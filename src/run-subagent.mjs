@@ -83,7 +83,7 @@ async function checkpoint(a, ctx) {
     if (!key || !a.inTurn) return;
     const bundle = join(tmp, 'wip.bundle');
     await writeFile(bundle, await a.sandbox.files.read(`${a.home}/wip.bundle`, { format: 'bytes' }));
-    await git(a.root, 'fetch', '-q', bundle, `+refs/cc/wip:refs/heads/claude-cloud/${a.id}-wip`);
+    await git(a.root, 'fetch', '-q', '--no-write-fetch-head', bundle, `+refs/cc/wip:refs/heads/claude-cloud/${a.id}-wip`);
     a.wipKey = key;
   } catch (e) {
     log(`checkpoint of ${a.id} failed:`, ctx.scrub(e?.message));
@@ -99,16 +99,21 @@ async function collect(a, { scrub }) {
   const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-'));
   try {
     const out = await a.sandbox.commands.run(
-      `git add -A && (git diff --cached --quiet || git ${IDENT.join(' ')} commit -q -m "claude-cloud: subagent changes");` +
+      // Only tracked files are swept in; new files the agent left uncommitted (caches, build output) are listed instead.
+      `git add -u && (git diff --cached --quiet || git ${IDENT.join(' ')} commit -q -m "claude-cloud: subagent changes");` +
+      ` git ls-files --others --exclude-standard --directory | head -20 | sed 's/^/UNTRACKED /';` +
       ` if [ "$(git rev-parse HEAD)" != "${a.sha}" ]; then git update-ref refs/heads/out HEAD &&` +
       ` git bundle create ${a.home}/out.bundle ^${a.sha} refs/heads/out && echo CHANGED; fi`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     );
-    if (!out.stdout.includes('CHANGED')) return { where: 'No changes were made.' };
+    const left = out.stdout.split('\n').filter((l) => l.startsWith('UNTRACKED ')).map((l) => l.slice(10));
+    const leftNote = left.length ? ` New files not committed (still in the sandbox; ask the agent to commit any that matter): ${left.join(', ')}.` : '';
+    if (!out.stdout.includes('CHANGED')) return { where: `No changes were made.${leftNote}`, left };
     const bundle = join(tmp, 'out.bundle');
     await writeFile(bundle, await a.sandbox.files.read(`${a.home}/out.bundle`, { format: 'bytes' }));
-    await git(a.root, 'fetch', '-q', bundle, 'refs/heads/out');
-    const tip = await git(a.root, 'rev-parse', 'FETCH_HEAD');
+    // Read the tip from this agent's own bundle: FETCH_HEAD is shared by every agent finishing at the same time.
+    const tip = (await git(a.root, 'bundle', 'list-heads', bundle, 'refs/heads/out')).split(' ')[0];
+    await git(a.root, 'fetch', '-q', '--no-write-fetch-head', bundle, 'refs/heads/out');
     let target = branch, note = '';
     const cur = await git(a.root, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`).catch(() => '');
     if (cur && !(await git(a.root, 'merge-base', '--is-ancestor', cur, tip).then(() => true, () => false))) {
@@ -120,7 +125,7 @@ async function collect(a, { scrub }) {
     await git(a.root, 'update-ref', `refs/heads/${target}`, tip);
     await git(a.root, 'update-ref', `refs/cc-keep/${a.id}`, tip); // keeps objects for the next bundle
     a.sha = tip;
-    return { where: `Changes are on local branch ${target}.${note}` };
+    return { where: `Changes are on local branch ${target}.${note}${leftNote}`, left };
   } catch (e) {
     log('recovery failed:', scrub(e?.message));
     return { failed: true, where: `Any changes could not be recovered. Latest work may be on claude-cloud/${a.id} or claude-cloud/${a.id}-wip.` };
@@ -155,7 +160,7 @@ async function turn(a, message, ctx) {
     a.inTurn = false;
     await a.cp?.catch(() => {});
   }
-  const { where, failed } = await collect(a, ctx);
+  const { where, failed, left } = await collect(a, ctx);
 
   let text = stdout, error = false;
   if (failure) {
@@ -175,8 +180,9 @@ async function turn(a, message, ctx) {
   } catch {
     text = `${stdout}\n\n(Could not parse claude's JSON output, so this is the raw stdout.)`;
   }
-  // The turn ended normally and its content is on the normal branch: the recovery copy is not needed.
-  if (!error && !failed) {
+  // The turn ended normally and everything is on the normal branch: the recovery copy is not needed.
+  // Keep it when new files were left uncommitted, since -wip may be the only copy outside the sandbox.
+  if (!error && !failed && !left?.length) {
     a.wipKey = null;
     await git(a.root, 'update-ref', '-d', `refs/heads/claude-cloud/${a.id}-wip`).catch(() => {});
   }

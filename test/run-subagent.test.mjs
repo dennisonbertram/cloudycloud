@@ -20,9 +20,12 @@ resumed=""
 [ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
 reply() { printf '{"type":"result","is_error":false,"session_id":"%s","result":"%s"}\\n' "$sid" "$1"; }
 case "$p" in
+  OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; git add -A; git -c user.name=x -c user.email=x@x commit -qm "own $n"; reply "own $n" ;;
+  JUNK*) mkdir -p __pycache__; echo bytecode > __pycache__/m.pyc; echo newfile > notes.txt; echo dirty >> a.txt; reply "junk" ;;
   EDIT2*) echo more > b.txt; git add -A; git -c user.name=x -c user.email=x@x commit -qm two; reply "\${resumed}edited2" ;;
   EDIT*) echo changed > a.txt; reply "edited" ;;
   SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
+  SLOWCLEAN*) echo dirty >> a.txt; sleep 0.8; reply "slow done" ;;
   SLOWWIP*) echo wipdata > u.txt; echo dirty >> a.txt; sleep 0.8; reply "slow done" ;;
   FAILWIP*) echo wipdata > u.txt; sleep 0.8; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
   SLOW*) sleep 0.5; reply "slow done" ;;
@@ -386,9 +389,20 @@ test('checkpoint captures uncommitted and untracked files to -wip without touchi
   assert.equal(await sh(sbxRepo, 'git rev-parse HEAD'), await sh(repo, `git rev-parse refs/cc-keep/${id}`));
   assert.equal(await sh(sbxRepo, 'git diff --cached --name-only'), '', 'agent index untouched');
   assert.match(await sh(sbxRepo, 'git status --porcelain'), /\?\? u\.txt/);
+  const r = await wait([id]);
+  // u.txt was left untracked: it is not committed to the branch, is named in the result, and -wip keeps a copy.
+  assert.match(await sh(repo, `git show claude-cloud/${id}:a.txt`), /dirty/);
+  assert.equal(await sh(repo, `git cat-file -e claude-cloud/${id}:u.txt 2>/dev/null && echo y || echo n`), 'n');
+  assert.match(r, /not committed.*u\.txt/);
+  assert.equal(await sh(repo, `git show ${wip}:u.txt`), 'wipdata', 'wip kept while untracked files remain');
+});
+
+test('-wip branch is removed after a clean turn with nothing left uncommitted', async () => {
+  const { repo, start, wait } = await setup({ checkpointMs: 100 });
+  const id = await start({ prompt: 'SLOWCLEAN' });
   await wait([id]);
-  assert.equal(await sh(repo, `git branch --list ${wip}`), '', 'wip removed after clean turn');
-  assert.equal(await sh(repo, `git show claude-cloud/${id}:u.txt`), 'wipdata');
+  assert.equal(await sh(repo, `git branch --list claude-cloud/${id}-wip`), '');
+  assert.match(await sh(repo, `git show claude-cloud/${id}:a.txt`), /dirty/);
 });
 
 test('-wip branch is kept after a failed turn', async () => {
@@ -442,4 +456,24 @@ test('wait and stop accept a single id as a string or as agent_id', async () => 
     const w = await waitAgents({ ...args, timeout_seconds: 1 }, deps);
     assert.notEqual(w.isError, true, JSON.stringify(w));
   }
+});
+
+test('agents finishing at the same moment each get their own commits', async () => {
+  const { repo, start, wait } = await setup();
+  const names = ['n1', 'n2', 'n3', 'n4'];
+  const ids = await Promise.all(names.map((n) => start({ prompt: `OWN-${n}` })));
+  const r = await wait(ids, 120);
+  for (const [i, id] of ids.entries()) {
+    const files = (await sh(repo, `git diff --name-only main claude-cloud/${id} 2>&1 || true`)).split('\n');
+    assert.deepEqual(files, [`own-${names[i]}.txt`], `agent ${id} branch has ${files}\n${r}`);
+  }
+});
+
+test('final sweep commits tracked edits only and names leftover untracked files', async () => {
+  const { repo, start, wait } = await setup();
+  const id = await start({ prompt: 'JUNK' });
+  const r = await wait([id]);
+  const files = (await sh(repo, `git diff --name-only main claude-cloud/${id}`)).split('\n');
+  assert.deepEqual(files, ['a.txt']);
+  assert.match(r, /not committed.*__pycache__\/.*notes\.txt|not committed.*notes\.txt.*__pycache__\//s);
 });
