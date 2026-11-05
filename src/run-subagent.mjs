@@ -51,7 +51,9 @@ export async function runSubagent(args, { createSandbox, env = process.env, cwd 
     await git(root, 'bundle', 'create', inBundle, ref);
 
     const envs = {};
-    for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) if (env[k]) envs[k] = env[k];
+    // Prefer the subscription token; sending both would make Claude Code bill the API key.
+    if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
+    else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     sandbox = await createSandbox(envs, LIFETIME_MS);
     const home = sandbox.home ?? '/home/user';
     log(`sandbox up, id ${id}, ${args.description ?? ''}`);

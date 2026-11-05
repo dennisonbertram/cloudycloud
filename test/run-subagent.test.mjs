@@ -156,3 +156,13 @@ test('failed change recovery is reported, not described as no changes', async ()
   assert.match(text, /could not be recovered/);
   assert.equal(r.isError, true);
 });
+
+test('sandbox gets only the OAuth token when both Claude credentials exist', async () => {
+  const { repo } = await setup();
+  let seen;
+  const createSandbox = async (envs) => { seen = envs; const s = await fakeSandbox(); s.envs = envs; return s; };
+  await runSubagent({ description: 'd', prompt: 'hi' }, {
+    createSandbox, cwd: repo, env: { ANTHROPIC_API_KEY: 'api', CLAUDE_CODE_OAUTH_TOKEN: 'tok' },
+  });
+  assert.deepEqual(seen, { CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
+});
