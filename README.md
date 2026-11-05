@@ -39,3 +39,6 @@ Background output is one combined log, so a failing subagent's error text is tha
 - `subagent_type` only works for agents committed in the repo or built into Claude Code; agents in `~/.claude/agents` are not sent.
 - Skills that fork their own subagent (`context: fork`) are not intercepted.
 - Setting `ANTHROPIC_API_KEY` also moves the parent session to API billing.
+
+## Test it
+Run `./test-instabox.sh`. It runs one real subagent on Instabox in a throwaway repo and prints PASS or FAIL.
