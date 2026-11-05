@@ -5,10 +5,13 @@ remote sandbox: [Instabox](https://instabox.sh) if `INSTABOX_API_KEY` is set, ot
 
 ## Setup
     npm install
-    npm link            # or symlink bin/claude-cloud onto your PATH
-    export E2B_API_KEY=...        # E2B, or:
-    export INSTABOX_API_KEY=...   # Instabox (template `agent-browser`); wins if both are set
-    export CLAUDE_CODE_OAUTH_TOKEN=...   # from `claude setup-token`; or set ANTHROPIC_API_KEY
+    npm link
+    claude-cloud      # the first run asks for your keys
+
+Then say "use a subagent" in the session. Keys are saved to `~/.config/claude-cloud/env`
+with owner-only permissions and reach only the MCP server, so your main session keeps its
+normal login. Environment variables with the same names take priority. Get a Claude token
+with `claude setup-token`.
 
 ## How it works
 The launcher disables the built-in `Agent` and `Workflow` tools and adds an MCP tool,

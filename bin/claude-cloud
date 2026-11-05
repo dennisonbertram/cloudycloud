@@ -8,21 +8,29 @@ while [ -h "$self" ]; do
 done
 root=$(cd "$(dirname "$self")/.." && pwd)
 
-missing=""
-[ -n "${E2B_API_KEY:-}" ] || [ -n "${INSTABOX_API_KEY:-}" ] || missing="E2B_API_KEY or INSTABOX_API_KEY"
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  missing="$missing ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (run 'claude setup-token' to get an OAuth token)"
-fi
-if [ -n "$missing" ]; then
-  echo "claude-cloud: missing environment:$missing" >&2
-  exit 1
+# Keys saved here reach only the MCP server, so the main session keeps its normal login.
+config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
+has() { eval "[ -n \"\${$1:-}\" ]" || grep -q "^$1=." "$config" 2>/dev/null; }
+ask() { # ask VAR "prompt": read a hidden value and save it with owner-only permissions
+  if [ ! -t 0 ]; then echo "claude-cloud: missing $1" >&2; exit 1; fi
+  printf '%s: ' "$2" >&2
+  stty -echo; IFS= read -r value; stty echo; echo >&2
+  if [ -z "$value" ]; then echo "claude-cloud: missing $1" >&2; exit 1; fi
+  (umask 077; mkdir -p "$(dirname "$config")"; printf '%s=%s\n' "$1" "$value" >> "$config")
+}
+has E2B_API_KEY || has INSTABOX_API_KEY || ask INSTABOX_API_KEY 'Instabox API key (ibk_...)'
+if ! has ANTHROPIC_API_KEY && ! has CLAUDE_CODE_OAUTH_TOKEN; then
+  echo "Subagents need a Claude token. Run this in another terminal and paste the result: claude setup-token" >&2
+  ask CLAUDE_CODE_OAUTH_TOKEN 'Claude token'
 fi
 case $root in *'"'*|*'\'*) echo "claude-cloud: install path contains a quote or backslash" >&2; exit 1 ;; esac
 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
-envjson='{"E2B_API_KEY":"${E2B_API_KEY:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
+# CLAUDE_CLOUD_CONFIG is included so the server reads the same file as this launcher.
+export CLAUDE_CLOUD_CONFIG="$config"
+envjson='{"CLAUDE_CLOUD_CONFIG":"${CLAUDE_CLOUD_CONFIG:-}","E2B_API_KEY":"${E2B_API_KEY:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
-settings='{"permissions":{"deny":["Agent","Workflow"]}}'
+settings='{"permissions":{"allow":["mcp__cloud__cloud_agent"],"deny":["Agent","Workflow"]}}'
 prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. It runs in a remote sandbox from committed and tracked files only (including uncommitted edits to tracked files) and does not see local untracked files. Parallel calls are allowed, but if cloud_agent fails with quota_exceeded, the sandbox plan limits concurrency, so run subagents one at a time. Its changes come back as a local git branch named in the result.'
 
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"

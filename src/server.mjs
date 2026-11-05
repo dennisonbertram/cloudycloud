@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createInstaboxSandbox } from './instabox.mjs';
+import { loadEnv } from './config.mjs';
 import { runSubagent } from './run-subagent.mjs';
 
 const tool = {
@@ -19,8 +20,7 @@ const tool = {
   },
 };
 
-// The launcher passes unset secrets as empty strings; treat them as unset.
-const env = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v));
+const env = loadEnv();
 // Instabox wins when both keys are set. Each SDK is imported only when its provider is used.
 const createSandbox = env.INSTABOX_API_KEY
   ? createInstaboxSandbox(env)
