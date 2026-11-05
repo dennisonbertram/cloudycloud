@@ -40,8 +40,8 @@ git add README.md
 git -c user.name=test -c user.email=test@example.invalid commit -qm init
 
 echo "Running one subagent on Instabox. This usually takes a minute or two..."
-"$root/bin/claude-cloud" -p --model haiku --allowedTools mcp__cloud__cloud_agent --output-format text \
-  "Call mcp__cloud__cloud_agent exactly once with description 'end to end test', model 'haiku', and this prompt: 'Run the hostname command, write its exact output to a new file named proof.txt, and stop.' Then print the tool's exact result." \
+"$root/bin/claude-cloud" -p --model haiku --allowedTools mcp__cloud__cloud_agent,mcp__cloud__cloud_agent_wait,mcp__cloud__cloud_agent_stop --output-format text \
+  "Call mcp__cloud__cloud_agent exactly once with description 'end to end test', model 'haiku', and this prompt: 'Run the hostname command, write its exact output to a new file named proof.txt, and stop.' Then call mcp__cloud__cloud_agent_wait with the returned agent_id, then mcp__cloud__cloud_agent_stop with it, then print the wait result exactly." \
   < /dev/null || true
 
 branch=$(git branch --list 'claude-cloud/*' --format='%(refname:short)' | head -1)

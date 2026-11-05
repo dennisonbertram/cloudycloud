@@ -1,11 +1,12 @@
+const ARCHIVE_MS = 8 * 60 * 60_000; // backstop; agents are normally stopped sooner.
 const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 minutes.
 
-// Returns createSandbox(envs, timeoutMs) for run-subagent. `sdk` is injectable for tests.
+// Returns createSandbox(envs) for run-subagent. `sdk` is injectable for tests.
 export function createInstaboxSandbox(env, sdk) {
-  return async (envs, timeoutMs) => {
+  return async (envs) => {
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
-      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud' }, archiveMs: timeoutMs,
+      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud' }, archiveMs: ARCHIVE_MS,
     });
     return {
       home: '/data/home',

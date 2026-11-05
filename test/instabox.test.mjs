@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createInstaboxSandbox } from '../src/instabox.mjs';
-import { runSubagent } from '../src/run-subagent.mjs';
+import { runSubagent, waitAgents } from '../src/run-subagent.mjs';
 
 function fakeSdk({ waitImpl } = {}) {
   const calls = { create: null, run: [], killedJob: false };
@@ -33,10 +33,10 @@ const KEY = 'ib-secret-key';
 
 test('create passes key, metadata, archiveMs and home', async () => {
   const { sdk, calls } = fakeSdk();
-  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk)({ A: '1' }, 1800000);
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk)({ A: '1' });
   assert.equal(sbx.home, '/data/home');
   assert.equal(calls.create.opts.apiKey, KEY);
-  assert.equal(calls.create.opts.archiveMs, 1800000);
+  assert.equal(calls.create.opts.archiveMs, 8 * 60 * 60_000);
   assert.deepEqual(calls.create.opts.metadata, { purpose: 'claude-cloud' });
   assert.equal(calls.create.opts.timeoutMs, undefined);
   assert.ok(!JSON.stringify(Object.keys(sbx)).includes(KEY));
@@ -76,11 +76,15 @@ test('run-subagent honours sandbox.home and scrubs the Instabox key', async () =
     commands: { async run(cmd, o) { cmds.push({ cmd, cwd: o.cwd }); throw Object.assign(new Error('x'), { exitCode: 1, stderr: `bad ${KEY}` }); } },
     kill: async () => {},
   };
-  const r = await runSubagent({ description: 'd', prompt: 'p' }, {
-    createSandbox: async (envs) => { seenEnvs = envs; return sbx; },
-    env: { INSTABOX_API_KEY: KEY, E2B_API_KEY: 'e2b', ANTHROPIC_API_KEY: 'a' }, cwd: process.cwd(),
-  });
-  assert.deepEqual(seenEnvs, { ANTHROPIC_API_KEY: 'a' });
+  const deps = {
+    createSandbox: async (envs) => { seenEnvs = envs; return sbx; }, open: new Map(),
+    env: { INSTABOX_API_KEY: KEY, E2B_API_KEY: 'e2b', ANTHROPIC_API_KEY: 'api-key-xyz' }, cwd: process.cwd(),
+  };
+  const started = await runSubagent({ description: 'd', prompt: 'p' }, deps);
+  const id = started.content[0].text.match(/agent_id: (\w+)/)[1];
+  const r = await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, deps);
+  assert.match(r.content[0].text, /status: failed/);
+  assert.deepEqual(seenEnvs, { ANTHROPIC_API_KEY: 'api-key-xyz' });
   assert.ok(written.every((p) => p.startsWith('/data/home/')) && written.length);
   assert.ok(cmds.every((c) => !c.cmd.includes('/home/user') && !String(c.cwd).includes('/home/user')));
   assert.ok(!JSON.stringify(r).includes(KEY));
