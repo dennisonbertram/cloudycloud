@@ -1,12 +1,12 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { Sandbox } from 'e2b';
+import { createInstaboxSandbox } from './instabox.mjs';
 import { runSubagent } from './run-subagent.mjs';
 
 const tool = {
   name: 'cloud_agent',
-  description: 'Run a subagent in a remote E2B sandbox on committed and tracked files (no untracked files). Returns its final answer; any file changes come back as a local git branch.',
+  description: 'Run a subagent in a remote sandbox on committed and tracked files (no untracked files). Returns its final answer; any file changes come back as a local git branch.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -21,7 +21,10 @@ const tool = {
 
 // The launcher passes unset secrets as empty strings; treat them as unset.
 const env = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v));
-const createSandbox = (envs, timeoutMs) => Sandbox.create('claude', { envs, timeoutMs });
+// Instabox wins when both keys are set. Each SDK is imported only when its provider is used.
+const createSandbox = env.INSTABOX_API_KEY
+  ? createInstaboxSandbox(env)
+  : async (envs, timeoutMs) => (await import('e2b')).Sandbox.create('claude', { envs, timeoutMs });
 
 const server = new Server({ name: 'cloud', version: '0.1.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [tool] }));

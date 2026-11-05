@@ -1,5 +1,5 @@
 #!/bin/sh
-# Starts Claude Code with every subagent routed to an E2B sandbox via the cloud_agent MCP tool.
+# Starts Claude Code with every subagent routed to a remote sandbox via the cloud_agent MCP tool.
 self=$0
 while [ -h "$self" ]; do
   dir=$(cd "$(dirname "$self")" && pwd)
@@ -9,7 +9,7 @@ done
 root=$(cd "$(dirname "$self")/.." && pwd)
 
 missing=""
-[ -n "${E2B_API_KEY:-}" ] || missing="E2B_API_KEY"
+[ -n "${E2B_API_KEY:-}" ] || [ -n "${INSTABOX_API_KEY:-}" ] || missing="E2B_API_KEY or INSTABOX_API_KEY"
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   missing="$missing ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (run 'claude setup-token' to get an OAuth token)"
 fi
@@ -20,10 +20,10 @@ fi
 case $root in *'"'*|*'\'*) echo "claude-cloud: install path contains a quote or backslash" >&2; exit 1 ;; esac
 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
-envjson='{"E2B_API_KEY":"${E2B_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
+envjson='{"E2B_API_KEY":"${E2B_API_KEY:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
 settings='{"permissions":{"deny":["Agent","Workflow"]}}'
-prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. It runs in a remote sandbox from committed and tracked files only (including uncommitted edits to tracked files) and does not see local untracked files. Parallel calls are allowed. Its changes come back as a local git branch named in the result.'
+prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. It runs in a remote sandbox from committed and tracked files only (including uncommitted edits to tracked files) and does not see local untracked files. Parallel calls are allowed, but if cloud_agent fails with quota_exceeded, the sandbox plan limits concurrency, so run subagents one at a time. Its changes come back as a local git branch named in the result.'
 
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"
 exec claude --mcp-config "$mcp" --settings "$settings" --append-system-prompt "$prompt" "$@"

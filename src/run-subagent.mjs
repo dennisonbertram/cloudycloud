@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'E2B_API_KEY'];
+const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'E2B_API_KEY', 'INSTABOX_API_KEY'];
 const LIFETIME_MS = 30 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -53,21 +53,22 @@ export async function runSubagent(args, { createSandbox, env = process.env, cwd 
     const envs = {};
     for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) if (env[k]) envs[k] = env[k];
     sandbox = await createSandbox(envs, LIFETIME_MS);
+    const home = sandbox.home ?? '/home/user';
     log(`sandbox up, id ${id}, ${args.description ?? ''}`);
 
-    await sandbox.files.write('/home/user/in.bundle', await readFile(inBundle));
-    await sandbox.files.write('/home/user/prompt.txt', prompt);
+    await sandbox.files.write(`${home}/in.bundle`, await readFile(inBundle));
+    await sandbox.files.write(`${home}/prompt.txt`, prompt);
     await sandbox.commands.run(
       `git init -q repo && cd repo && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${sha}`,
-      { cwd: '/home/user', timeoutMs: SETUP_MS },
+      { cwd: home, timeoutMs: SETUP_MS },
     );
 
     // model and agent were validated against SAFE, so they are safe inside the command string.
     const cmd = ['claude -p --dangerously-skip-permissions --output-format text',
-      model && `--model ${model}`, agent && `--agent ${agent}`, '< /home/user/prompt.txt'].filter(Boolean).join(' ');
+      model && `--model ${model}`, agent && `--agent ${agent}`, `< ${home}/prompt.txt`].filter(Boolean).join(' ');
     let text, failure;
     try {
-      text = (await sandbox.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: AGENT_MS })).stdout;
+      text = (await sandbox.commands.run(cmd, { cwd: `${home}/repo`, timeoutMs: AGENT_MS })).stdout;
     } catch (e) {
       failure = e;
     }
@@ -78,12 +79,12 @@ export async function runSubagent(args, { createSandbox, env = process.env, cwd 
       const out = await sandbox.commands.run(
         `git add -A && (git diff --cached --quiet || git ${IDENT.join(' ')} commit -q -m "claude-cloud: subagent changes");` +
         ` if [ "$(git rev-parse HEAD)" != "${sha}" ]; then git update-ref refs/heads/out HEAD &&` +
-        ` git bundle create /home/user/out.bundle ^${sha} refs/heads/out && echo CHANGED; fi`,
-        { cwd: '/home/user/repo', timeoutMs: SETUP_MS },
+        ` git bundle create ${home}/out.bundle ^${sha} refs/heads/out && echo CHANGED; fi`,
+        { cwd: `${home}/repo`, timeoutMs: SETUP_MS },
       );
       if (out.stdout.includes('CHANGED')) {
         const outBundle = join(tmp, 'out.bundle');
-        await writeFile(outBundle, await sandbox.files.read('/home/user/out.bundle', { format: 'bytes' }));
+        await writeFile(outBundle, await sandbox.files.read(`${home}/out.bundle`, { format: 'bytes' }));
         await git(root, 'fetch', '-q', outBundle, `refs/heads/out:refs/heads/${branch}`);
         recovered = true;
       }
