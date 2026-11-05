@@ -1,0 +1,17 @@
+{
+  "name": "claude-cloud",
+  "version": "0.1.0",
+  "description": "Run Claude Code subagents in E2B sandboxes",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "e2b": "^2.63.0"
+  },
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claude-cloud": "bin/claude-cloud"
+  }
+}
