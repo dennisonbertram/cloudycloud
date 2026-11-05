@@ -17,12 +17,26 @@ const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then
 const log = (...a) => console.error('[claude-cloud]', ...a);
 
 // createSandbox(envs, timeoutMs) -> sandbox with files.write/read, commands.run, kill.
-export async function runSubagent(args, { createSandbox, env = process.env, cwd = process.cwd() }) {
-  const { prompt, model, subagent_type: agent } = args;
+// `open` holds kept-open subagents by id: { sandbox, root, sha }.
+export async function runSubagent(args, { createSandbox, env = process.env, cwd = process.cwd(), open = new Map() }) {
+  const { prompt, model, subagent_type: agent, keep_open: keepOpen, session_id: sessionId, close } = args;
   const secrets = SECRETS.map((k) => env[k]).filter(Boolean);
   const scrub = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const fail = (text) => ({ isError: true, content: [{ type: 'text', text: scrub(text) }] });
 
+  if (sessionId !== undefined && !(typeof sessionId === 'string' && /^[0-9a-f]{8}$/.test(sessionId))) {
+    return fail('invalid session_id: must match /^[0-9a-f]{8}$/');
+  }
+  const session = sessionId === undefined ? undefined : open.get(sessionId);
+  if (sessionId !== undefined && !session) {
+    return fail(`Subagent ${sessionId} is not open. It may have been closed or reached the 30-minute sandbox lifetime.`);
+  }
+  if (close) {
+    if (!session) return fail('close requires session_id');
+    open.delete(sessionId);
+    await session.sandbox.kill().catch(() => {});
+    return { content: [{ type: 'text', text: `Subagent ${sessionId} closed.` }] };
+  }
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v !== undefined && !(typeof v === 'string' && SAFE.test(v))) {
@@ -30,44 +44,54 @@ export async function runSubagent(args, { createSandbox, env = process.env, cwd 
     }
   }
 
-  let root;
-  try {
-    root = await git(cwd, 'rev-parse', '--show-toplevel');
-    await git(root, 'rev-parse', '--verify', 'HEAD');
-  } catch {
-    return fail('claude-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
+  let root = session?.root;
+  if (!session) {
+    try {
+      root = await git(cwd, 'rev-parse', '--show-toplevel');
+      await git(root, 'rev-parse', '--verify', 'HEAD');
+    } catch {
+      return fail('claude-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
+    }
   }
 
-  const id = randomUUID().slice(0, 8);
+  const id = sessionId ?? randomUUID().slice(0, 8);
   const ref = `refs/claude-cloud/${id}`;
   const branch = `claude-cloud/${id}`;
   const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-'));
-  let sandbox;
+  let sandbox = session?.sandbox;
+  let keep = false;
   try {
-    // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
-    const sha = (await git(root, ...IDENT, 'stash', 'create')) || (await git(root, 'rev-parse', 'HEAD'));
-    await git(root, 'update-ref', ref, sha);
-    const inBundle = join(tmp, 'in.bundle');
-    await git(root, 'bundle', 'create', inBundle, ref);
+    let sha = session?.sha;
+    let home;
+    if (session) {
+      home = sandbox.home ?? '/home/user';
+      await sandbox.files.write(`${home}/prompt.txt`, prompt);
+    } else {
+      // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
+      sha = (await git(root, ...IDENT, 'stash', 'create')) || (await git(root, 'rev-parse', 'HEAD'));
+      await git(root, 'update-ref', ref, sha);
+      const inBundle = join(tmp, 'in.bundle');
+      await git(root, 'bundle', 'create', inBundle, ref);
 
-    const envs = {};
-    // Prefer the subscription token; sending both would make Claude Code bill the API key.
-    if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
-    else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-    sandbox = await createSandbox(envs, LIFETIME_MS);
-    const home = sandbox.home ?? '/home/user';
-    log(`sandbox up, id ${id}, ${args.description ?? ''}`);
+      const envs = {};
+      // Prefer the subscription token; sending both would make Claude Code bill the API key.
+      if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
+      else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+      sandbox = await createSandbox(envs, LIFETIME_MS);
+      home = sandbox.home ?? '/home/user';
+      log(`sandbox up, id ${id}, ${args.description ?? ''}`);
 
-    await sandbox.files.write(`${home}/in.bundle`, await readFile(inBundle));
-    await sandbox.files.write(`${home}/prompt.txt`, prompt);
-    await sandbox.commands.run(
-      `git init -q repo && cd repo && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${sha}`,
-      { cwd: home, timeoutMs: SETUP_MS },
-    );
+      await sandbox.files.write(`${home}/in.bundle`, await readFile(inBundle));
+      await sandbox.files.write(`${home}/prompt.txt`, prompt);
+      await sandbox.commands.run(
+        `git init -q repo && cd repo && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${sha}`,
+        { cwd: home, timeoutMs: SETUP_MS },
+      );
+    }
 
     // model and agent were validated against SAFE, so they are safe inside the command string.
     const cmd = ['claude -p --dangerously-skip-permissions --output-format text',
-      model && `--model ${model}`, agent && `--agent ${agent}`, `< ${home}/prompt.txt`].filter(Boolean).join(' ');
+      session && '--continue', model && `--model ${model}`, agent && `--agent ${agent}`, `< ${home}/prompt.txt`].filter(Boolean).join(' ');
     let text, failure;
     try {
       text = (await sandbox.commands.run(cmd, { cwd: `${home}/repo`, timeoutMs: AGENT_MS })).stdout;
@@ -104,12 +128,21 @@ export async function runSubagent(args, { createSandbox, env = process.env, cwd 
       const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
       return fail(`Subagent failed, exit code ${code}.\n${stderr}\n${where}`);
     }
+    if (keepOpen) {
+      keep = true;
+      open.set(id, { sandbox, root, sha });
+      const note = `Subagent ${id} is still open. Pass session_id "${id}" to send it another message, or close: true to end it.`;
+      return { content: [{ type: 'text', text: scrub(`${text}\n\n${where}\n${note}`) }] };
+    }
     return { content: [{ type: 'text', text: scrub(`${text}\n\n${where}`) }] };
   } catch (e) {
     log('error:', scrub(e?.message));
     return fail(`claude-cloud error: ${e?.message}`);
   } finally {
-    await sandbox?.kill().catch(() => {});
+    if (!keep) {
+      open.delete(id);
+      await sandbox?.kill().catch(() => {});
+    }
     await git(root, 'update-ref', '-d', ref).catch(() => {});
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

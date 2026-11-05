@@ -17,7 +17,10 @@ with `claude setup-token`.
 The launcher disables the built-in `Agent` and `Workflow` tools and adds an MCP tool,
 `mcp__cloud__cloud_agent`. Each call snapshots your repo's tracked files (including uncommitted
 edits), sends a git bundle to a new sandbox, runs `claude -p` there, and returns the text.
-Any commits the subagent makes come back as a local branch `claude-cloud/<id>`. Your working
+Any commits the subagent makes come back as a local branch `claude-cloud/<id>`. With `keep_open`, the sandbox
+stays up and the result gives a `session_id`; pass it with a new `prompt` to continue that conversation
+(`claude -p --continue`), or with `close: true` to end it. The branch `claude-cloud/<id>` is updated after each round.
+Your working
 tree, index, and current branch are not touched. Secrets reach the tool through
 `${VAR:-}` expansion in the MCP config, so they never appear in process arguments.
 
@@ -32,6 +35,7 @@ Background output is one combined log, so a failing subagent's error text is tha
 ## Limits
 - The directory must be a git repo with at least one commit.
 - Untracked and ignored files are not sent. Subagents cannot use your local MCP servers or settings.
+- Open subagents (`keep_open`) still die at the 30-minute sandbox lifetime, and are killed when the MCP server exits. On the Instabox free plan an open subagent occupies the one allowed machine, so other `cloud_agent` calls hit `quota_exceeded` until it is closed.
 - Sandbox lifetime is 30 minutes; the subagent is stopped after 29. Nested subagents are not routed to the cloud.
 - A branch that began from uncommitted edits includes a stash-style snapshot commit in its history.
 - No retries. Failures return an error with the exit code and the last 4000 characters of stderr;

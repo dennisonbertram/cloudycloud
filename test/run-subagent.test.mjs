@@ -33,12 +33,15 @@ async function fakeSandbox() {
   const sbx = {
     killed: false,
     files: {
-      write: (p, d) => writeFile(map(p), d),
+      write: (p, d) => { sbx.writes.push(p); return writeFile(map(p), d); },
       read: (p) => readFile(map(p)),
     },
+    cmds: [],
+    writes: [],
     commands: {
       async run(cmd, { cwd, timeoutMs } = {}) {
         assert.ok(timeoutMs > 0, 'timeoutMs must be set');
+        sbx.cmds.push(cmd);
         try {
           const r = await exec('sh', ['-c', map(cmd)], {
             cwd: map(cwd),
@@ -62,10 +65,11 @@ async function setup() {
   await sh(repo, 'git add -A && git commit -qm init');
   const created = [];
   const createSandbox = async (envs) => { const s = await fakeSandbox(); s.envs = envs; created.push(s); return s; };
+  const open = new Map();
   const call = (args) => runSubagent({ description: 'd', ...args }, {
-    createSandbox, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, E2B_API_KEY: 'e2b-secret' },
+    createSandbox, open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, E2B_API_KEY: 'e2b-secret' },
   });
-  return { repo, created, call };
+  return { repo, created, call, open };
 }
 const branches = (repo) => sh(repo, 'git branch --list "claude-cloud/*"');
 
@@ -165,4 +169,85 @@ test('sandbox gets only the OAuth token when both Claude credentials exist', asy
     createSandbox, cwd: repo, env: { ANTHROPIC_API_KEY: 'api', CLAUDE_CODE_OAUTH_TOKEN: 'tok' },
   });
   assert.deepEqual(seen, { CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
+});
+
+const id8 = (r) => r.content[0].text.match(/Subagent ([0-9a-f]{8}) is still open/)?.[1];
+
+test('keep_open leaves the sandbox alive and registers it', async () => {
+  const { call, created, open } = await setup();
+  const r = await call({ prompt: 'hi', keep_open: true });
+  assert.ok(!r.isError, r.content[0].text);
+  const id = id8(r);
+  assert.ok(id, r.content[0].text);
+  assert.match(r.content[0].text, new RegExp(`Pass session_id "${id}" to send it another message, or close: true to end it\\.`));
+  assert.equal(created[0].killed, false);
+  assert.equal(open.get(id)?.sandbox, created[0]);
+});
+
+test('follow-up reuses the sandbox with --continue and no bundle; branch covers all rounds', async () => {
+  const { repo, call, created, open } = await setup();
+  const id = id8(await call({ prompt: 'hi', keep_open: true }));
+  const r = await call({ prompt: 'EDIT', session_id: id });
+  assert.ok(!r.isError, r.content[0].text);
+  assert.equal(created.length, 1);
+  assert.ok(created[0].cmds.some((c) => c.includes('claude -p') && c.includes('--continue')));
+  assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1, 'bundle only sent initially');
+  assert.ok(!created[0].cmds.slice(-3).some((c) => c.includes('git init')));
+  assert.equal(created[0].killed, true);
+  assert.equal(open.size, 0);
+  assert.equal(await sh(repo, `git show claude-cloud/${id}:a.txt`), 'changed');
+  assert.equal(await sh(repo, 'git for-each-ref refs/claude-cloud'), '');
+});
+
+test('follow-up with keep_open keeps it open', async () => {
+  const { call, created, open } = await setup();
+  const id = id8(await call({ prompt: 'hi', keep_open: true }));
+  const r = await call({ prompt: 'hi', session_id: id, keep_open: true });
+  assert.equal(id8(r), id);
+  assert.equal(created[0].killed, false);
+  assert.ok(open.has(id));
+});
+
+test('close kills the sandbox and forgets it, no prompt needed', async () => {
+  const { call, created, open } = await setup();
+  const id = id8(await call({ prompt: 'hi', keep_open: true }));
+  const r = await call({ session_id: id, close: true });
+  assert.ok(!r.isError, r.content[0].text);
+  assert.equal(created[0].killed, true);
+  assert.equal(open.size, 0);
+});
+
+test('unknown or malformed session_id is an error', async () => {
+  const { call, created } = await setup();
+  for (const args of [{ prompt: 'hi', session_id: 'deadbeef' }, { session_id: 'deadbeef', close: true }]) {
+    const r = await call(args);
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /not open/);
+  }
+  for (const session_id of ['nope', 'DEADBEEF', 'deadbeef0', '../x']) {
+    const r = await call({ prompt: 'hi', session_id });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /invalid session_id/);
+  }
+  assert.equal(created.length, 0);
+});
+
+test('failed run in a kept-open sandbox kills it and drops it', async () => {
+  const { call, created, open } = await setup();
+  const r = await call({ prompt: 'FAIL', keep_open: true });
+  assert.equal(r.isError, true);
+  assert.equal(created[0].killed, true);
+  assert.equal(open.size, 0);
+  const id = id8(await call({ prompt: 'hi', keep_open: true }));
+  const r2 = await call({ prompt: 'FAIL', session_id: id, keep_open: true });
+  assert.equal(r2.isError, true);
+  assert.equal(created[1].killed, true);
+  assert.equal(open.size, 0);
+});
+
+test('prompt is required unless closing', async () => {
+  const { call } = await setup();
+  const r = await call({});
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /prompt is required/);
 });
