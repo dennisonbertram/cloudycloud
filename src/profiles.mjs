@@ -51,6 +51,7 @@ export const gatewayConfig = (p) => `model_list:
       api_key: os.environ/${p.keyName}
 litellm_settings:
   drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
 `;
 
 // Environment prefix for the worker's claude command. It holds no secret: the anthropic token is a shell reference.

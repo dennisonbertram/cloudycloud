@@ -663,6 +663,7 @@ test('an openai profile writes a key-free config, starts the gateway, waits for 
   assert.match(cfg, /api_base: https:\/\/api\.particle\.ai\/v1/);
   assert.match(cfg, /api_key: os\.environ\/PARTICLE_API_KEY/);
   assert.match(cfg, /drop_params: true/);
+  assert.match(cfg, /use_chat_completions_url_for_anthropic_messages: true/); // else LiteLLM calls /v1/responses, which Particle lacks (405)
   assert.ok(!cfg.includes(PKEY));
   const i = sbx.cmds.findIndex((c) => c.includes('litellm --config'));
   const j = sbx.cmds.findIndex((c) => c.includes('health/liveliness'));
