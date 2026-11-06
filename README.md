@@ -79,9 +79,21 @@ These ran on real Instabox machines with a real Claude login:
 - 50 subagents running at once on a paid plan.
 - Follow-up messages.
 - Three subagents pushing their own branches to GitHub at the same time.
+- MCP task mode in an interactive session:
+  - the footer count;
+  - live progress in `/tasks`;
+  - automatic completion;
+  - follow-ups as tasks;
+  - stopping subagents.
+- `install.sh`:
+  - rejecting malformed and invalid keys;
+  - saving real keys privately;
+  - finding the stored `GH_TOKEN`;
+  - offering to replace each key on a re-run;
+  - leaving the terminal echoing normally after Ctrl-C at a hidden prompt.
+- Machine cleanup when a session ends, including when the terminal is closed outright while a subagent is working. The machine was gone within 10 seconds.
 
 These have not been run live:
-- MCP task mode (`/tasks`, the footer count, stopping with `x`). It is covered by tests against a fake sandbox only.
 - A 50-subagent swarm since subagents started pushing their own work to GitHub.
 - Any single task longer than 10 minutes.
 
