@@ -4,10 +4,15 @@ import { join } from 'node:path';
 import { PROVIDER_KEY } from './config.mjs';
 
 const PARTICLE = 'https://api.particle.ai/v1';
+// Workers on the pi harness talk to the OpenAI-format provider directly, with no LiteLLM gateway.
+const pi = (model) => ({ harness: 'pi', format: 'openai', baseUrl: PARTICLE, model, keyName: 'PARTICLE_API_KEY' });
 const BUILTIN = {
   glm: { format: 'openai', baseUrl: PARTICLE, model: 'z-ai/glm-5.3-flash', keyName: 'PARTICLE_API_KEY' },
   deepseek: { format: 'openai', baseUrl: PARTICLE, model: 'deepseek-ai/deepseek-v41-flash-1017', keyName: 'PARTICLE_API_KEY' },
   particle: { format: 'openai', baseUrl: PARTICLE, model: 'particle-ai/particle-1', keyName: 'PARTICLE_API_KEY' },
+  'pi-glm': pi('z-ai/glm-5.3-flash'),
+  'pi-deepseek': pi('deepseek-ai/deepseek-v41-flash-1017'),
+  'pi-particle': pi('particle-ai/particle-1'),
   openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', keyName: 'OPENROUTER_API_KEY' }, // model: per call or in profiles.json
 };
 export const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -34,12 +39,14 @@ export function resolveProfile(name, model, env = process.env) {
   const p = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
   if (!p || typeof p !== 'object') return { error: `unknown profile "${name}". Known profiles: ${Object.keys(profiles).join(', ')}` };
   const m = model ?? p.model;
+  const harness = p.harness ?? 'claude';
+  if (!['claude', 'pi'].includes(harness)) return { error: `profile ${name}: harness must be "claude" or "pi"` };
   if (!['anthropic', 'openai'].includes(p.format)) return { error: `profile ${name}: format must be "anthropic" or "openai"` };
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
   if (!env[p.keyName]) return { error: `profile ${name} needs ${p.keyName}, which is not set. Add it with ./install.sh (the Particle.ai or OpenRouter step), or put ${p.keyName}=... in ~/.config/claude-cloud/env.` };
-  return { ok: { name, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName } };
+  return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName } };
 }
 
 export const GATEWAY_PORT = 4000;
@@ -65,3 +72,9 @@ export function claudeEnv(p) {
   }
   return `ANTHROPIC_BASE_URL=${p.baseUrl} ANTHROPIC_AUTH_TOKEN="\$${p.keyName}" ANTHROPIC_API_KEY= ANTHROPIC_MODEL=${p.model}`;
 }
+
+// pi harness. Docs (pi.dev/docs/latest/models): models.json "apiKey ... can use $NAME or ${NAME} environment interpolation"; credential
+// order is --api-key, then auth.json, then models.json apiKey, so PI_CODING_AGENT_DIR points at a fresh directory that has no auth.json.
+export const PI_VERSION = '1.5.0';
+export const PI_PROVIDER = 'worker';
+export const piModels = (p) => JSON.stringify({ providers: { [PI_PROVIDER]: { baseUrl: p.baseUrl, api: 'openai-completions', apiKey: `$${p.keyName}`, models: [{ id: p.model }] } } }, null, 2);

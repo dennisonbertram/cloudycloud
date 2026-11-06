@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
-import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL } from './profiles.mjs';
+import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
 import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
+import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -66,6 +67,7 @@ const ctxOf = (deps) => {
   deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLAUDE_CLOUD_STARTS_PER_MIN) || 25 });
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
 };
+const isPi = (a) => a.profile?.harness === 'pi';
 const active = (a) => a.status === 'queued' || a.status === 'starting' || a.status === 'running';
 
 function wake(a) {
@@ -97,7 +99,7 @@ function newTurn(a) {
   a.turns = (a.turns ?? 0) + 1;
   let resolve;
   const done = new Promise((r) => { resolve = r; });
-  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: createProgress(), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
+  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: isPi(a) ? createPiProgress() : createProgress(), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
   a.turn = t;
   return t;
 }
@@ -152,9 +154,11 @@ async function turn(a, message, ctx, t) {
   const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLAUDE_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
+  // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
+  const piCmd = `PI_CODING_AGENT_DIR=${a.home}/pi-agent PATH=${a.home}/.local/bin:$PATH pi --mode json --provider ${PI_PROVIDER} --model ${a.profile?.model} ${a.sessionId ? `--session ${a.sessionId} ` : ''}--append-system-prompt '${hint}' < ${a.home}/prompt.txt`;
   let stdout, failure;
   try {
-    stdout = (await a.sandbox.commands.run(cmd, {
+    stdout = (await a.sandbox.commands.run(isPi(a) ? piCmd : cmd, {
       cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => t.progress.feed(chunk),
     })).stdout;
   } catch (e) {
@@ -171,16 +175,16 @@ async function turn(a, message, ctx, t) {
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
-    const whole = parseStream(stdout);
+    const whole = (isPi(a) ? parsePiStream : parseStream)(stdout);
     whole.startedAt = t.progress.startedAt;
     t.progress = whole;
   }
   const j = t.progress.final;
   let text, error = false;
   if (!j) {
-    text = `${String(stdout).slice(-4000)}\n\n(Could not parse claude's stream-json output, so this is the raw stdout.)`;
+    text = `${String(stdout).slice(-4000)}\n\n(Could not parse the agent's JSON output, so this is the raw stdout.)`;
   } else if (typeof j.result !== 'string') {
-    text = `Claude stopped without a result (${j.subtype ?? 'unknown reason'}).`;
+    text = `The agent stopped without a result (${j.subtype ?? 'unknown reason'}).`;
     error = true;
   } else {
     text = j.result;
@@ -222,7 +226,7 @@ async function setup(a, ctx) {
     else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
-    if (a.profile?.format === 'openai') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
+    if (a.profile?.format === 'openai' && !isPi(a)) envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLAUDE_CLOUD_DEPTH: String(a.depth), CLAUDE_CLOUD_MAX_DEPTH: String(a.maxDepth), CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
@@ -254,7 +258,8 @@ async function setup(a, ctx) {
       }
     }
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
-    if (a.profile?.format === 'openai') await startGateway(a, ctx);
+    if (isPi(a)) await setupPi(a, ctx);
+    else if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -273,6 +278,15 @@ async function installCoordinator(a, ctx, envs) {
   await sh(`mkdir -p ${dir}`);
   await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);
   await sh(`chmod 600 ${dir}/env`);
+}
+
+// Installs pinned pi under ~/.local (no sudo needed, whatever the global npm prefix is) and writes its provider config.
+// The config names the key's environment variable; the key itself is only in the sandbox environment.
+async function setupPi(a, ctx) {
+  const sh = (cmd, timeoutMs) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
+  await sh(`mkdir -p ${a.home}/pi-agent && npm install -g --ignore-scripts --prefix ${a.home}/.local @earendil-works/pi-coding-agent@${PI_VERSION}`, INSTALL_MS)
+    .catch((e) => { throw new Error(`Could not install pi in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
+  await a.sandbox.files.write(`${a.home}/pi-agent/models.json`, piModels(a.profile));
 }
 
 // Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
@@ -394,6 +408,7 @@ export async function runSubagent(args, deps) {
     if (r.error) return fail(r.error);
     profile = r.ok;
   }
+  if (role === 'coordinator' && profile?.harness === 'pi') return fail('A coordinator cannot use a pi profile, because coordinators run Claude Code. Use a pi profile for workers only.');
   let root;
   try {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');

@@ -1,3 +1,4 @@
+import { parsePiStream, createPiProgress } from '../src/progress-pi.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -60,4 +61,35 @@ test('totalLine leaves out the cost when asked: Claude Code prices other provide
   const p = parseStream(sample);
   assert.doesNotMatch(totalLine(p, { cost: false }), /\$/);
   assert.match(totalLine(p), /\$0\.0078/);
+});
+
+// Synthetic pi events built from the documented shapes (pi.dev/docs/latest/json), not captured from a real run.
+const pi = (f) => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
+
+test('pi JSON events give tools, tokens, step, session id and the final text', () => {
+  const p = parsePiStream(pi('pi-json-sample.jsonl'));
+  assert.deepEqual(p.totals(), { tools: 1, in: 350, out: 30 });
+  assert.equal(p.step, 'bash ls');
+  assert.equal(p.final.session_id, '11111111-2222-3333-4444-555555555555');
+  assert.equal(p.final.result, 'hello from pi');
+  assert.equal(p.final.is_error, false);
+});
+
+test('a pi error message is reported as an error with its message', () => {
+  const p = parsePiStream(pi('pi-json-error.jsonl'));
+  assert.equal(p.final.is_error, true);
+  assert.match(p.final.result, /401 invalid api key/);
+});
+
+test('pi progress works on chunks split anywhere, and before the run settles', () => {
+  const text = pi('pi-json-sample.jsonl'), p = createPiProgress();
+  const cut = text.indexOf('tool_execution_start') + 5;
+  p.feed(text.slice(0, cut));
+  assert.equal(p.tools, 0);
+  p.feed(text.slice(cut, cut + 300));
+  assert.equal(p.tools, 1);
+  assert.equal(p.final, undefined);
+  p.feed(text.slice(cut + 300));
+  p.end();
+  assert.equal(p.final.result, 'hello from pi');
 });

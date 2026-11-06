@@ -15,7 +15,7 @@ const tools = [
         prompt: { type: 'string', description: 'Full task for the subagent' },
         description: { type: 'string', description: 'Short task label' },
         model: { type: 'string', description: 'Optional model name' },
-        profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, openrouter, or a name from profiles.json. Default: Claude.' },
+        profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, pi-glm, pi-deepseek, pi-particle, openrouter, or a name from profiles.json. Default: Claude.' },
         role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets claude-cloud installed and can start its own cloud agents (limited by CLAUDE_CLOUD_MAX_DEPTH, default 3).' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },

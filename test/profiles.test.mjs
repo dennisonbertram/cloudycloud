@@ -54,3 +54,16 @@ test('provider keys load from the saved file, other names do not', () => {
   assert.equal(e.PARTICLE_API_KEY, 'pk'); assert.equal(e.OPENROUTER_API_KEY, 'ok');
   assert.equal(e.PATH, undefined); assert.equal(e.lower_API_KEY, undefined);
 });
+
+test('pi built-ins use the pi harness; others default to claude', () => {
+  const m = { 'pi-glm': 'z-ai/glm-5.3-flash', 'pi-deepseek': 'deepseek-ai/deepseek-v41-flash-1017', 'pi-particle': 'particle-ai/particle-1' };
+  for (const [n, model] of Object.entries(m)) {
+    const p = resolveProfile(n, undefined, env).ok;
+    assert.deepEqual([p.harness, p.format, p.baseUrl, p.model, p.keyName], ['pi', 'openai', 'https://api.particle.ai/v1', model, 'PARTICLE_API_KEY']);
+  }
+  assert.equal(resolveProfile('glm', undefined, env).ok.harness, 'claude');
+  const f = file({ mine: { harness: 'pi', format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' }, bad: { harness: 'vim', format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } });
+  const e = { ...env, CLAUDE_CLOUD_PROFILES: f };
+  assert.equal(resolveProfile('mine', undefined, e).ok.harness, 'pi');
+  assert.match(resolveProfile('bad', undefined, e).error, /harness/);
+});

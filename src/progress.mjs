@@ -7,11 +7,11 @@ const TOKEN_LIKE = /\b(?:sk-|ghp_|gho_|github_pat_|ibk_)[A-Za-z0-9_-]+/g;
 const STEP_MAX = 60;
 export const STATUS_MAX = 200;
 
-const num = (n) => (typeof n === 'number' && n > 0 ? n : 0);
+export const num = (n) => (typeof n === 'number' && n > 0 ? n : 0);
 const inputTokens = (u) => num(u?.input_tokens) + num(u?.cache_creation_input_tokens) + num(u?.cache_read_input_tokens);
 
 // "Edit src/parser.ts": the tool name and a short argument. Secret-looking tokens are removed.
-function stepOf(block) {
+export function stepOf(block) {
   const input = block.input ?? {};
   const key = ARG_KEYS.find((k) => typeof input[k] === 'string' && input[k]);
   const arg = key ? input[key].replace(TOKEN_LIKE, '[redacted]').replace(/\s+/g, ' ').trim() : '';
@@ -25,7 +25,7 @@ export function createProgress(now = Date.now) {
     usage: new Map(), // message id -> { in, out }; the same message repeats in several events, so keep the largest values
     seenTools: new Set(), buf: '',
   };
-  const event = (j) => {
+  p.event = (j) => {
     if (j?.type === 'assistant' && j.message) {
       const u = j.message.usage;
       if (u) {
@@ -44,7 +44,7 @@ export function createProgress(now = Date.now) {
   };
   p.line = (l) => {
     if (!l.trim().startsWith('{')) return;
-    try { event(JSON.parse(l)); } catch { /* not JSON */ }
+    try { p.event(JSON.parse(l)); } catch { /* not JSON */ }
   };
   // Feed raw output chunks, which may split lines anywhere.
   p.feed = (chunk) => {

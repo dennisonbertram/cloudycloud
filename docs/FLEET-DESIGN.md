@@ -39,6 +39,7 @@ A profile names the inference endpoint for a session:
 - **How it's used:** `cloud_agent` gets a `profile` argument. The worker's Claude Code runs with `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and an auth variable holding the secret's **placeholder**. The real key never reaches the machine.
 - **Claude through the proxy too:** if the Claude token also moves to a proxy secret, the last real credential on worker machines goes away. That closes the prompt-injection risk the README warns about today.
 - **Where profiles come from:** profiles live in `~/.config/claude-cloud/profiles.json`, and `install.sh` can add them.
+- **Status:** built. A profile's optional `harness` (`claude`, the default, or `pi`) picks the worker's agent. The built-in `pi-glm`, `pi-deepseek` and `pi-particle` profiles run the pi coding agent, which talks to Particle's OpenAI API directly, so there is no LiteLLM gateway. Not yet run live.
 - **Compatibility:** DeepSeek and others must offer an Anthropic-compatible API, or run behind a gateway that translates.
 - **Providers (decided):** any number of profiles can be added.
   - **OpenRouter** is the default for open models.

@@ -41,6 +41,14 @@ case "$p" in
 esac
 `;
 
+// Fake `pi`: logs its arguments and prompt, then prints the synthetic fixture (FAKE_PI_FIXTURE, or the error one for prompts starting PIERR).
+const FIXTURES = new URL('./fixtures/', import.meta.url).pathname;
+const FAKE_PI = `#!/bin/sh
+p=$(cat)
+echo "ARGS $* DIR=$PI_CODING_AGENT_DIR PROMPT=$p" >> ../pi.log
+case "$p" in PIERR*) cat ${FIXTURES}pi-json-error.jsonl ;; *) cat ${FIXTURES}pi-json-sample.jsonl ;; esac
+`;
+
 let currentGithub; // the bare repo of the test being set up (tests in a file run one at a time)
 async function fakeSandbox(github = currentGithub) {
   const dir = await mkdtemp(join(tmpdir(), 'fake-sbx-'));
@@ -49,6 +57,8 @@ async function fakeSandbox(github = currentGithub) {
   await mkdir(join(dir, 'home'));
   await writeFile(join(bin, 'claude'), FAKE_CLAUDE);
   await chmod(join(bin, 'claude'), 0o755);
+  await writeFile(join(bin, 'pi'), FAKE_PI);
+  await chmod(join(bin, 'pi'), 0o755);
   await writeFile(join(bin, 'npm'), '#!/bin/sh\necho "npm $*" >> npm.log\n');
   await chmod(join(bin, 'npm'), 0o755);
   await writeFile(join(bin, 'gh'), '#!/bin/sh\nexit 0\n'); // fake gh: no-op
@@ -813,4 +823,56 @@ test('a worker is unchanged: plain claude, no install, no env file; bad role rej
   assert.ok(!s.writes.some((w) => w.endsWith('/env')));
   assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, undefined);
   assert.match(x.text(await runSubagent({ description: 'd', prompt: 'hi', role: 'boss' }, x.deps)), /invalid role/);
+});
+
+// ---- pi harness ---- (the fake pi prints synthetic events built from the documented shapes, see test/fixtures/pi-json-*.jsonl)
+const piLog = (sbx) => readFile(join(sbx.dir, 'home', 'pi.log'), 'utf8');
+
+test('a pi profile installs pinned pi, writes a key-free models.json, starts no gateway, and runs pi with the prompt from the file', async () => {
+  const { start, wait, text, sandboxes, deps } = await profileSetup();
+  const id = await start({ profile: 'pi-glm', prompt: 'do the thing' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle[\s\S]*hello from pi/);
+  assert.match(r, /Total: 1 tool use, 350 in \/ 30 out tokens, /);
+  assert.ok(!/\$\d/.test(r), 'no cost in the result');
+  const sbx = sandboxes[0], all = sbx.cmds.join('\n');
+  assert.match(all, /npm install -g --ignore-scripts --prefix \S+\.local @earendil-works\/pi-coding-agent@1\.5\.0/);
+  assert.ok(!all.includes('litellm') && !all.includes('uvx'));
+  const cfg = JSON.parse(Object.entries(sbx.written).find(([p]) => p.endsWith('pi-agent/models.json'))[1]);
+  const prov = Object.values(cfg.providers)[0];
+  assert.deepEqual([prov.baseUrl, prov.api, prov.apiKey, prov.models], ['https://api.particle.ai/v1', 'openai-completions', '$PARTICLE_API_KEY', [{ id: 'z-ai/glm-5.3-flash' }]]);
+  assert.ok(!JSON.stringify(sbx.written).includes(PKEY) && !all.includes(PKEY));
+  assert.deepEqual(Object.keys(sbx.envs), ['PARTICLE_API_KEY']);
+  const log = await piLog(sbx);
+  assert.match(log, /ARGS --mode json --provider \S+ --model z-ai\/glm-5\.3-flash --append-system-prompt .*git push.*foreground/);
+  assert.match(log, /DIR=\S+pi-agent PROMPT=do the thing/);
+  assert.ok(!log.includes('--session'));
+  assert.match(text(await listAgents({}, deps)), /profile pi-glm/);
+});
+
+test('a pi follow-up resumes the session by id', async () => {
+  const { start, wait, msg, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'pi-deepseek' });
+  await wait([id]);
+  await msg(id, 'again');
+  assert.match(await wait([id]), /status: idle/);
+  const lines = (await piLog(sandboxes[0])).trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /--session 11111111-2222-3333-4444-555555555555 /);
+  assert.match(lines[1], /PROMPT=again/);
+});
+
+test('a pi run whose final assistant message is an error fails the turn', async () => {
+  const { start, wait } = await profileSetup();
+  const id = await start({ profile: 'pi-particle', prompt: 'PIERR now' });
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /ERROR: .*401 invalid api key/);
+});
+
+test('a pi worker cannot be a coordinator', async () => {
+  const { deps } = await profileSetup();
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', role: 'coordinator' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /coordinator.*pi/);
 });
