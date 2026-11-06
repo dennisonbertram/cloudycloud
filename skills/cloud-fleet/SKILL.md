@@ -32,6 +32,12 @@ Only use this when the tasks really are independent and the user wants separate 
 
 The coordinator is the session that starts workers. It owns an integration branch and is the only one that merges.
 
+**Where to do the git work:**
+- **On a cloud coordinator machine (`~/repo`):** checking out the trunk in place is fine.
+- **In the user's own working folder,** for example a `claude-cloud` session on their laptop, never switch that folder's branch. It is the user's checkout, and an installed `claude-cloud` may run from it, so a switch silently changes their files and tools.
+  - Do the trunk work in a separate worktree instead: `git worktree add ../<repo>-fleet -b fleet/<topic> origin/<base>`. Run the merge commands below there, and remove the worktree when done.
+  - Workers then start from the folder's current commit, so their brief must say to `git fetch origin fleet/<topic> && git rebase origin/fleet/<topic>` first.
+
 1. Create and push the trunk first. Workers copy your tracked files when they start, so commit everything you want them to see before you start them:
    ```sh
    git fetch origin
