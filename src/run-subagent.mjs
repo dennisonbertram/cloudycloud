@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
@@ -24,6 +25,12 @@ const WAIT_MAX_S = 1500;
 const POLL_MS = 3000;
 const GATEWAY_WAIT_MS = 200_000;
 const CANCEL_WAIT_MS = 15_000;
+const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const INSTALL_MS = 300_000;
+const MAX_DEPTH = 3;
+const MAX_AGENTS = 200;
+const ROLES = ['worker', 'coordinator'];
+const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/claude-cloud. Pass work to subagents only through the cloud_agent tools.';
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
 const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.`;
 
@@ -138,8 +145,8 @@ async function turn(a, message, ctx, t) {
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
-  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
-    `--append-system-prompt '${commitHint(a.id)}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${a.role === 'coordinator' ? `${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+    `--append-system-prompt '${commitHint(a.id)}${a.role === 'coordinator' ? ` ${COORDINATOR_HINT}` : ''}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
   try {
@@ -212,6 +219,7 @@ async function setup(a, ctx) {
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
     if (a.profile?.format === 'openai') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
+    if (a.role === 'coordinator') Object.assign(envs, { CLAUDE_CLOUD_DEPTH: String(a.depth), CLAUDE_CLOUD_MAX_DEPTH: String(a.maxDepth), CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
@@ -241,10 +249,26 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+// Puts claude-cloud on a coordinator's machine, at the commit the laptop runs, with the keys it needs in a mode-600 env file.
+// The keys go through files.write, never through a command string.
+async function installCoordinator(a, ctx, envs) {
+  const { env } = ctx, sh = (cmd, timeoutMs = SETUP_MS) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
+  await sh(`git clone -q '${a.tool.origin}' claude-cloud && git -C claude-cloud checkout -q ${a.tool.sha}`);
+  await sh('cd claude-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
+  const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
+  const names = ['INSTABOX_API_KEY', claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];
+  const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLAUDE_CLOUD_DEPTH=${a.depth}`, `CLAUDE_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
+  const dir = `${a.home}/.config/claude-cloud`;
+  await sh(`mkdir -p ${dir}`);
+  await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);
+  await sh(`chmod 600 ${dir}/env`);
 }
 
 // Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
@@ -296,6 +320,7 @@ function statusOf(t, ctx) {
   else if (t.status === 'completed') m = statusLine(t.progress);
   else m = `${t.status}: ${t.result?.text ?? ''}`;
   if (t.agent.profile) m = `[${t.agent.profile.name}] ${m}`;
+  if (t.agent.role === 'coordinator') m = `[coordinator] ${m}`;
   const one = ctx.scrub(m).replace(/\s+/g, ' ').trim();
   return one.length > STATUS_MAX ? `${one.slice(0, STATUS_MAX - 1)}…` : one;
 }
@@ -351,7 +376,8 @@ export async function cancelTask(taskId, deps) {
 export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps);
   const { fail, ok } = ctx;
-  const { prompt, model, subagent_type: agent, description, profile: profileName } = args;
+  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker' } = args;
+  if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v === undefined) continue;
@@ -373,8 +399,26 @@ export async function runSubagent(args, deps) {
   }
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
+  const depth = (Number(ctx.env.CLAUDE_CLOUD_DEPTH) || 0) + 1;
+  const maxDepth = Number(ctx.env.CLAUDE_CLOUD_MAX_DEPTH) || MAX_DEPTH;
+  const maxAgents = Number(ctx.env.CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION) || MAX_AGENTS;
+  if (role === 'coordinator' && depth > maxDepth) return fail(`Cannot start a coordinator: this session is already at the maximum depth of ${maxDepth} (CLAUDE_CLOUD_MAX_DEPTH). Start a worker instead.`);
+  const count = (deps.count ??= { started: 0 });
+  if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
+  let tool;
+  if (role === 'coordinator') {
+    const toolRoot = deps.toolRoot ?? TOOL_ROOT;
+    try {
+      const url = githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin'));
+      if (!url) throw new Error('origin is not a github.com URL');
+      tool = { origin: url, sha: await git(toolRoot, 'rev-parse', 'HEAD') };
+    } catch (e) {
+      return fail(`A coordinator needs claude-cloud's own repo (${toolRoot}) to be a git checkout with a github.com origin, so the sandbox can clone it: ${e.message}`);
+    }
+  }
+  count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
+  const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
@@ -437,7 +481,7 @@ export async function listAgents(_args, deps) {
   const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 

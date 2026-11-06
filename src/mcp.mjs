@@ -16,6 +16,7 @@ const tools = [
         description: { type: 'string', description: 'Short task label' },
         model: { type: 'string', description: 'Optional model name' },
         profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, openrouter, or a name from profiles.json. Default: Claude.' },
+        role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets claude-cloud installed and can start its own cloud agents (limited by CLAUDE_CLOUD_MAX_DEPTH, default 3).' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },
       required: ['prompt', 'description'],
@@ -66,6 +67,7 @@ const taskParams = fromJsonSchema({ type: 'object', properties: { taskId: { type
 
 // deps: { createSandbox, env, open, tasks, cwd? }. One server per connection.
 export function buildServer(deps) {
+  deps.count ??= { started: 0 }; // agents started by this server, for the per-session cap
   const server = new Server({ name: 'cloud', version: '0.1.0' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {

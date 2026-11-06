@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 // Provider keys for model profiles, such as PARTICLE_API_KEY or OPENROUTER_API_KEY.
 export const PROVIDER_KEY = /^[A-Z][A-Z0-9_]{2,63}_API_KEY$/;
-const KEYS = ['CLAUDE_CLOUD_STARTS_PER_MIN', 'CLAUDE_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT'];
+const KEYS = ['CLAUDE_CLOUD_STARTS_PER_MIN', 'CLAUDE_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT', 'CLAUDE_CLOUD_DEPTH', 'CLAUDE_CLOUD_MAX_DEPTH', 'CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION'];
 
 // Environment values win over the saved file. Empty values count as unset; a missing file is fine.
 export function loadEnv(env = process.env) {
