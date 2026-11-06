@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createStartQueue } from '../src/limits.mjs';
 import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
@@ -15,6 +16,7 @@ const SECRET = 'sk-test-secret-123';
 const SID = '11111111-2222-3333-4444-555555555555';
 const FAKE_CLAUDE = `#!/bin/sh
 p=$(cat)
+echo "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" >> ../envlog.txt
 sid=${SID}
 resumed=""
 [ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
@@ -162,24 +164,39 @@ test('parallel starts all create sandboxes at once, and wait covers all', async 
   assert.equal(peak, 5);
 });
 
-test('a failed create marks only that agent failed, with the provider limit named', async () => {
+test('quota_exceeded keeps the agent queued, then it starts when capacity frees', async () => {
   let n = 0;
-  const { start, wait, msg } = await setup({
+  const { start, wait, text, deps } = await setup({
+    queue: createStartQueue({ quotaRetryMs: 60, quotaGiveUpMs: 10_000 }),
     createSandbox: async () => {
-      if (n++ === 0) throw Object.assign(new Error('machine limit'), { code: 'quota_exceeded' });
+      if (n++ < 3) throw Object.assign(new Error('machine limit'), { code: 'quota_exceeded' });
       return fakeSandbox();
     },
   });
-  const [bad, good] = [await start(), await start()];
-  const r = await wait([bad, good]);
-  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit reached \\(quota_exceeded\\)`));
-  assert.match(r, new RegExp(`## ${good}[^#]*status: idle[^#]*hello`));
+  const id = await start();
+  for (let i = 0; i < 100 && deps.open.get(id).status !== 'queued'; i++) await tick(10);
+  assert.match(text(await listAgents({}, deps)), /queued/);
+  assert.match(await wait([id]), /status: idle[^#]*hello/);
+  assert.equal(n, 4);
+});
+
+test('quota_exceeded that never clears fails the agent after the give-up time, with the provider message', async () => {
+  const { start, wait, msg } = await setup({
+    queue: createStartQueue({ quotaRetryMs: 5, quotaGiveUpMs: 20 }),
+    createSandbox: async () => { throw Object.assign(new Error('machine limit'), { code: 'quota_exceeded' }); },
+  });
+  const bad = await start();
+  const r = await wait([bad]);
+  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit reached \\(quota_exceeded\\)[^#]*Provider message: machine limit`));
   assert.equal((await msg(bad, 'x')).isError, true);
 });
 
 test('rate_limited create is reported as the start rate', async () => {
-  const { start, wait } = await setup({ createSandbox: async () => { throw Object.assign(new Error('slow down'), { code: 'rate_limited' }); } });
-  assert.match(await wait([await start()]), /start rate limit reached \(rate_limited\)/);
+  const { start, wait } = await setup({
+    queue: createStartQueue({ sleep: async () => {} }),
+    createSandbox: async () => { throw Object.assign(new Error('slow down'), { code: 'rate_limited' }); },
+  });
+  assert.match(await wait([await start()]), /start rate limit reached \(rate_limited\) and still limited after 5 tries/);
 });
 
 test('message to a busy agent is rejected, not queued', async () => {
@@ -377,7 +394,7 @@ test('first-turn command is stream-json output with the commit-and-push hint; id
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
   assert.match(cmd, /--output-format stream-json --verbose/);
-  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.'`));
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.'`));
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b claude-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
@@ -513,4 +530,33 @@ test('task mode: a starting agent says "starting machine…"; the final line end
   assert.equal(v.status, 'completed');
   assert.ok(v.statusMessage.length <= 200 && !v.statusMessage.includes(SECRET));
   assert.equal(getTask('cc-nope-t1', deps), undefined);
+});
+
+test('claude runs with background tasks disabled on the first turn and on a resume', async () => {
+  const { start, wait, msg, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  await msg(id, 'again');
+  await wait([id]);
+  assert.equal(await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8'), '1\n1\n');
+  assert.ok(created[0].cmds.filter((c) => c.includes('claude -p')).length === 2);
+});
+
+test('a queued agent shows status queued with its place, and a stopped queued agent never creates a machine', async () => {
+  let creates = 0;
+  const { start, stop, deps, text, wait } = await setup({
+    queue: createStartQueue({ perMin: 1, sleep: () => new Promise(() => {}) }), // the 2nd and 3rd wait for ever
+    createSandbox: async () => { creates++; return fakeSandbox(); },
+  });
+  const [a, b, c] = [await start(), await start(), await start()];
+  await tick(300);
+  assert.equal(creates, 1);
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${c}  queued[^]*queued for a machine \\(1 ahead\\)`));
+  assert.match(await wait([b], 0.1), /status: queued/);
+  await stop([b]);
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${c}  queued[^]*queued for a machine \\(0 ahead\\)`));
+  await stop([c]);
+  await tick(50);
+  assert.equal(creates, 1);
+  assert.match(await wait([a]), /status: idle/);
 });

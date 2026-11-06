@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const KEYS = ['INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+const KEYS = ['CLAUDE_CLOUD_STARTS_PER_MIN', 'CLAUDE_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 // Environment values win over the saved file. Empty values count as unset; a missing file is fine.
 export function loadEnv(env = process.env) {
