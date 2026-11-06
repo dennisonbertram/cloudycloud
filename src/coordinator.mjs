@@ -14,7 +14,7 @@ const SECRET_KEYS = ['INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
-const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine} -- ${rest}`;
+const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine}${rest ? ` -- ${rest}` : ''}`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };

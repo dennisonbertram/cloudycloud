@@ -48,5 +48,10 @@ if [ -n "${CLAUDE_CLOUD_COORDINATOR:-}" ]; then
   prompt="$prompt This session is a cloud coordinator. The real Instabox key, the Claude token and any provider API keys are stored on this machine in ~/.config/claude-cloud/env. Never print, share, commit or send these keys anywhere, never read that file into a message or a file, and never pass them to workers except through claude-cloud itself, which starts workers for you."
 fi
 
+# A parent claude-cloud running this as a nested coordinator passes extra rules here, so there is one prompt flag.
+if [ -n "${CLAUDE_CLOUD_EXTRA_PROMPT:-}" ]; then
+  prompt="$prompt $CLAUDE_CLOUD_EXTRA_PROMPT"
+fi
+
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"
 exec claude --mcp-config "$mcp" --settings "$settings" --append-system-prompt "$prompt" "$@"

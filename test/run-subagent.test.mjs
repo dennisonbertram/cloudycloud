@@ -742,7 +742,7 @@ test('an unknown or invalid profile is rejected', async () => {
 async function withTool(x) {
   const tool = await mkdtemp(join(tmpdir(), 'cc-tool-'));
   await sh(tool, 'git init -q -b main && git config user.name t && git config user.email t@t && mkdir bin');
-  await writeFile(join(tool, 'bin', 'claude-cloud'), '#!/bin/sh\necho "LAUNCHER $*" >> ../launcher.log\nexec claude "$@"\n');
+  await writeFile(join(tool, 'bin', 'claude-cloud'), '#!/bin/sh\necho "LAUNCHER $* EXTRA=$CLAUDE_CLOUD_EXTRA_PROMPT" >> ../launcher.log\nexec claude "$@"\n');
   await chmod(join(tool, 'bin', 'claude-cloud'), 0o755);
   await sh(tool, 'git add -A && git commit -qm tool && git remote add origin https://github.com/test/tool.git');
   await mkdir(join(x.github, 'test', 'tool.git'));
@@ -771,7 +771,8 @@ test('a coordinator clones claude-cloud at the laptop commit, installs it, write
   for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);
   assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, '1');
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
-  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt .*You are a coordinator\. You can start your own cloud subagents/);
+  assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
+  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch claude-cloud\/.*You are a coordinator\. You can start your own cloud subagents/);
   assert.ok(s.cmds.some((c) => c.includes('/claude-cloud/bin/claude-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });

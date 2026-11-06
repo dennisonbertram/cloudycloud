@@ -87,3 +87,17 @@ test('reached through a linked folder (as npm link installs it), the install.sh 
   assert.equal(r.status, 1);
   assert.match(r.stderr, new RegExp(`Run: ${realpathSync(resolve('.')).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/install\\.sh`));
 });
+
+test('CLAUDE_CLOUD_EXTRA_PROMPT is appended to the launcher prompt, in one --append-system-prompt', () => {
+  const d = repo('https://github.com/o/r.git');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
+  const argvFile = join(dir, 'argv');
+  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  chmodSync(join(dir, 'claude'), 0o755);
+  writeFileSync(join(dir, 'env'), full);
+  const r = spawnSync('/bin/sh', [launcher, '-p'], { cwd: d, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLAUDE_CLOUD_CONFIG: join(dir, 'env'), CLAUDE_CLOUD_EXTRA_PROMPT: 'EXTRA-RULES-HERE' }, input: '', encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const argv = readFileSync(argvFile, 'utf8').split('\n');
+  assert.equal(argv.filter((a) => a === '--append-system-prompt').length, 1);
+  assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /mcp__cloud__cloud_agent[\s\S]*EXTRA-RULES-HERE/);
+});

@@ -145,8 +145,12 @@ async function turn(a, message, ctx, t) {
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
-  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${a.role === 'coordinator' ? `${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
-    `--append-system-prompt '${commitHint(a.id)}${a.role === 'coordinator' ? ` ${COORDINATOR_HINT}` : ''}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
+  // A coordinator runs through the claude-cloud launcher, which passes its own --append-system-prompt. Its extra
+  // instructions go to the launcher in CLAUDE_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
+  const coord = a.role === 'coordinator';
+  const hint = `${commitHint(a.id)}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLAUDE_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+    !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
   try {
