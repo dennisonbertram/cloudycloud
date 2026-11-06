@@ -100,7 +100,7 @@ git show FETCH_HEAD:proof.txt
   - The result reaches the session by itself when the task ends. It ends with a line such as `Total: 12 tool uses, 93.1k in / 327 out tokens, $0.0078, 3m10s` (the cost appears when Claude reports it).
   - Asking "list the subagents" shows the same progress line for each one.
 - **Without tasks.** In the VS Code extension, the desktop app, or a one-shot `claude -p "<prompt>"` run, Claude Code does not make MCP tasks. The tools then return an agent ID and Claude uses `cloud_agent_wait`, exactly as in older versions. Nothing needs configuring. Task mode is not turned on or off with any setting of this tool, so do not set `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` or `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND`.
-- **Large swarms.** Ask the session to pace them, for example "start the 50 subagents in batches of 10 per minute, and send them work in waves of about 25". Without pacing, some starts fail; see section 6.
+- **Large swarms.** Start as many as you need. Starts are paced and queued automatically (`CLAUDE_CLOUD_STARTS_PER_MIN`, default 25 a minute), and Instabox requests share `CLAUDE_CLOUD_MAX_INSTABOX_CALLS` slots (default 24). Queued subagents show the status `queued`. Set either variable in the environment, or as `NAME=value` in `~/.config/claude-cloud/env`, before you start `claude-cloud`.
 - **When subagents stop:**
   - when you or the session stops them;
   - after 60 minutes with nothing to do;
@@ -131,9 +131,8 @@ git show FETCH_HEAD:proof.txt
 | `The first push to origin claude-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `./install.sh` and replace the GitHub token, and check the token's repository list. |
 | `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `./install.sh` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
 | `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `./install.sh` and replace the Claude token, and restart `claude-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
-| `quota_exceeded` (machine limit) | Your Instabox plan's machine limit is reached. Paused machines count too. Stop subagents you don't need, delete leftover machines (section 5), or upgrade the plan. |
-| `rate_limited` (start rate) | Too many machines started in a minute. Start in smaller batches, about 10 a minute. |
-| Some subagents fail when many work at once | Instabox allows 32 commands at once per account, and each working subagent holds about one. Send work in waves of about 25. |
+| A subagent stays `queued` | Your Instabox plan's machine limit (`quota_exceeded`) is full, or starts are waiting for the pace limit. Paused machines count too. It retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you don't need, delete leftover machines (section 5), or upgrade the plan. |
+| `rate_limited` after 5 tries | Instabox kept refusing starts. Lower `CLAUDE_CLOUD_STARTS_PER_MIN` (the default 25 is under the Pro plan's about 30 a minute) and restart `claude-cloud`. |
 | A subagent's work is missing | Only pushed work survives. Check the result for `Push failed` or `Uncommitted changes left in the sandbox`. While the subagent is open, ask it to commit and push. |
 | The session uses no subagents, or says `Agent` is unavailable | That's expected: `claude-cloud` turns off the built-in `Agent` and `Workflow` tools. Ask for "a subagent" and it uses `cloud_agent`. Plain `claude` still has the built-in tools. |
 | A subagent can't use an agent type you defined | Only agents committed in the repo, or built into Claude Code, exist on the machine. Agents in `~/.claude/agents` aren't sent. |

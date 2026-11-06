@@ -66,9 +66,11 @@ Read these before relying on it:
 - **When subagents stop:** an idle subagent is stopped after 60 minutes, and every subagent is stopped when the session ends.
   - A single task is stopped after 29 minutes.
 - **Nested subagents:** a subagent's own subagents run inside the same machine, not on new ones.
-- **Large swarms:** these hit Instabox's machine limit, its start rate, and its limit of 32 commands running at once.
-  - Start them in batches of about 10 to 25 a minute.
-  - Nothing is retried automatically.
+- **Large swarms:** start as many subagents as you need. `claude-cloud` paces them for Instabox's limits.
+  - Machines start at most `CLAUDE_CLOUD_STARTS_PER_MIN` times a minute (default 25). Waiting subagents show the status `queued`, for example `queued for a machine (12 ahead)`.
+  - A `rate_limited` start is retried after the delay Instabox gives, up to 5 tries. When the plan's machine limit is full (`quota_exceeded`), the subagent stays queued and retries every 60 seconds for up to 30 minutes, then fails with Instabox's message.
+  - At most `CLAUDE_CLOUD_MAX_INSTABOX_CALLS` Instabox command and file requests run at once (default 24, below Instabox's 32). Working subagents share them in turn, so hundreds can run. Set either value in the environment or in the config file.
+  - The machine limit of your plan still caps how many subagents run at once; the rest wait in the queue.
 - **Security:** each machine runs Claude with permission checks off.
   - **Claude credential:** it is on the machine, so a prompt injection there could misuse or leak it.
   - **GitHub token:** it never reaches the machine, which gets only a placeholder. A subagent can still push to any branch the token can reach, so protect your main branch. The runbook shows how.

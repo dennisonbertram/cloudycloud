@@ -20,7 +20,7 @@ const createSandbox = async () => {
     kill: async () => { dead.abort(); },
     commands: {
       async run(cmd, { onStdout, signal } = {}) {
-        if (!cmd.startsWith('claude -p')) return { stdout: cmd.includes('PUSHOK') ? 'PUSHOK\nSHA abcdef1234567\n' : '', stderr: '', exitCode: 0 };
+        if (!cmd.includes('claude -p')) return { stdout: cmd.includes('PUSHOK') ? 'PUSHOK\nSHA abcdef1234567\n' : '', stderr: '', exitCode: 0 };
         const out = [];
         const emit = async (l) => { out.push(l); await onStdout?.(`${l}\n`); };
         await emit(tool(1, 'Read', { file_path: 'src/a.ts' }));

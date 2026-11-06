@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
 
 const run = promisify(execFile);
@@ -21,7 +22,7 @@ const WAIT_MAX_S = 1500;
 const POLL_MS = 3000;
 const CANCEL_WAIT_MS = 15_000;
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
-const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.`;
+const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
 const log = (...a) => console.error('[claude-cloud]', ...a);
@@ -38,7 +39,7 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
 // answer with a task and the result arrives through getTask. Otherwise they answer at once and cloud_agent_wait collects.
-// Agent: { id, description, status: starting|running|idle|failed|stopped, result: {text, error, reported},
+// Agent: { id, description, status: queued|starting|running|idle|failed|stopped, result: {text, error, reported},
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
@@ -50,9 +51,10 @@ function helpers(env) {
 }
 const ctxOf = (deps) => {
   deps.tasks ??= new Map();
+  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLAUDE_CLOUD_STARTS_PER_MIN) || 25 });
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
 };
-const active = (a) => a.status === 'starting' || a.status === 'running';
+const active = (a) => a.status === 'queued' || a.status === 'starting' || a.status === 'running';
 
 function wake(a) {
   const w = a.waiters.splice(0);
@@ -62,6 +64,8 @@ function wake(a) {
 // Kill the sandbox and forget the agent. Idempotent.
 async function stop(a, open) {
   clearTimeout(a.idleTimer);
+  a.cancelled = true;
+  a.cancelQueue?.();
   if (open.get(a.id) === a) open.delete(a.id);
   a.status = 'stopped';
   if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
@@ -126,7 +130,8 @@ async function turn(a, message, ctx, t) {
     return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin claude-cloud/${a.id} survives.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
-  const cmd = ['claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+  // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
+  const cmd = ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     `--append-system-prompt '${commitHint(a.id)}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
@@ -172,8 +177,8 @@ async function turn(a, message, ctx, t) {
 
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
-  if (/quota_exceeded/.test(s)) return 'Provider machine limit reached (quota_exceeded). Stop other agents or wait; nothing was retried.';
-  if (/rate_limited/.test(s)) return 'Provider start rate limit reached (rate_limited). Start fewer agents at once; nothing was retried.';
+  if (/quota_exceeded/.test(s)) return `Provider machine limit reached (quota_exceeded) and still full after waiting in the start queue. Stop other agents or upgrade the plan. Provider message: ${e?.message}`;
+  if (/rate_limited/.test(s)) return `Provider start rate limit reached (rate_limited) and still limited after ${MAX_START_TRIES} tries. Provider message: ${e?.message}`;
 };
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
@@ -196,7 +201,9 @@ async function setup(a, ctx) {
     // Prefer the subscription token; sending both would make Claude Code bill the API key.
     if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-    a.sandbox = await createSandbox(envs);
+    a.cancelQueue = () => ctx.queue.cancel(a);
+    a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
+    if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
     log(`sandbox up, id ${a.id}, ${a.description}`);
     await a.sandbox.files.write(`${a.home}/in.bundle`, await readFile(bundle));
@@ -245,7 +252,11 @@ async function work(a, message, first, ctx, t) {
 // The progress line for a turn, safe to show: scrubbed, one line, at most STATUS_MAX characters.
 function statusOf(t, ctx) {
   let m;
-  if (t.status === 'working') m = t.agent.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
+  if (t.status === 'working') {
+    const a = t.agent, ahead = ctx.queue.ahead(a);
+    m = a.status === 'queued' ? `queued for a machine (${ahead === undefined ? 'waiting to retry' : `${ahead} ahead`})`
+      : a.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
+  }
   else if (t.status === 'completed') m = statusLine(t.progress);
   else m = `${t.status}: ${t.result?.text ?? ''}`;
   const one = ctx.scrub(m).replace(/\s+/g, ' ').trim();

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createLimiter } from '../src/limits.mjs';
+import { createProgress } from '../src/progress.mjs';
 import { runSubagent, waitAgents } from '../src/run-subagent.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
@@ -90,10 +92,81 @@ test('background non-zero exit throws exitCode and stderr', async () => {
 });
 
 test('background timeout kills the job and throws', async () => {
-  const { sdk, calls } = fakeSdk({ waitImpl: async (o) => { assert.equal(o.timeoutMs, 1_740_000); throw Object.assign(new Error('late'), { code: 'job_wait_timeout' }); } });
-  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({}, 1);
+  let t = 0;
+  const rt = { now: () => t, sleep: async () => {}, sliceMs: 20_000 };
+  const { sdk, calls } = fakeSdk({ waitImpl: async (o) => { assert.ok(o.timeoutMs <= 20_000); t += o.timeoutMs; throw Object.assign(new Error('late'), { code: 'job_wait_timeout' }); } });
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, rt)({});
   await assert.rejects(sbx.commands.run('x', { timeoutMs: 1_740_000 }), /timed out/);
   assert.equal(calls.killedJob, true);
+  assert.equal(t, 1_740_000);
+});
+
+test('sliced waits deliver the full output once, with no double-counted tool uses', async () => {
+  const tool = (id) => `{"type":"assistant","message":{"id":"m${id}","content":[{"type":"tool_use","id":"t${id}","name":"Bash","input":{"command":"ls"}}]}}\n`;
+  const lines = [tool(1), tool(2), tool(3), '{"type":"result","result":"done","session_id":"s"}\n'];
+  let slice = 0;
+  // Each wait() replays the log from the start and reveals one more line, as the SDK does.
+  const waitImpl = async (o) => {
+    slice++;
+    for (const l of lines.slice(0, slice)) await o.onStdout(l.slice(0, 7)), await o.onStdout(l.slice(7));
+    if (slice < lines.length) throw Object.assign(new Error('slice'), { code: 'job_wait_timeout' });
+    return { stdout: lines.join(''), stderr: '', exitCode: 0 };
+  };
+  const { sdk } = fakeSdk({ waitImpl });
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({});
+  const p = createProgress();
+  const got = [];
+  const r = await sbx.commands.run('x', { timeoutMs: 1_740_000, onStdout: (c) => { got.push(c); p.feed(c); } });
+  p.end();
+  assert.equal(slice, 4);
+  assert.equal(got.join(''), lines.join(''));
+  assert.equal(p.tools, 3);
+  assert.equal(r.stdout, lines.join(''));
+});
+
+test('the global limiter holds at its cap with 100 agents running long turns, and waits do not hold a slot between slices', async () => {
+  const limiter = createLimiter(24);
+  const rt = { limiter, sleep: async () => {} };
+  let finished = 0;
+  const left = new Map();
+  const waitImpl = (id) => async () => {
+    await new Promise((r) => setTimeout(r, 1));
+    left.set(id, (left.get(id) ?? 5) - 1);
+    if (left.get(id) > 0) throw Object.assign(new Error('slice'), { code: 'job_wait_timeout' });
+    finished++;
+    return { stdout: 'x', stderr: '', exitCode: 0 };
+  };
+  let n = 0;
+  const sdk = { Sandbox: { async create() {
+    const id = n++;
+    return { sandboxId: `m${id}`, files: { write: async () => {} }, kill: async () => true,
+      commands: { run: async (c, o) => (o.background ? { kill: async () => true, wait: waitImpl(id) } : { stdout: '', stderr: '', exitCode: 0 }) } };
+  } } };
+  const make = createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, rt);
+  await Promise.all(Array.from({ length: 100 }, async () => {
+    const sbx = await make({});
+    await sbx.files.write('/f', 'x');
+    await sbx.commands.run('claude', { timeoutMs: 1_740_000 });
+  }));
+  assert.equal(finished, 100);
+  assert.equal(limiter.peak, 24);
+  assert.equal(limiter.active, 0);
+});
+
+test('a 429 on any call is retried after a short backoff', async () => {
+  let writes = 0, runs = 0;
+  const sleeps = [];
+  const sdk = { Sandbox: { async create() {
+    return { sandboxId: 'm', kill: async () => true,
+      files: { write: async () => { if (writes++ < 2) throw Object.assign(new Error('slots'), { status: 429, code: 'quota_exceeded' }); } },
+      commands: { run: async () => { if (runs++ < 1) throw Object.assign(new Error('slots'), { status: 429 }); return { stdout: 'ok', stderr: '', exitCode: 0 }; } } };
+  } } };
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, { limiter: createLimiter(2), sleep: async (ms) => { sleeps.push(ms); } })({});
+  await sbx.files.write('/f', 'x');
+  assert.equal((await sbx.commands.run('x', { timeoutMs: 1000 })).stdout, 'ok');
+  assert.equal(writes, 3);
+  assert.equal(runs, 2);
+  assert.deepEqual(sleeps, [1000, 2000, 1000]);
 });
 
 test('run-subagent honours sandbox.home and scrubs the Instabox key', async () => {
