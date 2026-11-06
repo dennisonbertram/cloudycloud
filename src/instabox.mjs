@@ -5,6 +5,15 @@ const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 m
 const WAIT_SLICE_MS = 20_000; // one job.wait() holds a request slot, so wait in short slices.
 const MAX_429_TRIES = 8;
 
+// Errors that mean "ask again" while waiting on a job that is still running: SDK request timeouts (any code),
+// network failures and HTTP 5xx. job_lost, 404 not_found and a command exit are real results and are not here.
+const NETWORK_RE = /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|network/i;
+function isTransientWaitError(e) {
+  if (e?.exitCode !== undefined || e?.code === 'job_lost' || e?.code === 'not_found' || e?.status === 404) return false;
+  return e?.name === 'InstaboxTimeoutError' || /timed out after/i.test(e?.message ?? '') || e?.status >= 500
+    || NETWORK_RE.test(`${e?.code ?? ''} ${e?.cause?.code ?? ''} ${e?.message ?? ''}`);
+}
+
 const API = 'https://api.instabox.sh/v1/machines';
 const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in docs/RUNBOOK.md, step 2.4.';
 
@@ -84,6 +93,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
           // wait() replays the whole log from the start on every call, so count the characters already delivered
           // and pass only the new tail to onStdout.
           let delivered = 0;
+          let failures = 0; // consecutive transient errors, for the backoff
           const deadline = now() + ms;
           try {
             for (;;) {
@@ -103,7 +113,9 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
               try {
                 return await call(() => { pos = 0; return job.wait({ timeoutMs: Math.min(sliceMs, left), onStdout: fresh }); });
               } catch (e) {
-                if (e?.code !== 'job_wait_timeout') throw e; // a slice ended; the job keeps running
+                if (e?.code === 'job_wait_timeout') failures = 0; // a slice ended; the job keeps running
+                else if (isTransientWaitError(e)) await sleep(Math.min(Math.min(2000 * 2 ** failures++, 15_000), Math.max(0, deadline - now())));
+                else throw e;
               }
             }
           } catch (e) {
