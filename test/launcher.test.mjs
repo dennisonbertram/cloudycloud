@@ -1,0 +1,77 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const launcher = resolve('bin/claude-cloud');
+const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
+const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
+
+// Runs the launcher with a stub `claude` that records its argv.
+function run({ config, cwd }) {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
+  const argvFile = join(dir, 'argv');
+  const stub = join(dir, 'claude');
+  writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  chmodSync(stub, 0o755);
+  const cfg = join(dir, 'env');
+  if (config !== undefined) writeFileSync(cfg, config);
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLAUDE_CLOUD_CONFIG: cfg };
+  const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
+  return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
+}
+
+function repo(origin) {
+  const d = mkdtempSync(join(tmpdir(), 'cc-repo-'));
+  execFileSync('git', ['init', '-q'], { cwd: d });
+  if (origin) execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: d });
+  return d;
+}
+
+const full = `INSTABOX_API_KEY=${IBK}\nCLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+
+test('missing keys: points to install.sh, exits 1, never starts claude', () => {
+  const r = run({ config: '' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not set up yet/);
+  assert.match(r.stderr, /Run: .*install\.sh/);
+  assert.equal(r.started, false);
+});
+
+test('missing Claude token only: still stops with install.sh message', () => {
+  const r = run({ config: `INSTABOX_API_KEY=${IBK}\n` });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Claude token/);
+  assert.match(r.stderr, /install\.sh/);
+  assert.equal(r.started, false);
+});
+
+test('keys present: claude starts with expected flags and no secret in argv', () => {
+  const r = run({ config: full, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.started, true);
+  assert.doesNotMatch(r.stderr, /warning/);
+  for (const flag of ['--mcp-config', '--settings', '--append-system-prompt']) assert.ok(r.argv.includes(flag + '\n'), flag);
+  assert.ok(!r.argv.includes(IBK) && !r.argv.includes(TOK));
+});
+
+test('not a git repo: warns on stderr and still starts', () => {
+  const r = run({ config: full });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /not a git repository/);
+  assert.equal(r.started, true);
+});
+
+test('non-GitHub origin: warns on stderr and still starts', () => {
+  const r = run({ config: full, cwd: repo('https://example.com/x/y.git') });
+  assert.match(r.stderr, /no github\.com origin/);
+  assert.equal(r.started, true);
+});
+
+test('no origin at all: warns and still starts', () => {
+  const r = run({ config: full, cwd: repo() });
+  assert.match(r.stderr, /no github\.com origin/);
+  assert.equal(r.started, true);
+});
