@@ -2,7 +2,7 @@ const ARCHIVE_MS = 8 * 60 * 60_000; // backstop; agents are normally stopped soo
 const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 minutes.
 
 const API = 'https://api.instabox.sh/v1/machines';
-const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it with claude-cloud-setup-github.';
+const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in docs/RUNBOOK.md, step 2.4.';
 
 // Attach the org's GH_TOKEN secret (a proxy placeholder) and wait until Instabox has applied it.
 async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, timeoutMs = 60_000 } = {}) {

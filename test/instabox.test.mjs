@@ -123,7 +123,7 @@ test('a secrets timeout or HTTP error kills the sandbox and names GH_TOKEN and t
     const { sdk } = fakeSdk();
     const create = sdk.Sandbox.create;
     sdk.Sandbox.create = async (...a) => Object.assign(await create(...a), { kill: async () => { killed = true; } });
-    await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, f, timing)({}), (e) => re.test(e.message) && /GH_TOKEN Instabox secret/.test(e.message) && /claude-cloud-setup-github/.test(e.message));
+    await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, f, timing)({}), (e) => re.test(e.message) && /GH_TOKEN Instabox secret/.test(e.message) && /RUNBOOK\.md, step 2\.4/.test(e.message));
     assert.equal(killed, true);
   }
 });

@@ -12,7 +12,6 @@
   "type": "module",
   "private": true,
   "bin": {
-    "claude-cloud": "bin/claude-cloud",
-    "claude-cloud-setup-github": "bin/claude-cloud-setup-github"
+    "claude-cloud": "bin/claude-cloud"
   }
 }

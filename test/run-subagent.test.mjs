@@ -456,7 +456,7 @@ test('a failed first push fails the agent with a clear, scrubbed message', async
   await rejectPushes(true);
   const r = await wait([await start()]);
   assert.match(r, /status: failed/);
-  assert.match(r, /first push.*GH_TOKEN.*claude-cloud-setup-github.*denied by test/s);
+  assert.match(r, /first push.*GH_TOKEN.*RUNBOOK\.md, step 2\.4.*denied by test/s);
   assert.ok(created[0].killed);
   assert.ok(!created[0].cmds.some((c) => c.includes('claude -p')));
 });

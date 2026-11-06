@@ -172,7 +172,7 @@ async function setup(a, ctx) {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
     await a.sandbox.commands.run(`git push -q -u origin ${branch}`, repo).catch((e) => {
-      throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (run claude-cloud-setup-github) or the token has no write access to this repo. Git said: ${tail(e?.stderr ?? e?.message)}`);
+      throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${tail(e?.stderr ?? e?.message)}`);
     });
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
