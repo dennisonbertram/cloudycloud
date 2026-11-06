@@ -51,6 +51,11 @@ A profile names the inference endpoint for a session:
   - **a. Translating gateway:** run a gateway such as LiteLLM, either on the worker machine or once per fleet, that converts Anthropic requests to OpenAI ones.
   - **b. A different agent:** run OpenCode or Codex as the worker agent for OpenAI-format endpoints. Both come preinstalled on the Instabox `agent-browser` template.
   - **c. Through OpenRouter:** reach Particle through OpenRouter. OpenRouter has an Anthropic-compatible layer, but that probably bills through OpenRouter rather than the free Particle deal.
+- **Decided direction:**
+  - **Translating gateway:** use one for OpenAI-format endpoints such as Particle.
+  - **The `pi` harness:** consider it as a second worker agent.
+  - **OpenCode:** rejected as inefficient.
+- **The `pi` harness (TBD):** before building, check its package, its headless and streaming output modes, its session resume, and its provider config. The user's `factory-local` skill already runs `pi` workers on OpenRouter. A pi worker would need its own progress parser and follow-up handling, alongside the Claude Code ones.
 - **OpenRouter itself:** its documented Claude Code setup is `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN=<key>` and `ANTHROPIC_API_KEY=""`. OpenRouter warns that Claude Code is guaranteed only with Anthropic's own models.
   - Opus runs through Anthropic.
 

@@ -135,7 +135,7 @@ async function turn(a, message, ctx, t) {
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
-  const cmd = ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+  const cmd = ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     `--append-system-prompt '${commitHint(a.id)}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;

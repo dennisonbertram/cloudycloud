@@ -16,7 +16,7 @@ const SECRET = 'sk-test-secret-123';
 const SID = '11111111-2222-3333-4444-555555555555';
 const FAKE_CLAUDE = `#!/bin/sh
 p=$(cat)
-echo "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" >> ../envlog.txt
+echo "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS $BASH_DEFAULT_TIMEOUT_MS $BASH_MAX_TIMEOUT_MS" >> ../envlog.txt
 sid=${SID}
 resumed=""
 [ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
@@ -538,7 +538,7 @@ test('claude runs with background tasks disabled on the first turn and on a resu
   await wait([id]);
   await msg(id, 'again');
   await wait([id]);
-  assert.equal(await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8'), '1\n1\n');
+  assert.equal(await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8'), '1 1680000 1680000\n1 1680000 1680000\n');
   assert.ok(created[0].cmds.filter((c) => c.includes('claude -p')).length === 2);
 });
 
