@@ -621,3 +621,112 @@ test('the safety push retries once', async () => {
   assert.equal(pushes, 2);
   assert.equal(sleeps.length, 1);
 });
+
+// ---- model profiles ----
+const PKEY = 'pk-particle-secret-999';
+const pEnv = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-1', GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: PKEY, OPENROUTER_API_KEY: 'or-secret-777', CLAUDE_CLOUD_PROFILES: '/nonexistent/profiles.json' };
+// Gateway commands are faked (no uvx or curl here); everything else runs in the fake sandbox. health: 'ok' or a log text.
+async function profileSetup(health = 'ok', env = pEnv) {
+  const github = () => currentGithub;
+  const s = await setup({
+    env,
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(github());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => {
+        if (cmd.includes('litellm --config')) { sbx.cmds.push(cmd); return { stdout: '', stderr: '', exitCode: 0 }; }
+        if (cmd.includes('health/liveliness')) {
+          sbx.cmds.push(cmd);
+          return { stdout: health === 'ok' ? 'GATEWAYOK\n' : `GATEWAYFAIL\n${health}\n`, stderr: '', exitCode: 0 };
+        }
+        return real(cmd, o);
+      };
+      sbx.written = {};
+      const w = sbx.files.write;
+      sbx.files.write = (p, d) => { sbx.written[p] = String(d); return w(p, d); };
+      s.sandboxes.push(sbx);
+      return sbx;
+    },
+  });
+  s.sandboxes = [];
+  return s;
+}
+
+test('an openai profile writes a key-free config, starts the gateway, waits for health, and runs claude without the OAuth token', async () => {
+  const { start, wait, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'glm' });
+  assert.match(await wait([id]), /status: idle[\s\S]*hello/);
+  const sbx = sandboxes[0];
+  const cfg = Object.entries(sbx.written).find(([p]) => p.endsWith('litellm.yaml'))[1];
+  assert.match(cfg, /model: openai\/z-ai\/glm-5\.3-flash/);
+  assert.match(cfg, /api_base: https:\/\/api\.particle\.ai\/v1/);
+  assert.match(cfg, /api_key: os\.environ\/PARTICLE_API_KEY/);
+  assert.match(cfg, /drop_params: true/);
+  assert.ok(!cfg.includes(PKEY));
+  const i = sbx.cmds.findIndex((c) => c.includes('litellm --config'));
+  const j = sbx.cmds.findIndex((c) => c.includes('health/liveliness'));
+  const k = sbx.cmds.findIndex((c) => c.includes('claude -p'));
+  assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git push -q -u')) && j > i && k > j, 'order: push, gateway, health, claude');
+  assert.match(sbx.cmds[i], /nohup uvx --from 'litellm\[proxy\]' litellm .*--port 4000 > .*gateway\.log/);
+  const c = sbx.cmds[k];
+  for (const v of ['ANTHROPIC_BASE_URL=http://127.0.0.1:4000', 'ANTHROPIC_AUTH_TOKEN=local', 'ANTHROPIC_API_KEY= ', 'ANTHROPIC_MODEL=worker', 'ANTHROPIC_SMALL_FAST_MODEL=worker']) assert.ok(c.includes(v), v);
+  assert.ok(!c.includes('--model'));
+  assert.deepEqual(sbx.envs, { PARTICLE_API_KEY: PKEY }); // no OAuth token, no Anthropic key, no other provider's key
+  assert.ok(!sbx.cmds.join('\n').includes(PKEY));
+});
+
+test('an anthropic profile sets the base URL and token, with the key only in the sandbox environment', async () => {
+  const { start, wait, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'openrouter', model: 'deepseek/deepseek-chat' });
+  await wait([id]);
+  const sbx = sandboxes[0];
+  const c = sbx.cmds.find((x) => x.includes('claude -p'));
+  assert.ok(c.includes('ANTHROPIC_BASE_URL=https://openrouter.ai/api'));
+  assert.ok(c.includes('ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"'));
+  assert.ok(c.includes('ANTHROPIC_MODEL=deepseek/deepseek-chat') && !c.includes('--model'));
+  assert.ok(!sbx.cmds.some((x) => x.includes('litellm')));
+  assert.deepEqual(sbx.envs, { OPENROUTER_API_KEY: 'or-secret-777' });
+});
+
+test('a follow-up reuses the profile, and the list and status show it', async () => {
+  const { start, wait, msg, deps, text, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'deepseek' });
+  await wait([id]);
+  assert.match(text(await listAgents({}, deps)), /profile deepseek/);
+  await msg(id, 'again');
+  await wait([id]);
+  const runs = sandboxes[0].cmds.filter((x) => x.includes('claude -p'));
+  assert.equal(runs.length, 2);
+  assert.ok(runs[1].includes('--resume') && runs[1].includes('ANTHROPIC_MODEL=worker'));
+});
+
+test('a gateway that never becomes healthy fails the agent with a scrubbed log tail', async () => {
+  const { start, wait, sandboxes } = await profileSetup(`boom ${PKEY} uvx: command not found`);
+  const id = await start({ profile: 'particle' });
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /gateway \(LiteLLM\) did not become healthy/);
+  assert.match(r, /uvx: command not found/);
+  assert.ok(!r.includes(PKEY));
+  assert.ok(!sandboxes[0].cmds.some((x) => x.includes('claude -p')));
+  assert.equal(sandboxes[0].killed, true);
+});
+
+test('a missing provider key fails cloud_agent at once, before any sandbox', async () => {
+  const { deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, CLAUDE_CLOUD_PROFILES: '/nonexistent/profiles.json' } });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'glm' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /PARTICLE_API_KEY.*install\.sh/);
+  assert.equal(created.length, 0);
+  assert.equal(deps.open.size, 0);
+});
+
+test('an unknown or invalid profile is rejected', async () => {
+  const { deps } = await setup({ env: pEnv });
+  for (const [profile, re] of [['nope', /unknown profile "nope"/], ['bad name; rm', /invalid profile/], ['__proto__', /invalid profile|unknown profile/]]) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', profile }, deps);
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, re);
+  }
+});

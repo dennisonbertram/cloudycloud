@@ -24,6 +24,25 @@ your Mac                                  Instabox (one machine per subagent)
 - **Accounts:** an Instabox account (a paid plan for more than a few subagents at once), a Claude subscription or API key, and a GitHub repo you can push to.
 - **On your machine:** `git`, Node.js 20 or later, and Claude Code.
 
+## Model profiles (open-model workers)
+
+A worker can run Claude Code on a non-Anthropic model while your session stays on Claude. Ask for it in plain language ("use a glm subagent for this"); `cloud_agent` takes an optional `profile`. Follow-up messages reuse the agent's profile, and `cloud_agent_list` and the status line show it.
+
+| Profile | Format | Endpoint and model |
+| --- | --- | --- |
+| `glm` | openai | Particle.ai, `z-ai/glm-5.3-flash` |
+| `deepseek` | openai | Particle.ai, `deepseek-ai/deepseek-v41-flash-1017` |
+| `particle` | openai | Particle.ai, `particle-ai/particle-1` |
+| `openrouter` | anthropic | `https://openrouter.ai/api`; pass `model` per call or set it in the file |
+
+- **Keys:** `install.sh` has an optional step for `PARTICLE_API_KEY` (platform.particle.ai) and `OPENROUTER_API_KEY` (openrouter.ai/keys). Press Enter to skip. A profile whose key is missing makes `cloud_agent` fail at once.
+- **Your own profiles:** `~/.config/claude-cloud/profiles.json` (or the path in `CLAUDE_CLOUD_PROFILES`) overrides or adds to the built-ins:
+  `{ "<name>": { "format": "anthropic" | "openai", "baseUrl": "...", "model": "...", "keyName": "PARTICLE_API_KEY" } }`.
+  `keyName` is a key saved in `~/.config/claude-cloud/env` and must end in `_API_KEY`.
+- **How it works:** Claude Code needs the Anthropic Messages API. An `anthropic` profile points Claude Code straight at the endpoint (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`). An `openai` profile (Particle speaks only OpenAI Chat Completions) starts LiteLLM in the worker with `uvx --from 'litellm[proxy]' litellm` (the Instabox `agent-browser` template includes `uv`), waits up to 180 s for it, and points Claude Code at it on `127.0.0.1:4000`. A profile worker never receives your Claude token.
+- **Security:** the provider key sits on the worker machine that uses it, unlike `GH_TOKEN`, which is only a placeholder there. A prompt-injected worker could read it. Moving it to an Instabox proxy secret is the next step (docs/FLEET-DESIGN.md, section 2). Only workers that use a profile get that profile's key.
+- **Unverified:** the gateway start has been tested only against a fake sandbox, not a live Instabox machine.
+
 ## Quick reference
 
 | Task | How |

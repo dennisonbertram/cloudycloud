@@ -15,6 +15,7 @@ const tools = [
         prompt: { type: 'string', description: 'Full task for the subagent' },
         description: { type: 'string', description: 'Short task label' },
         model: { type: 'string', description: 'Optional model name' },
+        profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, openrouter, or a name from profiles.json. Default: Claude.' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },
       required: ['prompt', 'description'],

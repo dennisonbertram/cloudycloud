@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
+import { PROVIDER_KEY } from './config.mjs';
+import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL } from './profiles.mjs';
 import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
 
 const run = promisify(execFile);
@@ -20,6 +22,7 @@ const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
 const WAIT_MAX_S = 1500;
 const POLL_MS = 3000;
+const GATEWAY_WAIT_MS = 200_000;
 const CANCEL_WAIT_MS = 15_000;
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
 const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.`;
@@ -46,7 +49,7 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 function helpers(env) {
-  const secrets = SECRETS.map((k) => env[k]).filter(Boolean);
+  const secrets = [...SECRETS, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
   const scrub = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
@@ -135,8 +138,8 @@ async function turn(a, message, ctx, t) {
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
-  const cmd = ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
-    `--append-system-prompt '${commitHint(a.id)}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+    `--append-system-prompt '${commitHint(a.id)}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
   try {
@@ -202,8 +205,10 @@ async function setup(a, ctx) {
       await git(a.root, 'update-ref', '-d', ref).catch(() => {});
     }
     const envs = {};
-    // Prefer the subscription token; sending both would make Claude Code bill the API key.
-    if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
+    // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
+    // sending both would make Claude Code bill the API key.
+    if (a.profile) envs[a.profile.keyName] = env[a.profile.keyName];
+    else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
@@ -234,8 +239,24 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
+// The config names the key's environment variable (os.environ/NAME); the key itself is only in the sandbox environment.
+async function startGateway(a, ctx) {
+  const p = a.profile, sh = (cmd, timeoutMs) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
+  await a.sandbox.files.write(`${a.home}/litellm.yaml`, gatewayConfig(p));
+  await sh(`nohup uvx --from 'litellm[proxy]' litellm --config ${a.home}/litellm.yaml --port ${GATEWAY_PORT} > ${a.home}/gateway.log 2>&1 < /dev/null &`, SETUP_MS);
+  const out = (await sh(
+    `for i in $(seq 1 90); do curl -fsS -m 2 http://127.0.0.1:${GATEWAY_PORT}/health/liveliness >/dev/null 2>&1 && { echo GATEWAYOK; exit 0; }; sleep 2; done; echo GATEWAYFAIL; tail -n 30 ${a.home}/gateway.log 2>&1; true`,
+    GATEWAY_WAIT_MS,
+  )).stdout;
+  if (!out.includes('GATEWAYOK')) {
+    throw new Error(`The ${p.name} model gateway (LiteLLM) did not become healthy within 180 s. Log tail:\n${ctx.scrub(tail(out.replace('GATEWAYFAIL', '')))}`);
   }
 }
 
@@ -272,6 +293,7 @@ function statusOf(t, ctx) {
   }
   else if (t.status === 'completed') m = statusLine(t.progress);
   else m = `${t.status}: ${t.result?.text ?? ''}`;
+  if (t.agent.profile) m = `[${t.agent.profile.name}] ${m}`;
   const one = ctx.scrub(m).replace(/\s+/g, ' ').trim();
   return one.length > STATUS_MAX ? `${one.slice(0, STATUS_MAX - 1)}…` : one;
 }
@@ -327,10 +349,18 @@ export async function cancelTask(taskId, deps) {
 export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps);
   const { fail, ok } = ctx;
-  const { prompt, model, subagent_type: agent, description } = args;
+  const { prompt, model, subagent_type: agent, description, profile: profileName } = args;
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
-    if (v !== undefined && !(typeof v === 'string' && SAFE.test(v))) return fail(`invalid ${name}: must match ${SAFE}`);
+    if (v === undefined) continue;
+    const re = name === 'model' && profileName !== undefined ? MODEL : SAFE; // profile models may contain "/"
+    if (!(typeof v === 'string' && re.test(v))) return fail(`invalid ${name}: must match ${re}`);
+  }
+  let profile;
+  if (profileName !== undefined) {
+    const r = resolveProfile(profileName, model, ctx.env);
+    if (r.error) return fail(r.error);
+    profile = r.ok;
   }
   let root;
   try {
@@ -342,7 +372,7 @@ export async function runSubagent(args, deps) {
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
   const id = randomUUID().slice(0, 8);
-  const a = { id, description: description ?? '', status: 'starting', root, origin, model, agent, waiters: [], result: null, idleSince: Date.now() };
+  const a = { id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
@@ -405,7 +435,7 @@ export async function listAgents(_args, deps) {
   const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 

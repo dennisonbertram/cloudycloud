@@ -108,3 +108,21 @@ test('http_code maps curl results and keeps the key out of argv', () => {
     assert.ok(!existsSync(join(dir, 'x')));
   }
 });
+
+test('optional provider key step: Enter skips and saves nothing; a pasted key is saved privately and masked', () => {
+  const dir = tmp();
+  const env = { CLAUDE_CLOUD_CONFIG: join(dir, 'env') };
+  // read_secret reads /dev/tty, so run it under script(1)-free override: replace read_secret with a stub reading a variable.
+  const run = (answer) => fn(`read_secret() { printf -v "$1" '%s' "${answer}"; }; setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai`, [], env);
+  const skipped = run('');
+  assert.equal(skipped.status, 0);
+  assert.match(skipped.stdout, /Enter to skip/);
+  assert.match(skipped.stdout, /Skipped Particle\.ai/);
+  assert.ok(!existsSync(env.CLAUDE_CLOUD_CONFIG));
+  const saved = run('pk-1234567890abcdef');
+  assert.equal(saved.status, 0);
+  assert.equal(readFileSync(env.CLAUDE_CLOUD_CONFIG, 'utf8'), 'PARTICLE_API_KEY=pk-1234567890abcdef\n');
+  assert.ok(!saved.stdout.includes('pk-1234567890abcdef'));
+  assert.match(saved.stdout, /…cdef/);
+  assert.equal(statSync(env.CLAUDE_CLOUD_CONFIG).mode & 0o777, 0o600);
+});

@@ -195,6 +195,20 @@ MSG
   [ "$state" = yes ] || echo "Could not confirm GH_TOKEN (could not read your Instabox orgs). Check with: npx --yes instabox@latest secrets ls"
 }
 
+# Optional: a provider key for open-model workers (profiles glm, deepseek, particle, openrouter).
+setup_provider() { # setup_provider NAME LABEL WHERE
+  local name=$1 label=$2 where=$3 saved key
+  saved=$(get_saved "$name")
+  if [ -n "$saved" ]; then
+    yn "$label key: saved ($(mask "" "$saved")). Replace it?" || return 0
+  fi
+  printf '%s\n%s ' "$label key for open-model workers (optional, Enter to skip): get one at $where." "Paste it (nothing shows as you paste):"
+  read_secret key
+  [ -n "$key" ] || { echo "Skipped $label."; return 0; }
+  write_env "$name" "$key" || { echo "Could not write $(cfg)." >&2; exit 1; }
+  echo "Saved the $label key ($(mask "" "$key")). Note: unlike GH_TOKEN, this key is stored on the worker machines that use it."
+}
+
 main() {
   if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
     echo "install.sh asks for keys, so run it in a terminal: ./install.sh"; exit 1
@@ -215,6 +229,8 @@ main() {
   setup_instabox
   setup_claude
   setup_github
+  setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
+  setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
