@@ -43,6 +43,14 @@ A worker can run Claude Code on a non-Anthropic model while your session stays o
 - **Security:** the provider key sits on the worker machine that uses it, unlike `GH_TOKEN`, which is only a placeholder there. A prompt-injected worker could read it. Moving it to an Instabox proxy secret is the next step (docs/FLEET-DESIGN.md, section 2). Only workers that use a profile get that profile's key.
 - **Unverified:** the gateway start has been tested only against a fake sandbox, not a live Instabox machine.
 
+## Ways of working
+
+Starting many subagents is easy, but 100 PRs are hard to review. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) teaches Claude how to run a fleet so the output stays manageable: merge worker branches into one `fleet/<topic>` trunk, use sub-coordinators for large jobs, work in waves, and clean up branches. Install it by copying or symlinking it:
+
+```sh
+ln -s "$PWD/skills/cloud-fleet" ~/.claude/skills/cloud-fleet
+```
+
 ## Quick reference
 
 | Task | How |

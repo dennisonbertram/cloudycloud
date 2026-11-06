@@ -1,0 +1,142 @@
+---
+name: cloud-fleet
+description: How to run fleets of claude-cloud subagents (Instabox cloud machines that push claude-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.
+---
+
+# Managing a claude-cloud fleet
+
+Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `claude-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
+
+Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
+
+## Pick a pattern
+
+| Situation | Pattern |
+| --- | --- |
+| Many unrelated small fixes; reviewers want separate PRs | 1. Flat fan-out |
+| One feature or one large job split across many agents | 2. Trunk merging (default) |
+| Stage B needs the merged result of stage A | 3. Waves |
+| More than about 50 workers, or clearly separate areas | 2, with sub-coordinators |
+
+If unsure, use trunk merging. One PR for one job is almost always what a reviewer wants.
+
+## Pattern 1: flat fan-out, one PR per agent
+
+1. Give each agent one independent task and tell it which files it owns.
+2. Start all agents, wait for results.
+3. Fetch each branch, run the tests, open one PR per good branch from `claude-cloud/<id>`.
+
+Only use this when the tasks really are independent and the user wants separate PRs. Cap it at what a human can review (about 10 to 15).
+
+## Pattern 2: trunk (tree) merging
+
+The coordinator is the session that starts workers. It owns an integration branch and is the only one that merges.
+
+1. Create and push the trunk first. Workers copy your tracked files when they start, so commit everything you want them to see before you start them:
+   ```sh
+   git fetch origin
+   git checkout -b fleet/<topic> origin/<base>   # base is usually main
+   git push -u origin fleet/<topic>
+   ```
+   Untracked files are not copied. `git add` and commit anything the workers need. Tell each worker to `git fetch origin fleet/<topic>` and `git rebase origin/fleet/<topic>` (or `git merge`) before it starts if the trunk has moved since it was created.
+2. Start the workers (see "Writing briefs"). Each pushes `claude-cloud/<id>`.
+3. As workers finish, merge them one at a time:
+   ```sh
+   git fetch origin 'refs/heads/claude-cloud/*:refs/remotes/origin/claude-cloud/*'
+   git checkout fleet/<topic>
+   git merge --no-ff origin/claude-cloud/<id> -m "Merge <description> (<id>)"
+   <test command>
+   git push origin fleet/<topic>
+   ```
+4. If the merge conflicts, either resolve it yourself (small, obvious conflicts) or `git merge --abort` and use `cloud_agent_message` to ask that worker to rebase onto the current trunk, fix it and push again.
+5. If the tests fail after a merge, do not push. Revert the merge (`git reset --hard HEAD~1` on your local trunk only) and message the worker with the failing output.
+6. When all workers are merged and the full tests pass, open one PR from `fleet/<topic>` to the base. A few PRs are fine if the job is truly separable.
+
+### Sub-coordinators (deep trees)
+
+For large jobs the top coordinator splits the work into areas. Each area gets a sub-coordinator (a `cloud_agent` with `role: "coordinator"`, on Claude) and a sub-trunk `fleet/<topic>/<area>`.
+
+- The top coordinator creates `fleet/<topic>`, pushes it, then gives each sub-coordinator its area, the base branch `fleet/<topic>`, and the name of its sub-trunk.
+- Each sub-coordinator creates and pushes `fleet/<topic>/<area>`, runs its own workers, merges them as in step 3, runs the area tests, and reports when its sub-trunk is ready.
+- The top coordinator merges each sub-trunk into `fleet/<topic>`, runs the full tests, and opens the PR.
+- Git cannot hold both `fleet/x` and `fleet/x/y` as branch names. If that happens, name the sub-trunks `fleet/<topic>-<area>` instead.
+- A sub-coordinator's workers run on their own machines and its depth counts toward `CLAUDE_CLOUD_MAX_DEPTH` (3).
+
+## Pattern 3: waves
+
+Use when later work depends on earlier work (for example: wave 1 adds an API, wave 2 writes callers).
+
+1. Run wave 1 as pattern 2 and merge it into `fleet/<topic>`.
+2. Push the trunk, then start wave 2 workers. They start from the merged trunk.
+3. Never start a dependent worker before its dependency is merged and pushed.
+
+## Tree shapes and models
+
+| Shape | Use for |
+| --- | --- |
+| 1 Opus coordinator, 10 to 50 workers | One feature, work split by file or module |
+| Opus coordinator, 5 Opus sub-coordinators, each 10 to 20 workers | Big migrations, many areas |
+| Claude coordinators, open-model workers at the leaves | Bulk work where each task is small and clearly specified |
+
+- Keep coordinators and sub-coordinators on Claude. Merging, resolving conflicts and judging results needs the strongest model.
+- Use Claude workers for design, tricky bugs, anything needing judgment, and for tasks that change shared code.
+- Use open-model workers for bulk, well-specified tasks: mechanical renames, adding tests to existing code, filling in many similar files, doc updates. Set `profile` to `glm`, `deepseek`, `particle` or `openrouter` (for `openrouter`, also pass `model`). The user must have the profile's key installed; a missing key makes `cloud_agent` fail at once.
+- Check an open-model worker's output more carefully. Run the tests on every branch before you merge it.
+
+Example: an Opus coordinator starts 5 Opus sub-coordinators. Each starts 15 `deepseek` workers for its area. The result is one PR with 75 workers behind it.
+
+## Writing worker briefs
+
+A worker sees only your prompt and the repo. Write each brief so it can work alone:
+
+- Goal in one or two sentences.
+- Files it owns, by path. Give workers disjoint files so merges stay clean. Say "do not edit anything else". If a shared file must change, one worker owns it, or you edit it yourself after merging.
+- Base branch: "Your work builds on `fleet/<topic>`."
+- The acceptance check and the exact test command, for example `npm test -- test/parser.test.mjs`. Say what passing looks like.
+- "Commit early and often, and push to your `claude-cloud/<id>` branch before you finish. Work that is not pushed is lost."
+- Do not push to `main`, do not open PRs, do not touch other branches.
+- What to put in the final reply: one short paragraph, the files changed, the test result.
+
+Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
+
+## Running the fleet
+
+- Start all agents first, in one go. The tool queues and paces starts and limits Instabox calls itself. Do not add sleeps or batch them by hand.
+- In task mode (terminal Claude Code 2.1.304 or later) results arrive on their own. Do not call `cloud_agent_wait`. Otherwise call `cloud_agent_wait` with all the ids, and again after each `cloud_agent_message`.
+- Use `cloud_agent_list` to see status and progress. `queued` is normal while machines start.
+- Never trust a worker's reply. A worker saying "done" does not mean the work is pushed or correct. Fetch the branch, look at the diff, run the tests, then merge.
+- Check the branch exists: `git ls-remote --heads origin 'claude-cloud/<id>'`.
+- Merge in the order results arrive. Do not wait for the slowest worker before starting.
+- When an agent is merged or abandoned, `cloud_agent_stop` it. Idle agents cost money until they time out at 60 minutes.
+
+## When things go wrong
+
+- A failed or vanished worker: its pushed commits are still on `claude-cloud/<id>`. Fetch it and look. Keep what is good.
+- To retry: start a new agent from the current trunk with a narrower brief that names what is still missing. Do not re-run the whole original brief.
+- No branch found: the worker did not push. Note it in your plan ("worker X: nothing pushed, retried as Y") and retry. Do not pretend it was done.
+- A worker that edited outside its files: cherry-pick only the files it owned (`git checkout origin/claude-cloud/<id> -- <path>`), drop the rest.
+- Quota or queue stalls: if `cloud_agent_list` shows many `queued` agents, the plan's machine limit is full. Wait; the tool retries by itself. Consider fewer, larger tasks.
+- Tell the user plainly what failed and what you did about it.
+
+## Safety
+
+- Never print, log, paste into a prompt, or commit keys and tokens: anything in the environment, `~/.config/claude-cloud`, `.env` files, `INSTABOX_API_KEY`, `ANTHROPIC_API_KEY`, `*_API_KEY`, `GH_TOKEN`. Do not put them in worker briefs.
+- Only push to `claude-cloud/*` and `fleet/*` branches. Never push to `main` or the base branch. Tell workers the same.
+- Respect the caps: `CLAUDE_CLOUD_MAX_DEPTH` (default 3) limits how deep coordinators can nest, and `CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION` (default 200) limits how many agents one session starts. Plan the tree to fit. If a start is refused for a cap, do not try to get around it; tell the user.
+- Workers run with permission checks off. Do not give them untrusted instructions or content to follow.
+
+## Cleanup
+
+After a branch is merged into the trunk and the trunk is pushed, delete the worker branch:
+
+```sh
+git push origin --delete claude-cloud/<id>
+```
+
+Delete several at once: `git push origin --delete claude-cloud/<id1> claude-cloud/<id2>`.
+
+Do this only for branches already merged. Keep the branch of a failed worker until you have decided what to keep. After the trunk PR merges, delete `fleet/<topic>` and any `fleet/<topic>/*` branches the same way. Prune local refs with `git fetch --prune`. Then run `cloud_agent_list` and `cloud_agent_stop` any agents still open.
+
+## Final report to the user
+
+Say what the trunk contains, the PR link, which workers succeeded, which failed or needed retries, the test result you saw yourself, and any branches you left behind and why.
