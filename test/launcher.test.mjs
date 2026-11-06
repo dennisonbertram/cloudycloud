@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -74,4 +74,16 @@ test('no origin at all: warns and still starts', () => {
   const r = run({ config: full, cwd: repo() });
   assert.match(r.stderr, /no github\.com origin/);
   assert.equal(r.started, true);
+});
+
+test('reached through a linked folder (as npm link installs it), the install.sh path is the real clone', () => {
+  const linkDir = mkdtempSync(join(tmpdir(), 'cc-link-'));
+  const pkg = join(linkDir, 'claude-cloud');
+  symlinkSync(resolve('.'), pkg); // like <npm prefix>/lib/node_modules/claude-cloud -> the clone
+  const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
+  const r = spawnSync('/bin/sh', [join(pkg, 'bin/claude-cloud')], {
+    cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CLOUD_CONFIG: join(dir, 'env') }, input: '', encoding: 'utf8',
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, new RegExp(`Run: ${realpathSync(resolve('.')).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/install\\.sh`));
 });

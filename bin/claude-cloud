@@ -6,7 +6,7 @@ while [ -h "$self" ]; do
   self=$(readlink "$self")
   case $self in /*) ;; *) self=$dir/$self ;; esac
 done
-root=$(cd "$(dirname "$self")/.." && pwd)
+root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
 
 # Keys saved here reach only the MCP server, so the main session keeps its normal login.
 config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
