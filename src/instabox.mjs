@@ -49,12 +49,16 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing) {
       files: sbx.files,
       kill: () => sbx.kill(),
       commands: {
-        async run(cmd, { timeoutMs: ms, ...opts } = {}) {
-          if (!(ms > FOREGROUND_MAX_MS)) return sbx.commands.run(cmd, { ...opts, timeoutMs: ms });
+        // opts.onStdout receives output as it is written. opts.signal stops the command (a background job is killed).
+        async run(cmd, { timeoutMs: ms, onStdout, signal, ...opts } = {}) {
+          if (!(ms > FOREGROUND_MAX_MS)) return sbx.commands.run(cmd, { ...opts, onStdout, signal, timeoutMs: ms });
           // The SDK does not enforce a timeout on background jobs, so wait() with a deadline and kill on expiry.
           const job = await sbx.commands.run(cmd, { ...opts, background: true });
+          const kill = () => job.kill().catch(() => {});
+          if (signal?.aborted) await kill();
+          else signal?.addEventListener('abort', kill, { once: true });
           try {
-            return await job.wait({ timeoutMs: ms });
+            return await job.wait({ timeoutMs: ms, onStdout });
           } catch (e) {
             if (e?.code === 'job_wait_timeout') {
               await job.kill().catch(() => {});
@@ -63,6 +67,8 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing) {
             // Background output is one combined log in stdout; surface it as stderr for run-subagent.
             if (e?.exitCode !== undefined && !e.stderr) e.stderr = e.stdout;
             throw e;
+          } finally {
+            signal?.removeEventListener('abort', kill);
           }
         },
       },

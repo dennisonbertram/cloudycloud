@@ -5,20 +5,23 @@ import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll } from '../src/run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
 const SECRET = 'sk-test-secret-123';
 
-// Fake `claude`: behaviour chosen by the first word of the prompt on stdin. Prints JSON like `claude -p --output-format json`.
+// Fake `claude`: behaviour chosen by the first word of the prompt on stdin. Prints stream-json like `claude -p --output-format stream-json --verbose`.
 const SID = '11111111-2222-3333-4444-555555555555';
 const FAKE_CLAUDE = `#!/bin/sh
 p=$(cat)
 sid=${SID}
 resumed=""
 [ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
-reply() { printf '{"type":"result","is_error":false,"session_id":"%s","result":"%s"}\\n' "$sid" "$1"; }
+reply() {
+  printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":5}}}\\n'
+  printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"%s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":7}}\\n' "$sid" "$1"
+}
 commit() { git add -A; git -c user.name=x -c user.email=x@x commit -qm "$1"; }
 case "$p" in
   OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; commit "own $n"; git push -q origin HEAD; reply "own $n" ;;
@@ -28,7 +31,7 @@ case "$p" in
   EDIT*) echo changed > a.txt; commit edit; git push -q origin HEAD; reply "edited" ;;
   SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
   SLOW*) sleep 0.5; reply "slow done" ;;
-  BADSID*) printf '{"result":"x","session_id":"x; rm -rf /"}' ;;
+  BADSID*) printf '{"type":"result","is_error":false,"result":"x","session_id":"x; rm -rf /"}\\n' ;;
   RAW*) echo "not json" ;;
   LEAK*) reply "leak $LEAK1 $LEAK2" ;;
   FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
@@ -57,7 +60,7 @@ async function fakeSandbox(github = currentGithub) {
     cmds: [],
     writes: [],
     commands: {
-      async run(cmd, { cwd, timeoutMs } = {}) {
+      async run(cmd, { cwd, timeoutMs, onStdout } = {}) {
         assert.ok(timeoutMs > 0, 'timeoutMs must be set');
         sbx.cmds.push(cmd);
         try {
@@ -65,6 +68,7 @@ async function fakeSandbox(github = currentGithub) {
             cwd: map(cwd),
             env: { ...process.env, ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
           });
+          await onStdout?.(r.stdout);
           return { stdout: r.stdout, stderr: r.stderr, exitCode: 0 };
         } catch (e) {
           throw Object.assign(new Error('exit'), { exitCode: e.code, stdout: e.stdout, stderr: e.stderr });
@@ -233,7 +237,7 @@ test('invalid session_id from the sandbox is refused and the agent is failed', a
   assert.ok(created[0].killed);
 });
 
-test('unparseable JSON returns the raw stdout and says so', async () => {
+test('unparseable output returns the raw stdout and says so', async () => {
   const { start, wait } = await setup();
   const id = await start({ prompt: 'RAW' });
   const r = await wait([id]);
@@ -362,17 +366,17 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.equal(await remote(`git merge-base --is-ancestor ${tip1} claude-cloud/${id} && echo yes`), 'yes');
   assert.equal(await remote(`git show claude-cloud/${id}:b.txt`), 'more');
   const cmd = created[0].cmds.filter((c) => c.includes('claude -p')).pop();
-  assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format json`));
+  assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
 });
 
-test('first-turn command is json output with the commit-and-push hint; identity and branch are set up', async () => {
+test('first-turn command is stream-json output with the commit-and-push hint; identity and branch are set up', async () => {
   const { start, wait, created } = await setup();
   const id = await start();
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
-  assert.match(cmd, /--output-format json/);
+  assert.match(cmd, /--output-format stream-json --verbose/);
   assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.'`));
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b claude-cloud/${id}`)));
@@ -492,4 +496,21 @@ test('secrets, including GH_TOKEN and GITHUB_TOKEN, are scrubbed from results', 
   const r = await wait([await start({ prompt: 'LEAK' })]);
   assert.match(r, /leak \[redacted\] \[redacted\]/);
   assert.ok(!/ghp_secret|ghp_other/.test(r));
+});
+
+test('task mode: a starting agent says "starting machine…"; the final line ends with a total; the status message hides secrets', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { deps, wait } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); }, asTask: true });
+  const t = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(t.resultType, 'task');
+  assert.equal(t.statusMessage, 'starting machine…');
+  assert.equal(getTask(t.taskId, deps).statusMessage, 'starting machine…');
+  release();
+  const id = t.taskId.split('-')[1];
+  assert.match(await wait([id]), /Total: 1 tool use, 100 in \/ 7 out tokens, \$0\.0100, \d+s$/);
+  const v = getTask(t.taskId, deps);
+  assert.equal(v.status, 'completed');
+  assert.ok(v.statusMessage.length <= 200 && !v.statusMessage.includes(SECRET));
+  assert.equal(getTask('cc-nope-t1', deps), undefined);
 });

@@ -2,6 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createInstaboxSandbox } from '../src/instabox.mjs';
 import { runSubagent, waitAgents } from '../src/run-subagent.mjs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// A throwaway repo with a github.com origin, so the test does not depend on where this checkout came from.
+function githubRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-ib-'));
+  const git = (...a) => execFileSync('git', ['-C', dir, ...a]);
+  git('init', '-q', '-b', 'main');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('remote', 'add', 'origin', 'https://github.com/test/repo.git');
+  return dir;
+}
 
 function fakeSdk({ waitImpl } = {}) {
   const calls = { create: null, run: [], killedJob: false };
@@ -93,7 +107,7 @@ test('run-subagent honours sandbox.home and scrubs the Instabox key', async () =
   };
   const deps = {
     createSandbox: async (envs) => { seenEnvs = envs; return sbx; }, open: new Map(),
-    env: { INSTABOX_API_KEY: KEY, ANTHROPIC_API_KEY: 'api-key-xyz' }, cwd: process.cwd(),
+    env: { INSTABOX_API_KEY: KEY, ANTHROPIC_API_KEY: 'api-key-xyz' }, cwd: githubRepo(),
   };
   const started = await runSubagent({ description: 'd', prompt: 'p' }, deps);
   const id = started.content[0].text.match(/agent_id: (\w+)/)[1];
@@ -126,4 +140,23 @@ test('a secrets timeout or HTTP error kills the sandbox and names GH_TOKEN and t
     await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, f, timing)({}), (e) => re.test(e.message) && /GH_TOKEN Instabox secret/.test(e.message) && /RUNBOOK\.md, step 2\.4/.test(e.message));
     assert.equal(killed, true);
   }
+});
+
+test('background run streams output to onStdout and kills the job when the signal aborts', async () => {
+  let seen, resolveWait;
+  const { sdk, calls } = fakeSdk({
+    waitImpl: (o) => { seen = o; return new Promise((_, rej) => { resolveWait = () => rej(Object.assign(new Error('x'), { exitCode: 143, stdout: 'log' })); }); },
+  });
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({});
+  const ac = new AbortController();
+  const chunks = [];
+  const p = sbx.commands.run('x', { timeoutMs: 600001, onStdout: (c) => chunks.push(c), signal: ac.signal });
+  await new Promise((r) => setTimeout(r, 10));
+  seen.onStdout('line\n');
+  assert.deepEqual(chunks, ['line\n']);
+  ac.abort();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.killedJob, true);
+  resolveWait();
+  await assert.rejects(p, (e) => e.exitCode === 143);
 });

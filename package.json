@@ -7,7 +7,7 @@
   },
   "dependencies": {
     "@insforge/instabox-sdk": "^0.6.0",
-    "@modelcontextprotocol/sdk": "^1.32.2"
+    "@modelcontextprotocol/server": "^2.4.0"
   },
   "type": "module",
   "private": true,

@@ -101,6 +101,13 @@ git show FETCH_HEAD:proof.txt
   ```
 
   Merge, cherry-pick or open pull requests from these branches as usual.
+- **Watch and stop subagents.** In a terminal session on Claude Code 2.1.304 or later, each subagent call is an MCP task:
+  - The footer shows `N MCP tasks`.
+  - `/tasks` shows one line per task, updated every few seconds: `12 tool uses · 48.2k tokens · 3m10s · Edit src/parser.ts`. `starting machine…` means the machine is not up yet. The tokens are input (including cached input) plus output.
+  - Select a task and press `x` to stop it. For a task started by `cloud_agent` this stops the agent and deletes its machine. For a task started by `cloud_agent_message` it stops only that follow-up, and the agent stays open and idle.
+  - The result reaches the session by itself when the task ends. It ends with a line such as `Total: 12 tool uses, 93.1k in / 327 out tokens, $0.0078, 3m10s` (the cost appears when Claude reports it).
+  - Asking "list the subagents" shows the same progress line for each one.
+- **Without tasks.** In the VS Code extension, the desktop app, or a one-shot `claude -p "<prompt>"` run, Claude Code does not make MCP tasks. The tools then return an agent ID and Claude uses `cloud_agent_wait`, exactly as in older versions. Nothing needs configuring. Task mode is not turned on or off with any setting of this tool, so do not set `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` or `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND`.
 - **Large swarms.** Ask the session to pace them, for example "start the 50 subagents in batches of 10 per minute, and send them work in waves of about 25". Without pacing, some starts fail; see section 6.
 - **When subagents stop:**
   - when you or the session stops them;
@@ -149,8 +156,8 @@ git show FETCH_HEAD:proof.txt
    - it uploads the snapshot and checks it out on branch `claude-cloud/<id>`;
    - it pushes that branch, then runs `claude -p` in the background.
 
-   The call returns at once, because Claude Code runs MCP tools one at a time unless they're marked read-only.
-3. **Getting answers.** `cloud_agent_wait`, which is read-only, collects answers. Follow-ups use `claude -p --resume <session>` on the same machine.
+   The call returns at once, because Claude Code runs MCP tools one at a time unless they're marked read-only. When the client supports MCP tasks, the call returns a task (id `cc-<agent id>-t<turn number>`, for example `cc-3f2a91bc-t2`). The server detects this from the client capabilities that Claude Code sends with each request on MCP revision 2026-07-28, and the server answers `tasks/get` and `tasks/cancel` for the task.
+3. **Getting answers.** In task mode, Claude Code polls `tasks/get` and passes on the result when the task ends. Otherwise `cloud_agent_wait`, which is read-only, collects answers. Follow-ups use `claude -p --resume <session>` on the same machine. The machine runs `claude -p --output-format stream-json --verbose`; the server reads that stream as it arrives to count tool uses and tokens and to find the current step.
 4. **After every task.** The tool runs `git push` once more, in case the subagent forgot. It never commits for the subagent; it lists any uncommitted files instead.
 5. **Secrets.**
    - **Instabox key and Claude token:** these stay in `~/.config/claude-cloud/env` and the MCP server. They never appear in process arguments.

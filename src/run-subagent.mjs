@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -17,6 +18,8 @@ const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
 const WAIT_MAX_S = 1500;
+const POLL_MS = 3000;
+const CANCEL_WAIT_MS = 15_000;
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
 const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.`;
 
@@ -32,16 +35,23 @@ const githubUrl = (raw) => {
 // Last lines of git's stderr with any user:password@ part of a URL removed.
 const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@').trim().slice(-1500);
 
-// deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, idleMs }.
+// deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
+// asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
+// answer with a task and the result arrives through getTask. Otherwise they answer at once and cloud_agent_wait collects.
 // Agent: { id, description, status: starting|running|idle|failed|stopped, result: {text, error, reported},
-//          sandbox, home, root, sha, sessionId, model, agent, idleSince, timers... }.
+//          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
+// Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
+//          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 function helpers(env) {
   const secrets = SECRETS.map((k) => env[k]).filter(Boolean);
   const scrub = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
 }
-const ctxOf = (deps) => ({ ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) });
+const ctxOf = (deps) => {
+  deps.tasks ??= new Map();
+  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
+};
 const active = (a) => a.status === 'starting' || a.status === 'running';
 
 function wake(a) {
@@ -54,8 +64,26 @@ async function stop(a, open) {
   clearTimeout(a.idleTimer);
   if (open.get(a.id) === a) open.delete(a.id);
   a.status = 'stopped';
+  if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
   wake(a);
   await a.sandbox?.kill().catch(() => {});
+}
+
+function endTurn(t, status, result) {
+  if (t.status !== 'working') return;
+  t.status = status;
+  t.result = result;
+  t.updatedAt = Date.now();
+  t.resolve();
+}
+
+function newTurn(a) {
+  a.turns = (a.turns ?? 0) + 1;
+  let resolve;
+  const done = new Promise((r) => { resolve = r; });
+  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: createProgress(), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
+  a.turn = t;
+  return t;
 }
 
 function armIdle(a, ctx) {
@@ -88,9 +116,9 @@ async function safetyPush(a) {
   }
 }
 
-// One claude run in the sandbox (first turn, or --resume), then a safety push.
-// Returns { text, error, gone }. a.sessionId is updated from the JSON reply.
-async function turn(a, message, ctx) {
+// One claude run in the sandbox (first turn, or --resume), then a safety push. Output is stream-json, fed to t.progress as it arrives.
+// Returns { text, error, gone, cancelled }. a.sessionId is updated from the final result event.
+async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
@@ -98,36 +126,48 @@ async function turn(a, message, ctx) {
     return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin claude-cloud/${a.id} survives.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
-  const cmd = ['claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format json',
+  const cmd = ['claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     `--append-system-prompt '${commitHint(a.id)}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
   try {
-    stdout = (await a.sandbox.commands.run(cmd, { cwd: `${a.home}/repo`, timeoutMs: AGENT_MS })).stdout;
+    stdout = (await a.sandbox.commands.run(cmd, {
+      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => t.progress.feed(chunk),
+    })).stdout;
   } catch (e) {
     failure = e;
   }
+  t.progress.end();
   const { where, failed } = await safetyPush(a);
 
-  let text = stdout, error = false;
+  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
-    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}` };
+    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totalLine(t.progress)}` };
   }
-  try {
-    const j = JSON.parse(stdout);
-    if (typeof j?.result !== 'string') throw new Error('no result field');
+  // A sandbox that does not stream still returns the whole output; parse that instead.
+  if (!t.progress.final) {
+    const whole = parseStream(stdout);
+    whole.startedAt = t.progress.startedAt;
+    t.progress = whole;
+  }
+  const j = t.progress.final;
+  let text, error = false;
+  if (!j) {
+    text = `${String(stdout).slice(-4000)}\n\n(Could not parse claude's stream-json output, so this is the raw stdout.)`;
+  } else if (typeof j.result !== 'string') {
+    text = `Claude stopped without a result (${j.subtype ?? 'unknown reason'}).`;
+    error = true;
+  } else {
     text = j.result;
     error = j.is_error === true;
     if (j.session_id !== undefined) {
       if (typeof j.session_id === 'string' && SESSION.test(j.session_id)) a.sessionId = j.session_id;
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
-  } catch {
-    text = `${stdout}\n\n(Could not parse claude's JSON output, so this is the raw stdout.)`;
   }
-  return { text: `${text}\n\n${where}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totalLine(t.progress)}`, error: error || failed };
 }
 
 const limitText = (e) => {
@@ -180,12 +220,12 @@ async function setup(a, ctx) {
 }
 
 // Background job for one turn. Never throws; records the outcome and wakes waiters.
-async function work(a, message, first, ctx) {
+async function work(a, message, first, ctx, t) {
   let r;
   try {
     if (first) await setup(a, ctx);
     a.status = 'running';
-    r = await turn(a, message, ctx);
+    r = await turn(a, message, ctx, t);
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
@@ -196,9 +236,67 @@ async function work(a, message, first, ctx) {
   const dead = first ? r.error : r.gone;
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
+  endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
   if (dead) await a.sandbox?.kill().catch(() => {});
   armIdle(a, ctx);
   wake(a);
+}
+
+// The progress line for a turn, safe to show: scrubbed, one line, at most STATUS_MAX characters.
+function statusOf(t, ctx) {
+  let m;
+  if (t.status === 'working') m = t.agent.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
+  else if (t.status === 'completed') m = statusLine(t.progress);
+  else m = `${t.status}: ${t.result?.text ?? ''}`;
+  const one = ctx.scrub(m).replace(/\s+/g, ' ').trim();
+  return one.length > STATUS_MAX ? `${one.slice(0, STATUS_MAX - 1)}…` : one;
+}
+const iso = (ms) => new Date(ms).toISOString();
+
+// What cloud_agent and cloud_agent_message answer with in task mode.
+function taskAnswer(t, ctx) {
+  return {
+    resultType: 'task', taskId: t.id, status: 'working', statusMessage: statusOf(t, ctx),
+    createdAt: iso(t.createdAt), lastUpdatedAt: iso(Date.now()), ttlMs: null, pollIntervalMs: POLL_MS,
+  };
+}
+
+// tasks/get. Returns undefined for an unknown task id. A finished task's text counts as reported, so cloud_agent_wait does not repeat it.
+export function getTask(taskId, deps) {
+  const ctx = ctxOf(deps);
+  const t = ctx.tasks.get(taskId);
+  if (!t) return undefined;
+  const v = {
+    resultType: 'complete', taskId: t.id, status: t.status, createdAt: iso(t.createdAt),
+    lastUpdatedAt: iso(t.status === 'working' ? Date.now() : t.updatedAt), ttlMs: null, statusMessage: statusOf(t, ctx),
+  };
+  if (t.status === 'working') v.pollIntervalMs = POLL_MS;
+  else t.result.reported = true;
+  // Claude needs the agent id for cloud_agent_message and cloud_agent_stop, and the task result is all it sees.
+  const text = `agent_id: ${t.agent.id} (turn ${t.n})\n\n${t.result?.text}`;
+  if (t.status === 'completed') v.result = { content: [{ type: 'text', text }] };
+  if (t.status === 'failed') v.error = { code: -32000, message: text, data: null };
+  return v;
+}
+
+// tasks/cancel. Cancelling the first turn (cloud_agent) stops the whole agent and deletes its machine.
+// Cancelling a later turn (cloud_agent_message) kills only that claude run; the agent stays open and idle.
+// A finished task is returned unchanged. Returns undefined for an unknown task id.
+export async function cancelTask(taskId, deps) {
+  const ctx = ctxOf(deps);
+  const t = ctx.tasks.get(taskId);
+  if (!t) return undefined;
+  if (t.status === 'working') {
+    t.cancelled = true;
+    if (t.n === 1) await stop(t.agent, ctx.open);
+    else {
+      t.abort.abort();
+      let timer;
+      await Promise.race([t.done, new Promise((r) => { timer = setTimeout(r, ctx.cancelWaitMs ?? CANCEL_WAIT_MS); })]);
+      clearTimeout(timer);
+    }
+  }
+  return getTask(taskId, deps);
 }
 
 // cloud_agent: returns at once; the sandbox starts in the background.
@@ -222,7 +320,10 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { id, description: description ?? '', status: 'starting', root, origin, model, agent, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
-  work(a, prompt, true, ctx);
+  const t = newTurn(a);
+  ctx.tasks.set(t.id, t);
+  work(a, prompt, true, ctx, t);
+  if (ctx.asTask) return taskAnswer(t, ctx);
   return ok(`agent_id: ${id}\nstatus: starting\nCall cloud_agent_wait with the agent_ids to get the result.`);
 }
 
@@ -237,7 +338,10 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   if (a.status === 'failed') return fail(`Agent ${id} failed and cannot take messages. Call cloud_agent_wait for the error, then cloud_agent_stop.`);
   clearTimeout(a.idleTimer);
   a.status = 'running';
-  work(a, message, false, ctx);
+  const t = newTurn(a);
+  ctx.tasks.set(t.id, t);
+  work(a, message, false, ctx, t);
+  if (ctx.asTask) return taskAnswer(t, ctx);
   return ok(`agent_id: ${id}\nstatus: running\nCall cloud_agent_wait with the agent_ids to get the reply.`);
 }
 
@@ -273,10 +377,12 @@ export async function waitAgents(args = {}, deps) {
 
 // cloud_agent_list: read-only.
 export async function listAgents(_args, deps) {
-  const { ok, open } = ctxOf(deps);
+  const ctx = ctxOf(deps);
+  const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}`).join('\n'));
+    `${a.id}  ${a.status}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
+    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 
 // cloud_agent_stop: idempotent.
