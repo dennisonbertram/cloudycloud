@@ -15,50 +15,41 @@ This covers setting up `claude-cloud`, using it, operating it day to day, and fi
 
 ## 2. One-time setup
 
-### 2.1 Install the tool
+### 2.1 Install and enter your keys
 
 ```sh
 git clone https://github.com/dennisonbertram/ai-seamless-sandboxes.git
 cd ai-seamless-sandboxes
-npm install
-npm link
+./install.sh
 ```
 
-`npm link` puts `claude-cloud` on your PATH. Check with `which claude-cloud`.
+Run it in a terminal; it asks for keys, so it will not run from a pipe. It checks `git`, Node.js 20 or later, `npm`, `curl` and Claude Code, runs `npm install`, and links `claude-cloud` onto your PATH. If `claude-cloud` already points at another folder, it asks before changing that, and the default is to keep the current link. Then it asks for three keys. Nothing shows as you paste, and nothing is printed back except the last four characters.
 
-### 2.2 Create an Instabox API key
+| Key | Where to get it |
+| --- | --- |
+| **Instabox API key** (`ibk_…`) | Create it at https://dashboard.instabox.sh/dashboard/api-keys. The script checks it with Instabox before saving. |
+| **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
+| **GitHub token** | Create a fine-grained token (section 2.2). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
-1. Sign in at https://dashboard.instabox.sh.
-2. Open **API keys** and create a key. It starts with `ibk_`.
-3. Keep it for step 2.5.
+The first two are saved to `~/.config/claude-cloud/env`, which only your user account can read. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. You can run `./install.sh` again at any time; it shows each saved key as masked and asks before replacing it.
 
-### 2.3 Create a Claude token for subagents
+`claude-cloud` runs from the folder you ran `install.sh` in, on whatever branch is checked out there. The final message of `install.sh` shows the folder and branch.
 
-```sh
-claude setup-token
-```
+### 2.2 The GitHub token
 
-This prints a long-lived token, which you will use in step 2.5. Subagents use it, so your own session keeps its normal login.
+Subagents push their work to GitHub. Instabox stores the token and adds it only to requests to GitHub, so a subagent's machine sees a placeholder, never the token.
 
-### 2.4 Give subagents GitHub access
+- Create it at https://github.com/settings/personal-access-tokens/new.
+- **Repository access:** *Only select repositories*. Choose only the repos you will use `claude-cloud` in.
+- **Permissions:** *Contents*, read and write. *Metadata*, read-only, is added automatically.
+- **Expiration:** your choice. Shorter limits the damage if it leaks.
+- `install.sh` runs `npx --yes instabox@latest login` if you are not signed in, then `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, and the Instabox tool asks for the token. The name must be exactly `GH_TOKEN`.
 
-Subagents push their work to GitHub. Instabox stores the GitHub token and adds it only to requests to GitHub, so a subagent's machine sees a placeholder, never the token.
+### 2.3 Protect your main branch
 
-1. **Create a fine-grained GitHub token** at https://github.com/settings/personal-access-tokens/new.
-   - **Repository access:** *Only select repositories*. Choose only the repos you will use `claude-cloud` in.
-   - **Permissions:** *Contents*, read and write. *Metadata*, read-only, is added automatically.
-   - **Expiration:** your choice. Shorter limits the damage if it leaks.
-2. **Store it in Instabox.** An Instabox API key cannot create secrets, so you sign in with the CLI first:
+In the repo on GitHub, open *Settings → Rules → Rulesets* and add a branch ruleset that blocks direct pushes to your main branch. Subagents run with permission checks off, and the token can push to any branch it reaches.
 
-   ```sh
-   npx instabox@latest login
-   npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com
-   ```
-
-   Paste the GitHub token when asked; nothing appears as you paste. The name must be exactly `GH_TOKEN`.
-3. **Protect your main branch.** In the repo on GitHub, open *Settings → Rules → Rulesets* and add a branch ruleset that blocks direct pushes to your main branch. Subagents run with permission checks off, and the token can push to any branch it reaches.
-
-### 2.5 First run
+### 2.4 First run
 
 The repo you work in needs a GitHub `origin` that your token can push to:
 
@@ -68,7 +59,7 @@ git remote -v        # should show github.com
 claude-cloud
 ```
 
-The first run asks for your Instabox key and Claude token. Nothing appears as you type. It saves them to `~/.config/claude-cloud/env`, which only your user account can read, and doesn't ask again.
+Setup happens only in `install.sh`. If a key is missing, `claude-cloud` prints `not set up yet. Run: <folder>/install.sh` and exits.
 
 ## 3. Check that it works
 
@@ -104,6 +95,7 @@ git show FETCH_HEAD:proof.txt
 - **Watch and stop subagents.** In a terminal session on Claude Code 2.1.304 or later, each subagent call is an MCP task:
   - The footer shows `N MCP tasks`.
   - `/tasks` shows one line per task, updated every few seconds: `12 tool uses · 48.2k tokens · 3m10s · Edit src/parser.ts`. `starting machine…` means the machine is not up yet. The tokens are input (including cached input) plus output.
+  - Claude Code's task view says each task "runs on the server; survives exiting this session". That text does not apply to `claude-cloud`: when you exit the session, every subagent stops and its machine is deleted. Push or collect work before you exit.
   - Select a task and press `x` to stop it. For a task started by `cloud_agent` this stops the agent and deletes its machine. For a task started by `cloud_agent_message` it stops only that follow-up, and the agent stays open and idle.
   - The result reaches the session by itself when the task ends. It ends with a line such as `Total: 12 tool uses, 93.1k in / 327 out tokens, $0.0078, 3m10s` (the cost appears when Claude reports it).
   - Asking "list the subagents" shows the same progress line for each one.
@@ -123,21 +115,22 @@ git show FETCH_HEAD:proof.txt
 | **List cloud machines** | `npx instabox@latest ls`. Machines created by this tool have the label `purpose=claude-cloud`. |
 | **Delete a leftover machine** | `npx instabox@latest rm <name>` |
 | **Delete all subagent branches on GitHub** | `git ls-remote --heads origin 'claude-cloud/*' \| awk '{print $2}' \| xargs -n 50 git push origin --delete` |
-| **Replace the Claude token** | Run `claude setup-token`, then edit the `CLAUDE_CODE_OAUTH_TOKEN=` line in `~/.config/claude-cloud/env` |
-| **Replace the Instabox key** | Edit the `INSTABOX_API_KEY=` line in `~/.config/claude-cloud/env` |
-| **Replace the GitHub token** | Run `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com` again. Running machines pick it up. |
+| **Replace a key** (Claude token, Instabox key or GitHub token) | Run `./install.sh` again in the folder `claude-cloud` runs from, answer `y` for that key, then restart `claude-cloud`. A running session keeps the old key until you restart it. |
 | **Remove all saved keys** | `rm ~/.config/claude-cloud/env` |
-| **Update the tool** | `git pull && npm install` in the `ai-seamless-sandboxes` folder, then restart `claude-cloud` |
+| **Update the tool** | `git pull && npm install` in the folder that `install.sh` printed, then restart `claude-cloud` |
 | **Uninstall** | `npm unlink -g claude-cloud`, then delete the folder and `~/.config/claude-cloud` |
 
 ## 6. Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
+| `not set up yet. Run: <folder>/install.sh` | A key is missing. Run `./install.sh`. |
+| `malformed API key`, or `401` from Instabox in a session | The Instabox key is wrong or revoked. Run `./install.sh`, replace the key, and restart `claude-cloud`. |
+| You changed a key but the session still uses the old one | `claude-cloud` reads keys once at start. Restart it. |
 | `claude-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
-| `The first push to origin claude-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Redo step 2.4, and check the token's repository list. |
-| `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Redo step 2.4.2, with the name exactly `GH_TOKEN`. |
-| `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token` and replace the `CLAUDE_CODE_OAUTH_TOKEN=` line in `~/.config/claude-cloud/env`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
+| `The first push to origin claude-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `./install.sh` and replace the GitHub token, and check the token's repository list. |
+| `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `./install.sh` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
+| `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `./install.sh` and replace the Claude token, and restart `claude-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
 | `quota_exceeded` (machine limit) | Your Instabox plan's machine limit is reached. Paused machines count too. Stop subagents you don't need, delete leftover machines (section 5), or upgrade the plan. |
 | `rate_limited` (start rate) | Too many machines started in a minute. Start in smaller batches, about 10 a minute. |
 | Some subagents fail when many work at once | Instabox allows 32 commands at once per account, and each working subagent holds about one. Send work in waves of about 25. |
