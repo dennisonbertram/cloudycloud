@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -210,6 +210,8 @@ async function setup(a, ctx) {
     if (a.profile) envs[a.profile.keyName] = env[a.profile.keyName];
     else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
+    if (a.profile?.format === 'openai') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }

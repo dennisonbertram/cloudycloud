@@ -60,7 +60,7 @@ litellm_settings:
 // background tasks", so ANTHROPIC_DEFAULT_HAIKU_MODEL ("also used for background functionality") is set as well.
 export function claudeEnv(p) {
   if (p.format === 'openai') {
-    return `ANTHROPIC_BASE_URL=http://127.0.0.1:${GATEWAY_PORT} ANTHROPIC_AUTH_TOKEN=local ANTHROPIC_API_KEY= ANTHROPIC_MODEL=worker ANTHROPIC_SMALL_FAST_MODEL=worker ANTHROPIC_DEFAULT_HAIKU_MODEL=worker`;
+    return `ANTHROPIC_BASE_URL=http://127.0.0.1:${GATEWAY_PORT} ANTHROPIC_AUTH_TOKEN="\$LITELLM_MASTER_KEY" ANTHROPIC_API_KEY= ANTHROPIC_MODEL=worker ANTHROPIC_SMALL_FAST_MODEL=worker ANTHROPIC_DEFAULT_HAIKU_MODEL=worker`;
   }
   return `ANTHROPIC_BASE_URL=${p.baseUrl} ANTHROPIC_AUTH_TOKEN="\$${p.keyName}" ANTHROPIC_API_KEY= ANTHROPIC_MODEL=${p.model}`;
 }

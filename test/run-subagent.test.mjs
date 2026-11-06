@@ -670,9 +670,12 @@ test('an openai profile writes a key-free config, starts the gateway, waits for 
   assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git push -q -u')) && j > i && k > j, 'order: push, gateway, health, claude');
   assert.match(sbx.cmds[i], /nohup uvx --from 'litellm\[proxy\]' litellm .*--port 4000 > .*gateway\.log/);
   const c = sbx.cmds[k];
-  for (const v of ['ANTHROPIC_BASE_URL=http://127.0.0.1:4000', 'ANTHROPIC_AUTH_TOKEN=local', 'ANTHROPIC_API_KEY= ', 'ANTHROPIC_MODEL=worker', 'ANTHROPIC_SMALL_FAST_MODEL=worker']) assert.ok(c.includes(v), v);
+  for (const v of ['ANTHROPIC_BASE_URL=http://127.0.0.1:4000', 'ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY"', 'ANTHROPIC_API_KEY= ', 'ANTHROPIC_MODEL=worker', 'ANTHROPIC_SMALL_FAST_MODEL=worker']) assert.ok(c.includes(v), v);
   assert.ok(!c.includes('--model'));
-  assert.deepEqual(sbx.envs, { PARTICLE_API_KEY: PKEY }); // no OAuth token, no Anthropic key, no other provider's key
+  assert.deepEqual(Object.keys(sbx.envs).sort(), ["LITELLM_MASTER_KEY", "PARTICLE_API_KEY"]); // no OAuth token, no Anthropic key, no other provider's key
+  assert.equal(sbx.envs.PARTICLE_API_KEY, PKEY);
+  assert.match(sbx.envs.LITELLM_MASTER_KEY, /^sk-[0-9a-f]{48}$/); // LiteLLM refuses to start without a master key
+  assert.ok(!sbx.cmds.join("\n").includes(sbx.envs.LITELLM_MASTER_KEY));
   assert.ok(!sbx.cmds.join('\n').includes(PKEY));
 });
 
