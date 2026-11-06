@@ -233,3 +233,48 @@ test('background run streams output to onStdout and kills the job when the signa
   resolveWait();
   await assert.rejects(p, (e) => e.exitCode === 143);
 });
+
+const tool1 = '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}\n';
+const transient = [
+  Object.assign(new Error('POST /v1/machines/m_1/exec timed out after 79000 ms'), { name: 'InstaboxTimeoutError', code: 'request_timeout' }),
+  new Error('POST /v1/machines/m_1/exec timed out after 79000 ms'),
+  Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }),
+  Object.assign(new Error('bad gateway'), { status: 503, code: 'unavailable' }),
+];
+
+test('transient errors while waiting are retried with backoff and the output is delivered once', async () => {
+  let n = 0;
+  const sleeps = [];
+  const rt = { now: () => 0, sleep: async (ms) => { sleeps.push(ms); } };
+  const waitImpl = async (o) => {
+    await o.onStdout(tool1);
+    if (n < transient.length) throw transient[n++];
+    return { stdout: tool1, stderr: '', exitCode: 0 };
+  };
+  const { sdk } = fakeSdk({ waitImpl });
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, rt)({});
+  const got = [];
+  const r = await sbx.commands.run('x', { timeoutMs: 1_740_000, onStdout: (c) => got.push(c) });
+  assert.equal(r.exitCode, 0);
+  assert.equal(got.join(''), tool1);
+  assert.deepEqual(sleeps, [2000, 4000, 8000, 15000]);
+});
+
+test('job_lost, not_found and a command exit fail at once while waiting', async () => {
+  for (const err of [Object.assign(new Error('lost'), { code: 'job_lost' }), Object.assign(new Error('gone'), { status: 404, code: 'not_found' })]) {
+    let n = 0;
+    const { sdk } = fakeSdk({ waitImpl: async () => { n++; throw err; } });
+    const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, { now: () => 0, sleep: async () => {} })({});
+    await assert.rejects(sbx.commands.run('x', { timeoutMs: 1_740_000 }), err);
+    assert.equal(n, 1);
+  }
+});
+
+test('transient errors past the overall deadline end in the timeout path and kill the job', async () => {
+  let t = 0;
+  const rt = { now: () => t, sleep: async (ms) => { t += ms; } };
+  const { sdk, calls } = fakeSdk({ waitImpl: async () => { t += 1000; throw new Error('POST /exec timed out after 79000 ms'); } });
+  const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast(), undefined, undefined, rt)({});
+  await assert.rejects(sbx.commands.run('x', { timeoutMs: 700_000 }), /command timed out after 700000 ms/);
+  assert.equal(calls.killedJob, true);
+});
