@@ -155,3 +155,38 @@ git show FETCH_HEAD:proof.txt
    - **Instabox key and Claude token:** these stay in `~/.config/claude-cloud/env` and the MCP server. They never appear in process arguments.
    - **Claude token on the machine:** only the Claude token is placed on each machine.
    - **GitHub token:** it stays in Instabox. The machine sees only a placeholder, which Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
+
+## 8. Cloud coordinators
+
+A coordinator is a long-lived Claude Code session on its own Instabox machine. It runs `claude-cloud` there, so it can start worker machines. You reach it through Remote Control (claude.ai or the Claude app) or SSH, and it keeps working while your laptop is closed.
+
+### 8.1 Make the coordinator image (once)
+
+Remote Control needs a full Claude login. A token from `claude setup-token` can only make model requests, so it cannot open Remote Control sessions. You sign in once on an image machine and keep the result in an Instabox snapshot.
+
+1. `claude-cloud coordinator image` creates a machine labelled `role=coordinator-image`, installs `claude-cloud` on it, and prints an SSH command.
+2. Run that SSH command, then `claude auth login` inside the machine, and finish the sign-in in your browser.
+3. `claude-cloud coordinator image --save` snapshots the machine, saves the snapshot id as `CLAUDE_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/claude-cloud/env`, and deletes the image machine. A snapshot keeps the home folder, including the saved sign-in.
+
+### 8.2 Commands
+
+| Command | What it does |
+| --- | --- |
+| `claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO [--branch B]` | Creates a machine from the snapshot (label `role=coordinator`, never pauses), attaches the `GH_TOKEN` secret, writes the keys file, updates `claude-cloud` there, clones the repo, and starts a tmux session `claude` running `claude-cloud --remote-control "NAME"`. |
+| `claude-cloud coordinator attach NAME` | Prints `npx --yes instabox@latest ssh <machine> -- tmux attach -t claude`. Run it to see the session. |
+| `claude-cloud coordinator ls` | Lists coordinators: name, state, created time, machine name. |
+| `claude-cloud coordinator stop NAME` | Deletes that coordinator's machine. Its workers are deleted by its own `claude-cloud` cleanup process when its session ends. |
+
+The first time you attach, accept any trust or Remote Control prompts. Then pick the session named NAME in claude.ai/code.
+
+### 8.3 Keys on the coordinator
+
+- The coordinator's `~/.config/claude-cloud/env` (mode 600) holds the real Instabox key, the Claude setup-token and every `*_API_KEY` provider key from your laptop config. Workers started from the coordinator need them.
+- The values are written with a file upload, never in a command line.
+- The coordinator's system prompt tells it never to print, share, commit or send these keys, and never to pass them to workers except through `claude-cloud`.
+- GitHub access uses the `GH_TOKEN` Instabox secret, as on your laptop.
+- Anyone who can SSH into the coordinator can read these keys. Use keys you can revoke.
+
+### 8.4 Cleanup
+
+Your laptop's cleanup process deletes only machines whose `owner` label is that session's id (`src/reaper.mjs` checks `metadata.owner === owner`). Coordinators have no `owner` label, so it never deletes them. Delete one with `coordinator stop NAME`, or list leftovers with `npx --yes instabox@latest ls --meta role=coordinator`.
