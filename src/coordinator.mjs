@@ -56,7 +56,7 @@ const find = async (Sandbox, apiKey, role, name) =>
 async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
-  await run(`command -v tmux >/dev/null || sudo -n apt-get install -y tmux >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
+  await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
   await run(`if [ -d ~/claude-cloud/.git ]; then git -C ~/claude-cloud pull --ff-only -q; else git clone -q ${q(toolRepoUrl(root))} ~/claude-cloud; fi && cd ~/claude-cloud && npm install --no-audit --no-fund`);
   await run('gh auth setup-git');
   return home;

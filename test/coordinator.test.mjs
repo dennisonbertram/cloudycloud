@@ -141,3 +141,8 @@ test('launcher: coordinator goes to the script; plain claude-cloud still starts 
   assert.match(coord, /Never print, share, commit or send these keys/);
   assert.match(coord, /--remote-control\nboss/);
 });
+
+test('tmux is installed after refreshing package lists (Instabox images ship without them)', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(src, /apt-get update[^\n]*&&[^\n]*apt-get install -y[^\n]*tmux/);
+});
