@@ -19,30 +19,33 @@ sid=${SID}
 resumed=""
 [ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
 reply() { printf '{"type":"result","is_error":false,"session_id":"%s","result":"%s"}\\n' "$sid" "$1"; }
+commit() { git add -A; git -c user.name=x -c user.email=x@x commit -qm "$1"; }
 case "$p" in
-  OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; git add -A; git -c user.name=x -c user.email=x@x commit -qm "own $n"; reply "own $n" ;;
-  JUNK*) mkdir -p __pycache__; echo bytecode > __pycache__/m.pyc; echo newfile > notes.txt; echo dirty >> a.txt; reply "junk" ;;
-  EDIT2*) echo more > b.txt; git add -A; git -c user.name=x -c user.email=x@x commit -qm two; reply "\${resumed}edited2" ;;
-  EDIT*) echo changed > a.txt; reply "edited" ;;
+  OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; commit "own $n"; git push -q origin HEAD; reply "own $n" ;;
+  UNPUSHED*) echo unpushed > unpushed.txt; commit unpushed; reply "\${resumed}committed only" ;;
+  DIRTY*) echo newfile > notes.txt; echo dirty >> a.txt; reply "dirty" ;;
+  EDIT2*) echo more > b.txt; commit two; git push -q origin HEAD; reply "\${resumed}edited2" ;;
+  EDIT*) echo changed > a.txt; commit edit; git push -q origin HEAD; reply "edited" ;;
   SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
-  SLOWCLEAN*) echo dirty >> a.txt; sleep 0.8; reply "slow done" ;;
-  SLOWWIP*) echo wipdata > u.txt; echo dirty >> a.txt; sleep 0.8; reply "slow done" ;;
-  FAILWIP*) echo wipdata > u.txt; sleep 0.8; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
   SLOW*) sleep 0.5; reply "slow done" ;;
   BADSID*) printf '{"result":"x","session_id":"x; rm -rf /"}' ;;
   RAW*) echo "not json" ;;
-  FAIL*) echo changed > a.txt; git add -A; git -c user.name=x -c user.email=x@x commit -qm fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
+  LEAK*) reply "leak $LEAK1 $LEAK2" ;;
+  FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
   *) reply "\${resumed}hello" ;;
 esac
 `;
 
-async function fakeSandbox() {
+let currentGithub; // the bare repo of the test being set up (tests in a file run one at a time)
+async function fakeSandbox(github = currentGithub) {
   const dir = await mkdtemp(join(tmpdir(), 'fake-sbx-'));
   const bin = join(dir, 'bin');
   await mkdir(bin);
   await mkdir(join(dir, 'home'));
   await writeFile(join(bin, 'claude'), FAKE_CLAUDE);
   await chmod(join(bin, 'claude'), 0o755);
+  await writeFile(join(bin, 'gh'), '#!/bin/sh\nexit 0\n'); // fake gh: no-op
+  await chmod(join(bin, 'gh'), 0o755);
   const map = (s) => s.replaceAll('/home/user', join(dir, 'home'));
   const sbx = {
     dir,
@@ -60,7 +63,7 @@ async function fakeSandbox() {
         try {
           const r = await exec('sh', ['-c', map(cmd)], {
             cwd: map(cwd),
-            env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '' },
+            env: { ...process.env, ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
           });
           return { stdout: r.stdout, stderr: r.stderr, exitCode: 0 };
         } catch (e) {
@@ -73,24 +76,34 @@ async function fakeSandbox() {
   return sbx;
 }
 
+const ORIGIN = 'https://github.com/test/repo.git';
 async function setup(over = {}) {
   const repo = await mkdtemp(join(tmpdir(), 'cc-repo-'));
   await sh(repo, 'git init -q -b main && git config user.name t && git config user.email t@t');
   await writeFile(join(repo, 'a.txt'), 'orig\n');
   await sh(repo, 'git add -A && git commit -qm init');
+  if (over.origin !== null) await exec('git', ['remote', 'add', 'origin', over.origin ?? ORIGIN], { cwd: repo });
+  // A local bare repo stands in for GitHub: the fake sandbox rewrites https://github.com/ to it.
+  const github = await mkdtemp(join(tmpdir(), 'cc-github-'));
+  const bare = join(github, 'test', 'repo.git');
+  await mkdir(join(github, 'test'));
+  await sh(github, `git init -q --bare -b main ${bare}`);
+  currentGithub = github;
   const created = [];
-  const createSandbox = over.createSandbox ?? (async (envs) => { const s = await fakeSandbox(); s.envs = envs; created.push(s); return s; });
+  const createSandbox = over.createSandbox ?? (async (envs) => { const s = await fakeSandbox(github); s.envs = envs; created.push(s); return s; });
   const open = new Map();
-  const deps = { createSandbox, open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, E2B_API_KEY: 'e2b-secret' }, ...over };
+  const deps = { createSandbox, open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
   const wait = (ids, t = 10) => waitAgents({ agent_ids: ids, timeout_seconds: t }, deps).then(text);
   const msg = (id, message) => messageAgent({ agent_id: id, message }, deps);
   const stop = (ids) => stopAgents({ agent_ids: ids }, deps).then(text);
-  return { repo, created, open, deps, start, wait, msg, stop, text };
+  const remote = (cmd) => sh(bare, cmd); // run git in the bare "GitHub" repo
+  const rejectPushes = (on) => writeFile(join(bare, 'hooks', 'pre-receive'), on ? '#!/bin/sh\necho "remote: denied by test" >&2\nexit 1\n' : '#!/bin/sh\nexit 0\n').then(() => chmod(join(bare, 'hooks', 'pre-receive'), 0o755));
+  return { repo, bare, github, created, open, deps, start, wait, msg, stop, text, remote, rejectPushes };
 }
-const branches = (repo) => sh(repo, 'git branch --list "claude-cloud/*"');
+const refs = (repo) => sh(repo, 'git for-each-ref');
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('start returns at once with starting, before the sandbox exists', async () => {
@@ -109,7 +122,7 @@ test('wait returns the result once, then marks it reported; agent stays open', a
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
-  assert.match(first, /No changes were made/);
+  assert.match(first, /Pushed to origin claude-cloud\//);
   const second = await wait([id]);
   assert.match(second, /already reported/);
   assert.doesNotMatch(second, /hello/);
@@ -163,58 +176,6 @@ test('a failed create marks only that agent failed, with the provider limit name
 test('rate_limited create is reported as the start rate', async () => {
   const { start, wait } = await setup({ createSandbox: async () => { throw Object.assign(new Error('slow down'), { code: 'rate_limited' }); } });
   assert.match(await wait([await start()]), /start rate limit reached \(rate_limited\)/);
-});
-
-test('follow-up resumes the same session; its commit moves the same branch forward', async () => {
-  const { repo, start, wait, msg, created, text } = await setup();
-  const id = await start({ prompt: 'EDIT', model: 'haiku' });
-  await wait([id]);
-  const tip1 = await sh(repo, `git rev-parse claude-cloud/${id}`);
-  const r = await msg(id, 'EDIT2 please');
-  assert.match(text(r), /status: running/);
-  const out = await wait([id]);
-  assert.match(out, new RegExp(`resumed ${SID} edited2`));
-  assert.match(out, new RegExp(`local branch claude-cloud/${id}\\.`));
-  assert.equal(await sh(repo, `git merge-base --is-ancestor ${tip1} claude-cloud/${id} && echo yes`), 'yes');
-  assert.equal(await sh(repo, `git show claude-cloud/${id}:b.txt`), 'more');
-  const cmd = created[0].cmds.filter((c) => c.includes('claude -p')).pop();
-  assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format json`));
-  assert.match(cmd, /--model haiku/);
-  assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
-  assert.equal(await sh(repo, 'git for-each-ref refs/cc-keep | wc -l'), '1');
-});
-
-test('first-turn command is json output with the commit instruction; identity is set', async () => {
-  const { start, wait, created } = await setup();
-  await wait([await start()]);
-  const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
-  assert.match(cmd, /--output-format json/);
-  assert.ok(cmd.includes("--append-system-prompt 'Commit your work with git after each meaningful step, at least every few minutes, with a short message. Your sandbox can disappear at any time and only committed work is recovered.'"));
-  assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
-});
-
-test('follow-up with no change leaves the branch where it is', async () => {
-  const { repo, start, wait, msg } = await setup();
-  const id = await start({ prompt: 'EDIT' });
-  await wait([id]);
-  const tip = await sh(repo, `git rev-parse claude-cloud/${id}`);
-  await msg(id, 'hi again');
-  assert.match(await wait([id]), /No changes were made/);
-  assert.equal(await sh(repo, `git rev-parse claude-cloud/${id}`), tip);
-});
-
-test('a locally changed branch is not overwritten; update goes to -1', async () => {
-  const { repo, start, wait, msg } = await setup();
-  const id = await start({ prompt: 'EDIT' });
-  await wait([id]);
-  await sh(repo, `git checkout -q -b tmp claude-cloud/${id} && echo local > l.txt && git add -A && git commit -qm local && git branch -f claude-cloud/${id} tmp && git checkout -q main`);
-  const local = await sh(repo, `git rev-parse claude-cloud/${id}`);
-  await msg(id, 'EDIT2');
-  const out = await wait([id]);
-  assert.equal(await sh(repo, `git rev-parse claude-cloud/${id}`), local);
-  assert.match(out, new RegExp(`local branch claude-cloud/${id}-1`));
-  assert.match(out, /not a fast-forward/);
-  assert.equal(await sh(repo, `git show claude-cloud/${id}-1:b.txt`), 'more');
 });
 
 test('message to a busy agent is rejected, not queued', async () => {
@@ -280,8 +241,8 @@ test('unparseable JSON returns the raw stdout and says so', async () => {
   assert.match(r, /Could not parse/);
 });
 
-test('a failed turn reports error, scrubs secrets, recovers commits; agent with no session is failed', async () => {
-  const { repo, start, wait, created } = await setup();
+test('a failed turn reports error, scrubs secrets, still pushes commits; agent with no session is failed', async () => {
+  const { start, wait, created, remote } = await setup();
   const id = await start({ prompt: 'FAIL' });
   const r = await wait([id]);
   assert.match(r, /status: failed/);
@@ -289,10 +250,10 @@ test('a failed turn reports error, scrubs secrets, recovers commits; agent with 
   assert.match(r, /boom \[redacted\]/);
   assert.ok(!r.includes(SECRET));
   assert.ok(created[0].killed);
-  assert.equal(await sh(repo, `git show claude-cloud/${id}:a.txt`), 'changed');
+  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'changed');
 });
 
-test('a failed follow-up keeps the agent open (idle) and recovers changes', async () => {
+test('a failed follow-up keeps the agent open (idle) and pushes changes', async () => {
   const { start, wait, msg, created, open } = await setup();
   const id = await start();
   await wait([id]);
@@ -313,7 +274,7 @@ test('a follow-up to a vanished sandbox fails the agent and says so', async () =
   const r = await wait([id]);
   assert.match(r, /status: failed/);
   assert.match(r, /no longer reachable/);
-  assert.match(r, new RegExp(`claude-cloud/${id}-wip`));
+  assert.match(r, new RegExp(`already pushed to origin claude-cloud/${id}`));
 });
 
 test('invalid model or subagent_type is rejected before any sandbox', async () => {
@@ -333,17 +294,6 @@ test('non-git directory returns a clear error', async () => {
   assert.match(r.content[0].text, /git init/);
 });
 
-test('edit lands on a local branch; HEAD, index and worktree untouched', async () => {
-  const { repo, start, wait } = await setup();
-  const head = await sh(repo, 'git rev-parse HEAD');
-  const id = await start({ prompt: 'EDIT' });
-  assert.match(await wait([id]), new RegExp(`claude-cloud/${id}`));
-  assert.equal(await sh(repo, `git show claude-cloud/${id}:a.txt`), 'changed');
-  assert.equal(await sh(repo, 'git rev-parse HEAD'), head);
-  assert.equal(await sh(repo, 'git status --porcelain'), '');
-  assert.equal(await readFile(join(repo, 'a.txt'), 'utf8'), 'orig\n');
-});
-
 test('uncommitted tracked edits are sent; untracked files are not', async () => {
   const { repo, start, wait } = await setup();
   await writeFile(join(repo, 'a.txt'), 'dirty\n');
@@ -357,15 +307,6 @@ test('uncommitted tracked edits are sent; untracked files are not', async () => 
   assert.equal(await sh(repo, 'git diff --cached --name-only'), 'a.txt', 'index unchanged');
 });
 
-test('failed change recovery is reported, not described as no changes', async () => {
-  const { start, wait } = await setup({
-    createSandbox: async () => { const s = await fakeSandbox(); s.files.read = async () => { throw new Error('download failed'); }; return s; },
-  });
-  const r = await wait([await start({ prompt: 'EDIT' })]);
-  assert.doesNotMatch(r, /No changes were made/);
-  assert.match(r, /could not be recovered/);
-});
-
 test('sandbox gets only the OAuth token when both Claude credentials exist', async () => {
   let seen;
   const { start, wait } = await setup({
@@ -374,57 +315,6 @@ test('sandbox gets only the OAuth token when both Claude credentials exist', asy
   });
   await wait([await start()]);
   assert.deepEqual(seen, { CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
-});
-
-test('checkpoint captures uncommitted and untracked files to -wip without touching HEAD or index; clean turn removes -wip', async () => {
-  const { repo, start, wait, created } = await setup({ checkpointMs: 100 });
-  const id = await start({ prompt: 'SLOWWIP' });
-  const wip = `claude-cloud/${id}-wip`;
-  let tries = 0;
-  while (!(await sh(repo, `git cat-file -e ${wip}:u.txt && echo y`).catch(() => '')) && tries++ < 60) await tick(30);
-  assert.ok(await sh(repo, `git branch --list ${wip}`), 'wip branch appeared during the turn');
-  assert.equal(await sh(repo, `git show ${wip}:u.txt`), 'wipdata');
-  assert.match(await sh(repo, `git show ${wip}:a.txt`), /dirty/);
-  const sbxRepo = join(created[0].dir, 'home', 'repo');
-  assert.equal(await sh(sbxRepo, 'git rev-parse HEAD'), await sh(repo, `git rev-parse refs/cc-keep/${id}`));
-  assert.equal(await sh(sbxRepo, 'git diff --cached --name-only'), '', 'agent index untouched');
-  assert.match(await sh(sbxRepo, 'git status --porcelain'), /\?\? u\.txt/);
-  const r = await wait([id]);
-  // u.txt was left untracked: it is not committed to the branch, is named in the result, and -wip keeps a copy.
-  assert.match(await sh(repo, `git show claude-cloud/${id}:a.txt`), /dirty/);
-  assert.equal(await sh(repo, `git cat-file -e claude-cloud/${id}:u.txt 2>/dev/null && echo y || echo n`), 'n');
-  assert.match(r, /not committed.*u\.txt/);
-  assert.equal(await sh(repo, `git show ${wip}:u.txt`), 'wipdata', 'wip kept while untracked files remain');
-});
-
-test('-wip branch is removed after a clean turn with nothing left uncommitted', async () => {
-  const { repo, start, wait } = await setup({ checkpointMs: 100 });
-  const id = await start({ prompt: 'SLOWCLEAN' });
-  await wait([id]);
-  assert.equal(await sh(repo, `git branch --list claude-cloud/${id}-wip`), '');
-  assert.match(await sh(repo, `git show claude-cloud/${id}:a.txt`), /dirty/);
-});
-
-test('-wip branch is kept after a failed turn', async () => {
-  const { repo, start, wait } = await setup({ checkpointMs: 100 });
-  const id = await start({ prompt: 'FAILWIP' });
-  await wait([id]);
-  assert.equal(await sh(repo, `git show claude-cloud/${id}-wip:u.txt`), 'wipdata');
-});
-
-test('a checkpoint failure does not fail the turn', async () => {
-  const { start, wait } = await setup({
-    checkpointMs: 100,
-    createSandbox: async () => {
-      const s = await fakeSandbox();
-      const run = s.commands.run;
-      s.commands.run = (cmd, o) => (cmd.includes('cc-wip-index') ? Promise.reject(new Error('exec cap')) : run(cmd, o));
-      return s;
-    },
-  });
-  const r = await wait([await start({ prompt: 'SLOWWIP' })]);
-  assert.match(r, /status: idle/);
-  assert.match(r, /slow done/);
 });
 
 test('shutdown cleanup kills every open sandbox', async () => {
@@ -458,22 +348,148 @@ test('wait and stop accept a single id as a string or as agent_id', async () => 
   }
 });
 
-test('agents finishing at the same moment each get their own commits', async () => {
-  const { repo, start, wait } = await setup();
-  const names = ['n1', 'n2', 'n3', 'n4'];
-  const ids = await Promise.all(names.map((n) => start({ prompt: `OWN-${n}` })));
-  const r = await wait(ids, 120);
-  for (const [i, id] of ids.entries()) {
-    const files = (await sh(repo, `git diff --name-only main claude-cloud/${id} 2>&1 || true`)).split('\n');
-    assert.deepEqual(files, [`own-${names[i]}.txt`], `agent ${id} branch has ${files}\n${r}`);
+
+test('follow-up resumes the same session; both turns push to the same GitHub branch', async () => {
+  const { start, wait, msg, created, text, remote } = await setup();
+  const id = await start({ prompt: 'EDIT', model: 'haiku' });
+  await wait([id]);
+  const tip1 = await remote(`git rev-parse claude-cloud/${id}`);
+  const r = await msg(id, 'EDIT2 please');
+  assert.match(text(r), /status: running/);
+  const out = await wait([id]);
+  assert.match(out, new RegExp(`resumed ${SID} edited2`));
+  assert.match(out, new RegExp(`Pushed to origin claude-cloud/${id} at [0-9a-f]{7}\\. Fetch with: git fetch origin claude-cloud/${id}`));
+  assert.equal(await remote(`git merge-base --is-ancestor ${tip1} claude-cloud/${id} && echo yes`), 'yes');
+  assert.equal(await remote(`git show claude-cloud/${id}:b.txt`), 'more');
+  const cmd = created[0].cmds.filter((c) => c.includes('claude -p')).pop();
+  assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format json`));
+  assert.match(cmd, /--model haiku/);
+  assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+});
+
+test('first-turn command is json output with the commit-and-push hint; identity and branch are set up', async () => {
+  const { start, wait, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
+  assert.match(cmd, /--output-format json/);
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.'`));
+  assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
+  assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b claude-cloud/${id}`)));
+  assert.ok(created[0].cmds.includes('gh auth setup-git'));
+  assert.ok(created[0].cmds.includes(`git push -q -u origin claude-cloud/${id}`));
+});
+
+test('origin: https accepted, ssh converted, missing or non-GitHub or malicious rejected before any sandbox', async () => {
+  const ok = await setup({ origin: 'git@github.com:acme/widgets.git' });
+  const id = await ok.start();
+  await ok.wait([id]);
+  assert.ok(ok.created[0].cmds.some((c) => c.includes("git remote add origin 'https://github.com/acme/widgets.git'")));
+  const plain = await setup({ origin: 'https://github.com/acme/widgets' });
+  await plain.wait([await plain.start()]);
+  assert.ok(plain.created[0].cmds.some((c) => c.includes("git remote add origin 'https://github.com/acme/widgets'")));
+  for (const origin of [null, 'https://gitlab.com/a/b.git', 'git@gitlab.com:a/b.git', "https://github.com/a/b.git'; rm -rf /; '", 'https://github.com/a/b.git$(id)', 'https://evil.com/github.com/a/b.git', '/some/local/path']) {
+    const t = await setup({ origin });
+    const r = await runSubagent({ description: 'd', prompt: 'hi' }, t.deps);
+    assert.equal(r.isError, true, String(origin));
+    assert.match(r.content[0].text, /origin.*github\.com.*git remote add origin/s);
+    assert.equal(t.created.length, 0);
+    assert.equal(t.open.size, 0);
   }
 });
 
-test('final sweep commits tracked edits only and names leftover untracked files', async () => {
-  const { repo, start, wait } = await setup();
-  const id = await start({ prompt: 'JUNK' });
+test('agent commits reach the GitHub branch; the local repo gets no new refs', async () => {
+  const { repo, start, wait, remote, created } = await setup();
+  const before = await refs(repo);
+  const head = await sh(repo, 'git rev-parse HEAD');
+  const id = await start({ prompt: 'EDIT' });
   const r = await wait([id]);
-  const files = (await sh(repo, `git diff --name-only main claude-cloud/${id}`)).split('\n');
-  assert.deepEqual(files, ['a.txt']);
-  assert.match(r, /not committed.*__pycache__\/.*notes\.txt|not committed.*notes\.txt.*__pycache__\//s);
+  assert.match(r, new RegExp(`Pushed to origin claude-cloud/${id}`));
+  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'changed');
+  assert.equal(await refs(repo), before);
+  assert.equal(await sh(repo, 'git rev-parse HEAD'), head);
+  assert.equal(await sh(repo, 'git status --porcelain'), '');
+  assert.ok(!created[0].cmds.some((c) => c.includes('cc-keep') && c.includes('push')));
+});
+
+test('safety push sends commits the agent made but did not push', async () => {
+  const { start, wait, remote, msg } = await setup();
+  const id = await start({ prompt: 'UNPUSHED' });
+  const r = await wait([id]);
+  assert.match(r, new RegExp(`Pushed to origin claude-cloud/${id}`));
+  assert.equal(await remote(`git show claude-cloud/${id}:unpushed.txt`), 'unpushed');
+  assert.doesNotMatch(r, /Uncommitted/);
+  await msg(id, 'UNPUSHED');
+  await wait([id]);
+});
+
+test('uncommitted files are listed, not committed', async () => {
+  const { start, wait, remote, created } = await setup();
+  const id = await start({ prompt: 'DIRTY' });
+  const r = await wait([id]);
+  assert.match(r, /Uncommitted changes left in the sandbox \(ask the agent to commit and push\): .*notes\.txt/);
+  assert.match(r, /a\.txt/);
+  assert.equal(await remote(`git ls-tree -r --name-only claude-cloud/${id}`), 'a.txt');
+  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'orig');
+  assert.ok(!created[0].cmds.some((c) => /git (add|commit)/.test(c)), 'the server never commits for the agent');
+});
+
+test('a push failure is reported; the agent stays idle and messageable', async () => {
+  const { start, wait, msg, open, rejectPushes, remote } = await setup();
+  const id = await start();
+  await wait([id]);
+  await rejectPushes(true);
+  await msg(id, 'UNPUSHED');
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.doesNotMatch(r, /ERROR/);
+  assert.match(r, /Push failed: .*denied by test.*; the agent is still open, ask it to push\./s);
+  assert.ok(open.has(id));
+  await rejectPushes(false);
+  assert.equal((await msg(id, 'hi')).isError, undefined);
+  assert.match(await wait([id]), new RegExp(`Pushed to origin claude-cloud/${id}`));
+  assert.equal(await remote(`git show claude-cloud/${id}:unpushed.txt`), 'unpushed');
+});
+
+test('a failed first push fails the agent with a clear, scrubbed message', async () => {
+  const { start, wait, rejectPushes, created } = await setup();
+  await rejectPushes(true);
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /first push.*GH_TOKEN.*claude-cloud-setup-github.*denied by test/s);
+  assert.ok(created[0].killed);
+  assert.ok(!created[0].cmds.some((c) => c.includes('claude -p')));
+});
+
+test('a missing gh fails the agent with a clear message', async () => {
+  const { start, wait } = await setup({
+    createSandbox: async () => {
+      const s = await fakeSandbox();
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.startsWith('gh ') ? Promise.reject(Object.assign(new Error('x'), { exitCode: 127, stderr: 'gh: not found' })) : run(cmd, o));
+      return s;
+    },
+  });
+  assert.match(await wait([await start()]), /status: failed[^#]*gh auth setup-git[^#]*gh: not found/);
+});
+
+test('8 agents finishing at once each end up with only their own commits on their own GitHub branch', async () => {
+  const { repo, start, wait, remote } = await setup();
+  const before = await refs(repo);
+  const base = await sh(repo, 'git rev-parse HEAD');
+  const names = ['n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8'];
+  const ids = await Promise.all(names.map((n) => start({ prompt: `OWN-${n}` })));
+  const r = await wait(ids, 120);
+  for (const [i, id] of ids.entries()) {
+    const files = (await remote(`git diff --name-only ${base} claude-cloud/${id}`)).split('\n');
+    assert.deepEqual(files, [`own-${names[i]}.txt`], `agent ${id} branch has ${files}\n${r}`);
+  }
+  assert.equal(await refs(repo), before);
+});
+
+test('secrets, including GH_TOKEN and GITHUB_TOKEN, are scrubbed from results', async () => {
+  const { start, wait } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', GITHUB_TOKEN: 'ghp_other' } });
+  const r = await wait([await start({ prompt: 'LEAK' })]);
+  assert.match(r, /leak \[redacted\] \[redacted\]/);
+  assert.ok(!/ghp_secret|ghp_other/.test(r));
 });

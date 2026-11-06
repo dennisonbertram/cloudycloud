@@ -9,7 +9,7 @@ const ids = { type: 'array', items: { type: 'string' }, description: 'Agent ids'
 const tools = [
   {
     name: 'cloud_agent',
-    description: 'Start a Claude subagent in a remote sandbox on committed and tracked files (no untracked files). Returns an agent_id at once while the sandbox starts and the task runs in the background. Call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. File changes come back as local git branch claude-cloud/<id>.',
+    description: 'Start a Claude subagent in a remote sandbox on committed and tracked files (no untracked files). The repo needs a github.com origin. Returns an agent_id at once while the sandbox starts and the task runs in the background. Call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. The agent pushes its work to origin branch claude-cloud/<id>; nothing is copied into the local repo.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -58,10 +58,7 @@ const handlers = {
 };
 
 const env = loadEnv();
-// Instabox wins when both keys are set. Each SDK is imported only when its provider is used.
-const createSandbox = env.INSTABOX_API_KEY
-  ? createInstaboxSandbox(env)
-  : async (envs) => (await import('e2b')).Sandbox.create('claude', { envs, timeoutMs: 60 * 60_000 }) // E2B caps a sandbox at 1 hour;
+const createSandbox = createInstaboxSandbox(env);
 
 const open = new Map();
 const killOpen = () => killAll(open);

@@ -3,25 +3,36 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'E2B_API_KEY', 'INSTABOX_API_KEY'];
+const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'INSTABOX_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN'];
+const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
+const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
+const NO_ORIGIN = 'claude-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
 const IDLE_MS = 60 * 60_000;
-const CHECKPOINT_MS = 3 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
 const WAIT_MAX_S = 1500;
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
-const COMMIT_HINT = 'Commit your work with git after each meaningful step, at least every few minutes, with a short message. Your sandbox can disappear at any time and only committed work is recovered.';
+const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch.`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
 const log = (...a) => console.error('[claude-cloud]', ...a);
 
-// deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, idleMs, checkpointMs }.
+// Returns the https GitHub URL for an origin URL (https or git@github.com:), or undefined.
+const githubUrl = (raw) => {
+  const m = GITHUB_SSH.exec(raw);
+  const url = m ? `https://github.com/${m[1]}/${m[2]}.git` : raw;
+  return GITHUB_URL.test(url) ? url : undefined;
+};
+// Last lines of git's stderr with any user:password@ part of a URL removed.
+const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@').trim().slice(-1500);
+
+// deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, idleMs }.
 // Agent: { id, description, status: starting|running|idle|failed|stopped, result: {text, error, reported},
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, timers... }.
 function helpers(env) {
@@ -38,14 +49,13 @@ function wake(a) {
   for (const r of w) r();
 }
 
-// Kill the sandbox, forget the agent, drop its local ref. Idempotent.
+// Kill the sandbox and forget the agent. Idempotent.
 async function stop(a, open) {
   clearTimeout(a.idleTimer);
   if (open.get(a.id) === a) open.delete(a.id);
   a.status = 'stopped';
   wake(a);
   await a.sandbox?.kill().catch(() => {});
-  await git(a.root, 'update-ref', '-d', `refs/cc-keep/${a.id}`).catch(() => {});
 }
 
 function armIdle(a, ctx) {
@@ -55,112 +65,49 @@ function armIdle(a, ctx) {
   a.idleTimer.unref?.();
 }
 
-// Checkpoints run one at a time across all agents (Instabox caps concurrent exec calls per account).
-let queue = Promise.resolve();
-function schedule(a, ctx) {
-  if (a.cp) return;
-  const p = queue.then(() => checkpoint(a, ctx));
-  queue = p;
-  a.cp = p;
-  p.then(() => { if (a.cp === p) a.cp = null; });
-}
-
-// Copy the working tree (uncommitted and untracked files included) to local claude-cloud/<id>-wip
-// using a temporary index, so the agent's index, HEAD and branch are untouched. Never throws.
-async function checkpoint(a, ctx) {
-  if (!a.inTurn) return;
-  const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-wip-'));
-  try {
-    const idx = `${a.home}/cc-wip-index`;
-    const out = await a.sandbox.commands.run(
-      `export GIT_INDEX_FILE=${idx}; git read-tree HEAD && git add -A && tree=$(git write-tree) && key="$tree $(git rev-parse HEAD)" || exit 1;` +
-      ` if [ "$key" = "${a.wipKey ?? ''}" ]; then echo SAME; exit 0; fi;` +
-      ` c=$(git commit-tree "$tree" -p HEAD -m wip) && git update-ref refs/cc/wip "$c" &&` +
-      ` git bundle create ${a.home}/wip.bundle ^${a.sha} refs/cc/wip && echo "KEY $key"`,
-      { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
-    );
-    const key = out.stdout.match(/^KEY (.+)$/m)?.[1];
-    if (!key || !a.inTurn) return;
-    const bundle = join(tmp, 'wip.bundle');
-    await writeFile(bundle, await a.sandbox.files.read(`${a.home}/wip.bundle`, { format: 'bytes' }));
-    await git(a.root, 'fetch', '-q', '--no-write-fetch-head', bundle, `+refs/cc/wip:refs/heads/claude-cloud/${a.id}-wip`);
-    a.wipKey = key;
-  } catch (e) {
-    log(`checkpoint of ${a.id} failed:`, ctx.scrub(e?.message));
-  } finally {
-    await rm(tmp, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-// Commit anything left in the sandbox and bring new commits back to the local branch.
-// The branch only moves forward; if it was changed locally, the update goes to claude-cloud/<id>-<n>.
-async function collect(a, { scrub }) {
+// After a turn: push whatever the agent committed (never commits for it) and report what is left.
+// The command always exits 0, so a throw means the sandbox itself is unreachable.
+async function safetyPush(a) {
   const branch = `claude-cloud/${a.id}`;
-  const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-'));
   try {
-    const out = await a.sandbox.commands.run(
-      // Only tracked files are swept in; new files the agent left uncommitted (caches, build output) are listed instead.
-      `git add -u && (git diff --cached --quiet || git ${IDENT.join(' ')} commit -q -m "claude-cloud: subagent changes");` +
-      ` git ls-files --others --exclude-standard --directory | head -20 | sed 's/^/UNTRACKED /';` +
-      ` if [ "$(git rev-parse HEAD)" != "${a.sha}" ]; then git update-ref refs/heads/out HEAD &&` +
-      ` git bundle create ${a.home}/out.bundle ^${a.sha} refs/heads/out && echo CHANGED; fi`,
+    const out = (await a.sandbox.commands.run(
+      `if err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
+      ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
-    );
-    const left = out.stdout.split('\n').filter((l) => l.startsWith('UNTRACKED ')).map((l) => l.slice(10));
-    const leftNote = left.length ? ` New files not committed (still in the sandbox; ask the agent to commit any that matter): ${left.join(', ')}.` : '';
-    if (!out.stdout.includes('CHANGED')) return { where: `No changes were made.${leftNote}`, left };
-    const bundle = join(tmp, 'out.bundle');
-    await writeFile(bundle, await a.sandbox.files.read(`${a.home}/out.bundle`, { format: 'bytes' }));
-    // Read the tip from this agent's own bundle: FETCH_HEAD is shared by every agent finishing at the same time.
-    const tip = (await git(a.root, 'bundle', 'list-heads', bundle, 'refs/heads/out')).split(' ')[0];
-    await git(a.root, 'fetch', '-q', '--no-write-fetch-head', bundle, 'refs/heads/out');
-    let target = branch, note = '';
-    const cur = await git(a.root, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`).catch(() => '');
-    if (cur && !(await git(a.root, 'merge-base', '--is-ancestor', cur, tip).then(() => true, () => false))) {
-      let n = 1;
-      while (await git(a.root, 'rev-parse', '--verify', '-q', `refs/heads/${branch}-${n}`).catch(() => '')) n++;
-      target = `${branch}-${n}`;
-      note = ` Local branch ${branch} was changed and the update is not a fast-forward, so it was left alone.`;
-    }
-    await git(a.root, 'update-ref', `refs/heads/${target}`, tip);
-    await git(a.root, 'update-ref', `refs/cc-keep/${a.id}`, tip); // keeps objects for the next bundle
-    a.sha = tip;
-    return { where: `Changes are on local branch ${target}.${note}${leftNote}`, left };
+    )).stdout;
+    const lines = out.split('\n');
+    const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
+    const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
+    const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
+    if (out.includes('PUSHOK')) return { where: `Pushed to origin ${branch} at ${sha}. Fetch with: git fetch origin ${branch}.${dirty}` };
+    const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
+    return { where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
-    log('recovery failed:', scrub(e?.message));
-    return { failed: true, where: `Any changes could not be recovered. Latest work may be on claude-cloud/${a.id} or claude-cloud/${a.id}-wip.` };
-  } finally {
-    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    log('safety push failed:', e?.message);
+    return { failed: true, where: `The sandbox could not be reached to push. Only work the agent already pushed to origin ${branch} survives.` };
   }
 }
 
-// One claude run in the sandbox (first turn, or --resume) with periodic checkpoints, then change recovery.
+// One claude run in the sandbox (first turn, or --resume), then a safety push.
 // Returns { text, error, gone }. a.sessionId is updated from the JSON reply.
 async function turn(a, message, ctx) {
   const { scrub } = ctx;
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
   } catch (e) {
-    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Latest work may be on claude-cloud/${a.id} or claude-cloud/${a.id}-wip.` };
+    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin claude-cloud/${a.id} survives.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   const cmd = ['claude -p', a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format json',
-    `--append-system-prompt '${COMMIT_HINT}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
+    `--append-system-prompt '${commitHint(a.id)}'`, a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   let stdout, failure;
-  a.inTurn = true;
-  const iv = setInterval(() => schedule(a, ctx), ctx.checkpointMs ?? CHECKPOINT_MS);
-  iv.unref?.();
   try {
     stdout = (await a.sandbox.commands.run(cmd, { cwd: `${a.home}/repo`, timeoutMs: AGENT_MS })).stdout;
   } catch (e) {
     failure = e;
-  } finally {
-    clearInterval(iv);
-    a.inTurn = false;
-    await a.cp?.catch(() => {});
   }
-  const { where, failed, left } = await collect(a, ctx);
+  const { where, failed } = await safetyPush(a);
 
   let text = stdout, error = false;
   if (failure) {
@@ -180,12 +127,6 @@ async function turn(a, message, ctx) {
   } catch {
     text = `${stdout}\n\n(Could not parse claude's JSON output, so this is the raw stdout.)`;
   }
-  // The turn ended normally and everything is on the normal branch: the recovery copy is not needed.
-  // Keep it when new files were left uncommitted, since -wip may be the only copy outside the sandbox.
-  if (!error && !failed && !left?.length) {
-    a.wipKey = null;
-    await git(a.root, 'update-ref', '-d', `refs/heads/claude-cloud/${a.id}-wip`).catch(() => {});
-  }
   return { text: `${text}\n\n${where}`, error: error || failed };
 }
 
@@ -195,17 +136,22 @@ const limitText = (e) => {
   if (/rate_limited/.test(s)) return 'Provider start rate limit reached (rate_limited). Start fewer agents at once; nothing was retried.';
 };
 
-// Sandbox creation, upload and repo setup for the first turn. Runs in the background.
+// Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, createSandbox } = ctx;
   const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-'));
+  const branch = `claude-cloud/${a.id}`;
   try {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     a.sha = (await git(a.root, ...IDENT, 'stash', 'create')) || (await git(a.root, 'rev-parse', 'HEAD'));
-    const ref = `refs/cc-keep/${a.id}`;
-    await git(a.root, 'update-ref', ref, a.sha);
+    const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
     const bundle = join(tmp, 'in.bundle');
-    await git(a.root, 'bundle', 'create', bundle, ref);
+    await git(a.root, 'update-ref', ref, a.sha);
+    try {
+      await git(a.root, 'bundle', 'create', bundle, ref);
+    } finally {
+      await git(a.root, 'update-ref', '-d', ref).catch(() => {});
+    }
     const envs = {};
     // Prefer the subscription token; sending both would make Claude Code bill the API key.
     if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -214,11 +160,20 @@ async function setup(a, ctx) {
     a.home = a.sandbox.home ?? '/home/user';
     log(`sandbox up, id ${a.id}, ${a.description}`);
     await a.sandbox.files.write(`${a.home}/in.bundle`, await readFile(bundle));
+    // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
     await a.sandbox.commands.run(
       `git init -q repo && cd repo && git config user.name claude-cloud && git config user.email claude-cloud@localhost &&` +
-      ` git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha}`,
+      ` git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
+      ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
       { cwd: a.home, timeoutMs: SETUP_MS },
     );
+    const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
+    await a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
+      throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
+    });
+    await a.sandbox.commands.run(`git push -q -u origin ${branch}`, repo).catch((e) => {
+      throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (run claude-cloud-setup-github) or the token has no write access to this repo. Git said: ${tail(e?.stderr ?? e?.message)}`);
+    });
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -262,8 +217,10 @@ export async function runSubagent(args, deps) {
   } catch {
     return fail('claude-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
   }
+  const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
+  if (!origin) return fail(NO_ORIGIN);
   const id = randomUUID().slice(0, 8);
-  const a = { id, description: description ?? '', status: 'starting', root, model, agent, waiters: [], result: null, idleSince: Date.now() };
+  const a = { id, description: description ?? '', status: 'starting', root, origin, model, agent, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
   work(a, prompt, true, ctx);
   return ok(`agent_id: ${id}\nstatus: starting\nCall cloud_agent_wait with the agent_ids to get the result.`);

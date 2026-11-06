@@ -1,12 +1,22 @@
 # claude-cloud
 
 `claude-cloud [claude args...]` starts normal Claude Code, but every subagent runs in a
-remote sandbox: [Instabox](https://instabox.sh) if `INSTABOX_API_KEY` is set, otherwise [E2B](https://e2b.dev) (template `claude`). If both keys are set, Instabox is used. Plain `claude` is unaffected.
+remote [Instabox](https://instabox.sh) sandbox, and pushes its own commits to GitHub. Plain `claude` is unaffected.
 
 ## Setup
     npm install
     npm link
     claude-cloud      # the first run asks for your keys
+
+The repo must have an `origin` remote on github.com (`https://github.com/owner/repo.git` or `git@github.com:owner/repo.git`, which is converted to https).
+Then store a GitHub token once, so sandboxes can push without holding it:
+
+    claude-cloud-setup-github
+
+Create a fine-grained token limited to the repos you will use, with Contents read and write and Metadata read. The script runs
+`instabox login` and `instabox secrets set GH_TOKEN` (an API key cannot create secrets), then checks the saved secret. Instabox
+delivers it through its proxy for github.com and api.github.com, so the sandbox only sees a placeholder.
+Subagents can push to any branch the token reaches, so protect your main branch with a GitHub ruleset.
 
 Then say "use a subagent" in the session. Keys are saved to `~/.config/claude-cloud/env`
 with owner-only permissions and reach only the MCP server, so your main session keeps its
@@ -28,24 +38,17 @@ The launcher disables the built-in `Agent` and `Workflow` tools and adds MCP too
 Claude Code runs MCP tools one at a time unless they are marked read-only, so starting is separate from waiting:
 start every agent first, then wait for all of them in one call.
 
-Results come back as local git branch `claude-cloud/<id>`, which only moves forward after each turn. If you changed that
-branch locally and the update is not a fast-forward, the update goes to `claude-cloud/<id>-1` (then `-2`, ...) and the result says so.
-Changes are recovered after every turn, including failed ones. Your working tree, index, and current branch are not touched.
+Each agent works on branch `claude-cloud/<id>` in its sandbox and pushes it to your GitHub origin. Nothing is copied into your local repo
+automatically; get the work with `git fetch origin claude-cloud/<id>`. The sandbox Claude is told to commit and push after each step.
+After every turn, including failed ones, the server also runs `git push` of the agent's HEAD to that branch. It never commits for the agent:
+uncommitted files are listed in the result so you can ask the agent to commit and push them. A failed push is reported in the result;
+the agent stays open. If the first push at start-up fails, the agent fails with git's message. Your working tree, index and branches are not touched.
 Secrets reach the tool through `${VAR:-}` expansion in the MCP config, so they never appear in process arguments.
-
-## Saving work
-Sandboxes can disappear, and commits inside one vanish with it. The sandbox Claude is told to commit after each step.
-While a turn runs, every 3 minutes the server also copies the agent's working tree (uncommitted and untracked, not ignored
-files) to local branch `claude-cloud/<id>-wip`, using a temporary index so the agent's own index, HEAD and branch are
-untouched. That branch is a recovery copy and may be rewritten; it is deleted when a turn ends normally, and kept when a turn
-fails or the sandbox is lost. If an agent fails or disappears, its latest work is on `claude-cloud/<id>` or `claude-cloud/<id>-wip`.
-Checkpoints run one at a time across all agents, and an agent with no change since its last checkpoint is skipped.
-A checkpoint failure is logged to stderr and never fails the turn.
 
 ## Cleanup
 - An agent with no running turn and no message for 60 minutes is stopped and its sandbox deleted.
 - On server shutdown (stdin closed, SIGINT, SIGTERM) every open sandbox is killed.
-- Backstop sandbox lifetime: Instabox `archiveMs` 8 hours; E2B `timeoutMs` 1 hour (E2B's own cap), so an E2B agent cannot outlive an hour.
+- Backstop sandbox lifetime: Instabox `archiveMs` 8 hours.
 - Open agents are in server memory only. Nothing is saved to disk, so restarting Claude Code loses track of them (their sandboxes are killed).
 
 ## Instabox notes
@@ -58,22 +61,19 @@ Background output is one combined log, so a failing subagent's error text is tha
 - Instabox allows 32 concurrent requests per account across commands and file reads. Per the SDK docs, a background command counts
   only while it starts, but each `wait()` holds a slot while it waits (it polls the job log, up to 25 seconds per request).
   Each running turn therefore holds roughly one slot for its whole duration, so about 30 agents running turns at once plus
-  checkpoints and uploads can reach the cap and get 429 errors. This was read from the SDK docs, not measured.
-- Instabox: machine lifecycle, background jobs, and the git round trip were run on real machines with a stand-in `claude` script. A real `claude` was found there but had no credential, so a subagent doing real model work has not been run yet.
+  pushes and uploads can reach the cap and get 429 errors. This was read from the SDK docs, not measured.
+- Instabox: machine lifecycle, background jobs, and the git round trip were run on real machines with a stand-in `claude` script. The GitHub push flow has been tested only with a fake sandbox and a local bare repo.
 
 ## Limits
 - The directory must be a git repo with at least one commit.
 - Untracked and ignored files are not sent. Subagents cannot use your local MCP servers or settings.
 - A single turn is stopped after 29 minutes. Nested subagents are not routed to the cloud.
-- A branch that began from uncommitted edits includes a stash-style snapshot commit in its history.
+- A branch that began from uncommitted edits includes a stash-style snapshot commit in its history, and it is pushed to GitHub.
+- Only work pushed to GitHub survives a lost sandbox. Start large swarms in batches of about 10-25 per minute and send work in waves of about 25.
 - No retries. Failures return an error with the exit code and the last 4000 characters of stderr;
-  commits made before the failure are still recovered.
+  commits made before the failure are still pushed.
 - Needs `git`, `node` 20+, and `claude` on PATH.
-- E2B: not yet run in a real sandbox. Tested with a fake sandbox, and against real Claude Code with a placeholder E2B key.
 - The sandbox runs `claude` with permission checks off and holds your Claude credential, so a prompt injection there could misuse or leak it.
 - `subagent_type` only works for agents committed in the repo or built into Claude Code; agents in `~/.claude/agents` are not sent.
 - Skills that fork their own subagent (`context: fork`) are not intercepted.
 - Setting `ANTHROPIC_API_KEY` also moves the parent session to API billing.
-
-## Test it
-Run `./test-instabox.sh`. It runs one real subagent on Instabox in a throwaway repo and prints PASS or FAIL.

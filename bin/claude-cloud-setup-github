@@ -1,0 +1,52 @@
+#!/bin/sh
+# Saves a GitHub token as the Instabox secret GH_TOKEN (proxy delivery), so sandboxes can push without ever holding the token.
+# An API key cannot create secrets (that needs workspace:admin), so the Instabox CLI does it after `instabox login`.
+set -eu
+config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
+key=${INSTABOX_API_KEY:-}
+if [ -z "$key" ] && [ -f "$config" ]; then key=$(grep '^INSTABOX_API_KEY=' "$config" | tail -n 1 | cut -d= -f2-); fi
+[ -n "$key" ] || { echo "No Instabox key: set INSTABOX_API_KEY or run claude-cloud once to save it in $config" >&2; exit 1; }
+[ -t 0 ] || { echo "Run this in a terminal: the Instabox CLI asks for the token there." >&2; exit 1; }
+command -v node >/dev/null && command -v npx >/dev/null || { echo "node and npx are required" >&2; exit 1; }
+
+cat >&2 <<'MSG'
+Create a GitHub fine-grained personal access token at https://github.com/settings/personal-access-tokens/new with:
+  - Repository access: only the repositories you will use claude-cloud in
+  - Repository permissions: Contents = Read and write, Metadata = Read
+Subagents can push to any branch this token reaches, so protect your main branch with a GitHub ruleset.
+The Instabox CLI will now log you in, then ask for the token with echo off.
+MSG
+npx -y instabox@latest login
+npx -y instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com
+
+# Verify with the saved API key. The key goes to curl through a mode-0600 file, never argv.
+tmp=$(umask 077; mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+(umask 077; printf 'header = "X-API-Key: %s"\n' "$key" > "$tmp/hdr")
+
+# api URL: GET into $tmp/body; on a non-2xx status print Instabox's code, message and hint, and exit 1.
+api() {
+  code=$(curl -sS -o "$tmp/body" -w '%{http_code}' -K "$tmp/hdr" "$1") || { echo "Request to $1 failed." >&2; exit 1; }
+  case $code in 2??) ;; *)
+    echo "Instabox returned HTTP $code:" >&2
+    node -e 'const fs=require("fs");let j={};try{j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))}catch{}; const e=j.error&&typeof j.error==="object"?j.error:j; console.error("code: "+(e.code??"?")+"\nmessage: "+(e.message??"?")+(e.hint?"\nhint: "+e.hint:""))' "$tmp/body" >&2
+    exit 1 ;;
+  esac
+}
+
+api https://api.instabox.sh/v1/orgs
+org=$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const o=(j.orgs||[]).find(o=>o.personal);if(o)console.log(o.id)' "$tmp/body")
+[ -n "$org" ] || { echo "No personal Instabox org found." >&2; exit 1; }
+case $org in *[!A-Za-z0-9_-]*) echo "Unexpected org id." >&2; exit 1 ;; esac
+
+api "https://api.instabox.sh/v1/orgs/$org/secrets"
+# Print name, delivery and hosts only, never a value.
+node -e '
+const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+const s=(j.items||[]).find(i=>i.name==="GH_TOKEN");
+if(!s){console.error("GH_TOKEN was not found in the org secrets.");process.exit(1)}
+const hosts=s.hosts||[];
+console.log(JSON.stringify({name:s.name,delivery:s.delivery,hosts}));
+if(s.delivery!=="proxy"||!["github.com","api.github.com"].every(h=>hosts.includes(h))){console.error("GH_TOKEN must have delivery proxy and hosts github.com and api.github.com.");process.exit(1)}
+' "$tmp/body"
+echo "GH_TOKEN is saved for org $org." >&2

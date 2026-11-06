@@ -18,7 +18,7 @@ ask() { # ask VAR "prompt": read a hidden value and save it with owner-only perm
   if [ -z "$value" ]; then echo "claude-cloud: missing $1" >&2; exit 1; fi
   (umask 077; mkdir -p "$(dirname "$config")"; printf '%s=%s\n' "$1" "$value" >> "$config")
 }
-has E2B_API_KEY || has INSTABOX_API_KEY || ask INSTABOX_API_KEY 'Instabox API key (ibk_...)'
+has INSTABOX_API_KEY || ask INSTABOX_API_KEY 'Instabox API key (ibk_...)'
 # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
 # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
 if ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
@@ -30,10 +30,10 @@ case $root in *'"'*|*'\'*) echo "claude-cloud: install path contains a quote or 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
 # CLAUDE_CLOUD_CONFIG is included so the server reads the same file as this launcher.
 export CLAUDE_CLOUD_CONFIG="$config"
-envjson='{"CLAUDE_CLOUD_CONFIG":"${CLAUDE_CLOUD_CONFIG:-}","E2B_API_KEY":"${E2B_API_KEY:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
+envjson='{"CLAUDE_CLOUD_CONFIG":"${CLAUDE_CLOUD_CONFIG:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
 settings='{"permissions":{"allow":["mcp__cloud__cloud_agent","mcp__cloud__cloud_agent_message","mcp__cloud__cloud_agent_wait","mcp__cloud__cloud_agent_list","mcp__cloud__cloud_agent_stop"],"deny":["Agent","Workflow"]}}'
-prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. Each cloud agent is a full Claude in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first (it returns an agent_id at once and works in the background), then call cloud_agent_wait with all the agent_ids to get results. Use cloud_agent_message for follow-ups (then cloud_agent_wait again), cloud_agent_list to check state, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. If a start fails with quota_exceeded the sandbox plan has a machine limit; with rate_limited it limits how fast machines start. Neither is retried. Changes come back as local git branch claude-cloud/<id>. If an agent fails or disappears, its latest work is on claude-cloud/<id> or claude-cloud/<id>-wip.'
+prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. Each cloud agent is a full Claude in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first (it returns an agent_id at once and works in the background), then call cloud_agent_wait with all the agent_ids to get results. Use cloud_agent_message for follow-ups (then cloud_agent_wait again), cloud_agent_list to check state, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. If a start fails with quota_exceeded the sandbox plan has a machine limit; with rate_limited it limits how fast machines start. Neither is retried. Each agent pushes its work to origin branch claude-cloud/<id>; nothing is copied into the local repo automatically. Get an agent'"'"'s work with git fetch origin claude-cloud/<id> (the result says when it was pushed). Start large swarms in batches of about 10-25 per minute and send work in waves of about 25. If an agent fails or disappears, whatever it pushed is still on origin claude-cloud/<id>.'
 
 
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"

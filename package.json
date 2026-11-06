@@ -1,18 +1,18 @@
 {
   "name": "claude-cloud",
   "version": "0.1.0",
-  "description": "Run Claude Code subagents in E2B sandboxes",
+  "description": "Run Claude Code subagents in Instabox sandboxes",
   "scripts": {
     "test": "node --test"
   },
   "dependencies": {
     "@insforge/instabox-sdk": "^0.6.0",
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "e2b": "^2.63.0"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   },
   "type": "module",
   "private": true,
   "bin": {
-    "claude-cloud": "bin/claude-cloud"
+    "claude-cloud": "bin/claude-cloud",
+    "claude-cloud-setup-github": "bin/claude-cloud-setup-github"
   }
 }
