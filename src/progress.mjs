@@ -92,8 +92,8 @@ export function statusLine(p) {
 }
 
 // One line for the end of a result: "12 tool uses, 93.1k in / 327 out tokens, $0.0078, 3m10s".
-export function totalLine(p) {
+export function totalLine(p, { cost: showCost = true } = {}) {
   const t = p.totals();
-  const cost = typeof t.cost === 'number' ? `, $${t.cost.toFixed(4)}` : '';
+  const cost = showCost && typeof t.cost === 'number' ? `, $${t.cost.toFixed(4)}` : '';
   return `Total: ${t.tools} tool ${t.tools === 1 ? 'use' : 'uses'}, ${fmtTokens(t.in)} in / ${fmtTokens(t.out)} out tokens${cost}, ${fmtElapsed(p.elapsedMs())}`;
 }

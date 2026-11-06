@@ -55,3 +55,9 @@ test('formatting', () => {
   assert.equal(fmtElapsed(190_000), '3m10s');
   assert.equal(fmtElapsed(3_900_000), '1h05m');
 });
+
+test('totalLine leaves out the cost when asked: Claude Code prices other providers at Anthropic rates', () => {
+  const p = parseStream(sample);
+  assert.doesNotMatch(totalLine(p, { cost: false }), /\$/);
+  assert.match(totalLine(p), /\$0\.0078/);
+});

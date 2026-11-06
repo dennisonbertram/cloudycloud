@@ -152,11 +152,11 @@ async function turn(a, message, ctx, t) {
   t.progress.end();
   const { where, failed } = await safetyPush(a, ctx);
 
-  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress)}` };
+  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
-    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totalLine(t.progress)}` };
+    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -179,7 +179,7 @@ async function turn(a, message, ctx, t) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totalLine(t.progress)}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totalLine(t.progress, { cost: !a.profile })}`, error: error || failed };
 }
 
 const limitText = (e) => {
