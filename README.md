@@ -58,6 +58,14 @@ Limits, both passed down to child coordinators:
 
 Every machine in a tree counts against your Instabox machine limit and start rate.
 
+## Ways of working
+
+Starting many subagents is easy, but 100 PRs are hard to review. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) teaches Claude how to run a fleet so the output stays manageable: merge worker branches into one `fleet/<topic>` trunk, use sub-coordinators for large jobs, work in waves, and clean up branches. Install it by copying or symlinking it:
+
+```sh
+ln -s "$PWD/skills/cloud-fleet" ~/.claude/skills/cloud-fleet
+```
+
 ## Quick reference
 
 | Task | How |
