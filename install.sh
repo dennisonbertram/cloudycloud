@@ -158,7 +158,7 @@ gh_secret_state() {
   orgs=$(api_get "$key" /v1/orgs) || true
   id=$(printf '%s' "$orgs" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
-    const a=Array.isArray(j)?j:(j.items||j.data||j.orgs||[]);console.log(a[0]&&a[0].id||"")}catch{console.log("")}})') || true
+    const a=Array.isArray(j)?j:(j.items||j.data||j.orgs||[]);const o=a.find(x=>x&&x.personal)||a[0];console.log(o&&o.id||"")}catch{console.log("")}})') || true
   [[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || { echo unknown; return; }
   secrets=$(api_get "$key" "/v1/orgs/$id/secrets") || true
   printf '%s' "$secrets" | node -e '
