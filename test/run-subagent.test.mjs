@@ -49,6 +49,8 @@ async function fakeSandbox(github = currentGithub) {
   await mkdir(join(dir, 'home'));
   await writeFile(join(bin, 'claude'), FAKE_CLAUDE);
   await chmod(join(bin, 'claude'), 0o755);
+  await writeFile(join(bin, 'npm'), '#!/bin/sh\necho "npm $*" >> npm.log\n');
+  await chmod(join(bin, 'npm'), 0o755);
   await writeFile(join(bin, 'gh'), '#!/bin/sh\nexit 0\n'); // fake gh: no-op
   await chmod(join(bin, 'gh'), 0o755);
   const map = (s) => s.replaceAll('/home/user', join(dir, 'home'));
@@ -734,4 +736,80 @@ test('an unknown or invalid profile is rejected', async () => {
     assert.equal(r.isError, true);
     assert.match(r.content[0].text, re);
   }
+});
+
+// Nested coordinators. The tool repo is a second repo on the fake GitHub; the launcher is a script that logs its args and runs the fake claude.
+async function withTool(x) {
+  const tool = await mkdtemp(join(tmpdir(), 'cc-tool-'));
+  await sh(tool, 'git init -q -b main && git config user.name t && git config user.email t@t && mkdir bin');
+  await writeFile(join(tool, 'bin', 'claude-cloud'), '#!/bin/sh\necho "LAUNCHER $*" >> ../launcher.log\nexec claude "$@"\n');
+  await chmod(join(tool, 'bin', 'claude-cloud'), 0o755);
+  await sh(tool, 'git add -A && git commit -qm tool && git remote add origin https://github.com/test/tool.git');
+  await mkdir(join(x.github, 'test', 'tool.git'));
+  await sh(join(x.github, 'test', 'tool.git'), 'git init -q --bare -b main');
+  await sh(tool, `git push -q ${join(x.github, 'test', 'tool.git')} main`);
+  x.deps.toolRoot = tool;
+  return { tool, sha: await sh(tool, 'git rev-parse HEAD') };
+}
+const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret' };
+
+test('a coordinator clones claude-cloud at the laptop commit, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  const { sha } = await withTool(x);
+  const id = await x.start({ role: 'coordinator', prompt: 'hi' });
+  const out = await x.wait([id]);
+  assert.match(out, /status: idle/);
+  const s = x.created[0], home = join(s.dir, 'home');
+  assert.equal(await sh(join(home, 'claude-cloud'), 'git rev-parse HEAD'), sha);
+  assert.match(await readFile(join(home, 'claude-cloud', 'npm.log'), 'utf8'), /npm install/);
+  const env = await readFile(join(home, '.config/claude-cloud/env'), 'utf8');
+  for (const l of ['INSTABOX_API_KEY=ib-key-1', 'CLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1', 'PARTICLE_API_KEY=part-key-1', 'CLAUDE_CLOUD_DEPTH=1', 'CLAUDE_CLOUD_MAX_DEPTH=3', 'CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION=200']) assert.ok(env.includes(l), l);
+  assert.doesNotMatch(env, /ANTHROPIC_API_KEY/);
+  assert.equal((await sh(home, 'stat -f %Lp .config/claude-cloud/env 2>/dev/null || stat -c %a .config/claude-cloud/env')), '600');
+  assert.ok(s.writes.some((w) => w.endsWith('.config/claude-cloud/env')));
+  for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);
+  assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, '1');
+  const launched = await readFile(join(home, 'launcher.log'), 'utf8');
+  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt .*You are a coordinator\. You can start your own cloud subagents/);
+  assert.ok(s.cmds.some((c) => c.includes('/claude-cloud/bin/claude-cloud -p')));
+  assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
+});
+
+test('a coordinator at max depth is refused before any sandbox; depth goes up by one', async () => {
+  const x = await setup();
+  await withTool(x);
+  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_DEPTH: '3' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.match(x.text(r), /maximum depth of 3/);
+  assert.equal(x.created.length, 0);
+  // A worker at that depth is fine, and a coordinator one level lower gets depth 3.
+  assert.ok(await x.start({ prompt: 'hi' }));
+  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_DEPTH: '2', CLAUDE_CLOUD_MAX_DEPTH: '3' };
+  const id = await x.start({ role: 'coordinator' });
+  await x.wait([id]);
+  assert.equal(x.created.at(-1).envs.CLAUDE_CLOUD_DEPTH, '3');
+});
+
+test('the per-session agent cap refuses further starts', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: '2' };
+  assert.ok(await x.start()); assert.ok(await x.start());
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.match(x.text(r), /already started 2 agents.*MAX_AGENTS_PER_SESSION is 2/);
+  await killAll(x.open);
+});
+
+test('a worker is unchanged: plain claude, no install, no env file; bad role rejected', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  const id = await x.start({ role: 'worker' });
+  await x.wait([id]);
+  const s = x.created[0];
+  assert.ok(s.cmds.some((c) => / claude -p /.test(c)) && !s.cmds.some((c) => /\/claude-cloud\/bin|npm install/.test(c)));
+  assert.ok(!s.writes.some((w) => w.endsWith('/env')));
+  assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, undefined);
+  assert.match(x.text(await runSubagent({ description: 'd', prompt: 'hi', role: 'boss' }, x.deps)), /invalid role/);
 });

@@ -43,6 +43,21 @@ A worker can run Claude Code on a non-Anthropic model while your session stays o
 - **Security:** the provider key sits on the worker machine that uses it, unlike `GH_TOKEN`, which is only a placeholder there. A prompt-injected worker could read it. Moving it to an Instabox proxy secret is the next step (docs/FLEET-DESIGN.md, section 2). Only workers that use a profile get that profile's key.
 - **Unverified:** the gateway start has been tested only against a fake sandbox, not a live Instabox machine.
 
+## Nested coordinators
+
+`cloud_agent` accepts `role: "coordinator"` (default `"worker"`). A coordinator is a Claude subagent that can itself start cloud subagents, so you can build trees such as Opus coordinator, Opus sub-coordinators, then DeepSeek or GLM workers (`profile` combines with `role`; a coordinator with no profile uses the parent's Claude login).
+
+For a coordinator the sandbox also gets claude-cloud: this tool's repo is cloned (from this checkout's `origin`) into `~/claude-cloud` at the same commit your laptop runs, `npm install` runs there, and `~/.config/claude-cloud/env` is written with mode 600. That file holds the Instabox key, the Claude credential and any `*_API_KEY` provider keys from the parent, written as a file and never put in a command. Each turn then runs `~/claude-cloud/bin/claude-cloud -p ...` instead of plain `claude`, with a system prompt that tells it to keep keys private and delegate only through the cloud_agent tools.
+
+Because the nested session runs with `-p`, MCP tasks are not offered, so a nested coordinator uses the `cloud_agent_wait` flow, not task mode. This is expected.
+
+Limits, both passed down to child coordinators:
+
+- `CLAUDE_CLOUD_MAX_DEPTH` (default 3): levels below your laptop session. Starting a coordinator past it is refused. Workers cannot start agents, so they do not add depth.
+- `CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION` (default 200): agents one claude-cloud server may start. Further starts are refused.
+
+Every machine in a tree counts against your Instabox machine limit and start rate.
+
 ## Quick reference
 
 | Task | How |
