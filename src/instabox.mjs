@@ -30,13 +30,14 @@ async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, timeoutMs
   }
 }
 
-// Returns createSandbox(envs) for run-subagent. `sdk`, `fetchFn` and `timing` are injectable for tests.
-export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing) {
+// Returns createSandbox(envs) for run-subagent. `owner` is the server instance id the reaper deletes by.
+// `sdk`, `fetchFn` and `timing` are injectable for tests.
+export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner) {
   return async (envs) => {
     if (!env.INSTABOX_API_KEY) throw new Error('INSTABOX_API_KEY is not set.');
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
-      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud' }, archiveMs: ARCHIVE_MS,
+      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud', owner }, archiveMs: ARCHIVE_MS,
     });
     try {
       await attachGithubToken(sbx.sandboxId, env.INSTABOX_API_KEY, fetchFn, timing);
