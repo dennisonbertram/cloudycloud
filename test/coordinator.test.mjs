@@ -146,3 +146,9 @@ test('tmux is installed after refreshing package lists (Instabox images ship wit
   const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
   assert.match(src, /apt-get update[^\n]*&&[^\n]*apt-get install -y[^\n]*tmux/);
 });
+
+test('git is set up to use the GitHub token before claude-cloud is cloned', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('async function installTool'), src.indexOf('async function image'));
+  assert.ok(body.indexOf('gh auth setup-git') > -1 && body.indexOf('gh auth setup-git') < body.indexOf('git clone'));
+});
