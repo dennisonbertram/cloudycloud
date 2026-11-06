@@ -456,7 +456,7 @@ test('uncommitted files are listed, not committed', async () => {
 });
 
 test('a push failure is reported; the agent stays idle and messageable', async () => {
-  const { start, wait, msg, open, rejectPushes, remote } = await setup();
+  const { start, wait, msg, open, rejectPushes, remote } = await setup({ sleep: async () => {} });
   const id = await start();
   await wait([id]);
   await rejectPushes(true);
@@ -559,4 +559,65 @@ test('a queued agent shows status queued with its place, and a stopped queued ag
   await tick(50);
   assert.equal(creates, 1);
   assert.match(await wait([a]), /status: idle/);
+});
+
+// Sandbox whose first-push command fails with `stderr` for the first `n` attempts; sleeps are recorded, not waited.
+function flakyFirstPush(n, stderr) {
+  const sleeps = [];
+  let fails = 0;
+  const createSandbox = async () => {
+    const s = await fakeSandbox();
+    const run = s.commands.run;
+    s.commands.run = (cmd, o) => (cmd.startsWith('git push -q -u') && fails++ < n
+      ? Promise.reject(Object.assign(new Error('exit'), { exitCode: 1, stderr }))
+      : run(cmd, o));
+    return s;
+  };
+  return { createSandbox, sleep: async (ms) => { sleeps.push(ms); }, sleeps, attempts: () => fails };
+}
+
+test('a transient first-push rejection is retried and the agent succeeds', async () => {
+  const f = flakyFirstPush(2, '! [remote rejected] x -> x (missing necessary objects)');
+  const { start, wait } = await setup(f);
+  const r = await wait([await start()]);
+  assert.match(r, /status: idle/);
+  assert.deepEqual(f.sleeps, [5000, 15000]);
+});
+
+test('three non-auth first-push failures give the attempts message without the token hint', async () => {
+  const f = flakyFirstPush(9, '! [remote rejected] x -> x (missing necessary objects)');
+  const { start, wait } = await setup(f);
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /failed after 3 attempts\. Git said: .*missing necessary objects/s);
+  assert.doesNotMatch(r, /GH_TOKEN|RUNBOOK/);
+  assert.equal(f.attempts(), 3);
+});
+
+test('an auth failure on the first push gives the GH_TOKEN hint', async () => {
+  const f = flakyFirstPush(9, 'remote: Permission to test/repo.git denied. fatal: 403');
+  const { start, wait } = await setup(f);
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /GH_TOKEN.*RUNBOOK\.md, step 2\.4/s);
+});
+
+test('the safety push retries once', async () => {
+  const sleeps = [];
+  let pushes = 0;
+  const { start, wait } = await setup({
+    sleep: async (ms) => { sleeps.push(ms); },
+    createSandbox: async () => {
+      const s = await fakeSandbox();
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') && pushes++ === 0
+        ? Promise.resolve({ stdout: 'PUSHFAIL\nERR missing necessary objects\nSHA abc1234\n' })
+        : run(cmd, o));
+      return s;
+    },
+  });
+  const r = await wait([await start()]);
+  assert.match(r, /Pushed to origin claude-cloud\//);
+  assert.equal(pushes, 2);
+  assert.equal(sleeps.length, 1);
 });

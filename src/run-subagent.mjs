@@ -34,6 +34,8 @@ const githubUrl = (raw) => {
   return GITHUB_URL.test(url) ? url : undefined;
 };
 // Last lines of git's stderr with any user:password@ part of a URL removed.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const AUTH_FAIL = /403|Permission to|denied|Authentication failed|could not read Username|invalid credentials/i;
 const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@').trim().slice(-1500);
 
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
@@ -99,14 +101,16 @@ function armIdle(a, ctx) {
 
 // After a turn: push whatever the agent committed (never commits for it) and report what is left.
 // The command always exits 0, so a throw means the sandbox itself is unreachable.
-async function safetyPush(a) {
+async function safetyPush(a, ctx) {
   const branch = `claude-cloud/${a.id}`;
   try {
-    const out = (await a.sandbox.commands.run(
+    const push = async () => (await a.sandbox.commands.run(
       `if err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
       ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
+    let out = await push();
+    if (!out.includes('PUSHOK')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
@@ -143,7 +147,7 @@ async function turn(a, message, ctx, t) {
     failure = e;
   }
   t.progress.end();
-  const { where, failed } = await safetyPush(a);
+  const { where, failed } = await safetyPush(a, ctx);
 
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress)}` };
   if (failure) {
@@ -218,9 +222,18 @@ async function setup(a, ctx) {
     await a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
-    await a.sandbox.commands.run(`git push -q -u origin ${branch}`, repo).catch((e) => {
-      throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${tail(e?.stderr ?? e?.message)}`);
-    });
+    // All agents push the same new base history at once and GitHub sometimes rejects one, so retry.
+    for (let n = 1; ; n++) {
+      try {
+        await a.sandbox.commands.run(`git push -q -u origin ${branch}`, repo);
+        break;
+      } catch (e) {
+        const said = tail(e?.stderr ?? e?.message);
+        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
+        if (n === 3) throw new Error(`The first push to origin ${branch} failed after 3 attempts. Git said: ${said}`);
+        await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
+      }
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
