@@ -17,9 +17,14 @@ Check these once per repo, before the first subagent or coordinator. Tell the us
 2. **Main branch protected.** Subagents run with permission checks off and can push to any branch the token reaches.
    - Check with `gh api repos/OWNER/REPO/rulesets --jq 'length'` and `gh api repos/OWNER/REPO/branches/<default>/protection` (a 404 means unprotected).
    - If the default branch is unprotected, warn the user and suggest a ruleset that blocks direct pushes (repo Settings, then Rules, then Rulesets). Continue only if they say so.
-3. **Token access.** The GitHub token stored in Instabox as `GH_TOKEN` must include this repo.
-   - You cannot check it from here. If the first push of the first agent fails with a permission error, stop and tell the user to add the repo to their fine-grained token at https://github.com/settings/personal-access-tokens: under "Only select repositories", with Contents read and write.
-   - Editing the token keeps its value, so nothing else needs updating. Regenerating it does: they must run `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`.
+3. **Token access: ask the user.** The GitHub token stored in Instabox as `GH_TOKEN` must include this repo, and you cannot check that from here.
+   - The first time you use a repo, ask with the structured question tool if you have one: "Is OWNER/REPO in your claude-cloud GitHub token?" Offer three options:
+     - **Already included:** continue.
+     - **Add it to my current token** (recommended): at https://github.com/settings/personal-access-tokens, open the claude-cloud token, add the repo under "Only select repositories" with Contents read and write, and save. The value does not change, so nothing else needs updating.
+     - **Generate a new token:** create a fine-grained token at https://github.com/settings/personal-access-tokens/new with "Only select repositories" set to **every** repo they use with claude-cloud, not just this one, and Contents read and write. Then store it with `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, pasting the token at the prompt.
+   - There is only one `GH_TOKEN`, so a new token replaces the old one for every repo. Tell the user that, and to delete the old token on GitHub afterwards.
+   - Never ask for the token in chat. The user pastes it into the Instabox CLI prompt themselves. Wait until they say it is done.
+   - If the first push of the first agent still fails with a permission error, the repo is not in the token: go back to these options.
    - Never suggest "All repositories". Adding repos one at a time keeps a confused or prompt-injected subagent away from the rest.
 
 ## Handing a job to a cloud coordinator
