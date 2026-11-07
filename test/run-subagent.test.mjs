@@ -763,7 +763,7 @@ async function withTool(x) {
 }
 const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret' };
 
-test('a coordinator clones claude-cloud at the laptop commit, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
+test('a coordinator gets claude-cloud at the laptop commit from a bundle, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
   const x = await setup();
   x.deps.env = { ...LONG_ENV };
   const { sha } = await withTool(x);
@@ -772,6 +772,8 @@ test('a coordinator clones claude-cloud at the laptop commit, installs it, write
   assert.match(out, /status: idle/);
   const s = x.created[0], home = join(s.dir, 'home');
   assert.equal(await sh(join(home, 'claude-cloud'), 'git rev-parse HEAD'), sha);
+  assert.ok(s.writes.some((w) => w.endsWith('/claude-cloud.bundle')), 'tool uploaded as a bundle');
+  assert.ok(!s.cmds.some((c) => /git clone/.test(c) && /tool/.test(c)), 'tool is not cloned from GitHub');
   assert.match(await readFile(join(home, 'claude-cloud', 'npm.log'), 'utf8'), /npm install/);
   const env = await readFile(join(home, '.config/claude-cloud/env'), 'utf8');
   for (const l of ['INSTABOX_API_KEY=ib-key-1', 'CLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1', 'PARTICLE_API_KEY=part-key-1', 'CLAUDE_CLOUD_DEPTH=1', 'CLAUDE_CLOUD_MAX_DEPTH=3', 'CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION=200']) assert.ok(env.includes(l), l);

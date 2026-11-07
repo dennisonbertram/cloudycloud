@@ -184,9 +184,16 @@ test('tmux is installed after refreshing package lists (Instabox images ship wit
   assert.match(src, /apt-get update[^\n]*&&[^\n]*apt-get install -y[^\n]*tmux/);
 });
 
-test('git is set up to use the GitHub token before claude-cloud is cloned', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
-  const body = src.slice(src.indexOf('async function installTool'), src.indexOf('async function image'));
-  assert.ok(body.indexOf('gh auth setup-git') > -1 && body.indexOf('gh auth setup-git') < body.indexOf('git clone'));
+test('start uploads the laptop claude-cloud as a bundle and never clones the tool from GitHub', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const w = f.log.writes.find((x) => x.p === '/data/home/claude-cloud.bundle');
+  assert.ok(w && w.d.length > 0, 'bundle uploaded');
+  const i = f.log.cmds.findIndex((c) => /git init -q claude-cloud/.test(c) && /git fetch -q \/data\/home\/claude-cloud\.bundle refs\/cc-keep\//.test(c) && /checkout -q --detach/.test(c) && /npm install/.test(c));
+  assert.ok(i > -1, 'recreated from the bundle');
+  assert.ok(f.log.cmds.findIndex((c) => c.includes('gh auth setup-git')) < i);
+  const clones = f.log.cmds.filter((c) => /git clone/.test(c));
+  assert.equal(clones.length, 1, 'only the work repo is cloned');
+  assert.match(clones[0], /github\.com\/o\/r/);
 });
 
