@@ -350,7 +350,7 @@ setup_claude() {
 
 # Removes the image machine so nothing keeps running, or says how to.
 coordinator_cleanup() {
-  if npx --yes instabox@latest rm "$1" </dev/null >/dev/null 2>&1; then
+  if npx --yes instabox@latest rm --yes "$1" </dev/null >/dev/null 2>&1; then
     echo "Removed the image machine $1." >&2
   else
     echo "The image machine $1 may still be running. Remove it with: npx instabox@latest rm $1 (it also deletes itself after a while)." >&2
