@@ -1,6 +1,6 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own Instabox machines.
 // Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--json] | attach NAME | ls | stop NAME
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -139,6 +139,9 @@ async function start(c, args) {
     // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
     // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
     await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
+    // Give the coordinator's Claude the fleet skill from this laptop, so it matches the instructions the local Claude has.
+    const skillDir = join(c.root, 'skills', 'cloud-fleet');
+    for (const f of readdirSync(skillDir)) await sbx.files.write(`${home}/.claude/skills/cloud-fleet/${f}`, readFileSync(join(skillDir, f)));
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, task);
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';

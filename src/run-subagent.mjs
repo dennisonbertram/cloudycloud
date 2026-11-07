@@ -270,6 +270,7 @@ async function setup(a, ctx) {
 async function installCoordinator(a, ctx, envs) {
   const { env } = ctx, sh = (cmd, timeoutMs = SETUP_MS) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
   await sh(`git clone -q '${a.tool.origin}' claude-cloud && git -C claude-cloud checkout -q ${a.tool.sha}`);
+  await sh('mkdir -p .claude/skills && ln -sfn ~/claude-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
   await sh('cd claude-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
   const names = ['INSTABOX_API_KEY', claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];

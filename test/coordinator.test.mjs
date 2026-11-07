@@ -84,6 +84,7 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const prep = f.log.cmds.findIndex((c) => c.includes('hasCompletedOnboarding'));
   const tmux = f.log.cmds.findIndex((c) => /tmux new-session/.test(c));
   assert.ok(prep > -1 && prep < tmux, 'first-run setup is marked done before Claude starts');
+  for (const name of ['SKILL.md', 'handoff.md', 'brief-template.md']) assert.ok(f.log.writes.some((w) => w.p === `/data/home/.claude/skills/cloud-fleet/${name}`), `skill file ${name} uploaded`);
   for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice']) assert.ok(f.log.cmds[prep].includes(k), k);
   const text = f.log.out.join('\n');
   assert.match(text, /"boss"/);
@@ -186,3 +187,4 @@ test('git is set up to use the GitHub token before claude-cloud is cloned', asyn
   const body = src.slice(src.indexOf('async function installTool'), src.indexOf('async function image'));
   assert.ok(body.indexOf('gh auth setup-git') > -1 && body.indexOf('gh auth setup-git') < body.indexOf('git clone'));
 });
+

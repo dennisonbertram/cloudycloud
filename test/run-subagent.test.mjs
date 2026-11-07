@@ -780,6 +780,7 @@ test('a coordinator clones claude-cloud at the laptop commit, installs it, write
   assert.ok(s.writes.some((w) => w.endsWith('.config/claude-cloud/env')));
   for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);
   assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, '1');
+  assert.ok(s.cmds.some((c) => c.includes('ln -sfn ~/claude-cloud/skills/cloud-fleet .claude/skills/cloud-fleet')), 'nested coordinator gets the fleet skill');
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
   assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
   assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch claude-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\./);
