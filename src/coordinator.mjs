@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile, PROVIDER_KEY } from './config.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
+import { makeUi } from './ui.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
@@ -53,7 +54,7 @@ function context(deps) {
   const configFile = env.CLAUDE_CLOUD_CONFIG || join(homedir(), '.config/claude-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return { env, apiKey, configFile, out, root, fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  return { env, apiKey, configFile, out, root, ui: deps.ui ?? makeUi(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     getSdk: async () => deps.sdk ?? (await import('@insforge/instabox-sdk')) };
 }
 
@@ -96,6 +97,9 @@ async function image(c, args) {
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
     const info = await sbx.getInfo();
+    if (c.ui.on) return c.out([c.ui.ok(`Image machine ${info.name} is ready`, 'claude-cloud is installed on it'), '',
+      c.ui.block('Now sign in to Claude on it', [['1', SSH(info.name, '')], ['2', 'In that shell run: claude auth login'], ['3', 'Finish the browser sign-in, then leave the shell']]), '',
+      c.ui.hint('A setup-token cannot open Remote Control sessions, so this sign-in is needed.'), c.ui.hint('Then run: claude-cloud coordinator image --save')].join('\n'));
     c.out(`Image machine ${info.name} is ready and claude-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. ${SSH(info.name, '')}`.trimEnd() +
       `\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: claude-cloud coordinator image --save`);
     return;
@@ -112,6 +116,8 @@ async function image(c, args) {
   if (snap.status && snap.status !== 'ready') fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`);
   saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
   await sbx.kill();
+  if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'), c.ui.hint(`Saved as ${SNAPSHOT_KEY} in ${c.configFile}`),
+    c.ui.hint('Start a coordinator with: claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO')].join('\n'));
   c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
@@ -167,6 +173,15 @@ async function start(c, args) {
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
   if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: SSH(machine, 'tmux attach -t claude') }));
+  if (c.ui.on) {
+    const u = c.ui;
+    return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
+      u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), '',
+      u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
+        ['Terminal', `claude-cloud coordinator attach ${name}`, `runs: ${SSH(machine, 'tmux attach -t claude')}`]]), '',
+      u.hint('The first time, attach once and accept any trust or Remote Control prompts.'),
+      u.hint(`Stop it earlier with: claude-cloud coordinator stop ${name}`)].join('\n'));
+  }
   c.out(`Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: claude-cloud coordinator attach ${name}\n    (runs: ${SSH(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: claude-cloud coordinator stop ${name}`);
 }
@@ -180,6 +195,11 @@ async function attach(c, args) {
 async function ls(c) {
   const rows = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator');
   if (!rows.length) return c.out('No coordinators.');
+  if (c.ui.on) {
+    const u = c.ui, state = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
+    return c.out(u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES'], rows.map((m) => [m.metadata.name, [[m.state ?? '?', state[m.state] ?? u.col.err]], u.rel(m.startedAt),
+      m.name, m.machine?.deleteAt ? [[u.rel(m.machine.deleteAt)], [`  ${m.machine.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [['never', u.col.dim]]])));
+  }
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES'].join('\t'));
   for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name, m.machine?.deleteAt ?? 'never'].join('\t'));
 }
@@ -190,6 +210,8 @@ async function stop(c, args) {
   const [m] = await find(Sandbox, c.apiKey, 'coordinator', name);
   if (!m) fail(`No coordinator named ${name}. List them with: claude-cloud coordinator ls`);
   await Sandbox.kill(m.sandboxId, { apiKey: c.apiKey });
+  if (c.ui.on) return c.out([c.ui.ok(`Deleted coordinator ${name}`, `machine ${m.name}`), c.ui.hint('Its workers go with its cleanup, or at their own deadline (6 hours by default).'),
+    c.ui.hint('Check with: npx --yes instabox@latest ls --meta purpose=claude-cloud')].join('\n'));
   c.out(`Deleted coordinator ${name} (machine ${m.name}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: npx --yes instabox@latest ls --meta purpose=claude-cloud`);
 }
 
@@ -235,6 +257,7 @@ async function finish(c, args, deps) {
   }
   const r = await c.fetchFn(`${API}/${encodeURIComponent(me.id)}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': randomUUID(), 'X-Confirm-Delete': me.id } });
   if (!r.ok && r.status !== 404) fail(`Delete failed: HTTP ${r.status}`);
+  if (c.ui.on) return c.out([...verified.map((v) => c.ui.ok(v)), c.ui.ok(`Deleted this machine (${me.name})`)].join('\n'));
   c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${me.name}).`);
 }
 
@@ -246,5 +269,10 @@ export async function main(argv, deps = {}) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2)).catch((e) => { console.error(`claude-cloud: ${e.message}`); process.exit(1); });
+  main(process.argv.slice(2)).catch((e) => {
+    const u = makeUi({ tty: process.stderr.isTTY });
+    const [first, ...more] = String(e.message).split('\n');
+    console.error(u.on ? [u.err(first), ...more.map((l) => `    ${u.dim(l)}`)].join('\n') : `claude-cloud: ${e.message}`);
+    process.exit(1);
+  });
 }

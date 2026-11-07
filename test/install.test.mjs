@@ -142,7 +142,7 @@ test('parse_claude finds the token in labels, exports and quotes', () => {
 
 test('parse_claude: cut off and wrong shape messages never echo the value', () => {
   const short = fn('parse_claude "$1"', [TOKEN.slice(0, 103)]);
-  assert.match(short.stdout, /Got 103 of 108 characters, so it looks cut off\. Copy the whole token again; it may wrap onto two lines, which is fine to paste\./);
+  assert.match(short.stdout, /Got 103 of 108 characters, so it looks cut off\.\s+Copy the whole token again; it may wrap onto two lines, which is fine to paste\./);
   const wrong = fn('parse_claude "$1"', ['sk-ant-api03-SECRETSECRETSECRET']);
   assert.match(wrong.stdout, /should start with sk-ant-oat01-/);
   assert.ok(!wrong.stdout.includes('SECRET'));
@@ -269,7 +269,7 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   for (const n of ['curl', 'npm', 'npx']) chmodSync(join(cl, n), 0o755);
   symlinkSync(resolve('bin/claude-cloud'), join(cl, 'claude-cloud'));
   const tdir = tmp();
-  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLAUDE_CLOUD_CONFIG: cfg, TERM: 'xterm' };
+  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLAUDE_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
   const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps });
   return { cl, cfg, tdir, run };
 }
@@ -281,8 +281,8 @@ test('pty: a two-line paste gives the full token; live check runs; token is not 
   const g = rig();
   const r = g.run([['Paste it', KEY + '\n'], ['Enter, or paste', TOKEN.slice(0, 60) + '\n' + TOKEN.slice(60) + '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
-  assert.match(r.text, /Step 1 of 4: tools/);
-  assert.match(r.text, /Claude token works\./);
+  assert.match(r.text, /\[1\/4\] Tools/);
+  assert.match(r.text, /Claude token works/);
   assert.match(r.text, /this uses a very small amount of Claude usage/);
   const cfg = readFileSync(g.cfg, 'utf8');
   assert.ok(cfg.includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`), r.text);
@@ -338,7 +338,7 @@ test('pty: Enter keeps the saved token', () => {
   const g = rig({ saved: savedBoth });
   const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', '\n'], ['Paste the token', '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
-  assert.match(r.text, /Kept the saved key/);
+  assert.match(r.text, /Kept the saved token/);
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
 });
 
@@ -355,7 +355,111 @@ test('pty: pressing Enter gets the token from claude setup-token, with no copyin
   const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { 'setup-out': `Open the browser...\n${ESC}[2K\nYour token:\n${TOKEN}\nStore it safely\n` } });
   const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
-  assert.match(r.text, /Claude token works\./);
+  assert.match(r.text, /Claude token works/);
   assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
   assert.deepEqual(readdirSync(g.tdir).filter((f) => !f.startsWith('.')), []);
+});
+
+// ---- how it looks ----
+const UI_ENV = { LANG: 'en_US.UTF-8', TERM: 'xterm-256color', NO_COLOR: undefined };
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/;
+function uiRig(opts, env = {}) {
+  const g = rig(opts);
+  const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLAUDE_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
+  for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
+  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps, ...extra }) };
+}
+const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const NOANIM = { CLAUDE_CLOUD_NO_ANIMATION: '1' };
+
+test('piped output has no escape sequences and uses ASCII marks', () => {
+  const r = spawnSync('/bin/bash', ['-c', `. "${script}"; ok "Done" "detail"; warn "Careful"; bad "Broke"; hint "Try this"; step 2 Claude; box_open Summary; box_row "$C_OK" "$M_OK" "Label" "value"; box_close; banner`],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), LANG: 'en_US.UTF-8', TERM: 'xterm-256color' } });
+  assert.ok(!ANSI.test(r.stdout), JSON.stringify(r.stdout));
+  assert.match(r.stdout, /\[ok\] Done  detail/);
+  assert.match(r.stdout, /! Careful/);
+  assert.match(r.stdout, /\[x\] Broke/);
+  assert.match(r.stdout, /\[2\/4\] Claude/);
+  assert.ok(!/[✔✖▲›╭│]/.test(r.stdout));
+});
+
+test('pty: NO_COLOR and TERM=dumb turn styling off even on a terminal', () => {
+  for (const extra of [{ NO_COLOR: '1' }, { TERM: 'dumb' }, { CLICOLOR: '0' }]) {
+    const g = uiRig({ saved: savedBoth }, { ...NOANIM, ...extra });
+    const r = g.run(answers);
+    assert.equal(r.code, 0, r.text);
+    assert.ok(!ANSI.test(r.text.replace(/\u001b\[2K/g, '')), JSON.stringify(extra) + JSON.stringify(r.text.slice(0, 300)));
+    assert.match(r.text, /\[1\/4\] Tools/);
+  }
+});
+
+test('pty: on a terminal the output is styled, fits 80 columns, and the flow still works', () => {
+  const g = uiRig({ saved: savedBoth }, NOANIM);
+  const r = g.run(answers, { cols: 80 });
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /\u001b\[38;5;\d+m/); // 256-colour accent
+  const plain = r.text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+  assert.match(plain, /✔ git, node/);
+  assert.match(plain, /╭─ Summary ─+╮/);
+  assert.match(plain, /╭─ Next ─+╮/);
+  assert.match(plain, /●━━○━━○━━○ {2}Tools/);
+  for (const l of plain.split('\n')) if (/[│╭╰]/.test(l)) assert.ok([...l.replace(/\r/g, '')].length <= 80, `box line too wide: ${l}`);
+  assert.ok(!r.text.includes(TOKEN) && !r.text.includes(KEY));
+  assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
+});
+
+test('pty: the spinner leaves no stray characters and shows the result line', () => {
+  const g = uiRig({}, NOANIM);
+  const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; spin_start "Waiting a bit"; sleep 1; spin_stop; ok "Finished" "$SPIN_T"; echo END`], env: g.env, steps: [] });
+  assert.match(r.text, /Waiting a bit/);
+  assert.match(r.text, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+  const last = r.text.split('\r').pop();
+  assert.match(last, /\u001b\[K\u001b\[\?25h/);
+  assert.match(r.text, /Finished {2}\u001b\[[0-9;]*m1s/); // elapsed time
+  assert.match(r.text, /✔[^\n]*Finished/);
+  assert.ok(r.text.lastIndexOf('\u001b[?25h') > r.text.lastIndexOf('\u001b[?25l'));
+});
+
+test('pty: Ctrl-C during a spinner restores the cursor and terminal echo', () => {
+  const g = uiRig({}, NOANIM);
+  const wrapper = `trap : INT; /bin/bash -c '. "${script}"; trap "ui_cleanup; stty echo" EXIT; trap "exit 130" INT; spin_start "Working"; sleep 20' ; echo; echo "ECHO:$(stty -a | tr ' ' '\\n' | grep -x -e '-*echo' | head -1)"`;
+  const r = pty({ cmd: ['/bin/bash', '-c', wrapper], env: g.env, steps: [['Working', '\u0003']] });
+  assert.ok(r.text.lastIndexOf('\u001b[?25h') > r.text.lastIndexOf('\u001b[?25l'), JSON.stringify(r.text));
+  assert.match(r.text, /ECHO:echo/);
+});
+
+test('animation: skipped without a terminal, with NO_COLOR, CI or CLAUDE_CLOUD_NO_ANIMATION', () => {
+  const piped = spawnSync('/bin/bash', ['-c', `. "${script}"; banner`], { encoding: 'utf8', env: { PATH: process.env.PATH, ...UI_ENV, HOME: tmp() } });
+  assert.equal(piped.stdout, 'claude-cloud setup\nChecks your tools, links the command and saves your keys.\n');
+  for (const extra of [{ NO_COLOR: '1' }, { CI: '1' }, { CLAUDE_CLOUD_NO_ANIMATION: '1' }]) {
+    const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; banner`], env: { PATH: process.env.PATH, HOME: tmp(), ...UI_ENV, ...extra }, steps: [] });
+    assert.ok(!r.text.includes('\u001b[?25l'), JSON.stringify(extra)); // no cursor hiding means no animation
+    assert.ok(r.text.includes('claude-cloud') || r.text.includes('╔═╗'), r.text);
+  }
+});
+
+test('animation: plays on a terminal and the cursor is shown again afterwards', () => {
+  const g = uiRig({});
+  const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; banner; echo END`], env: g.env, steps: [] });
+  assert.ok(r.text.includes('\u001b[?25l'));
+  assert.ok(r.text.lastIndexOf('\u001b[?25h') > r.text.lastIndexOf('\u001b[?25l'));
+  assert.ok((r.text.match(/\u001b\[3A/g) || []).length >= 10, 'frames redraw in place');
+  assert.match(r.text, /END/);
+});
+
+test('animation: Ctrl-C restores the cursor and echo', () => {
+  const g = uiRig({});
+  const wrapper = `trap : INT; /bin/bash -c '. "${script}"; trap "ui_cleanup; stty echo" EXIT; trap "exit 130" INT; banner; sleep 5'; echo; echo "ECHO:$(stty -a | tr ' ' '\\n' | grep -x -e '-*echo' | head -1)"`;
+  const r = pty({ cmd: ['/bin/bash', '-c', wrapper], env: g.env, steps: [['\\?25l', '\u0003']] });
+  assert.ok(r.text.lastIndexOf('\u001b[?25h') > r.text.lastIndexOf('\u001b[?25l'), JSON.stringify(r.text));
+  assert.match(r.text, /ECHO:echo/);
+});
+
+test('animation: a key pressed during it skips it and does not reach the first prompt', () => {
+  const g = uiRig({ saved: savedBoth });
+  const r = g.run([['\\?25l', 'yy'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']]);
+  assert.equal(r.code, 0, r.text);
+  assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
+  assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
+  assert.match(r.text, /Summary/);
 });
