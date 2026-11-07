@@ -50,6 +50,7 @@ As of 2026-11-06. **"Proven live"** means it was run against real Instabox machi
 - **Push failures:** GitHub rejected 1 push in 100 during a mass first push. First pushes now retry, and the token hint appears only for auth errors.
 - **LiteLLM gateway:** it needed a master key, and it routed requests to the Responses API, which Particle lacks (405). Fixed in config.
 - **Misleading cost:** open-model results showed Anthropic-priced costs. The cost is now hidden for them.
+- **Coordinator tool version:** cloud and nested coordinators get the laptop's exact claude-cloud (a git bundle of HEAD plus uncommitted tracked edits), not a clone of GitHub. The tool repo no longer needs to be pushed or reachable by `GH_TOKEN`. Covered by unit tests only; not yet run against a live machine.
 - **Coordinator setup:** `tmux` was missing and the package lists were empty; `gh auth setup-git` ran after the clone; Claude Code's first-run screens blocked Remote Control. All fixed.
 - **Skill gap:** the fleet skill switched the user's own folder's branch. It now uses a worktree.
 

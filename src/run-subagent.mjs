@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
+import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
 import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
@@ -274,7 +275,9 @@ async function setup(a, ctx) {
 // The keys go through files.write, never through a command string.
 async function installCoordinator(a, ctx, envs) {
   const { env } = ctx, sh = (cmd, timeoutMs = SETUP_MS) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
-  await sh(`git clone -q '${a.tool.origin}' claude-cloud && git -C claude-cloud checkout -q ${a.tool.sha}`);
+  const b = toolBundle(a.tool.root); // the laptop's exact claude-cloud, pushed or not
+  await a.sandbox.files.write(`${a.home}/claude-cloud.bundle`, b.data);
+  await sh(toolInstallCmd(b, `${a.home}/claude-cloud.bundle`, a.tool.origin));
   await sh('mkdir -p .claude/skills && ln -sfn ~/claude-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
   await sh('cd claude-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
@@ -434,11 +437,10 @@ export async function runSubagent(args, deps) {
   if (role === 'coordinator') {
     const toolRoot = deps.toolRoot ?? TOOL_ROOT;
     try {
-      const url = githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin'));
-      if (!url) throw new Error('origin is not a github.com URL');
-      tool = { origin: url, sha: await git(toolRoot, 'rev-parse', 'HEAD') };
+      await git(toolRoot, 'rev-parse', 'HEAD');
+      tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
     } catch (e) {
-      return fail(`A coordinator needs claude-cloud's own repo (${toolRoot}) to be a git checkout with a github.com origin, so the sandbox can clone it: ${e.message}`);
+      return fail(`A coordinator needs claude-cloud's own folder (${toolRoot}) to be a git checkout, so it can be sent to the sandbox: ${e.message}`);
     }
   }
   count.started++;

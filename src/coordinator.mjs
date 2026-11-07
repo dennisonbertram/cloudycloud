@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile, PROVIDER_KEY } from './config.mjs';
+import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
 
 const TEMPLATE = 'agent-browser';
@@ -36,11 +37,13 @@ function saveKey(file, name, value) {
   renameSync(tmp, file);
 }
 
-// The repo URL of claude-cloud itself, as an https URL (git clone on the machine goes through the GH_TOKEN proxy).
+// The GitHub URL of claude-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
 function toolRepoUrl(root) {
-  const u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim();
+  let u;
+  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim(); } catch { return ''; }
   const m = u.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+?)(?:\.git)?$/);
-  return m ? `https://github.com/${m[1]}.git` : u;
+  const url = m ? `https://github.com/${m[1]}.git` : u;
+  return REPO_RE.test(url) ? url : ''; // goes into a quoted shell word
 }
 
 // Everything the commands need, injectable for tests.
@@ -71,11 +74,14 @@ async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
-  await run('gh auth setup-git'); // before any clone, so git uses the GH_TOKEN placeholder
+  await run('gh auth setup-git'); // before the work-repo clone, so git uses the GH_TOKEN placeholder
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
   const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8' }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'claude-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'claude-cloud@localhost'))}`);
-  await run(`if [ -d ~/claude-cloud/.git ]; then git -C ~/claude-cloud pull --ff-only -q; else git clone -q ${q(toolRepoUrl(root))} ~/claude-cloud; fi && cd ~/claude-cloud && npm install --no-audit --no-fund`);
+  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
+  const b = toolBundle(root);
+  await sbx.files.write(`${home}/claude-cloud.bundle`, b.data);
+  await run(`${toolInstallCmd(b, `${home}/claude-cloud.bundle`, toolRepoUrl(root))} && npm install --no-audit --no-fund`, { cwd: home });
   return home;
 }
 
