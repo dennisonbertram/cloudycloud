@@ -36,7 +36,7 @@ test('missing keys: points to install.sh, exits 1, never starts claude', () => {
   const r = run({ config: '' });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not set up yet/);
-  assert.match(r.stderr, /Run: .*install\.sh/);
+  assert.match(r.stderr, /Run: claude-cloud setup/);
   assert.equal(r.started, false);
 });
 
@@ -44,7 +44,7 @@ test('missing Claude token only: still stops with install.sh message', () => {
   const r = run({ config: `INSTABOX_API_KEY=${IBK}\n` });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Claude token/);
-  assert.match(r.stderr, /install\.sh/);
+  assert.match(r.stderr, /claude-cloud setup/);
   assert.equal(r.started, false);
 });
 
@@ -76,7 +76,7 @@ test('no origin at all: warns and still starts', () => {
   assert.equal(r.started, true);
 });
 
-test('reached through a linked folder (as npm link installs it), the install.sh path is the real clone', () => {
+test('reached through a linked folder (as npm link installs it), the missing-keys message points to claude-cloud setup', () => {
   const linkDir = mkdtempSync(join(tmpdir(), 'cc-link-'));
   const pkg = join(linkDir, 'claude-cloud');
   symlinkSync(resolve('.'), pkg); // like <npm prefix>/lib/node_modules/claude-cloud -> the clone
@@ -85,7 +85,7 @@ test('reached through a linked folder (as npm link installs it), the install.sh 
     cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CLOUD_CONFIG: join(dir, 'env') }, input: '', encoding: 'utf8',
   });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, new RegExp(`Run: ${realpathSync(resolve('.')).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/install\\.sh`));
+  assert.match(r.stderr, /Run: claude-cloud setup/);
 });
 
 test('CLAUDE_CLOUD_EXTRA_PROMPT is appended to the launcher prompt, in one --append-system-prompt', () => {
@@ -100,4 +100,21 @@ test('CLAUDE_CLOUD_EXTRA_PROMPT is appended to the launcher prompt, in one --app
   const argv = readFileSync(argvFile, 'utf8').split('\n');
   assert.equal(argv.filter((a) => a === '--append-system-prompt').length, 1);
   assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /mcp__cloud__cloud_agent[\s\S]*EXTRA-RULES-HERE/);
+});
+
+test('claude-cloud setup and --setup run install.sh from any folder', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-setup-'));
+  for (const n of ['git', 'npm', 'curl', 'claude']) { writeFileSync(join(dir, n), '#!/bin/sh\nexit 0\n'); chmodSync(join(dir, n), 0o755); }
+  for (const flag of ['setup', '--setup']) {
+    // --check-only is passed through to install.sh, which prints its step line and exits 0
+    const r = spawnSync('/bin/sh', [launcher, flag, '--check-only'], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /Step 1 of 4: tools/);
+  }
+});
+
+test('missing keys without a terminal: message and exit 1, no prompt', () => {
+  const r = run({ config: '' });
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stderr, /Run setup now/);
 });

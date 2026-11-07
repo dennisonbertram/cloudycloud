@@ -14,19 +14,32 @@ if [ "${1:-}" = coordinator ]; then
   exec node "$root/src/coordinator.mjs" "$@"
 fi
 
+# `claude-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
+case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
+
 # Keys saved here reach only the MCP server, so the main session keeps its normal login.
 config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
-# The Instabox key counts from the environment or the file.
-if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
-  missing='Instabox API key'
-# Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
-# `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
-elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
-  missing='Claude token'
-fi
-if [ -n "${missing:-}" ]; then
-  printf 'claude-cloud is not set up yet (no %s in %s).\nRun: %s/install.sh\n' "$missing" "$config" "$root" >&2
-  exit 1
+find_missing() {
+  missing=
+  # The Instabox key counts from the environment or the file.
+  if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
+    missing='Instabox API key'
+  # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
+  # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
+  elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
+    missing='Claude token'
+  fi
+}
+find_missing
+if [ -n "$missing" ]; then
+  printf 'claude-cloud is not set up yet (no %s in %s).\nRun: claude-cloud setup\n' "$missing" "$config" >&2
+  [ -t 0 ] || exit 1
+  printf 'Run setup now? [Y/n] ' >&2
+  IFS= read -r answer || answer=n
+  case $answer in n*|N*) exit 1 ;; esac
+  "$root/install.sh" || exit 1
+  find_missing
+  [ -z "$missing" ] || { echo "claude-cloud: still no $missing. Run: claude-cloud setup" >&2; exit 1; }
 fi
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "claude-cloud: warning: this folder is not a git repository, so subagents can't start here. Run claude-cloud from inside a repo with a github.com origin." >&2

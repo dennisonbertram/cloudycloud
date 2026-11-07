@@ -734,7 +734,7 @@ test('a missing provider key fails cloud_agent at once, before any sandbox', asy
   const { deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, CLAUDE_CLOUD_PROFILES: '/nonexistent/profiles.json' } });
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'glm' }, deps);
   assert.equal(r.isError, true);
-  assert.match(r.content[0].text, /PARTICLE_API_KEY.*install\.sh/);
+  assert.match(r.content[0].text, /PARTICLE_API_KEY.*claude-cloud setup/);
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });

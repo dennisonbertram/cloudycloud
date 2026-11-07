@@ -14,7 +14,7 @@ As of 2026-11-06. **"Proven live"** means it was run against real Instabox machi
 | Part | Where | What it does |
 | --- | --- | --- |
 | Installer | `install.sh` | Checks prerequisites and asks for each key with a one-line note on where to get it: Instabox, Claude token, GitHub token (stored as an Instabox proxy secret), and optional Particle or OpenRouter keys. It checks keys before saving, saves them at mode 600 and shows them masked. |
-| Launcher | `bin/claude-cloud` | Starts Claude Code with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `install.sh`. It warns about folders that aren't repos or have no GitHub origin. |
+| Launcher | `bin/claude-cloud` | Starts Claude Code with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `claude-cloud setup` and offers to run it. It warns about folders that aren't repos or have no GitHub origin. |
 | Cloud tools (MCP server) | `src/server.mjs`, `src/mcp.mjs` | `cloud_agent`, `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list` and `cloud_agent_stop`. On terminal sessions they run as **MCP tasks**: footer count, live progress in `/tasks`, stop with `x`, automatic completion. |
 | Agent lifecycle | `src/run-subagent.mjs` | Snapshot upload, branch setup, push retries, the after-each-task safety push, follow-ups through `--resume`, a 60-minute idle stop, depth and per-session limits. |
 | Instabox layer | `src/instabox.mjs`, `src/limits.mjs` | Machine creation and the `GH_TOKEN` proxy secret. Paced starts (25 a minute) with retries on `rate_limited` and `quota_exceeded`. One global limit of 24 Instabox calls. Sliced job waits that survive brief request errors. |

@@ -49,7 +49,7 @@ function toolRepoUrl(root) {
 // Everything the commands need, injectable for tests.
 function context(deps) {
   const env = deps.env ?? loadEnv();
-  const apiKey = env.INSTABOX_API_KEY || fail('INSTABOX_API_KEY is not set. Run install.sh first.');
+  const apiKey = env.INSTABOX_API_KEY || fail('INSTABOX_API_KEY is not set. Run: claude-cloud setup');
   const configFile = env.CLAUDE_CLOUD_CONFIG || join(homedir(), '.config/claude-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');

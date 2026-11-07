@@ -31,7 +31,7 @@ Run it in a terminal; it asks for keys, so it will not run from a pipe. It check
 | **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
 | **GitHub token** | Create a fine-grained token (section 2.2). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
-The first two are saved to `~/.config/claude-cloud/env`, which only your user account can read. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. You can run `./install.sh` again at any time; it shows each saved key as masked and asks before replacing it.
+The first two are saved to `~/.config/claude-cloud/env`, which only your user account can read. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. After the first install, run `claude-cloud setup` at any time (it runs `install.sh` from the folder `claude-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
 
 `claude-cloud` runs from the folder you ran `install.sh` in, on whatever branch is checked out there. The final message of `install.sh` shows the folder and branch.
 
@@ -59,7 +59,7 @@ git remote -v        # should show github.com
 claude-cloud
 ```
 
-Setup happens only in `install.sh`. If a key is missing, `claude-cloud` prints `not set up yet. Run: <folder>/install.sh` and exits.
+Setup happens only in `install.sh`. If a key is missing, `claude-cloud` prints `claude-cloud is not set up yet (...). Run: claude-cloud setup`. In a terminal it also asks `Run setup now? [Y/n]` and continues into the session after setup; without a terminal it exits 1.
 
 ## 3. Check that it works
 
@@ -115,7 +115,7 @@ git show FETCH_HEAD:proof.txt
 | **List cloud machines** | `npx instabox@latest ls`. Machines created by this tool have the label `purpose=claude-cloud`. |
 | **Delete a leftover machine** | `npx instabox@latest rm <name>` |
 | **Delete all subagent branches on GitHub** | `git ls-remote --heads origin 'claude-cloud/*' \| awk '{print $2}' \| xargs -n 50 git push origin --delete` |
-| **Replace a key** (Claude token, Instabox key or GitHub token) | Run `./install.sh` again in the folder `claude-cloud` runs from, answer `y` for that key, then restart `claude-cloud`. A running session keeps the old key until you restart it. |
+| **Replace a key** (Claude token, Instabox key or GitHub token) | Run `claude-cloud setup`, answer `y` for that key, then restart `claude-cloud`. A running session keeps the old key until you restart it. |
 | **Remove all saved keys** | `rm ~/.config/claude-cloud/env` |
 | **Update the tool** | `git pull && npm install` in the folder that `install.sh` printed, then restart `claude-cloud` |
 | **Uninstall** | `npm unlink -g claude-cloud`, then delete the folder and `~/.config/claude-cloud` |
@@ -124,13 +124,17 @@ git show FETCH_HEAD:proof.txt
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `not set up yet. Run: <folder>/install.sh` | A key is missing. Run `./install.sh`. |
-| `malformed API key`, or `401` from Instabox in a session | The Instabox key is wrong or revoked. Run `./install.sh`, replace the key, and restart `claude-cloud`. |
+| `claude-cloud is not set up yet ... Run: claude-cloud setup` | A key is missing. Run `claude-cloud setup`. |
+| `Got 103 of 108 characters, so it looks cut off` | The Claude token was cut short when pasted. Press Enter at the Claude step to let the installer get the token itself, or copy the whole token again; wrapping onto two lines is fine. |
+| `Got N of 56 characters` or `starts like an Instabox key` | The Instabox key is incomplete or has a typo. The dashboard shows a key only once, so if it was lost, create a new one at https://dashboard.instabox.sh/dashboard/api-keys. |
+| `Claude rejected this token` | The token is revoked or from another login. Run `claude-cloud setup` and press Enter at the Claude step. |
+| `Stopped the ... step after 3 tries` | Nothing was changed. The saved key stays. Run `claude-cloud setup` to try again. |
+| `malformed API key`, or `401` from Instabox in a session | The Instabox key is wrong or revoked. Run `claude-cloud setup`, replace the key, and restart `claude-cloud`. |
 | You changed a key but the session still uses the old one | `claude-cloud` reads keys once at start. Restart it. |
 | `claude-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
-| `The first push to origin claude-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `./install.sh` and replace the GitHub token, and check the token's repository list. |
-| `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `./install.sh` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
-| `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `./install.sh` and replace the Claude token, and restart `claude-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
+| `The first push to origin claude-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `claude-cloud setup` and replace the GitHub token, and check the token's repository list. |
+| `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `claude-cloud setup` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
+| `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `claude-cloud setup` and replace the Claude token, and restart `claude-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
 | A subagent stays `queued` | Your Instabox plan's machine limit (`quota_exceeded`) is full, or starts are waiting for the pace limit. Paused machines count too. It retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you don't need, delete leftover machines (section 5), or upgrade the plan. |
 | `rate_limited` after 5 tries | Instabox kept refusing starts. Lower `CLAUDE_CLOUD_STARTS_PER_MIN` (the default 25 is under the Pro plan's about 30 a minute) and restart `claude-cloud`. |
 | A subagent's work is missing | Only pushed work survives. Check the result for `Push failed` or `Uncommitted changes left in the sandbox`. While the subagent is open, ask it to commit and push. |

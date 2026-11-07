@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -34,12 +34,9 @@ test('Instabox key format', () => {
   assert.ok(!ok('valid_ibk "$1"', 'ibk_' + '1'.repeat(52))); // 1 is not base32
 });
 
-test('Claude token prefix and length warning', () => {
+test('Claude token prefix', () => {
   assert.ok(ok('valid_claude "$1"', TOKEN));
   assert.ok(!ok('valid_claude "$1"', 'sk-ant-api03-' + 'x'.repeat(95)));
-  assert.ok(ok('claude_len_ok "$1"', TOKEN));
-  assert.ok(!ok('claude_len_ok "$1"', TOKEN.slice(0, 100)));
-  assert.ok(!ok('claude_len_ok "$1"', TOKEN + 'x'));
 });
 
 test('mask shows prefix and last four only', () => {
@@ -125,4 +122,240 @@ test('optional provider key step: Enter skips and saves nothing; a pasted key is
   assert.ok(!saved.stdout.includes('pk-1234567890abcdef'));
   assert.match(saved.stdout, /…cdef/);
   assert.equal(statSync(env.CLAUDE_CLOUD_CONFIG).mode & 0o777, 0o600);
+});
+
+// ---- paste handling, live check, capture, coordinators ----
+const ESC = '\u001b';
+const out1 = (r) => r.stdout.trim();
+
+test('clean_paste removes whitespace, CR/LF and escape sequences', () => {
+  const r = fn('clean_paste "$1"', [`${ESC}[200~ab c\r\nde\tf${ESC}[201~${ESC}[2K\n`]);
+  assert.equal(r.stdout, 'abcdef');
+  assert.equal(fn('clean_paste "$1"', ['[200~xy[201~']).stdout, 'xy'); // ESC already dropped
+});
+
+test('parse_claude finds the token in labels, exports and quotes', () => {
+  for (const raw of [TOKEN, `export CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`, `"${TOKEN}"`, `Your token: ${TOKEN.slice(0, 50)}\n${TOKEN.slice(50)}\n`]) {
+    assert.equal(out1(fn('parse_claude "$1" >/dev/null && printf %s "$PARSED"', [raw])), TOKEN);
+  }
+});
+
+test('parse_claude: cut off and wrong shape messages never echo the value', () => {
+  const short = fn('parse_claude "$1"', [TOKEN.slice(0, 103)]);
+  assert.match(short.stdout, /Got 103 of 108 characters, so it looks cut off\. Copy the whole token again; it may wrap onto two lines, which is fine to paste\./);
+  const wrong = fn('parse_claude "$1"', ['sk-ant-api03-SECRETSECRETSECRET']);
+  assert.match(wrong.stdout, /should start with sk-ant-oat01-/);
+  assert.ok(!wrong.stdout.includes('SECRET'));
+  assert.equal(wrong.status, 1);
+});
+
+test('parse_ibk extracts, and explains cut off, wrong shape and the once-only dashboard key', () => {
+  assert.equal(out1(fn('parse_ibk "$1" >/dev/null && printf %s "$PARSED"', [`"${KEY}"`])), KEY);
+  assert.equal(out1(fn('parse_ibk "$1" >/dev/null && printf %s "$PARSED"', [`export INSTABOX_API_KEY=${KEY}`])), KEY);
+  const short = fn('parse_ibk "$1"', [KEY.slice(0, 40)]);
+  assert.match(short.stdout, /Got 40 of 56 characters, so it looks cut off/);
+  assert.match(short.stdout, /shows a key only once/);
+  const bad = fn('parse_ibk "$1"', ['ibk_' + 'ABCDEFGH1234567890'.repeat(3)]);
+  assert.match(bad.stdout, /starts like an Instabox key \(ibk_ABCD…7890\)/);
+  const other = fn('parse_ibk "$1"', ['ghp_SECRETSECRETSECRETSECRET']);
+  assert.ok(!other.stdout.includes('SECRET'));
+  assert.match(other.stdout, /should start with ibk_/);
+});
+
+// A stub claude: logs argv and the token it saw; behaviour comes from files in its folder.
+function claudeStub(extra = {}) {
+  const dir = tmp();
+  const body = `#!/bin/sh
+echo "$@" >> "${dir}/argv"
+case "$1" in
+  auth) echo '{"email":"me@example.com"}'; exit 0 ;;
+  setup-token) [ -f "${dir}/setup-out" ] && cat "${dir}/setup-out"; exit 0 ;;
+esac
+echo "$CLAUDE_CODE_OAUTH_TOKEN" >> "${dir}/seen"
+[ -f "${dir}/sleep" ] && sleep 5
+if [ -f "${dir}/fail" ]; then cat "${dir}/fail"; exit 1; fi
+echo ok
+`;
+  writeFileSync(join(dir, 'claude'), body); chmodSync(join(dir, 'claude'), 0o755);
+  for (const [k, v] of Object.entries(extra)) writeFileSync(join(dir, k), v);
+  return dir;
+}
+const withPath = (dir, more = {}) => ({ PATH: `${dir}:${process.env.PATH}`, ...more });
+
+test('claude_check: ok, rejected, no network and timeout; token only in the environment', () => {
+  const d = claudeStub();
+  let r = fn('claude_check "$1"', [TOKEN], withPath(d));
+  assert.equal(out1(r), 'ok');
+  assert.match(readFileSync(join(d, 'argv'), 'utf8'), /^-p --model haiku Reply with ok$/m);
+  assert.ok(!readFileSync(join(d, 'argv'), 'utf8').includes(TOKEN));
+  assert.equal(readFileSync(join(d, 'seen'), 'utf8').trim(), TOKEN);
+  const bad = claudeStub({ fail: '401 invalid authentication credentials\n' });
+  assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(bad))), /^fail 401 invalid/);
+  const net = claudeStub({ fail: 'getaddrinfo ENOTFOUND api.anthropic.com\n' });
+  assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(net))), /^unrun /);
+  const slow = claudeStub({ sleep: '1' });
+  assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(slow, { CLAUDE_CLOUD_CHECK_SECONDS: '1' }))), /^unrun it took longer than 1 seconds/);
+});
+
+test('capture_token extracts a wrapped, escaped token and always deletes the temp file', () => {
+  const t = tmp();
+  const script = (body) => fn(`run_setup_token() { printf '%b' "$SETUP" > "$1"; }; ${body}`, [], { TMPDIR: t, SETUP: `${ESC}[2Kyour token:\\r\\n${ESC}[1m${TOKEN}${ESC}[0m\\r\\nStore it safely\\r\\n` });
+  const r = script('capture_token');
+  assert.equal(r.stdout, TOKEN);
+  assert.deepEqual(readdirSync(t), []);
+  const wrapped = fn(`run_setup_token() { printf '%s\\n%s\\n' "${TOKEN.slice(0, 80)}" "${TOKEN.slice(80)}" > "$1"; }; capture_token`, [], { TMPDIR: t });
+  assert.equal(wrapped.status, 1);
+  assert.match(wrapped.stderr, /gave only 80 of 108/);
+  const none = fn(`run_setup_token() { echo nothing > "$1"; }; capture_token`, [], { TMPDIR: t });
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /Could not find a token/);
+  assert.deepEqual(readdirSync(t), []);
+  // Ctrl-C path: the exit trap calls cleanup_capture
+  const c = fn(`CAPTURE_FILE=$(mktemp); trap cleanup_capture EXIT; exit 130`, [], { TMPDIR: t });
+  assert.equal(c.status, 130);
+  assert.deepEqual(readdirSync(t), []);
+});
+
+// A stub folder with bin/claude-cloud and an npx that records its calls.
+function coordStub({ imageOut = 'Image machine img-1 is ready and claude-cloud is installed on it.', sshFail = false, saveFail = false } = {}) {
+  const dir = tmp();
+  const root = join(dir, 'root'); const bin = join(root, 'bin');
+  execFileSync('mkdir', ['-p', bin]);
+  writeFileSync(join(bin, 'claude-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\ncase "$*" in\n *--save*) ${saveFail ? 'echo save failed; exit 1' : 'echo saved'} ;;\n *) echo "${imageOut}" ;;\nesac\n`);
+  chmodSync(join(bin, 'claude-cloud'), 0o755);
+  writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\ncase "$*" in\n *"auth login"*) ${sshFail ? 'exit 1' : 'exit 0'} ;;\n *"auth status"*) echo '{"email":"coord@example.com"}' ;;\nesac\n`);
+  chmodSync(join(dir, 'npx'), 0o755);
+  return { dir, root };
+}
+import { execFileSync } from 'node:child_process';
+
+test('coordinators: skipped on N; full flow signs in on the machine, saves, and records the account', () => {
+  const s = coordStub();
+  const cfg = join(tmp(), 'env');
+  const skip = fn(`yn() { return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLAUDE_CLOUD_CONFIG: cfg });
+  assert.equal(out1(skip), 'not set up');
+  assert.ok(!existsSync(join(s.dir, 'calls')));
+  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLAUDE_CLOUD_CONFIG: cfg }));
+  assert.match(r.stdout, /ready \(coord@example\.com\)/);
+  const calls = readFileSync(join(s.dir, 'calls'), 'utf8');
+  assert.match(calls, /npx --yes instabox@latest ssh img-1 -- -t claude auth login/);
+  assert.match(calls, /coordinator image --save/);
+  assert.match(readFileSync(cfg, 'utf8'), /CLAUDE_CLOUD_SNAPSHOT_ACCOUNT=coord@example\.com/);
+});
+
+test('coordinators: a failed sign-in removes the image machine and says how to retry', () => {
+  const s = coordStub({ sshFail: true });
+  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLAUDE_CLOUD_CONFIG: join(tmp(), 'env') }));
+  assert.match(r.stdout, /failed \(run (claude-cloud setup|\.\/install\.sh) again\)/);
+  assert.match(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx --yes instabox@latest rm img-1/);
+  assert.ok(!/--save/.test(readFileSync(join(s.dir, 'calls'), 'utf8')));
+});
+
+// ---- the real script through a pty ----
+const pty = (spec) => {
+  const r = spawnSync('python3', [resolve('test/pty_run.py'), JSON.stringify({ timeout: 60, ...spec })], { encoding: 'utf8' });
+  const m = r.stdout.match(/EXIT:(\d+)\s*$/);
+  return { text: r.stdout, code: m ? Number(m[1]) : -1 };
+};
+
+function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
+  const cl = claudeStub(claudeExtra);
+  const cfgDir = tmp(); const cfg = join(cfgDir, 'env');
+  if (saved) writeFileSync(cfg, saved, { mode: 0o600 });
+  const secrets = githubState === 'yes' ? '[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]}]' : '[]';
+  writeFileSync(join(cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *secrets*) echo '${secrets}' ;;\n *) echo '[{"id":"o1","personal":true}]' ;;\nesac\n`);
+  writeFileSync(join(cl, 'npm'), '#!/bin/sh\n[ "$1" = prefix ] && echo /nowhere\nexit 0\n');
+  writeFileSync(join(cl, 'npx'), '#!/bin/sh\nexit 0\n');
+  for (const n of ['curl', 'npm', 'npx']) chmodSync(join(cl, n), 0o755);
+  symlinkSync(resolve('bin/claude-cloud'), join(cl, 'claude-cloud'));
+  const tdir = tmp();
+  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLAUDE_CLOUD_CONFIG: cfg, TERM: 'xterm' };
+  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps });
+  return { cl, cfg, tdir, run };
+}
+const P_IB = ['Paste it', null]; // placeholders, built per test
+const tail = [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const savedBoth = `INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`;
+
+test('pty: a two-line paste gives the full token; live check runs; token is not in argv', () => {
+  const g = rig();
+  const r = g.run([['Paste it', KEY + '\n'], ['Enter, or paste', TOKEN.slice(0, 60) + '\n' + TOKEN.slice(60) + '\n'], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Step 1 of 4: tools/);
+  assert.match(r.text, /Claude token works\./);
+  assert.match(r.text, /this uses a very small amount of Claude usage/);
+  const cfg = readFileSync(g.cfg, 'utf8');
+  assert.ok(cfg.includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`), r.text);
+  assert.ok(cfg.includes(`INSTABOX_API_KEY=${KEY}\n`));
+  assert.ok(cfg.includes('CLAUDE_CLOUD_TOKEN_ACCOUNT=me@example.com'));
+  assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
+  assert.ok(!readFileSync(join(g.cl, 'argv'), 'utf8').includes(TOKEN));
+  assert.equal(readFileSync(join(g.cl, 'seen'), 'utf8').split('\n')[0], TOKEN);
+  assert.ok(!r.text.includes(TOKEN) && !r.text.includes(KEY)); // nothing secret on screen
+  assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK[\s\S]*Claude token\s+OK[\s\S]*Coordinators\s+not set up/);
+});
+
+test('pty: pasted export lines and quoted values work', () => {
+  const g = rig();
+  const r = g.run([['Paste it', `"${KEY}"\n`], ['Enter, or paste', `export CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`INSTABOX_API_KEY=${KEY}\\n`));
+});
+
+test('pty: a bracketed-paste-wrapped value works', () => {
+  const g = rig();
+  const r = g.run([['Paste it', `${ESC}[200~${KEY}${ESC}[201~\n`], ['Enter, or paste', `${ESC}[200~${TOKEN}${ESC}[201~\n`], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+});
+
+test('pty: leftover input cannot answer a [y/N] question', () => {
+  const r = pty({ cmd: ['/bin/bash', '-c', `sleep 0.5; . "${script}"; yn "Q?" && echo ANSWER-YES || echo ANSWER-NO`], env: { PATH: process.env.PATH, HOME: tmp() }, steps: [['', 'yes\n'], ['Q\\?', 'n\n']] });
+  assert.match(r.text, /ANSWER-NO/);
+  assert.ok(!/ANSWER-YES/.test(r.text), r.text);
+});
+
+test('pty: a short token says it is cut off, asks no [y/N], and saves nothing', () => {
+  const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n` });
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN.slice(0, 103) + '\n'], ['Paste the token', '\n']]);
+  assert.match(r.text, /Got 103 of 108 characters, so it looks cut off/);
+  assert.ok(!/Save it anyway/.test(r.text));
+  assert.equal(r.code, 1);
+  assert.ok(!readFileSync(g.cfg, 'utf8').includes('CLAUDE_CODE_OAUTH_TOKEN'));
+});
+
+test('pty: three bad tries stop the step cleanly and keep the saved token', () => {
+  const g = rig({ saved: savedBoth });
+  const bad = TOKEN.slice(0, 90);
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', bad + '\n'], ['Paste the token', bad + '\n'], ['Paste the token', bad + '\n'], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Stopped the Claude step after 3 tries\. Your saved token is unchanged\. Run .* again to retry\./);
+  assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
+});
+
+test('pty: Enter keeps the saved token', () => {
+  const g = rig({ saved: savedBoth });
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', '\n'], ['Paste the token', '\n'], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Kept the saved key/);
+  assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
+});
+
+test('pty: a rejected token is retried at most 3 times and not saved', () => {
+  const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { fail: '401 invalid authentication\n' } });
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']]);
+  assert.match(r.text, /Claude rejected this token: 401 invalid authentication/);
+  assert.match(r.text, /Stopped the Claude step after 3 tries\. No token is saved/);
+  assert.ok(!readFileSync(g.cfg, 'utf8').includes('CLAUDE_CODE_OAUTH_TOKEN'));
+  assert.ok(!readFileSync(join(g.cl, 'argv'), 'utf8').includes(TOKEN));
+});
+
+test('pty: pressing Enter gets the token from claude setup-token, with no copying and no temp file left', () => {
+  const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { 'setup-out': `Open the browser...\n${ESC}[2K\nYour token:\n${TOKEN}\nStore it safely\n` } });
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', '\n'], ...tail]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Claude token works\./);
+  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+  assert.deepEqual(readdirSync(g.tdir).filter((f) => !f.startsWith('.')), []);
 });
