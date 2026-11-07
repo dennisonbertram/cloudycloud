@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own Instabox machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--json] | attach NAME | ls | stop NAME
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -14,6 +14,7 @@ const SECRET_KEYS = ['INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
+const TASK_MAX = 100_000; // bytes
 const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine}${rest ? ` -- ${rest}` : ''}`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
@@ -115,6 +116,12 @@ async function start(c, args) {
   if (!repo || !REPO_RE.test(repo)) fail('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO');
   const branch = flag(args, '--branch');
   if (branch && !/^[\w./-]+$/.test(branch)) fail('--branch has characters that are not allowed.');
+  const taskFile = flag(args, '--task-file');
+  const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
+  if (task !== undefined) {
+    if (!task.trim()) fail('The task is empty.');
+    if (Buffer.byteLength(task) > TASK_MAX) fail(`The task is larger than ${TASK_MAX / 1000} KB.`);
+  }
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) fail('No coordinator image yet. Run: claude-cloud coordinator image');
   const { Sandbox } = await c.getSdk();
@@ -132,10 +139,14 @@ async function start(c, args) {
     // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
     // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
     await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}`)}`);
+    // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
+    if (task !== undefined) await sbx.files.write(`${home}/task.md`, task);
+    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}${prompt}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
-  c.out(`Coordinator ${name} is running on machine ${machine}. It never pauses.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: SSH(machine, 'tmux attach -t claude') }));
+  c.out(`Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: claude-cloud coordinator attach ${name}\n    (runs: ${SSH(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it with: claude-cloud coordinator stop ${name}`);
 }
 
@@ -164,7 +175,7 @@ async function stop(c, args) {
 export async function main(argv, deps = {}) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop };
-  if (!commands[cmd]) fail('Usage: claude-cloud coordinator image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME');
+  if (!commands[cmd]) fail('Usage: claude-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--json] | attach NAME | ls | stop NAME');
   return commands[cmd](context(deps), args);
 }
 

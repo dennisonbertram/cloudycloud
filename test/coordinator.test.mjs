@@ -90,6 +90,35 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   assert.match(text, /coordinator attach boss/);
 });
 
+test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {
+  const f = fixture();
+  const task = "do it; $(rm -rf /) 'quoted'";
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', task], f.deps);
+  assert.equal(f.log.writes.find((x) => x.p === '/data/home/task.md').d, task);
+  for (const c of f.log.cmds) assert.ok(!c.includes('rm -rf /'), `task text in command: ${c}`);
+  const tmux = f.log.cmds.find((c) => /tmux new-session/.test(c));
+  assert.ok(tmux.includes(`--remote-control '\\''boss'\\'' "$(cat '\\''/data/home/task.md'\\'')"`), tmux);
+  assert.match(f.log.out.join('\n'), /started on the task/);
+});
+
+test('start --task-file reads the file; empty or over 100 KB tasks are refused before any machine', async () => {
+  const f = fixture();
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-task-')), 't.md');
+  writeFileSync(file, 'from file');
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task-file', file], f.deps);
+  assert.equal(f.log.writes.find((x) => x.p === '/data/home/task.md').d, 'from file');
+  const g = fixture();
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', '  '], g.deps), /empty/);
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', 'x'.repeat(100_001)], g.deps), /larger/);
+  assert.equal(g.log.create.length, 0);
+});
+
+test('start --json prints name, machine, remoteControlName and attach', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps);
+  assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude' });
+});
+
 test('start rejects bad repo urls and duplicate names', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { role: 'coordinator', name: 'boss' } }] });
   await assert.rejects(main(['start', 'x', '--repo', 'git@github.com:o/r.git'], f.deps), /--repo/);

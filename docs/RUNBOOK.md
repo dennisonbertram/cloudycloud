@@ -172,7 +172,7 @@ Remote Control needs a full Claude login. A token from `claude setup-token` can 
 
 | Command | What it does |
 | --- | --- |
-| `claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO [--branch B]` | Creates a machine from the snapshot (label `role=coordinator`, never pauses), attaches the `GH_TOKEN` secret, writes the keys file, updates `claude-cloud` there, clones the repo, and starts a tmux session `claude` running `claude-cloud --remote-control "NAME"`. |
+| `claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO [--branch B]` | Creates a machine from the snapshot (label `role=coordinator`, never pauses), attaches the `GH_TOKEN` secret, writes the keys file, updates `claude-cloud` there, clones the repo, and starts a tmux session `claude` running `claude-cloud --remote-control "NAME"`. With `--task TEXT` or `--task-file PATH` (not empty, at most 100 KB) the task is uploaded to `~/task.md` on the machine and passed as the session's first prompt, so the coordinator starts working at once. `--json` prints `{name, machine, remoteControlName, attach}` instead of the text. |
 | `claude-cloud coordinator attach NAME` | Prints `npx --yes instabox@latest ssh <machine> -- tmux attach -t claude`. Run it to see the session. |
 | `claude-cloud coordinator ls` | Lists coordinators: name, state, created time, machine name. |
 | `claude-cloud coordinator stop NAME` | Deletes that coordinator's machine. Its workers are deleted by its own `claude-cloud` cleanup process when its session ends. |
