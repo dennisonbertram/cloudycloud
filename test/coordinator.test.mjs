@@ -80,6 +80,11 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   assert.ok(f.log.cmds.some((c) => /chmod 600/.test(c)));
   assert.ok(f.log.cmds.some((c) => /git clone -q -b 'main' 'https:\/\/github.com\/o\/r'/.test(c)));
   assert.ok(f.log.cmds.some((c) => /tmux new-session -d -s claude/.test(c) && /claude-cloud --remote-control .*boss/.test(c)));
+  // Claude Code's first-run screens would block Remote Control on an unattended machine; they are marked done first.
+  const prep = f.log.cmds.findIndex((c) => c.includes('hasCompletedOnboarding'));
+  const tmux = f.log.cmds.findIndex((c) => /tmux new-session/.test(c));
+  assert.ok(prep > -1 && prep < tmux, 'first-run setup is marked done before Claude starts');
+  for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice']) assert.ok(f.log.cmds[prep].includes(k), k);
   const text = f.log.out.join('\n');
   assert.match(text, /"boss"/);
   assert.match(text, /coordinator attach boss/);

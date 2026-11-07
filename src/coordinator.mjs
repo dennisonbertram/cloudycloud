@@ -53,6 +53,14 @@ const find = async (Sandbox, apiKey, role, name) =>
     .filter((m) => m.metadata?.role === role && (!name || m.metadata?.name === name));
 
 // Installs or updates claude-cloud on the machine and sets up git's GitHub login. Returns the home folder.
+// Marks Claude Code's first-run screens as done in ~/.claude.json and trusts ~/repo. Keys found live on a coordinator.
+const MARK_FIRST_RUN_DONE = `const fs=require('fs'),f=process.env.HOME+'/.claude.json';
+const j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{};
+Object.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'dark',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});
+const p=process.env.HOME+'/repo';j.projects=j.projects||{};
+j.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+fs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});`;
+
 async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
@@ -121,6 +129,9 @@ async function start(c, args) {
     await sbx.files.write(`${dir}/env`, keysFile(c.env)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
+    // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
+    // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
+    await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
