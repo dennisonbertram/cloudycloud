@@ -419,8 +419,30 @@ cleanup_capture() {
 
 # run_setup_token FILE: runs claude setup-token in a pty and records the output in FILE.
 run_setup_token() {
-  if [ "$(uname)" = Darwin ]; then script -q "$1" claude setup-token </dev/tty
-  else script -qc "claude setup-token" "$1" </dev/tty; fi
+  if [ "$(uname)" = Darwin ]; then script -q "$1" claude setup-token </dev/tty | mask_token
+  else script -qc "claude setup-token" "$1" </dev/tty | mask_token; fi
+}
+
+# Shows claude setup-token's sign-in link and prompts as they arrive, with the token itself hidden.
+# It works on chunks, not lines, so a prompt with no newline still appears. A token split across chunks is held back.
+mask_token() {
+  command -v perl >/dev/null 2>&1 || { sed -l 's/sk-ant-oat01-[A-Za-z0-9_-]*/sk-ant-oat01-(hidden)/g' 2>/dev/null || cat >/dev/null; return 0; }
+  perl -e '
+    $| = 1; my $b = ""; my $t = qr/sk-ant-oat01-[A-Za-z0-9_-]+/;
+    while (sysread(STDIN, my $c, 4096)) {
+      $b .= $c; my $h = "";
+      if ($b =~ s/(sk-ant-oat01-[A-Za-z0-9_-]*|s(?:k(?:-(?:a(?:n(?:t(?:-(?:o(?:a(?:t(?:0(?:1)?)?)?)?)?)?)?)?)?)?)?)\z//) { $h = $1 }
+      $b =~ s/$t/sk-ant-oat01-(hidden)/g; print $b; $b = $h;
+    }
+    $b =~ s/$t/sk-ant-oat01-(hidden)/g; print $b;'
+}
+
+# Links the fleet skill for every project, so any Claude session knows how to run fleets. Leaves a real folder alone.
+link_skill() {
+  local dest="$HOME/.claude/skills/cloud-fleet"
+  mkdir -p "$HOME/.claude/skills" || return 0
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then warn "Fleet skill not linked: $dest already exists"; return 0; fi
+  ln -sfn "$1/skills/cloud-fleet" "$dest" && ok "Fleet skill available in every project"
 }
 
 # capture_token: gets a token from claude setup-token without copying. Prints the token, or a reason on stderr and returns 1.
@@ -704,6 +726,7 @@ main() {
   rm -f "$log"
   ok "Dependencies installed" "$SPIN_T"
   link_command "$root"
+  link_skill "$root"
   LOCAL_ACCOUNT=$(claude_account)
   [ -z "$LOCAL_ACCOUNT" ] || ok "Your local Claude" "$LOCAL_ACCOUNT"
 

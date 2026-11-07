@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -462,4 +462,25 @@ test('animation: a key pressed during it skips it and does not reach the first p
   assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
   assert.match(r.text, /Summary/);
+});
+
+test('mask_token hides the token, passes prompts straight through, and handles a token split across writes', () => {
+  const head = TOKEN.slice(0, 30), rest = TOKEN.slice(30);
+  const r = fn(`{ printf 'Open https://x.test/a\\nPaste code > '; sleep 1; printf 'Your token: ${head}'; sleep 1; printf '${rest}\\ndone\\n'; } | mask_token`, [], {});
+  const out = r.stdout ?? String(r);
+  assert.ok(!out.includes(TOKEN) && !out.includes(rest), 'token hidden');
+  assert.match(out, /https:\/\/x\.test\/a/);
+  assert.match(out, /Paste code > /);
+  assert.match(out, /sk-ant-oat01-\(hidden\)/);
+  assert.match(out, /done/);
+});
+
+test('link_skill links the fleet skill, and leaves an existing real folder alone', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
+  fn(`link_skill /tool/root`, [], { HOME: home });
+  assert.equal(readlinkSync(join(home, '.claude/skills/cloud-fleet')), '/tool/root/skills/cloud-fleet');
+  const home2 = mkdtempSync(join(tmpdir(), 'cc-home-'));
+  mkdirSync(join(home2, '.claude/skills/cloud-fleet'), { recursive: true });
+  fn(`link_skill /tool/root`, [], { HOME: home2 });
+  assert.ok(lstatSync(join(home2, '.claude/skills/cloud-fleet')).isDirectory());
 });

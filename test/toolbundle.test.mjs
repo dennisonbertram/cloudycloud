@@ -24,3 +24,11 @@ test('the tool bundle carries an uncommitted tracked edit, leaves no ref behind,
   sh(home, toolInstallCmd(b, join(home, 'x.bundle'))); // re-install works
   assert.equal(sh(join(home, 'claude-cloud'), 'git rev-parse HEAD'), b.sha);
 });
+
+test('retryIndexLock retries a locked index, and rethrows anything else', async () => {
+  const { retryIndexLock } = await import('../src/toolbundle.mjs');
+  let n = 0;
+  assert.equal(retryIndexLock(() => { if (++n < 3) throw Object.assign(new Error('x'), { stderr: 'fatal: Unable to create .git/index.lock' }); return 'ok'; }), 'ok');
+  assert.equal(n, 3);
+  assert.throws(() => retryIndexLock(() => { throw new Error('other'); }), /other/);
+});

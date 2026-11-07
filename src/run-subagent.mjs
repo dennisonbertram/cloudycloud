@@ -214,7 +214,15 @@ async function setup(a, ctx) {
   const branch = `claude-cloud/${a.id}`;
   try {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
-    a.sha = (await git(a.root, ...IDENT, 'stash', 'create')) || (await git(a.root, 'rev-parse', 'HEAD'));
+    // Many agents starting together can collide on index.lock here; wait and retry.
+    let snap;
+    for (let i = 1; ; i++) {
+      try { snap = await git(a.root, ...IDENT, 'stash', 'create'); break; } catch (e) {
+        if (i >= 8 || !/index\.lock|could not write index/i.test(`${e?.stderr ?? ''} ${e?.message ?? ''}`)) throw e;
+        await new Promise((r) => setTimeout(r, 100 * i));
+      }
+    }
+    a.sha = snap || (await git(a.root, 'rev-parse', 'HEAD'));
     const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
     const bundle = join(tmp, 'in.bundle');
     await git(a.root, 'update-ref', ref, a.sha);
