@@ -141,24 +141,52 @@ box_close() {
   if [ "$UTF" = 1 ]; then printf '  %s╰%s╯%s\n' "$C_DIM" "${fill// /─}" "$C_X"; else printf '  %s+%s+%s\n' "$C_DIM" "${fill// /-}" "$C_X"; fi
 }
 
-# The logo. logo_frame EDGE draws it three lines tall, revealed from the left up to column EDGE with a cloud in front.
-LOGO=('╔═╗╦  ╔═╗╦ ╦╔╦╗╔═╗   ╔═╗╦  ╔═╗╦ ╦╔╦╗'
-      '║  ║  ╠═╣║ ║ ║║║╣ ───║  ║  ║ ║║ ║ ║║'
-      '╚═╝╩═╝╩ ╩╚═╝═╩╝╚═╝   ╚═╝╩═╝╚═╝╚═╝═╩╝')
-logo_frame() {
-  local r i lo seg line code
-  local shades=(33 33 39 39 45 45 81 81 87 87 123 123)
+# The banner: three rows of ASCII clouds that drift in and settle, a blank row, then the wordmark (6 rows).
+# Cloud art is CLk_ROW; CX is each cloud's final column, CD how far it starts away (the sign is the direction).
+CL0_0='   .-.   '; CL0_1=' .(   ). '; CL0_2='(___.___)'
+CL1_0='      .---.      '; CL1_1='  .-(      ).-.  '; CL1_2=' (___.___)_____) '
+CL2_0='    .--.   '; CL2_1=' .-(    ).'; CL2_2='(___.__)__)'
+CX=(4 21 46); CD=(-16 22 -24); CC=(far near far)
+WORD0='█▀▀ █   █▀█ █ █ █▀▄ █▄█   █▀▀ █   █▀█ █ █ █▀▄'
+WORD1='█▄▄ █▄▄ █▄█ █▄█ █▄▀  █    █▄▄ █▄▄ █▄█ █▄█ █▄▀'
+BANNER_ROWS=6; BANNER_LAST=13
+# banner_frame N: draws the banner for frame N; any N >= BANNER_LAST is the final picture. Every row is cleared to its end.
+banner_frame() {
+  local n=$1 r k i x v art c line prev left near far edge
+  local buf col shades=(33 33 39 39 45 45 81 81 87 87 123 123)
+  [ "$n" -le "$BANNER_LAST" ] || n=$BANNER_LAST
+  left=$(( (BANNER_LAST - n) * (BANNER_LAST - n) )) # 169 at the start, 0 at the end: clouds slow down as they settle
+  near=$C_X; far=$C_DIM; [ "$WIDE" = 0 ] || { near=$'\e[38;5;255m'; far=$'\e[38;5;244m'; }
   for r in 0 1 2; do
-    line="  "
-    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
-      lo=$((i * 3)); seg=${LOGO[r]:$lo:3}
-      if [ "$((lo + 3))" -le "$1" ]; then
-        code=$C_ACC; [ "$WIDE" = 0 ] || code=$'\e[38;5;'"${shades[i]}m"
-        line="$line$code$seg"
-      elif [ "$lo" -lt "$((${1} + 6))" ]; then line="$line${C_DIM}░░░"
-      else line="$line   "; fi
+    buf=(); col=()
+    for ((i = 0; i < 58; i++)); do buf[i]=" "; col[i]=""; done
+    for k in 0 1 2; do
+      v=CL${k}_$r; art=${!v}; x=$(( CX[k] + CD[k] * left / 169 ))
+      for ((i = 0; i < ${#art}; i++)); do
+        c=${art:i:1}
+        [ "$c" != " " ] && [ "$((x + i))" -ge 0 ] && [ "$((x + i))" -lt 58 ] || continue
+        buf[x + i]=$c; if [ "${CC[k]}" = near ]; then col[x + i]=$near; else col[x + i]=$far; fi
+      done
     done
-    printf '%s%s\n' "$line" "$C_X"
+    line="  "; prev=""
+    for ((i = 0; i < 58; i++)); do
+      [ "${buf[i]}" = " " ] || [ "${col[i]}" = "$prev" ] || { line="$line${col[i]}"; prev=${col[i]}; }
+      line="$line${buf[i]}"
+    done
+    printf '%s%s\e[K\n' "$line" "$C_X"
+  done
+  printf '\e[K\n'
+  edge=$((n * 4)) # the wordmark is revealed from the left, 4 columns per frame
+  for r in 0 1; do
+    v=WORD$r; art=${!v}; line="  "; prev=""
+    for ((i = 0; i < ${#art}; i++)); do
+      c=${art:i:1}
+      if [ "$c" = " " ] || [ "$i" -ge "$edge" ]; then line="$line "; continue; fi
+      if [ "$WIDE" = 1 ]; then v=$'\e[38;5;'"${shades[i * 12 / ${#art}]}m"; else v=$C_ACC; fi
+      [ "$v" = "$prev" ] || { line="$line$v"; prev=$v; }
+      line="$line$c"
+    done
+    printf '%s%s\e[K\n' "$line" "$C_X"
   done
 }
 
@@ -172,18 +200,18 @@ banner() {
   fi
   echo
   if [ -n "${CI:-}" ] || [ "${CLOUDY_CLOUD_NO_ANIMATION:-}" = 1 ] || ! { : </dev/tty; } 2>/dev/null; then
-    logo_frame 99
+    banner_frame 99
   else
     local s n
     INTRO_TTY=$(stty -g </dev/tty 2>/dev/null) || INTRO_TTY=""
     stty -echo -icanon min 0 time 1 </dev/tty 2>/dev/null
     printf '\e[?25l'; HIDDEN=1
     for s in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do
-      [ "$s" = 0 ] || printf '\e[3A'
-      logo_frame $((s * 3))
+      [ "$s" = 0 ] || printf '\e[%sA' "$BANNER_ROWS"
+      banner_frame "$s"
       # Waits up to 0.1 s for a key: that is both the frame delay and the skip check.
       n=$(dd bs=1 count=1 </dev/tty 2>/dev/null | wc -c)
-      if [ "$((n))" -gt 0 ]; then printf '\e[3A'; logo_frame 99; break; fi
+      if [ "$((n))" -gt 0 ]; then printf '\e[%sA' "$BANNER_ROWS"; banner_frame 99; break; fi
     done
     drain_tty # while echo is still off and input is unbuffered, so a leftover key is neither shown nor kept
     [ -z "$INTRO_TTY" ] || stty "$INTRO_TTY" </dev/tty 2>/dev/null

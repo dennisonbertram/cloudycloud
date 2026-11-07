@@ -434,7 +434,7 @@ test('animation: skipped without a terminal, with NO_COLOR, CI or CLOUDY_CLOUD_N
   for (const extra of [{ NO_COLOR: '1' }, { CI: '1' }, { CLOUDY_CLOUD_NO_ANIMATION: '1' }]) {
     const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; banner`], env: { PATH: process.env.PATH, HOME: tmp(), ...UI_ENV, ...extra }, steps: [] });
     assert.ok(!r.text.includes('\u001b[?25l'), JSON.stringify(extra)); // no cursor hiding means no animation
-    assert.ok(r.text.includes('Cloudy Cloud') || r.text.includes('cloudy-cloud') || r.text.includes('╔═╗'), r.text);
+    assert.ok(r.text.includes('Cloudy Cloud') || r.text.includes('cloudy-cloud') || r.text.includes('█▀▀'), r.text);
   }
 });
 
@@ -443,7 +443,7 @@ test('animation: plays on a terminal and the cursor is shown again afterwards', 
   const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; banner; echo END`], env: g.env, steps: [] });
   assert.ok(r.text.includes('\u001b[?25l'));
   assert.ok(r.text.lastIndexOf('\u001b[?25h') > r.text.lastIndexOf('\u001b[?25l'));
-  assert.ok((r.text.match(/\u001b\[3A/g) || []).length >= 10, 'frames redraw in place');
+  assert.ok((r.text.match(/\u001b\[6A/g) || []).length >= 10, 'frames redraw in place');
   assert.match(r.text, /END/);
 });
 
@@ -483,4 +483,18 @@ test('link_skill links the fleet skill, and leaves an existing real folder alone
   mkdirSync(join(home2, '.claude/skills/cloud-fleet'), { recursive: true });
   fn(`link_skill /tool/root`, [], { HOME: home2 });
   assert.ok(lstatSync(join(home2, '.claude/skills/cloud-fleet')).isDirectory());
+});
+
+test('banner: the final frame has the wordmark, three cloud rows, and no line over 60 columns', () => {
+  const r = fn("UI=1; UTF=1; WIDE=1; C_X=$'\\e[0m'; banner_frame 99", [], { LC_ALL: 'en_US.UTF-8' });
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stdout.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').split('\n').slice(0, -1);
+  assert.equal(lines.length, 6);
+  assert.ok(lines[4].includes('█▀▀ █   █▀█ █ █ █▀▄ █▄█   █▀▀ █   █▀█ █ █ █▀▄'));
+  assert.ok(lines[5].includes('█▄▄ █▄▄ █▄█ █▄█ █▄▀  █    █▄▄ █▄▄ █▄█ █▄█ █▄▀'));
+  assert.ok(lines[2].includes('(___.__)__)'));
+  for (const l of lines) assert.ok([...l].length <= 60, l);
+  // an early frame is a different picture of the same size
+  const early = fn('UI=1; UTF=1; WIDE=0; banner_frame 3', [], { LC_ALL: 'en_US.UTF-8' }).stdout;
+  assert.notEqual(early.replace(/\u001b\[[0-9;]*[A-Za-z]/g, ''), lines.join('\n') + '\n');
 });
