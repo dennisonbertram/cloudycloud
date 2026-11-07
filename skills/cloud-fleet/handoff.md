@@ -10,6 +10,7 @@ Read this when the user wants a job to run unattended on a cloud coordinator. Pa
 
 Steps:
 
+0. **Check the repo** (SKILL.md, "Before using a repo"): a GitHub origin, a protected main branch, and the repo in the token. Report anything missing in the same confirmation question.
 1. **Confirm with the user first.** Use the structured question tool if you have one. Ask for: the coordinator name, the repo, the base branch, and agreement that the coordinator is billed until it is stopped. Recommend defaults (name from the topic, repo from `git remote get-url origin`, base `main`).
 2. **Prepare the repo.** The coordinator clones from GitHub. Commit and push everything it needs (code, docs, test fixtures). Check `git status` is clean for those files and `git log origin/<base>..HEAD` is empty.
 3. **Write the brief** to a file from `brief-template.md`. Break the job down so nobody needs to ask a question: give exact acceptance commands, owned files per work package, and a default for every ambiguity you can foresee. If you cannot write an acceptance command, ask the user for one before you start.

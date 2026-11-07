@@ -9,6 +9,19 @@ Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works o
 
 Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
 
+## Before using a repo
+
+Check these once per repo, before the first subagent or coordinator. Tell the user plainly about any that fail. Never change GitHub settings yourself.
+
+1. **GitHub origin.** Run `git remote get-url origin`. It must be a github.com URL, because subagents push there. If it isn't, stop and tell the user how to add one.
+2. **Main branch protected.** Subagents run with permission checks off and can push to any branch the token reaches.
+   - Check with `gh api repos/OWNER/REPO/rulesets --jq 'length'` and `gh api repos/OWNER/REPO/branches/<default>/protection` (a 404 means unprotected).
+   - If the default branch is unprotected, warn the user and suggest a ruleset that blocks direct pushes (repo Settings, then Rules, then Rulesets). Continue only if they say so.
+3. **Token access.** The GitHub token stored in Instabox as `GH_TOKEN` must include this repo.
+   - You cannot check it from here. If the first push of the first agent fails with a permission error, stop and tell the user to add the repo to their fine-grained token at https://github.com/settings/personal-access-tokens: under "Only select repositories", with Contents read and write.
+   - Editing the token keeps its value, so nothing else needs updating. Regenerating it does: they must run `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`.
+   - Never suggest "All repositories". Adding repos one at a time keeps a confused or prompt-injected subagent away from the rest.
+
 ## Handing a job to a cloud coordinator
 
 When the user wants a long job to run unattended, start a cloud coordinator instead of running the fleet from this session. The user checks in through Remote Control (claude.ai or the Claude app).
