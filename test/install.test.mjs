@@ -247,7 +247,7 @@ test('coordinators: a failed sign-in removes the image machine and says how to r
   const s = coordStub({ sshFail: true });
   const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLAUDE_CLOUD_CONFIG: join(tmp(), 'env') }));
   assert.match(r.stdout, /failed \(run (claude-cloud setup|\.\/install\.sh) again\)/);
-  assert.match(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx --yes instabox@latest rm img-1/);
+  assert.match(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx --yes instabox@latest rm --yes img-1/);
   assert.ok(!/--save/.test(readFileSync(join(s.dir, 'calls'), 'utf8')));
 });
 
