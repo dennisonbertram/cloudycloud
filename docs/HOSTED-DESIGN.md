@@ -1,10 +1,10 @@
-# Hosted claude-cloud: design sprint
+# Hosted Cloudy Cloud: design sprint
 
 Status: **proposal.** Items marked *(verify)* need checking before building. Items marked **TBD** need a decision.
 
 ## Goal
 
-Make claude-cloud usable without the local setup:
+Make cloudy-cloud usable without the local setup:
 - **Sign in:** a user signs in with GitHub.
 - **Pick repos:** they choose which repos fleets may work on.
 - **Start coordinators:** from a web page, or from Claude Code.
@@ -100,4 +100,4 @@ Browser / Claude app ──► Web app (Next.js) ──► API ──► Instabo
 1. Audience and order: you and teammates first, or the public?
 2. Can Instabox create enough workspaces per tenant, and refresh a machine's proxy secret without a restart? *(verify)*
 3. Billing model and default caps, including per-user limits on the pooled model key.
-4. How the agent-drive and claude-cloud accounts merge: a shared Clerk instance, shared organizations, and which product is the front door.
+4. How the agent-drive and cloudy-cloud accounts merge: a shared Clerk instance, shared organizations, and which product is the front door.

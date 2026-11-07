@@ -19,9 +19,9 @@ export const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 export const MODEL = /^[A-Za-z0-9._:/-]{1,100}$/; // also safe inside the shell command and the YAML file
 const URL_OK = /^https?:\/\/[A-Za-z0-9._:/-]+$/;
 
-// Built-ins, overridden or extended by profiles.json (CLAUDE_CLOUD_PROFILES, else ~/.config/claude-cloud/profiles.json).
+// Built-ins, overridden or extended by profiles.json (CLOUDY_CLOUD_PROFILES, else ~/.config/cloudy-cloud/profiles.json).
 export function loadProfiles(env = process.env) {
-  const file = env.CLAUDE_CLOUD_PROFILES || join(homedir(), '.config/claude-cloud/profiles.json');
+  const file = env.CLOUDY_CLOUD_PROFILES || join(homedir(), '.config/cloudy-cloud/profiles.json');
   let user = {};
   try {
     user = JSON.parse(readFileSync(file, 'utf8'));
@@ -45,7 +45,7 @@ export function resolveProfile(name, model, env = process.env) {
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
-  if (!env[p.keyName]) return { error: `profile ${name} needs ${p.keyName}, which is not set. Add it with claude-cloud setup (the Particle.ai or OpenRouter step), or put ${p.keyName}=... in ~/.config/claude-cloud/env.` };
+  if (!env[p.keyName]) return { error: `profile ${name} needs ${p.keyName}, which is not set. Add it with cloudy-cloud setup (the Particle.ai or OpenRouter step), or put ${p.keyName}=... in ~/.config/cloudy-cloud/env.` };
   return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName } };
 }
 

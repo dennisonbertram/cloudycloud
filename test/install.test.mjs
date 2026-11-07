@@ -48,7 +48,7 @@ test('mask shows prefix and last four only', () => {
 test('write_env is atomic, idempotent, private, and keeps other lines', () => {
   const dir = join(tmp(), 'cfg');
   const file = join(dir, 'env');
-  const env = { CLAUDE_CLOUD_CONFIG: file };
+  const env = { CLOUDY_CLOUD_CONFIG: file };
   fn('write_env INSTABOX_API_KEY aaa', [], env);
   writeFileSync(file, readFileSync(file, 'utf8') + 'OTHER=keep me\nINSTABOX_API_KEY=duplicate\n', { mode: 0o600 });
   const r = fn('write_env INSTABOX_API_KEY "$1"; write_env INSTABOX_API_KEY "$1"; write_env CLAUDE_CODE_OAUTH_TOKEN "$2"', [KEY, TOKEN], env);
@@ -87,10 +87,10 @@ test('--check-only rejects old Node and passes with everything present', () => {
   assert.equal(r2.status, 0, r2.stdout);
 });
 
-test('CLAUDE_CLOUD_CONFIG is honoured and the default is under HOME', () => {
-  assert.equal(fn('cfg', [], { CLAUDE_CLOUD_CONFIG: '/x/y' }).stdout, '/x/y');
+test('CLOUDY_CLOUD_CONFIG is honoured and the default is under HOME', () => {
+  assert.equal(fn('cfg', [], { CLOUDY_CLOUD_CONFIG: '/x/y' }).stdout, '/x/y');
   const home = tmp();
-  assert.equal(fn('cfg', [], { HOME: home }).stdout, join(home, '.config/claude-cloud/env'));
+  assert.equal(fn('cfg', [], { HOME: home }).stdout, join(home, '.config/cloudy-cloud/env'));
 });
 
 test('http_code maps curl results and keeps the key out of argv', () => {
@@ -108,20 +108,20 @@ test('http_code maps curl results and keeps the key out of argv', () => {
 
 test('optional provider key step: Enter skips and saves nothing; a pasted key is saved privately and masked', () => {
   const dir = tmp();
-  const env = { CLAUDE_CLOUD_CONFIG: join(dir, 'env') };
+  const env = { CLOUDY_CLOUD_CONFIG: join(dir, 'env') };
   // read_secret reads /dev/tty, so run it under script(1)-free override: replace read_secret with a stub reading a variable.
   const run = (answer) => fn(`read_secret() { printf -v "$1" '%s' "${answer}"; }; setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai`, [], env);
   const skipped = run('');
   assert.equal(skipped.status, 0);
   assert.match(skipped.stdout, /Enter to skip/);
   assert.match(skipped.stdout, /Skipped Particle\.ai/);
-  assert.ok(!existsSync(env.CLAUDE_CLOUD_CONFIG));
+  assert.ok(!existsSync(env.CLOUDY_CLOUD_CONFIG));
   const saved = run('pk-1234567890abcdef');
   assert.equal(saved.status, 0);
-  assert.equal(readFileSync(env.CLAUDE_CLOUD_CONFIG, 'utf8'), 'PARTICLE_API_KEY=pk-1234567890abcdef\n');
+  assert.equal(readFileSync(env.CLOUDY_CLOUD_CONFIG, 'utf8'), 'PARTICLE_API_KEY=pk-1234567890abcdef\n');
   assert.ok(!saved.stdout.includes('pk-1234567890abcdef'));
   assert.match(saved.stdout, /…cdef/);
-  assert.equal(statSync(env.CLAUDE_CLOUD_CONFIG).mode & 0o777, 0o600);
+  assert.equal(statSync(env.CLOUDY_CLOUD_CONFIG).mode & 0o777, 0o600);
 });
 
 // ---- paste handling, live check, capture, coordinators ----
@@ -194,7 +194,7 @@ test('claude_check: ok, rejected, no network and timeout; token only in the envi
   const net = claudeStub({ fail: 'getaddrinfo ENOTFOUND api.anthropic.com\n' });
   assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(net))), /^unrun /);
   const slow = claudeStub({ sleep: '1' });
-  assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(slow, { CLAUDE_CLOUD_CHECK_SECONDS: '1' }))), /^unrun it took longer than 1 seconds/);
+  assert.match(out1(fn('claude_check "$1"', [TOKEN], withPath(slow, { CLOUDY_CLOUD_CHECK_SECONDS: '1' }))), /^unrun it took longer than 1 seconds/);
 });
 
 test('capture_token extracts a wrapped, escaped token and always deletes the temp file', () => {
@@ -216,13 +216,13 @@ test('capture_token extracts a wrapped, escaped token and always deletes the tem
   assert.deepEqual(readdirSync(t), []);
 });
 
-// A stub folder with bin/claude-cloud and an npx that records its calls.
-function coordStub({ imageOut = 'Image machine img-1 is ready and claude-cloud is installed on it.', sshFail = false, saveFail = false } = {}) {
+// A stub folder with bin/cloudy-cloud and an npx that records its calls.
+function coordStub({ imageOut = 'Image machine img-1 is ready and cloudy-cloud is installed on it.', sshFail = false, saveFail = false } = {}) {
   const dir = tmp();
   const root = join(dir, 'root'); const bin = join(root, 'bin');
   execFileSync('mkdir', ['-p', bin]);
-  writeFileSync(join(bin, 'claude-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\ncase "$*" in\n *--save*) ${saveFail ? 'echo save failed; exit 1' : 'echo saved'} ;;\n *) echo "${imageOut}" ;;\nesac\n`);
-  chmodSync(join(bin, 'claude-cloud'), 0o755);
+  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\ncase "$*" in\n *--save*) ${saveFail ? 'echo save failed; exit 1' : 'echo saved'} ;;\n *) echo "${imageOut}" ;;\nesac\n`);
+  chmodSync(join(bin, 'cloudy-cloud'), 0o755);
   writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\ncase "$*" in\n *"auth login"*) ${sshFail ? 'exit 1' : 'exit 0'} ;;\n *"auth status"*) echo '{"email":"coord@example.com"}' ;;\nesac\n`);
   chmodSync(join(dir, 'npx'), 0o755);
   return { dir, root };
@@ -232,21 +232,21 @@ import { execFileSync } from 'node:child_process';
 test('coordinators: skipped on N; full flow signs in on the machine, saves, and records the account', () => {
   const s = coordStub();
   const cfg = join(tmp(), 'env');
-  const skip = fn(`yn() { return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLAUDE_CLOUD_CONFIG: cfg });
+  const skip = fn(`yn() { return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLOUDY_CLOUD_CONFIG: cfg });
   assert.equal(out1(skip), 'not set up');
   assert.ok(!existsSync(join(s.dir, 'calls')));
-  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLAUDE_CLOUD_CONFIG: cfg }));
+  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
   assert.match(r.stdout, /ready \(coord@example\.com\)/);
   const calls = readFileSync(join(s.dir, 'calls'), 'utf8');
   assert.match(calls, /npx --yes instabox@latest ssh img-1 -- -t claude auth login/);
   assert.match(calls, /coordinator image --save/);
-  assert.match(readFileSync(cfg, 'utf8'), /CLAUDE_CLOUD_SNAPSHOT_ACCOUNT=coord@example\.com/);
+  assert.match(readFileSync(cfg, 'utf8'), /CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=coord@example\.com/);
 });
 
 test('coordinators: a failed sign-in removes the image machine and says how to retry', () => {
   const s = coordStub({ sshFail: true });
-  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLAUDE_CLOUD_CONFIG: join(tmp(), 'env') }));
-  assert.match(r.stdout, /failed \(run (claude-cloud setup|\.\/install\.sh) again\)/);
+  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') }));
+  assert.match(r.stdout, /failed \(run (cloudy-cloud setup|\.\/install\.sh) again\)/);
   assert.match(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx --yes instabox@latest rm --yes img-1/);
   assert.ok(!/--save/.test(readFileSync(join(s.dir, 'calls'), 'utf8')));
 });
@@ -267,9 +267,9 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   writeFileSync(join(cl, 'npm'), '#!/bin/sh\n[ "$1" = prefix ] && echo /nowhere\nexit 0\n');
   writeFileSync(join(cl, 'npx'), '#!/bin/sh\nexit 0\n');
   for (const n of ['curl', 'npm', 'npx']) chmodSync(join(cl, n), 0o755);
-  symlinkSync(resolve('bin/claude-cloud'), join(cl, 'claude-cloud'));
+  symlinkSync(resolve('bin/cloudy-cloud'), join(cl, 'cloudy-cloud'));
   const tdir = tmp();
-  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLAUDE_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
+  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
   const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps });
   return { cl, cfg, tdir, run };
 }
@@ -287,7 +287,7 @@ test('pty: a two-line paste gives the full token; live check runs; token is not 
   const cfg = readFileSync(g.cfg, 'utf8');
   assert.ok(cfg.includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`), r.text);
   assert.ok(cfg.includes(`INSTABOX_API_KEY=${KEY}\n`));
-  assert.ok(cfg.includes('CLAUDE_CLOUD_TOKEN_ACCOUNT=me@example.com'));
+  assert.ok(cfg.includes('CLOUDY_CLOUD_TOKEN_ACCOUNT=me@example.com'));
   assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
   assert.ok(!readFileSync(join(g.cl, 'argv'), 'utf8').includes(TOKEN));
   assert.equal(readFileSync(join(g.cl, 'seen'), 'utf8').split('\n')[0], TOKEN);
@@ -365,12 +365,12 @@ const UI_ENV = { LANG: 'en_US.UTF-8', TERM: 'xterm-256color', NO_COLOR: undefine
 const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/;
 function uiRig(opts, env = {}) {
   const g = rig(opts);
-  const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLAUDE_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
+  const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLOUDY_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
   for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
   return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps, ...extra }) };
 }
 const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
-const NOANIM = { CLAUDE_CLOUD_NO_ANIMATION: '1' };
+const NOANIM = { CLOUDY_CLOUD_NO_ANIMATION: '1' };
 
 test('piped output has no escape sequences and uses ASCII marks', () => {
   const r = spawnSync('/bin/bash', ['-c', `. "${script}"; ok "Done" "detail"; warn "Careful"; bad "Broke"; hint "Try this"; step 2 Claude; box_open Summary; box_row "$C_OK" "$M_OK" "Label" "value"; box_close; banner`],
@@ -428,13 +428,13 @@ test('pty: Ctrl-C during a spinner restores the cursor and terminal echo', () =>
   assert.match(r.text, /ECHO:echo/);
 });
 
-test('animation: skipped without a terminal, with NO_COLOR, CI or CLAUDE_CLOUD_NO_ANIMATION', () => {
+test('animation: skipped without a terminal, with NO_COLOR, CI or CLOUDY_CLOUD_NO_ANIMATION', () => {
   const piped = spawnSync('/bin/bash', ['-c', `. "${script}"; banner`], { encoding: 'utf8', env: { PATH: process.env.PATH, ...UI_ENV, HOME: tmp() } });
-  assert.equal(piped.stdout, 'claude-cloud setup\nChecks your tools, links the command and saves your keys.\n');
-  for (const extra of [{ NO_COLOR: '1' }, { CI: '1' }, { CLAUDE_CLOUD_NO_ANIMATION: '1' }]) {
+  assert.equal(piped.stdout, 'Cloudy Cloud setup\nChecks your tools, links the command and saves your keys.\n');
+  for (const extra of [{ NO_COLOR: '1' }, { CI: '1' }, { CLOUDY_CLOUD_NO_ANIMATION: '1' }]) {
     const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; banner`], env: { PATH: process.env.PATH, HOME: tmp(), ...UI_ENV, ...extra }, steps: [] });
     assert.ok(!r.text.includes('\u001b[?25l'), JSON.stringify(extra)); // no cursor hiding means no animation
-    assert.ok(r.text.includes('claude-cloud') || r.text.includes('╔═╗'), r.text);
+    assert.ok(r.text.includes('Cloudy Cloud') || r.text.includes('cloudy-cloud') || r.text.includes('╔═╗'), r.text);
   }
 });
 

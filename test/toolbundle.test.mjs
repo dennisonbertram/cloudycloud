@@ -20,9 +20,9 @@ test('the tool bundle carries an uncommitted tracked edit, leaves no ref behind,
   const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
   writeFileSync(join(home, 'x.bundle'), b.data);
   sh(home, toolInstallCmd(b, join(home, 'x.bundle'), 'https://github.com/o/t.git'));
-  assert.equal(readFileSync(join(home, 'claude-cloud', 'a.txt'), 'utf8'), 'edited\n');
+  assert.equal(readFileSync(join(home, 'cloudy-cloud', 'a.txt'), 'utf8'), 'edited\n');
   sh(home, toolInstallCmd(b, join(home, 'x.bundle'))); // re-install works
-  assert.equal(sh(join(home, 'claude-cloud'), 'git rev-parse HEAD'), b.sha);
+  assert.equal(sh(join(home, 'cloudy-cloud'), 'git rev-parse HEAD'), b.sha);
 });
 
 test('retryIndexLock retries a locked index, and rethrows anything else', async () => {

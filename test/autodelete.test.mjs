@@ -35,7 +35,7 @@ const fx = () => {
   return { log, sdk };
 };
 
-test('a worker machine is created with a 6 hour delete deadline; CLAUDE_CLOUD_WORKER_HOURS changes it', async () => {
+test('a worker machine is created with a 6 hour delete deadline; CLOUDY_CLOUD_WORKER_HOURS changes it', async () => {
   const { log, sdk } = fx();
   await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, baseFetch(log), undefined, 'o1')({}, { deleteAfterSeconds: 6 * 3600 });
   assert.equal(log.posts[0].deleteAfterSeconds, 21600);
@@ -46,7 +46,7 @@ test('coordinator start: default 24 h deadline, --max-hours applied, over 24 ref
   const mk = () => {
     const { log, sdk } = fx();
     const cfg = join(mkdtempSync(join(tmpdir(), 'cc-ad-')), 'env');
-    const env = { INSTABOX_API_KEY: KEY, CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDE_CLOUD_CONFIG: cfg, CLAUDE_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
+    const env = { INSTABOX_API_KEY: KEY, CLAUDE_CODE_OAUTH_TOKEN: 't', CLOUDY_CLOUD_CONFIG: cfg, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
     sdk.Sandbox.create = async (template, opts) => {
       await opts.fetch('https://api.instabox.sh/v1/machines', { method: 'POST', body: '{}' });
       return { sandboxId: 'm', getInfo: async () => ({ name: 'coord-boss' }), kill: async () => {},
@@ -59,7 +59,7 @@ test('coordinator start: default 24 h deadline, --max-hours applied, over 24 ref
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', 'do it'], a.deps);
   assert.equal(a.log.posts[0].deleteAfterSeconds, 86400);
   assert.match(a.log.writes.find((w) => w.p.endsWith('task.md')).d, /^Your machine is deleted by the server at \d{4}-\d\d-\d\dT[\d:.]+Z; push your work well before then\./);
-  assert.match(a.log.cmds.find((c) => /tmux new-session/.test(c)), /CLAUDE_CLOUD_DELETE_AT=/);
+  assert.match(a.log.cmds.find((c) => /tmux new-session/.test(c)), /CLOUDY_CLOUD_DELETE_AT=/);
   const b = mk();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--max-hours', '2'], b.deps);
   assert.equal(b.log.posts[0].deleteAfterSeconds, 7200);

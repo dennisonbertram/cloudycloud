@@ -44,20 +44,20 @@ export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, ti
 }
 
 // The SDK (0.6.0) has no deleteAfterSeconds option, but Instabox accepts it in the create request. Instabox then deletes the
-// machine at that time in any state, even if every claude-cloud process has died. Pass this as the SDK's `fetch` option: it
+// machine at that time in any state, even if every cloudy-cloud process has died. Pass this as the SDK's `fetch` option: it
 // adds the field to the POST /v1/machines body and leaves every other request alone.
 export const withDeleteAfter = (seconds, fetchFn = fetch) => (url, init = {}) =>
   fetchFn(url, init.method === 'POST' && /\/v1\/machines\/?$/.test(String(url)) && typeof init.body === 'string'
     ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body), deleteAfterSeconds: seconds }) } : init);
 
-// Seconds a worker or nested coordinator machine lives: CLAUDE_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
+// Seconds a worker or nested coordinator machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
 export const workerSeconds = (env) => {
-  const h = Number(env.CLAUDE_CLOUD_WORKER_HOURS);
+  const h = Number(env.CLOUDY_CLOUD_WORKER_HOURS);
   return Math.max(60, Math.round((h > 0 ? Math.min(h, 24) : 6) * 3600));
 };
 
 let shared; // one limiter for the whole server process
-const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) : 24));
+const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24));
 
 // Returns createSandbox(envs) for run-subagent. `owner` is the server instance id the reaper deletes by.
 // `sdk`, `fetchFn` and `timing` are injectable for tests. `rt` = { limiter, now, sleep, sliceMs } is too.
@@ -82,7 +82,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
     if (!env.INSTABOX_API_KEY) throw new Error('INSTABOX_API_KEY is not set.');
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
-      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud', owner }, archiveMs: ARCHIVE_MS,
+      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'cloudy-cloud', owner }, archiveMs: ARCHIVE_MS,
       fetch: withDeleteAfter(deleteAfterSeconds, fetchFn),
     });
     try {

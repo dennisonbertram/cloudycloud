@@ -1,11 +1,11 @@
 ---
 name: cloud-fleet
-description: How to run fleets of claude-cloud subagents (Instabox cloud machines that push claude-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.
+description: How to run fleets of cloudy-cloud subagents (Instabox cloud machines that push cloudy-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.
 ---
 
-# Managing a claude-cloud fleet
+# Managing a Cloudy Cloud fleet
 
-Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `claude-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
+Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
 Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
 
@@ -21,7 +21,7 @@ Workers can run Claude or open models. Do not tell the user otherwise.
 Profiles: `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`. `particle` means Particle.ai's `particle-1` model.
 
 - Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
-- If you do not have `mcp__cloud__cloud_agent`, you are not in a `claude-cloud` session. Say so, and ask the user to restart with `claude-cloud`.
+- If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
 - To prove a worker ran in the cloud, check its hostname starts with `instabox-sbx-`.
 
 ## Before using a repo
@@ -33,10 +33,10 @@ Check these once per repo, before the first subagent or coordinator. Tell the us
    - Check with `gh api repos/OWNER/REPO/rulesets --jq 'length'` and `gh api repos/OWNER/REPO/branches/<default>/protection` (a 404 means unprotected).
    - If the default branch is unprotected, warn the user and suggest a ruleset that blocks direct pushes (repo Settings, then Rules, then Rulesets). Continue only if they say so.
 3. **Token access: ask the user.** The GitHub token stored in Instabox as `GH_TOKEN` must include this repo, and you cannot check that from here.
-   - The first time you use a repo, ask with the structured question tool if you have one: "Is OWNER/REPO in your claude-cloud GitHub token?" Offer three options:
+   - The first time you use a repo, ask with the structured question tool if you have one: "Is OWNER/REPO in your cloudy-cloud GitHub token?" Offer three options:
      - **Already included:** continue.
-     - **Add it to my current token** (recommended): at https://github.com/settings/personal-access-tokens, open the claude-cloud token, add the repo under "Only select repositories" with Contents read and write, and save. The value does not change, so nothing else needs updating.
-     - **Generate a new token:** create a fine-grained token at https://github.com/settings/personal-access-tokens/new with "Only select repositories" set to **every** repo they use with claude-cloud, not just this one, and Contents read and write. Then store it with `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, pasting the token at the prompt.
+     - **Add it to my current token** (recommended): at https://github.com/settings/personal-access-tokens, open the cloudy-cloud token, add the repo under "Only select repositories" with Contents read and write, and save. The value does not change, so nothing else needs updating.
+     - **Generate a new token:** create a fine-grained token at https://github.com/settings/personal-access-tokens/new with "Only select repositories" set to **every** repo they use with cloudy-cloud, not just this one, and Contents read and write. Then store it with `npx instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, pasting the token at the prompt.
    - There is only one `GH_TOKEN`, so a new token replaces the old one for every repo. Tell the user that, and to delete the old token on GitHub afterwards.
    - Never ask for the token in chat. The user pastes it into the Instabox CLI prompt themselves. Wait until they say it is done.
    - If the first push of the first agent still fails with a permission error, the repo is not in the token: go back to these options.
@@ -48,8 +48,8 @@ When the user wants a long job to run unattended, start a cloud coordinator inst
 
 - Hand off when the job is long or large, the user is leaving, and the work needs only what is on GitHub. Do not hand off when it needs untracked local files or the user wants to steer step by step.
 - Confirm first: coordinator name, repo, base branch, and that it is billed until stopped. Commit and push what it needs.
-- Write the brief from [brief-template.md](brief-template.md), then run `claude-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`.
-- Tell the user the Remote Control session name, how to attach, and `claude-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
+- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`.
+- Tell the user the Remote Control session name, how to attach, and `cloudy-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
 
 Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).
 
@@ -68,7 +68,7 @@ If unsure, use trunk merging. One PR for one job is almost always what a reviewe
 
 1. Give each agent one independent task and tell it which files it owns.
 2. Start all agents, wait for results.
-3. Fetch each branch, run the tests, open one PR per good branch from `claude-cloud/<id>`.
+3. Fetch each branch, run the tests, open one PR per good branch from `cloudy-cloud/<id>`.
 
 Only use this when the tasks really are independent and the user wants separate PRs. Cap it at what a human can review (about 10 to 15).
 
@@ -78,7 +78,7 @@ The coordinator is the session that starts workers. It owns an integration branc
 
 **Where to do the git work:**
 - **On a cloud coordinator machine (`~/repo`):** checking out the trunk in place is fine.
-- **In the user's own working folder,** for example a `claude-cloud` session on their laptop, never switch that folder's branch. It is the user's checkout, and an installed `claude-cloud` may run from it, so a switch silently changes their files and tools.
+- **In the user's own working folder,** for example a `cloudy-cloud` session on their laptop, never switch that folder's branch. It is the user's checkout, and an installed `cloudy-cloud` may run from it, so a switch silently changes their files and tools.
   - Do the trunk work in a separate worktree instead: `git worktree add ../<repo>-fleet -b fleet/<topic> origin/<base>`. Run the merge commands below there, and remove the worktree when done.
   - Workers then start from the folder's current commit, so their brief must say to `git fetch origin fleet/<topic> && git rebase origin/fleet/<topic>` first.
 
@@ -89,12 +89,12 @@ The coordinator is the session that starts workers. It owns an integration branc
    git push -u origin fleet/<topic>
    ```
    Untracked files are not copied. `git add` and commit anything the workers need. Tell each worker to `git fetch origin fleet/<topic>` and `git rebase origin/fleet/<topic>` (or `git merge`) before it starts if the trunk has moved since it was created.
-2. Start the workers (see "Writing briefs"). Each pushes `claude-cloud/<id>`.
+2. Start the workers (see "Writing briefs"). Each pushes `cloudy-cloud/<id>`.
 3. As workers finish, merge them one at a time:
    ```sh
-   git fetch origin 'refs/heads/claude-cloud/*:refs/remotes/origin/claude-cloud/*'
+   git fetch origin 'refs/heads/cloudy-cloud/*:refs/remotes/origin/cloudy-cloud/*'
    git checkout fleet/<topic>
-   git merge --no-ff origin/claude-cloud/<id> -m "Merge <description> (<id>)"   # one-line subject; put any trailers in a second -m
+   git merge --no-ff origin/cloudy-cloud/<id> -m "Merge <description> (<id>)"   # one-line subject; put any trailers in a second -m
    <test command>
    git push origin fleet/<topic>
    ```
@@ -110,7 +110,7 @@ For large jobs the top coordinator splits the work into areas. Each area gets a 
 - Each sub-coordinator creates and pushes `fleet/<topic>/<area>`, runs its own workers, merges them as in step 3, runs the area tests, and reports when its sub-trunk is ready.
 - The top coordinator merges each sub-trunk into `fleet/<topic>`, runs the full tests, and opens the PR.
 - Git cannot hold both `fleet/x` and `fleet/x/y` as branch names. If that happens, name the sub-trunks `fleet/<topic>-<area>` instead.
-- A sub-coordinator's workers run on their own machines and its depth counts toward `CLAUDE_CLOUD_MAX_DEPTH` (3).
+- A sub-coordinator's workers run on their own machines and its depth counts toward `CLOUDY_CLOUD_MAX_DEPTH` (3).
 
 ## Pattern 3: waves
 
@@ -143,7 +143,7 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - Files it owns, by path. Give workers disjoint files so merges stay clean. Say "do not edit anything else". If a shared file must change, one worker owns it, or you edit it yourself after merging.
 - Base branch: "Your work builds on `fleet/<topic>`."
 - The acceptance check and the exact test command, for example `npm test -- test/parser.test.mjs`. Say what passing looks like.
-- "Commit early and often, and push to your `claude-cloud/<id>` branch before you finish. Work that is not pushed is lost."
+- "Commit early and often, and push to your `cloudy-cloud/<id>` branch before you finish. Work that is not pushed is lost."
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
 
@@ -155,24 +155,24 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 - In task mode (terminal Claude Code 2.1.304 or later) results arrive on their own. Do not call `cloud_agent_wait`. Otherwise call `cloud_agent_wait` with all the ids, and again after each `cloud_agent_message`.
 - Use `cloud_agent_list` to see status and progress. `queued` is normal while machines start.
 - Never trust a worker's reply. A worker saying "done" does not mean the work is pushed or correct. Fetch the branch, look at the diff, run the tests, then merge.
-- Check the branch exists: `git ls-remote --heads origin 'claude-cloud/<id>'`.
+- Check the branch exists: `git ls-remote --heads origin 'cloudy-cloud/<id>'`.
 - Merge in the order results arrive. Do not wait for the slowest worker before starting.
 - When an agent is merged or abandoned, `cloud_agent_stop` it. Idle agents cost money until they time out at 60 minutes.
 
 ## When things go wrong
 
-- A failed or vanished worker: its pushed commits are still on `claude-cloud/<id>`. Fetch it and look. Keep what is good.
+- A failed or vanished worker: its pushed commits are still on `cloudy-cloud/<id>`. Fetch it and look. Keep what is good.
 - To retry: start a new agent from the current trunk with a narrower brief that names what is still missing. Do not re-run the whole original brief.
 - No branch found: the worker did not push. Note it in your plan ("worker X: nothing pushed, retried as Y") and retry. Do not pretend it was done.
-- A worker that edited outside its files: cherry-pick only the files it owned (`git checkout origin/claude-cloud/<id> -- <path>`), drop the rest.
+- A worker that edited outside its files: cherry-pick only the files it owned (`git checkout origin/cloudy-cloud/<id> -- <path>`), drop the rest.
 - Quota or queue stalls: if `cloud_agent_list` shows many `queued` agents, the plan's machine limit is full. Wait; the tool retries by itself. Consider fewer, larger tasks.
 - Tell the user plainly what failed and what you did about it.
 
 ## Safety
 
-- Never print, log, paste into a prompt, or commit keys and tokens: anything in the environment, `~/.config/claude-cloud`, `.env` files, `INSTABOX_API_KEY`, `ANTHROPIC_API_KEY`, `*_API_KEY`, `GH_TOKEN`. Do not put them in worker briefs.
-- Only push to `claude-cloud/*` and `fleet/*` branches. Never push to `main` or the base branch. Tell workers the same.
-- Respect the caps: `CLAUDE_CLOUD_MAX_DEPTH` (default 3) limits how deep coordinators can nest, and `CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION` (default 200) limits how many agents one session starts. Plan the tree to fit. If a start is refused for a cap, do not try to get around it; tell the user.
+- Never print, log, paste into a prompt, or commit keys and tokens: anything in the environment, `~/.config/cloudy-cloud`, `.env` files, `INSTABOX_API_KEY`, `ANTHROPIC_API_KEY`, `*_API_KEY`, `GH_TOKEN`. Do not put them in worker briefs.
+- Only push to `cloudy-cloud/*` and `fleet/*` branches. Never push to `main` or the base branch. Tell workers the same.
+- Respect the caps: `CLOUDY_CLOUD_MAX_DEPTH` (default 3) limits how deep coordinators can nest, and `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (default 200) limits how many agents one session starts. Plan the tree to fit. If a start is refused for a cap, do not try to get around it; tell the user.
 - Workers run with permission checks off. Do not give them untrusted instructions or content to follow.
 
 ## Cleanup
@@ -180,10 +180,10 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 After a branch is merged into the trunk and the trunk is pushed, delete the worker branch:
 
 ```sh
-git push origin --delete claude-cloud/<id>
+git push origin --delete cloudy-cloud/<id>
 ```
 
-Delete several at once: `git push origin --delete claude-cloud/<id1> claude-cloud/<id2>`.
+Delete several at once: `git push origin --delete cloudy-cloud/<id1> cloudy-cloud/<id2>`.
 
 Do this only for branches already merged. Keep the branch of a failed worker until you have decided what to keep. After the trunk PR merges, delete `fleet/<topic>` and any `fleet/<topic>/*` branches the same way. Prune local refs with `git fetch --prune`. Then run `cloud_agent_list` and `cloud_agent_stop` any agents still open.
 

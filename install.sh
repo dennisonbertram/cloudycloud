@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sets up claude-cloud: checks tools, links the command, and asks for each key.
+# Sets up cloudy-cloud: checks tools, links the command, and asks for each key.
 # Run it from a clone, in a terminal: ./install.sh
 # Secrets are handled with shell builtins only (read, printf) and never appear in argv.
 
@@ -165,13 +165,13 @@ logo_frame() {
 DESCRIPTION="Checks your tools, links the command and saves your keys."
 # banner: the animated logo on a real terminal; a one-line title otherwise. Any key skips the animation.
 banner() {
-  if [ "$UI" != 1 ]; then printf 'claude-cloud setup\n%s\n' "$DESCRIPTION"; return; fi
+  if [ "$UI" != 1 ]; then printf 'Cloudy Cloud setup\n%s\n' "$DESCRIPTION"; return; fi
   if [ "$UTF" != 1 ] || [ "$COLS" -lt 60 ]; then
-    printf '\n  %s%s%s %sclaude-cloud%s  setup\n  %s%s%s\n' "$C_ACC" "$([ "$UTF" = 1 ] && echo ◆ || echo '*')" "$C_X" "$C_B" "$C_X" "$C_DIM" "$DESCRIPTION" "$C_X"
+    printf '\n  %s%s%s %scloudy-cloud%s  setup\n  %s%s%s\n' "$C_ACC" "$([ "$UTF" = 1 ] && echo ◆ || echo '*')" "$C_X" "$C_B" "$C_X" "$C_DIM" "$DESCRIPTION" "$C_X"
     return
   fi
   echo
-  if [ -n "${CI:-}" ] || [ "${CLAUDE_CLOUD_NO_ANIMATION:-}" = 1 ] || ! { : </dev/tty; } 2>/dev/null; then
+  if [ -n "${CI:-}" ] || [ "${CLOUDY_CLOUD_NO_ANIMATION:-}" = 1 ] || ! { : </dev/tty; } 2>/dev/null; then
     logo_frame 99
   else
     local s n
@@ -193,7 +193,7 @@ banner() {
   printf '  %s%s%s\n' "$C_DIM" "$DESCRIPTION" "$C_X"
 }
 
-cfg() { printf '%s' "${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}"; }
+cfg() { printf '%s' "${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}"; }
 
 valid_ibk() { [[ $1 =~ ^ibk_[a-z2-7]{52}$ ]]; }
 valid_claude() { [[ $1 == sk-ant-oat01-* ]]; }
@@ -291,27 +291,32 @@ check_prereqs() {
 }
 
 warn_shell_env() {
-  [ -z "${!1:-}" ] || warn "$1 is also set in your shell" "claude-cloud uses the shell value, not the saved one"
+  [ -z "${!1:-}" ] || warn "$1 is also set in your shell" "cloudy-cloud uses the shell value, not the saved one"
 }
 
 link_command() { # link_command ROOT
-  local root=$1 cur other
-  cur=$(command -v claude-cloud) || cur=""
+  local root=$1 cur other old
+  cur=$(command -v cloudy-cloud) || cur=""
+  # npm link made a claude-cloud link that now dangles (this folder no longer has bin/claude-cloud). Remove only a broken link.
+  old=$(npm prefix -g 2>/dev/null)/bin/claude-cloud
+  if [ -L "$old" ] && [ ! -e "$old" ]; then
+    rm -f "$old" && ok "Removed the old claude-cloud command link"
+  fi
   if [ -z "$cur" ]; then
     (cd "$root" && npm link >/dev/null) || { bad "npm link failed" >&2; exit 1; }
-    ok "Linked the claude-cloud command"
-    command -v claude-cloud >/dev/null ||
+    ok "Linked the cloudy-cloud command"
+    command -v cloudy-cloud >/dev/null ||
       warn "Add this to your shell profile" "export PATH=\"$(npm prefix -g)/bin:\$PATH\""
     return
   fi
   other=$(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "$cur")
-  if [ "$other" = "$root/bin/claude-cloud" ]; then
-    ok "claude-cloud already runs from this folder"
+  if [ "$other" = "$root/bin/cloudy-cloud" ]; then
+    ok "cloudy-cloud already runs from this folder"
   else
-    other=${other%/bin/claude-cloud}
-    if yn "claude-cloud on your PATH runs from $other. Point it at this folder instead?"; then
+    other=${other%/bin/cloudy-cloud}
+    if yn "cloudy-cloud on your PATH runs from $other. Point it at this folder instead?"; then
       (cd "$root" && npm link >/dev/null) || { bad "npm link failed" >&2; exit 1; }
-      ok "Linked the claude-cloud command to this folder"
+      ok "Linked the cloudy-cloud command to this folder"
     fi
   fi
 }
@@ -322,7 +327,7 @@ STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked
 LOCAL_ACCOUNT=""
 
 # rerun_cmd: the command that runs setup again.
-rerun_cmd() { if command -v claude-cloud >/dev/null 2>&1; then printf 'claude-cloud setup'; else printf './install.sh'; fi; }
+rerun_cmd() { if command -v cloudy-cloud >/dev/null 2>&1; then printf 'cloudy-cloud setup'; else printf './install.sh'; fi; }
 
 # strip_escapes TEXT: prints TEXT without terminal escape sequences and carriage returns.
 strip_escapes() {
@@ -392,7 +397,7 @@ claude_account() {
 
 # claude_check TOKEN: one tiny request. Prints "ok", "fail REASON" or "unrun REASON". The token goes in the environment only.
 claude_check() {
-  local f rc pid wd out reason secs=${CLAUDE_CLOUD_CHECK_SECONDS:-60}
+  local f rc pid wd out reason secs=${CLOUDY_CLOUD_CHECK_SECONDS:-60}
   f=$(mktemp) || { echo "unrun could not create a temporary file"; return; }
   CLAUDE_CODE_OAUTH_TOKEN="$1" claude -p --model haiku "Reply with ok" </dev/null >"$f" 2>&1 &
   pid=$!
@@ -510,7 +515,7 @@ setup_instabox() {
 setup_claude() {
   local saved key tries=0 auto=1 acct marker result reason
   saved=$(get_saved CLAUDE_CODE_OAUTH_TOKEN)
-  marker=$(get_saved CLAUDE_CLOUD_TOKEN_ACCOUNT)
+  marker=$(get_saved CLOUDY_CLOUD_TOKEN_ACCOUNT)
   if [ -n "$saved" ]; then
     STATUS_CLAUDE="OK ($(mask sk-ant-oat01- "$saved")${marker:+, $marker})"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
@@ -560,7 +565,7 @@ setup_claude() {
     esac
     write_env CLAUDE_CODE_OAUTH_TOKEN "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
     acct=$(claude_account "$key")
-    if [ -n "$acct" ]; then write_env CLAUDE_CLOUD_TOKEN_ACCOUNT "$acct"; else del_env CLAUDE_CLOUD_TOKEN_ACCOUNT; fi
+    if [ -n "$acct" ]; then write_env CLOUDY_CLOUD_TOKEN_ACCOUNT "$acct"; else del_env CLOUDY_CLOUD_TOKEN_ACCOUNT; fi
     STATUS_CLAUDE="OK ($(mask sk-ant-oat01- "$key")${acct:+, $acct})"
     ok "Saved the Claude token" "$(mask sk-ant-oat01- "$key")"
     hint "Subagents use the Claude account the token was made with${acct:+ ($acct)}."
@@ -582,8 +587,8 @@ coordinator_cleanup() {
 # Optional: cloud coordinators. Builds the image machine, opens the Claude sign-in on it, and saves the snapshot.
 setup_coordinators() {
   local root=$1 snap marker out name rc=0 acct saveout
-  snap=$(get_saved CLAUDE_CLOUD_COORDINATOR_SNAPSHOT)
-  marker=$(get_saved CLAUDE_CLOUD_SNAPSHOT_ACCOUNT)
+  snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
+  marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
   if [ -n "$snap" ]; then
     STATUS_COORD="ready${marker:+ ($marker)}"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
@@ -595,7 +600,7 @@ setup_coordinators() {
   fi
   hint "This can take a few minutes."
   spin_start "Building the coordinator image machine"
-  out=$("$root/bin/claude-cloud" coordinator image 2>&1) || rc=$?
+  out=$("$root/bin/cloudy-cloud" coordinator image 2>&1) || rc=$?
   spin_stop
   name=$(printf '%s\n' "$out" | sed -n 's/^Image machine \([^ ]*\) is ready.*/\1/p; s/.*already exists (\([^)]*\)).*/\1/p' | head -n 1)
   if [ -z "$name" ]; then
@@ -615,15 +620,15 @@ setup_coordinators() {
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));console.log(j.email||(j.account&&j.account.email)||"")}catch{console.log("")}})' 2>/dev/null) || acct=""
   spin_stop
   spin_start "Saving the coordinator image"
-  if ! saveout=$("$root/bin/claude-cloud" coordinator image --save 2>&1); then
+  if ! saveout=$("$root/bin/cloudy-cloud" coordinator image --save 2>&1); then
     spin_stop
     printf '%s\n' "$saveout" | tail -n 5 >&2
-    bad "Saving the image failed. To retry: $root/bin/claude-cloud coordinator image --save" >&2
+    bad "Saving the image failed. To retry: $root/bin/cloudy-cloud coordinator image --save" >&2
     coordinator_cleanup "$name"
     STATUS_COORD="failed (run $(rerun_cmd) again)"; return 0
   fi
   spin_stop
-  if [[ $acct =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then write_env CLAUDE_CLOUD_SNAPSHOT_ACCOUNT "$acct"; else acct=""; del_env CLAUDE_CLOUD_SNAPSHOT_ACCOUNT; fi
+  if [[ $acct =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then write_env CLOUDY_CLOUD_SNAPSHOT_ACCOUNT "$acct"; else acct=""; del_env CLOUDY_CLOUD_SNAPSHOT_ACCOUNT; fi
   STATUS_COORD="ready${acct:+ ($acct)}"
   ok "Coordinator image saved" "${acct:+$acct, }$SPIN_T"
 }
@@ -660,7 +665,7 @@ setup_github() {
   fi
   ask "GitHub token" "Subagents push their branches with it. Instabox stores it;" "subagent machines only see a placeholder." \
     "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new" \
-    "Repository access: only the repos you will use with claude-cloud." "Permissions: Contents, read and write." \
+    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, read and write." \
     "Next, the Instabox CLI signs you in (if needed) and asks for the token." "Nothing shows as you paste."
   # The token goes from the terminal straight to the Instabox CLI; this script never sees it.
   npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty
@@ -719,6 +724,7 @@ main() {
 
   local root branch sha log
   root=$(cd "$(dirname "$0")" && pwd)
+  . "$root/bin/migrate-config.sh"; migrate_config
   log=$(mktemp)
   spin_start "Installing dependencies"
   (cd "$root" && npm install --silent --no-audit --no-fund) >"$log" 2>&1 || { spin_stop; cat "$log" >&2; rm -f "$log"; bad "npm install failed." >&2; exit 1; }
@@ -753,16 +759,16 @@ main() {
   summary_row "Coordinators" "$STATUS_COORD"
   box_close
   echo
-  hint "claude-cloud runs from $root"
+  hint "cloudy-cloud runs from $root"
   hint "It is on branch $branch at $sha."
   hint "To update, run this in that folder: git pull && npm install"
-  hint "To change a key later, run: claude-cloud setup"
-  hint "Restart any open claude-cloud session to use the new keys."
+  hint "To change a key later, run: cloudy-cloud setup"
+  hint "Restart any open cloudy-cloud session to use the new keys."
   warn "Recommended: block direct pushes to your main branch on GitHub"
   hint "Settings > Rules > Rulesets. Subagents can push to any branch the token reaches."
   box_open Next
   box_text "In a repo with a github.com origin, run:"
-  box_text "  claude-cloud" "$C_B$C_ACC"
+  box_text "  cloudy-cloud" "$C_B$C_ACC"
   box_text "then type:"
   box_text "  use a subagent to run hostname, write it to proof.txt," "$C_ACC"
   box_text "  commit and push, and tell me the result" "$C_ACC"

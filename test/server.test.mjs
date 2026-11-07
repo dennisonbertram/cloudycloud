@@ -91,7 +91,7 @@ test('with the tasks extension, cloud_agent answers with a task; tasks/get shows
   const out = last.result.result.content[0].text;
   assert.match(out, new RegExp(`agent_id: ${t.taskId.split('-')[1]} \\(turn 1\\)`));
   assert.match(out, /done SLOW/);
-  assert.match(out, /Pushed to origin claude-cloud\//);
+  assert.match(out, /Pushed to origin cloudy-cloud\//);
   assert.match(out, /Total: 2 tool uses, 1\.0k in \/ 42 out tokens, \$0\.0123, \d+s$/);
   assert.equal(last.result.statusMessage.startsWith('2 tool uses · 1.0k tokens'), true);
 

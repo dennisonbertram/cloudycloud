@@ -1,5 +1,5 @@
 {
-  "name": "claude-cloud",
+  "name": "cloudy-cloud",
   "version": "0.1.0",
   "description": "Run Claude Code subagents in Instabox sandboxes",
   "scripts": {
@@ -12,6 +12,6 @@
   "type": "module",
   "private": true,
   "bin": {
-    "claude-cloud": "bin/claude-cloud"
+    "cloudy-cloud": "bin/cloudy-cloud"
   }
 }
