@@ -24,6 +24,8 @@ your Mac                                  Instabox (one machine per subagent)
 - **Accounts:** an Instabox account (a paid plan for more than a few subagents at once), a Claude subscription or API key, and a GitHub repo you can push to.
 - **On your machine:** `git`, Node.js 20 or later, and Claude Code.
 
+**Status:** everything built and proven live, with evidence, is in [docs/STATUS.md](docs/STATUS.md). A hosted version (Clerk sign-in, GitHub App, one central Instabox account) is sketched in [docs/HOSTED-DESIGN.md](docs/HOSTED-DESIGN.md).
+
 ## Model profiles (open-model workers)
 
 A worker can run Claude Code on a non-Anthropic model while your session stays on Claude. Ask for it in plain language ("use a glm subagent for this"); `cloud_agent` takes an optional `profile`. Follow-up messages reuse the agent's profile, and `cloud_agent_list` and the status line show it.
