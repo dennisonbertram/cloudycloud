@@ -59,4 +59,5 @@ As of 2026-11-06. **"Proven live"** means it was run against real Instabox machi
 - **agent-drive access for workers:** not built. It needs a `delegate` credential and a dedicated drive.
 - **Particle key:** it sits on worker machines; moving it into an Instabox proxy secret needs the user to run `npx instabox@latest secrets set PARTICLE_API_KEY --host api.particle.ai`.
 - **The `pi` harness:** fixtures were synthetic, but the live run passed. There's no per-command time limit setting for `pi`.
+- **Old-session shim:** delete `bin/claude-cloud` once no session started before the rename to Cloudy Cloud is still running.
 - **Hosted service:** see [HOSTED-DESIGN.md](HOSTED-DESIGN.md).

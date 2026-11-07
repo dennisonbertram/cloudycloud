@@ -1,0 +1,7 @@
+#!/bin/sh
+# Temporary. Sessions started before the rename to Cloudy Cloud still run this path on coordinator machines,
+# with CLAUDE_CLOUD_* settings. Delete this file once no session from before the rename is running.
+for v in $(env | sed -n 's/^CLAUDE_CLOUD_\([A-Z_]*\)=.*/\1/p'); do
+  eval "[ -n \"\${CLOUDY_CLOUD_$v+x}\" ] || export CLOUDY_CLOUD_$v=\"\${CLAUDE_CLOUD_$v}\""
+done
+exec "$(dirname "$(readlink -f "$0")")/cloudy-cloud" "$@"
