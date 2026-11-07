@@ -18,8 +18,8 @@ Steps:
    claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branch BASE --task-file /tmp/brief-NAME.md --json
    ```
    The JSON is `{name, machine, remoteControlName, attach}`. It begins on the task at once.
-5. **Tell the user** three things: the Remote Control session name (`remoteControlName`; they open claude.ai or the Claude app and pick that session), how to attach from a terminal (`attach`, or `claude-cloud coordinator attach NAME`), and the stop command: `claude-cloud coordinator stop NAME`.
-6. **Do not stop it** unless the user asks. It runs until stopped. List coordinators with `claude-cloud coordinator ls`. Remind the user to stop it when the report arrives.
+5. **Tell the user** three things: the Remote Control session name (`remoteControlName`; they open claude.ai or the Claude app and pick that session), how to attach from a terminal (`attach`, or `claude-cloud coordinator attach NAME`), the deadline (the server deletes the machine at the time `coordinator start` prints; default 24 hours, set with `--max-hours`), and the stop command: `claude-cloud coordinator stop NAME`.
+6. **Do not stop it** unless the user asks. It deletes itself when it finishes (see Part C), or the server deletes it at the deadline, whichever is first. List coordinators with `claude-cloud coordinator ls`. Set `--max-hours` to the wall time in the brief plus a margin.
 
 ## C. Working unattended (coordinator)
 
@@ -39,5 +39,7 @@ There is no human to answer questions. The user may look in through Remote Contr
   5. `cloud_agent_stop` every worker.
   6. Delete the worker branches you merged (`git push origin --delete claude-cloud/<id> ...`) unless the brief says to keep them. Keep the branches of failed or skipped workers, and list them in the report.
   7. Post a final summary in the session. The user reads it through Remote Control.
-- **You cannot stop your own machine.** Say so in the summary and include the user's command: `claude-cloud coordinator stop NAME`.
+  8. Last, run `~/claude-cloud/bin/claude-cloud coordinator finish`. It deletes your machine, but only if `~/repo` is clean, every `fleet/*` branch and the current branch are pushed, and no worker is running. If it refuses, fix what it names and run it again. Do not use `--force` unless the report says the unpushed work is intentionally dropped.
+- **Deadline.** The server deletes your machine at the time in your instructions, whatever you are doing. Push early and often. When the deadline is within 30 minutes, stop starting work and finish.
+- If `finish` cannot run, say so in the summary and include the user's command: `claude-cloud coordinator stop NAME`.
 - **Safety.** Never print or commit keys, tokens or `~/.config/claude-cloud` contents, and never put them in worker briefs. Push only to `claude-cloud/*` and `fleet/*`. Never push to `main` or the base branch. Open PRs only as the brief says.

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
 import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
@@ -31,9 +32,9 @@ const INSTALL_MS = 300_000;
 const MAX_DEPTH = 3;
 const MAX_AGENTS = 200;
 const ROLES = ['worker', 'coordinator'];
-const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/claude-cloud. Pass work to subagents only through the cloud_agent tools. No human is watching in real time. Do not stop to ask; choose the documented default and record each decision. If the reply of a subagent ends with a QUESTION: line, answer it with cloud_agent_message.';
+const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/claude-cloud. Pass work to subagents only through the cloud_agent tools. No human is watching in real time. Do not stop to ask; choose the documented default and record each decision. If the reply of a subagent ends with a QUESTION: line, answer it with cloud_agent_message. Before you finish, stop your workers with cloud_agent_stop and push your work. If you run on a machine made by claude-cloud coordinator start, your last step is to run ~/claude-cloud/bin/claude-cloud coordinator finish; a nested coordinator just ends its reply and its parent stops it.';
 const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
-const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.`;
+const commitHint = (id, deleteAt) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted by the server at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
 const log = (...a) => console.error('[claude-cloud]', ...a);
@@ -150,7 +151,7 @@ async function turn(a, message, ctx, t) {
   // A coordinator runs through the claude-cloud launcher, which passes its own --append-system-prompt. Its extra
   // instructions go to the launcher in CLAUDE_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
-  const hint = `${commitHint(a.id)}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const hint = `${commitHint(a.id, a.deleteAt)}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
   const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLAUDE_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
@@ -229,7 +230,11 @@ async function setup(a, ctx) {
     if (a.profile?.format === 'openai' && !isPi(a)) envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLAUDE_CLOUD_DEPTH: String(a.depth), CLAUDE_CLOUD_MAX_DEPTH: String(a.maxDepth), CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
-    a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
+    a.sandbox = await ctx.queue.create(a, () => {
+      const deleteAfterSeconds = workerSeconds(env);
+      a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
+      return createSandbox(envs, { deleteAfterSeconds });
+    });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
     log(`sandbox up, id ${a.id}, ${a.description}`);
@@ -501,7 +506,7 @@ export async function listAgents(_args, deps) {
   const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 

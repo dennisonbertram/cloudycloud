@@ -50,6 +50,7 @@ Do not wait. Skip the blocked item, note it in FLEET_REPORT.md under Open questi
 ## Budget and caps
 - Maximum workers at once: <N>. Maximum workers in total: <N>.
 - Maximum wall time: <for example 4 hours>. At that time, stop starting work, merge what is good, and finish.
+- Deadline: the server deletes the coordinator machine at the time in its instructions (`coordinator start --max-hours N`, at most 24). Push before then. When the work is done, run `~/claude-cloud/bin/claude-cloud coordinator finish` as the last step.
 
 ## Stop condition
 Stop when the acceptance commands pass on the trunk, or the wall time is reached, or every remaining item is skipped. Then do the deliverables below.

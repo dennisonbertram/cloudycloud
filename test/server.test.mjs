@@ -99,7 +99,7 @@ test('with the tasks extension, cloud_agent answers with a task; tasks/get shows
   const w = await c.call('cloud_agent_wait', { agent_ids: [t.taskId.split('-')[1]], timeout_seconds: 5 });
   assert.match(text(w), /already reported/);
   const list = text(await c.call('cloud_agent_list', {}));
-  assert.match(list, /idle\s+idle 0 min\s+d\n\s+cc-[0-9a-f]{8}-t1: 2 tool uses · 1\.0k tokens/);
+  assert.match(list, /idle\s+idle 0 min\s+deleted at \S+\s+d\n\s+cc-[0-9a-f]{8}-t1: 2 tool uses · 1\.0k tokens/);
 });
 
 test('cloud_agent_message answers with a task for turn 2 of the same agent', async () => {

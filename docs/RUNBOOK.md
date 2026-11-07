@@ -172,10 +172,11 @@ Remote Control needs a full Claude login. A token from `claude setup-token` can 
 
 | Command | What it does |
 | --- | --- |
-| `claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO [--branch B]` | Creates a machine from the snapshot (label `role=coordinator`, never pauses), attaches the `GH_TOKEN` secret, writes the keys file, updates `claude-cloud` there, clones the repo, and starts a tmux session `claude` running `claude-cloud --remote-control "NAME"`. With `--task TEXT` or `--task-file PATH` (not empty, at most 100 KB) the task is uploaded to `~/task.md` on the machine and passed as the session's first prompt, so the coordinator starts working at once. `--json` prints `{name, machine, remoteControlName, attach}` instead of the text. |
+| `claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO [--branch B] [--max-hours N]` | Creates a machine from the snapshot (label `role=coordinator`, never pauses), attaches the `GH_TOKEN` secret, writes the keys file, updates `claude-cloud` there, clones the repo, and starts a tmux session `claude` running `claude-cloud --remote-control "NAME"`. With `--task TEXT` or `--task-file PATH` (not empty, at most 100 KB) the task is uploaded to `~/task.md` on the machine and passed as the session's first prompt, so the coordinator starts working at once. `--max-hours N` sets the delete deadline (default and maximum 24; see 8.5). `--json` prints `{name, machine, remoteControlName, attach}` instead of the text. |
 | `claude-cloud coordinator attach NAME` | Prints `npx --yes instabox@latest ssh <machine> -- tmux attach -t claude`. Run it to see the session. |
-| `claude-cloud coordinator ls` | Lists coordinators: name, state, created time, machine name. |
-| `claude-cloud coordinator stop NAME` | Deletes that coordinator's machine. Its workers are deleted by its own `claude-cloud` cleanup process when its session ends. |
+| `claude-cloud coordinator ls` | Lists coordinators: name, state, created time, machine name, and the time the server deletes the machine. |
+| `claude-cloud coordinator stop NAME` | Deletes that coordinator's machine. Its workers are deleted by its own `claude-cloud` cleanup process when its session ends, or by their own delete deadline. |
+| `claude-cloud coordinator finish [--force]` | Run on the coordinator machine, by the coordinator. Deletes that machine after checking that the work is on GitHub (see 8.5). It refuses to run on a laptop. |
 
 The first time you attach, accept any trust or Remote Control prompts. Then pick the session named NAME in claude.ai/code.
 
@@ -190,3 +191,24 @@ The first time you attach, accept any trust or Remote Control prompts. Then pick
 ### 8.4 Cleanup
 
 Your laptop's cleanup process deletes only machines whose `owner` label is that session's id (`src/reaper.mjs` checks `metadata.owner === owner`). Coordinators have no `owner` label, so it never deletes them. Delete one with `coordinator stop NAME`, or list leftovers with `npx --yes instabox@latest ls --meta role=coordinator`.
+
+### 8.5 Delete deadlines and `finish`
+
+Every machine this tool creates has a delete deadline set when it is created (`deleteAfterSeconds`, shown by Instabox as `deleteAt`). Instabox deletes the machine at that time in any state, even if every `claude-cloud` process has died, so orphaned machines cannot pile up. The deadline cannot be changed after create (`PATCH /v1/machines/{id}` has no field for it).
+
+| Machine | Deadline |
+| --- | --- |
+| Worker and nested coordinator | `CLAUDE_CLOUD_WORKER_HOURS`, default 6, at most 24 |
+| Cloud coordinator | `coordinator start --max-hours N`, default 24, at most 24 (Instabox allows at most 86400 s); a larger value is refused |
+| Image machine | 2 hours |
+
+The agent is told its deadline ("Your machine is deleted by the server at <time>; push your work well before then."). `coordinator ls` and `cloud_agent_list` show it. A work package that must outlive 24 hours needs a new coordinator from a pushed branch.
+
+The coordinator ends its job with `~/claude-cloud/bin/claude-cloud coordinator finish`. It deletes the machine only when all of these hold, and prints what it verified:
+
+- it runs on a machine named `instabox-<name>` whose Instabox record has `role=coordinator`;
+- `git status --porcelain` in `~/repo` is empty;
+- the current branch and every local `fleet/*` branch have no commits beyond their upstream;
+- no machine owned by this coordinator's `claude-cloud` server is still running (stop workers with `cloud_agent_stop` first; the server records its owner id in `~/.config/claude-cloud/owner`).
+
+`--force` skips the git and worker checks, not the machine check.

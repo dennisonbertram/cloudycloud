@@ -108,6 +108,7 @@ Read these before relying on it:
   - Subagents see only files tracked by git. That includes uncommitted edits to tracked files, but not untracked files.
   - They can't use your local MCP servers, your settings, or agents defined in `~/.claude/agents`.
 - **What survives:** only work a subagent has pushed to GitHub survives if its machine is lost.
+- **Delete deadline:** the Instabox server deletes every machine this tool creates after a fixed time, even if `claude-cloud` has died. Workers and nested coordinators: `CLAUDE_CLOUD_WORKER_HOURS` (default 6, maximum 24). Cloud coordinators: `coordinator start --max-hours N` (default and maximum 24). The deadline cannot be extended, so push before it. A cloud coordinator deletes itself earlier with `claude-cloud coordinator finish`, which first checks that its work is on GitHub and its workers are stopped. See docs/RUNBOOK.md, section 8.5.
 - **When subagents stop:** an idle subagent is stopped after 60 minutes, and every subagent is stopped when the session ends.
   - A single task is stopped after 29 minutes.
 - **Nested subagents:** a subagent's own subagents run inside the same machine, not on new ones.

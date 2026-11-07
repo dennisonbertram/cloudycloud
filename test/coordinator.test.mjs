@@ -97,7 +97,7 @@ test('start --task uploads ~/task.md by file and launches with it as the first p
   const f = fixture();
   const task = "do it; $(rm -rf /) 'quoted'";
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', task], f.deps);
-  assert.equal(f.log.writes.find((x) => x.p === '/data/home/task.md').d, task);
+  assert.ok(f.log.writes.find((x) => x.p === '/data/home/task.md').d.endsWith(`\n\n${task}`));
   for (const c of f.log.cmds) assert.ok(!c.includes('rm -rf /'), `task text in command: ${c}`);
   const tmux = f.log.cmds.find((c) => /tmux new-session/.test(c));
   assert.ok(tmux.includes(`--remote-control '\\''boss'\\'' "$(cat '\\''/data/home/task.md'\\'')"`), tmux);
@@ -109,7 +109,7 @@ test('start --task-file reads the file; empty or over 100 KB tasks are refused b
   const file = join(mkdtempSync(join(tmpdir(), 'cc-task-')), 't.md');
   writeFileSync(file, 'from file');
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task-file', file], f.deps);
-  assert.equal(f.log.writes.find((x) => x.p === '/data/home/task.md').d, 'from file');
+  assert.ok(f.log.writes.find((x) => x.p === '/data/home/task.md').d.endsWith('\n\nfrom file'));
   const g = fixture();
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', '  '], g.deps), /empty/);
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', 'x'.repeat(100_001)], g.deps), /larger/);

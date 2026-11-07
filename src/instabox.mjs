@@ -43,6 +43,19 @@ export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, ti
   }
 }
 
+// The SDK (0.6.0) has no deleteAfterSeconds option, but Instabox accepts it in the create request. Instabox then deletes the
+// machine at that time in any state, even if every claude-cloud process has died. Pass this as the SDK's `fetch` option: it
+// adds the field to the POST /v1/machines body and leaves every other request alone.
+export const withDeleteAfter = (seconds, fetchFn = fetch) => (url, init = {}) =>
+  fetchFn(url, init.method === 'POST' && /\/v1\/machines\/?$/.test(String(url)) && typeof init.body === 'string'
+    ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body), deleteAfterSeconds: seconds }) } : init);
+
+// Seconds a worker or nested coordinator machine lives: CLAUDE_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
+export const workerSeconds = (env) => {
+  const h = Number(env.CLAUDE_CLOUD_WORKER_HOURS);
+  return Math.max(60, Math.round((h > 0 ? Math.min(h, 24) : 6) * 3600));
+};
+
 let shared; // one limiter for the whole server process
 const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) : 24));
 
@@ -65,11 +78,12 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       }
     }
   };
-  return async (envs) => {
+  return async (envs, { deleteAfterSeconds = workerSeconds(env) } = {}) => {
     if (!env.INSTABOX_API_KEY) throw new Error('INSTABOX_API_KEY is not set.');
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
       apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud', owner }, archiveMs: ARCHIVE_MS,
+      fetch: withDeleteAfter(deleteAfterSeconds, fetchFn),
     });
     try {
       await attachGithubToken(sbx.sandboxId, env.INSTABOX_API_KEY, fetchFn, timing);

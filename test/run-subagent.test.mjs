@@ -254,7 +254,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  deleted at \\S+  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -402,12 +402,12 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
 });
 
 test('first-turn command is stream-json output with the commit-and-push hint; identity and branch are set up', async () => {
-  const { start, wait, created } = await setup();
+  const { start, wait, created, deps } = await setup();
   const id = await start();
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
   assert.match(cmd, /--output-format stream-json --verbose/);
-  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.'`));
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then.'`));
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b claude-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
@@ -876,4 +876,37 @@ test('a pi worker cannot be a coordinator', async () => {
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', role: 'coordinator' }, deps);
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /coordinator.*pi/);
+});
+
+test('workers get a 6 hour delete deadline by default, CLAUDE_CLOUD_WORKER_HOURS changes it, and the deadline is in the list', async () => {
+  const seen = [];
+  const x = await setup({ createSandbox: async (envs, opts) => { seen.push(opts); return fakeSandbox(); } });
+  const t0 = Date.now();
+  const id = await x.start();
+  await x.wait([id]);
+  assert.deepEqual(seen[0], { deleteAfterSeconds: 21600 });
+  const iso = new Date(x.deps.open.get(id).deleteAt).toISOString();
+  assert.ok(Math.abs(x.deps.open.get(id).deleteAt - (t0 + 21600_000)) < 60_000);
+  assert.match(await x.text(await listAgents({}, x.deps)), new RegExp(`deleted at ${iso}`));
+  x.deps.env = { ...x.deps.env, CLAUDE_CLOUD_WORKER_HOURS: '2' };
+  await x.wait([await x.start()]);
+  assert.equal(seen[1].deleteAfterSeconds, 7200);
+  x.deps.env = { ...x.deps.env, CLAUDE_CLOUD_WORKER_HOURS: '99' };
+  await x.wait([await x.start()]);
+  assert.equal(seen[2].deleteAfterSeconds, 86400);
+});
+
+test('the coordinator hint tells the deadline and the finish step, with no apostrophe', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  await withTool(x);
+  const id = await x.start({ role: 'coordinator', prompt: 'hi' });
+  await x.wait([id]);
+  const launched = await readFile(join(x.created[0].dir, 'home', 'launcher.log'), 'utf8');
+  const iso = new Date(x.deps.open.get(id).deleteAt).toISOString();
+  assert.ok(launched.includes(`Your machine is deleted by the server at ${iso}; push your work well before then.`));
+  assert.match(launched, /coordinator finish/);
+  assert.match(launched, /cloud_agent_stop/);
+  const cmd = x.created[0].cmds.find((c) => c.includes('CLAUDE_CLOUD_EXTRA_PROMPT='));
+  assert.ok(!/EXTRA_PROMPT='[^']*'[^' ]/.test(cmd) && !cmd.slice(cmd.indexOf("EXTRA_PROMPT='") + 14).split("' ")[0].includes("'"), 'no apostrophe inside the hint');
 });

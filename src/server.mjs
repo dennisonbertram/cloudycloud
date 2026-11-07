@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { createInstaboxSandbox } from './instabox.mjs';
-import { loadEnv } from './config.mjs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { loadEnv, ownerFile } from './config.mjs';
 import { killAll } from './run-subagent.mjs';
 import { buildServer } from './mcp.mjs';
 import { reaperSpawn } from './reaper.mjs';
@@ -10,6 +12,8 @@ import { reaperSpawn } from './reaper.mjs';
 const owner = randomUUID().slice(0, 12);
 const env = loadEnv();
 const deps = { createSandbox: createInstaboxSandbox(env, undefined, undefined, undefined, owner), env, open: new Map(), tasks: new Map() };
+
+try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(ownerFile(env), `${owner}\n`); } catch { /* only `coordinator finish` reads it */ }
 
 // The reaper is the guarantee that machines are deleted. The handlers below only try to be quick about it.
 if (env.INSTABOX_API_KEY && !process.env.NODE_ENV?.includes('test')) {
