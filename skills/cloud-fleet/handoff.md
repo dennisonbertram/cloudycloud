@@ -37,6 +37,7 @@ There is no human to answer questions. The user may look in through Remote Contr
   3. Write `FLEET_REPORT.md` (Done, Decisions, Open questions, Skipped or failed, Verification with real command output). Commit and push it to the trunk.
   4. Open the PR only if the brief says so.
   5. `cloud_agent_stop` every worker.
-  6. Post a final summary in the session. The user reads it through Remote Control.
+  6. Delete the worker branches you merged (`git push origin --delete claude-cloud/<id> ...`) unless the brief says to keep them. Keep the branches of failed or skipped workers, and list them in the report.
+  7. Post a final summary in the session. The user reads it through Remote Control.
 - **You cannot stop your own machine.** Say so in the summary and include the user's command: `claude-cloud coordinator stop NAME`.
 - **Safety.** Never print or commit keys, tokens or `~/.config/claude-cloud` contents, and never put them in worker briefs. Push only to `claude-cloud/*` and `fleet/*`. Never push to `main` or the base branch. Open PRs only as the brief says.

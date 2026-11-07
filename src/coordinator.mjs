@@ -67,6 +67,9 @@ async function installTool(sbx, root) {
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
   await run('gh auth setup-git'); // before any clone, so git uses the GH_TOKEN placeholder
+  // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
+  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8' }).trim() || d; } catch { return d; } };
+  await run(`git config --global user.name ${q(`${ident('user.name', 'claude-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'claude-cloud@localhost'))}`);
   await run(`if [ -d ~/claude-cloud/.git ]; then git -C ~/claude-cloud pull --ff-only -q; else git clone -q ${q(toolRepoUrl(root))} ~/claude-cloud; fi && cd ~/claude-cloud && npm install --no-audit --no-fund`);
   return home;
 }

@@ -61,7 +61,7 @@ The coordinator is the session that starts workers. It owns an integration branc
    ```sh
    git fetch origin 'refs/heads/claude-cloud/*:refs/remotes/origin/claude-cloud/*'
    git checkout fleet/<topic>
-   git merge --no-ff origin/claude-cloud/<id> -m "Merge <description> (<id>)"
+   git merge --no-ff origin/claude-cloud/<id> -m "Merge <description> (<id>)"   # one-line subject; put any trailers in a second -m
    <test command>
    git push origin fleet/<topic>
    ```

@@ -84,6 +84,8 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const prep = f.log.cmds.findIndex((c) => c.includes('hasCompletedOnboarding'));
   const tmux = f.log.cmds.findIndex((c) => /tmux new-session/.test(c));
   assert.ok(prep > -1 && prep < tmux, 'first-run setup is marked done before Claude starts');
+  // A fresh machine has no git identity; the coordinator needs one to commit merges and its report.
+  assert.ok(f.log.cmds.some((c) => c.includes('git config --global user.name') && c.includes('git config --global user.email')), 'git identity set');
   for (const name of ['SKILL.md', 'handoff.md', 'brief-template.md']) assert.ok(f.log.writes.some((w) => w.p === `/data/home/.claude/skills/cloud-fleet/${name}`), `skill file ${name} uploaded`);
   for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice']) assert.ok(f.log.cmds[prep].includes(k), k);
   const text = f.log.out.join('\n');
