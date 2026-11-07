@@ -137,3 +137,9 @@ test('profile hint names model, host and profile, and is safe inside single quot
   assert.match(h, /^You are running model z-ai\/glm-5\.3-flash through api\.particle\.ai \(profile glm\)\. .*alias worker/);
   assert.ok(!h.includes("'"));
 });
+
+test('modelLine: a pi reply with no responseModel says pi saw no different model', () => {
+  const req = { model: 'particle-ai/particle-1', host: 'api.particle.ai', name: 'pi-particle' };
+  assert.equal(modelLine({ model: '', answered: true }, req), 'Model: particle-ai/particle-1 via api.particle.ai (profile pi-particle); pi saw no different model from the provider');
+  assert.match(modelLine({ model: '' }, req), /not confirmed by the provider/);
+});

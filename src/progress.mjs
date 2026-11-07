@@ -112,6 +112,8 @@ const sameModel = (a, b) => shortModel(a).toLowerCase() === shortModel(b).toLowe
 export function modelLine(p, req) {
   const via = req ? ` via ${req.host} (profile ${req.name})` : '';
   if (!req) return p.model ? `Model: ${p.model}` : 'Model: not reported';
+  // pi records responseModel only when the provider answered with a different model, so its absence after a reply is evidence.
+  if (!p.model && p.answered) return `Model: ${req.model}${via}; pi saw no different model from the provider`;
   if (!p.model) return `Model: ${req.model} requested${via}; not confirmed by the provider`;
   if (sameModel(p.model, req.model)) return `Model: ${p.model}${via}`;
   return `WARNING Model: asked for ${req.model}, provider reported ${p.model}${via}`;
