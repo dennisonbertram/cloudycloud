@@ -91,6 +91,7 @@ Browser / Claude app ──► Web app (Next.js) ──► API ──► Instabo
 ## Decisions (2026-11-06)
 
 - **Now:** test the CLI at its current stage. Build the hosted service later, using this plan.
+- **2026-11-07, order:** ship bring-your-own-Instabox-key first. Plan the hosted service (cloudycloud.tech) only if people are excited about it.
 - **Bundling:** the hosted service may be bundled with **agent-drive** (`~/develop/agent-drive`). That would give one account and one sign-in for both, and workers would get scoped agent-drive credentials automatically: a `delegate` key held by the service issues each worker a `credentials issue --write-path /fleet/<fleet>/<agent>` credential. agent-drive's existing auth, Clerk-based device login and API keys, would need to line up with this service's Clerk tenant *(verify)*.
 - **Coordinator Claude login:** a per-user login snapshot. Each user signs in to Claude once, in the browser, on a setup machine, and the service snapshots it. This is today's proven `coordinator image` flow, automated.
 - **Open-model keys:** a pooled key provided by the service is the default, and users can override it with their own Particle or OpenRouter keys. That needs per-user token caps for the pooled key.
