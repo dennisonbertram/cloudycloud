@@ -9,6 +9,21 @@ Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works o
 
 Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
 
+## Choosing a worker's model
+
+Workers can run Claude or open models. Do not tell the user otherwise.
+
+| Want | Use |
+| --- | --- |
+| A Claude model | `cloud_agent` with `model` (for example `haiku`), or nothing for the default |
+| A non-Claude model | `cloud_agent` with `profile`, never `model` |
+
+Profiles: `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`. `particle` means Particle.ai's `particle-1` model.
+
+- Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
+- If you do not have `mcp__cloud__cloud_agent`, you are not in a `claude-cloud` session. Say so, and ask the user to restart with `claude-cloud`.
+- To prove a worker ran in the cloud, check its hostname starts with `instabox-sbx-`.
+
 ## Before using a repo
 
 Check these once per repo, before the first subagent or coordinator. Tell the user plainly about any that fail. Never change GitHub settings yourself.
