@@ -9,6 +9,17 @@ Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works o
 
 Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
 
+## Handing a job to a cloud coordinator
+
+When the user wants a long job to run unattended, start a cloud coordinator instead of running the fleet from this session. The user checks in through Remote Control (claude.ai or the Claude app).
+
+- Hand off when the job is long or large, the user is leaving, and the work needs only what is on GitHub. Do not hand off when it needs untracked local files or the user wants to steer step by step.
+- Confirm first: coordinator name, repo, base branch, and that it is billed until stopped. Commit and push what it needs.
+- Write the brief from [brief-template.md](brief-template.md), then run `claude-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`.
+- Tell the user the Remote Control session name, how to attach, and `claude-cloud coordinator stop NAME`. Do not stop it unless asked.
+
+Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).
+
 ## Pick a pattern
 
 | Situation | Pattern |
