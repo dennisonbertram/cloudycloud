@@ -88,10 +88,16 @@ Browser / Claude app ──► Web app (Next.js) ──► API ──► Instabo
 2. **Teams:** Clerk organizations, per-tenant caps and Postgres state, plus a dashboard with live progress.
 3. **Self-serve:** an automated Claude connection, provider keys, metering and billing.
 
+## Decisions (2026-11-06)
+
+- **Now:** test the CLI at its current stage. Build the hosted service later, using this plan.
+- **Bundling:** the hosted service may be bundled with **agent-drive** (`~/develop/agent-drive`). That would give one account and one sign-in for both, and workers would get scoped agent-drive credentials automatically: a `delegate` key held by the service issues each worker a `credentials issue --write-path /fleet/<fleet>/<agent>` credential. agent-drive's existing auth, Clerk-based device login and API keys, would need to line up with this service's Clerk tenant *(verify)*.
+- **Coordinator Claude login:** a per-user login snapshot. Each user signs in to Claude once, in the browser, on a setup machine, and the service snapshots it. This is today's proven `coordinator image` flow, automated.
+- **Open-model keys:** a pooled key provided by the service is the default, and users can override it with their own Particle or OpenRouter keys. That needs per-user token caps for the pooled key.
+
 ## Open questions (TBD)
 
-1. Who is it for first: you and a few teammates, or the public?
-2. Coordinator Claude login: a per-user snapshot after an in-browser login, or API keys (no Remote Control)?
-3. Open models: each user's own keys, or a pooled key we pay for, such as the free Particle deal?
-4. Can Instabox create enough workspaces per tenant, and refresh a machine's proxy secret without a restart? *(verify)*
-5. Billing model and default caps.
+1. Audience and order: you and teammates first, or the public?
+2. Can Instabox create enough workspaces per tenant, and refresh a machine's proxy secret without a restart? *(verify)*
+3. Billing model and default caps, including per-user limits on the pooled model key.
+4. How the agent-drive and claude-cloud accounts merge: a shared Clerk instance, shared organizations, and which product is the front door.
