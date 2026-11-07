@@ -109,7 +109,7 @@ test('claude-cloud setup and --setup run install.sh from any folder', () => {
     // --check-only is passed through to install.sh, which prints its step line and exits 0
     const r = spawnSync('/bin/sh', [launcher, flag, '--check-only'], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir }, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /Step 1 of 4: tools/);
+    assert.match(r.stdout, /\[1\/4\] Tools/);
   }
 });
 

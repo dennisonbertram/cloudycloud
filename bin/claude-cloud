@@ -17,6 +17,23 @@ fi
 # `claude-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
 case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
 
+# Messages use the same look as install.sh: colour only on a colour terminal (not with NO_COLOR, CLICOLOR=0 or TERM=dumb).
+say_init() {
+  c_x=; c_acc=; c_dim=; c_warn=; c_b=; m_warn='!'; m_hint='>'
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ] && [ "${CLICOLOR:-}" != 0 ]; then
+    c_x=$(printf '\033[0m'); c_b=$(printf '\033[1m')
+    if [ "$(tput colors 2>/dev/null || echo 8)" -ge 256 ]; then
+      c_acc=$(printf '\033[38;5;75m'); c_dim=$(printf '\033[38;5;245m'); c_warn=$(printf '\033[38;5;214m')
+    else
+      c_acc=$(printf '\033[36m'); c_dim=$(printf '\033[2m'); c_warn=$(printf '\033[33m')
+    fi
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) m_warn='▲'; m_hint='›' ;; esac
+  fi
+}
+say_init
+warn() { printf '  %s%s%s %s' "$c_warn" "$m_warn" "$c_x" "$1" >&2; [ -z "${2:-}" ] || printf '  %s%s%s' "$c_dim" "$2" "$c_x" >&2; printf '\n' >&2; }
+hint() { printf '  %s%s %s%s\n' "$c_dim" "$m_hint" "$1" "$c_x" >&2; }
+
 # Keys saved here reach only the MCP server, so the main session keeps its normal login.
 config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
 find_missing() {
@@ -32,21 +49,22 @@ find_missing() {
 }
 find_missing
 if [ -n "$missing" ]; then
-  printf 'claude-cloud is not set up yet (no %s in %s).\nRun: claude-cloud setup\n' "$missing" "$config" >&2
+  warn "claude-cloud is not set up yet" "no $missing in $config"
+  hint "Run: claude-cloud setup"
   [ -t 0 ] || exit 1
-  printf 'Run setup now? [Y/n] ' >&2
+  printf '  %s?%s %sRun setup now?%s %s[Y/n]%s ' "$c_acc" "$c_x" "$c_b" "$c_x" "$c_dim" "$c_x" >&2
   IFS= read -r answer || answer=n
   case $answer in n*|N*) exit 1 ;; esac
   "$root/install.sh" || exit 1
   find_missing
-  [ -z "$missing" ] || { echo "claude-cloud: still no $missing. Run: claude-cloud setup" >&2; exit 1; }
+  [ -z "$missing" ] || { warn "claude-cloud: still no $missing" "run: claude-cloud setup"; exit 1; }
 fi
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "claude-cloud: warning: this folder is not a git repository, so subagents can't start here. Run claude-cloud from inside a repo with a github.com origin." >&2
+  warn "This folder is not a git repository, so subagents can't start here." "run claude-cloud from inside a repo with a github.com origin"
 elif ! git remote get-url origin 2>/dev/null | grep -q 'github\.com'; then
-  echo "claude-cloud: warning: this repo has no github.com origin, so subagents can't push their work. Add one: git remote add origin https://github.com/OWNER/REPO.git" >&2
+  warn "This repo has no github.com origin, so subagents can't push their work." "add one: git remote add origin https://github.com/OWNER/REPO.git"
 fi
-case $root in *'"'*|*'\'*) echo "claude-cloud: install path contains a quote or backslash" >&2; exit 1 ;; esac
+case $root in *'"'*|*'\'*) warn "claude-cloud: install path contains a quote or backslash"; exit 1 ;; esac
 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
 # CLAUDE_CLOUD_CONFIG is included so the server reads the same file as this launcher.

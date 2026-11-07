@@ -197,3 +197,68 @@ test('start uploads the laptop claude-cloud as a bundle and never clones the too
   assert.match(clones[0], /github\.com\/o\/r/);
 });
 
+
+// ---- how it looks ----
+import { makeUi } from '../src/ui.mjs';
+const tty = (env = {}) => makeUi({ tty: true, cols: 80, env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', ...env } });
+const ANSI = /\u001b\[/;
+const plainText = (s) => s.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+
+test('ui: plain when piped, NO_COLOR, CLICOLOR=0 or TERM=dumb; styled on a colour terminal', () => {
+  assert.equal(makeUi({ tty: false, env: { TERM: 'xterm' } }).on, false);
+  for (const env of [{ NO_COLOR: '1' }, { CLICOLOR: '0' }, { TERM: 'dumb' }]) assert.equal(tty(env).on, false, JSON.stringify(env));
+  assert.equal(tty().on, true);
+  assert.ok(!ANSI.test(makeUi({ tty: false }).ok('x', 'y')));
+  assert.match(tty().ok('Done', 'detail'), /✔/);
+  assert.match(tty({ LANG: 'C' }).ok('Done'), /\[ok\]/); // ASCII marks without UTF-8
+});
+
+test('ui: relative times', () => {
+  const u = tty(), now = Date.parse('2026-01-01T00:00:00Z');
+  assert.equal(u.rel('2026-01-02T00:00:00Z', now), 'in 24h');
+  assert.equal(u.rel('2026-01-01T00:45:00Z', now), 'in 45m');
+  assert.equal(u.rel('2025-12-31T22:00:00Z', now), '2h ago');
+  assert.equal(u.rel('2026-01-05T00:00:00Z', now), 'in 4d');
+});
+
+test('ls on a terminal: aligned table, state colours, relative deadline with the date dim', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(Date.now() - 2 * 3600e3), machine: { deleteAt: new Date(Date.now() + 23 * 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'boss' } },
+    { sandboxId: 'm2', name: 'coord-a', state: 'stopped', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  const raw = f.log.out.join('\n'), text = plainText(raw);
+  assert.match(raw, /\u001b\[38;5;42mrunning/); // green
+  assert.match(text, /NAME\s+STATE\s+STARTED\s+MACHINE\s+DELETES/);
+  assert.match(text, /boss\s+running\s+2h ago\s+coord-boss\s+in 23h\s+\d{4}-\d\d-\d\dT\d\d:\d\dZ/);
+  assert.match(text, /a\s+stopped\s+.*coord-a\s+never/);
+  for (const l of text.split('\n')) assert.ok(l.length <= 80, l);
+});
+
+test('start on a terminal shows a Reach it block; --json stays exactly the same', async () => {
+  const f = fixture();
+  f.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.match(text, /✔ Coordinator boss is running/);
+  assert.match(text, /Reach it\n\s+Remote Control\s+open claude\.ai\/code .* "boss"/);
+  assert.match(text, /Terminal\s+claude-cloud coordinator attach boss\n\s+runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude/);
+  const g = fixture();
+  g.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
+  assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude' });
+});
+
+test('stop and image on a terminal use status lines; piped output has no escapes', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.ui = tty();
+  await main(['stop', 'a'], f.deps);
+  assert.match(plainText(f.log.out.join('\n')), /✔ Deleted coordinator a {2}machine coord-a/);
+  const g = fixture();
+  g.deps.ui = tty();
+  await main(['image'], g.deps);
+  assert.match(plainText(g.log.out.join('\n')), /✔ Image machine sbx-abc is ready/);
+  const h = fixture();
+  await main(['image'], h.deps); // default ui: stdout is not a terminal under test
+  assert.ok(!ANSI.test(h.log.out.join('\n')));
+  assert.match(h.log.out.join('\n'), /^Image machine sbx-abc is ready and claude-cloud is installed on it\./); // install.sh reads this line
+});
