@@ -9,8 +9,8 @@ import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
-import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
+import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
+import { createProgress, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 
 const run = promisify(execFile);
@@ -140,6 +140,8 @@ async function safetyPush(a, ctx) {
 
 // One claude run in the sandbox (first turn, or --resume), then a safety push. Output is stream-json, fed to t.progress as it arrives.
 // Returns { text, error, gone, cancelled }. a.sessionId is updated from the final result event.
+const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}`;
+
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   try {
@@ -152,7 +154,7 @@ async function turn(a, message, ctx, t) {
   // A coordinator runs through the claude-cloud launcher, which passes its own --append-system-prompt. Its extra
   // instructions go to the launcher in CLAUDE_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
-  const hint = `${commitHint(a.id, a.deleteAt)}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const hint = `${commitHint(a.id, a.deleteAt)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
   const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLAUDE_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
@@ -169,11 +171,11 @@ async function turn(a, message, ctx, t) {
   t.progress.end();
   const { where, failed } = await safetyPush(a, ctx);
 
-  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
+  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
-    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
+    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}` };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -196,7 +198,7 @@ async function turn(a, message, ctx, t) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totalLine(t.progress, { cost: !a.profile })}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
 }
 
 const limitText = (e) => {
@@ -509,6 +511,7 @@ export async function listAgents(_args, deps) {
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
+    (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 

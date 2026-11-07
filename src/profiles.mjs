@@ -78,3 +78,7 @@ export function claudeEnv(p) {
 export const PI_VERSION = '1.5.0';
 export const PI_PROVIDER = 'worker';
 export const piModels = (p) => JSON.stringify({ providers: { [PI_PROVIDER]: { baseUrl: p.baseUrl, api: 'openai-completions', apiKey: `$${p.keyName}`, models: [{ id: p.model }] } } }, null, 2);
+
+export const profileHost = (p) => new URL(p.baseUrl).host;
+// Added to a profile worker's instructions. No apostrophes: it sits inside single quotes in a shell command.
+export const profileHint = (p) => `You are running model ${p.model} through ${profileHost(p)} (profile ${p.name}). Your tool settings may show the alias worker; that is expected.`;
