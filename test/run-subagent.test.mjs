@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, access } from 'node:fs/promises';
@@ -399,6 +400,55 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+});
+
+test('a small repo uploads a full bundle and sets up in the original command order', async () => {
+  const { start, wait, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const c = created[0].cmds;
+  assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+  assert.match(c[0], /git fetch -q \.\.\/in\.bundle .* git remote add origin /);
+  assert.equal(c[1], 'gh auth setup-git');
+  assert.ok(!c.some((x) => /git fetch -q origin /.test(x)));
+});
+
+const bulk = (repo, name) => writeFile(join(repo, name), randomBytes(20000)).then(() => sh(repo, `git add -A && git commit -qm ${name}`));
+
+test('a bundle over the limit is thin: the machine fetches the commits GitHub has, then the bundle', async () => {
+  const { repo, bare, start, wait, created, deps, remote } = await setup();
+  await bulk(repo, 'big.bin');
+  await sh(repo, `git push -q ${bare} main && git update-ref refs/remotes/origin/main HEAD`);
+  const base = await sh(repo, 'git rev-parse HEAD');
+  await writeFile(join(repo, 'b.txt'), 'local\n');
+  await sh(repo, 'git add -A && git commit -qm local');
+  deps.bundleMax = 5000;
+  const id = await start();
+  await wait([id]);
+  const s = created[0];
+  const bundle = await readFile(join(s.dir, 'home', 'in.bundle'));
+  assert.ok(bundle.length < 5000, `thin bundle is ${bundle.length} bytes`);
+  const i = s.cmds.findIndex((c) => c.includes(`git fetch -q origin ${base}`));
+  assert.ok(i > s.cmds.indexOf('gh auth setup-git'), 'prerequisites are fetched after gh auth');
+  assert.match(s.cmds[i], /git fetch -q origin [0-9a-f]{40} && git fetch -q \.\.\/in\.bundle /);
+  assert.ok(s.cmds[0].includes('git remote add origin') && !s.cmds[0].includes('in.bundle'));
+  assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'local');
+});
+
+test('changes too large even for a thin bundle fail with a clear error', async () => {
+  const { repo, bare, start, wait, deps } = await setup();
+  await sh(repo, `git push -q ${bare} main && git update-ref refs/remotes/origin/main HEAD`);
+  await bulk(repo, 'big.bin');
+  deps.bundleMax = 5000;
+  const out = await wait([await start()]);
+  assert.match(out, /too large to upload.*Push the branch to GitHub first/s);
+});
+
+test('a repo with no origin branches and a large bundle fails with the same error', async () => {
+  const { repo, start, wait, deps } = await setup();
+  await bulk(repo, 'big.bin');
+  deps.bundleMax = 5000;
+  assert.match(await wait([await start()]), /too large to upload/);
 });
 
 test('first-turn command is stream-json output with the commit-and-push hint; identity and branch are set up', async () => {

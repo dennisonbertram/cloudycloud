@@ -201,6 +201,9 @@ async function turn(a, message, ctx, t) {
   return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
 }
 
+// The machine upload limit is 10 MiB; stay under it. Over this, upload only the commits GitHub lacks.
+export const BUNDLE_MAX = 9 * 1024 * 1024;
+
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
   if (/quota_exceeded/.test(s)) return `Provider machine limit reached (quota_exceeded) and still full after waiting in the start queue. Stop other agents or upgrade the plan. Provider message: ${e?.message}`;
@@ -226,8 +229,24 @@ async function setup(a, ctx) {
     const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
     const bundle = join(tmp, 'in.bundle');
     await git(a.root, 'update-ref', ref, a.sha);
+    let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
+    let data;
+    const max = ctx.bundleMax ?? BUNDLE_MAX;
     try {
       await git(a.root, 'bundle', 'create', bundle, ref);
+      data = await readFile(bundle);
+      if (data.length > max) {
+        const tooBig = () => new Error(`The uncommitted/unpushed changes are too large to upload (${data?.length ?? 0} bytes, limit ${max}). Push the branch to GitHub first, then start the agent again.`);
+        // The bundle header lists each prerequisite commit on a line starting with "-".
+        const thin = await git(a.root, 'bundle', 'create', bundle, ref, '--not', '--remotes=origin').then(() => true, (e) => {
+          if (/empty bundle/i.test(`${e?.stderr ?? ''}`)) return false; // everything is already on GitHub
+          throw e;
+        });
+        data = thin ? await readFile(bundle) : null;
+        if (thin) prereqs = data.toString('latin1', 0, data.indexOf('\n\n')).split('\n').filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41));
+        else prereqs = [a.sha];
+        if (!prereqs.length || data?.length > max) throw tooBig();
+      }
     } finally {
       await git(a.root, 'update-ref', '-d', ref).catch(() => {});
     }
@@ -249,18 +268,29 @@ async function setup(a, ctx) {
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
     log(`sandbox up, id ${a.id}, ${a.description}`);
-    await a.sandbox.files.write(`${a.home}/in.bundle`, await readFile(bundle));
-    // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
-    await a.sandbox.commands.run(
-      `git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost &&` +
-      ` git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
-      ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
-      { cwd: a.home, timeoutMs: SETUP_MS },
-    );
+    if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
-    await a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
+    const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
+    const init = `git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost`;
+    // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
+    if (!prereqs.length) {
+      await a.sandbox.commands.run(
+        `${init} && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
+        ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
+        { cwd: a.home, timeoutMs: SETUP_MS },
+      );
+      await ghAuth();
+    } else {
+      // Thin bundle: git must be logged in to GitHub before it can fetch the commits the bundle builds on.
+      await a.sandbox.commands.run(`${init} && git remote add origin '${a.origin}'`, { cwd: a.home, timeoutMs: SETUP_MS });
+      await ghAuth();
+      await a.sandbox.commands.run(
+        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${ref}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
+        repo,
+      );
+    }
     // All agents push the same new base history at once and GitHub sometimes rejects one, so retry.
     for (let n = 1; ; n++) {
       try {
