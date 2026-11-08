@@ -426,12 +426,38 @@
     return { x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y };
   }
 
+  // puffy clouds in the upper sky: sunlit tops, lavender undersides
+  function puff(w) {
+    const h = Math.round(w * .55), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    for (let i = 0; i < 30; i++) {
+      const t = Math.random(), bump = Math.sin(t * Math.PI), x = w * (.1 + .8 * t);
+      const y = h * (.66 - bump * .26 * Math.random());
+      const r = Math.min(w * (.05 + .14 * bump * (.4 + .6 * Math.random())), x, w - x, y, h - y);
+      const rg = g.createRadialGradient(x, y - r * .3, 0, x, y, r);
+      rg.addColorStop(0, 'rgba(255,250,250,.75)'); rg.addColorStop(.6, 'rgba(255,244,248,.28)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
+      g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+    g.globalCompositeOperation = 'source-atop';
+    const sh = g.createLinearGradient(0, 0, 0, h);
+    sh.addColorStop(0, 'rgba(255,225,215,.25)'); sh.addColorStop(.5, 'rgba(220,205,240,.2)'); sh.addColorStop(1, 'rgba(150,140,210,.6)');
+    g.fillStyle = sh; g.fillRect(0, 0, w, h);
+    return c;
+  }
+  const puffs = Array.from({ length: 7 }, (_, i) => ({ img: puff(220 + Math.random() * 300), x: i / 7 + Math.random() * .08, y: .06 + Math.random() * .26, v: 3 + Math.random() * 5, a: .5 + Math.random() * .3 }));
+
   let last = performance.now();
   function frame(now) {
     const dt = Math.min((now - last) / 1000, .05); last = now;
     ctx.clearRect(0, 0, W, H);
 
     const span = W + 800;
+    puffs.forEach(w => {
+      if (!still) { w.x += w.v * dt / span; if (w.x > 1) w.x -= 1; }
+      const sc = W <= 700 ? .6 : 1, iw = w.img.width * sc, ih = w.img.height * sc;
+      const cx = w.x * span - 400, keep = Math.min(1, Math.max(.3, Math.abs(cx - W / 2) / (W * .32)));
+      ctx.globalAlpha = w.a * keep; ctx.drawImage(w.img, cx - iw / 2, w.y * H - ih / 2, iw, ih);
+    });
     wisps.forEach(w => {
       if (!still) { w.x += w.v * dt / span; if (w.x > 1) w.x -= 1; }
       ctx.globalAlpha = w.a; ctx.drawImage(w.img, w.x * span - 400 - w.img.width / 2, w.y * H - w.img.height / 2);
