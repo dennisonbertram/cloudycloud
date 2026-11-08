@@ -162,12 +162,40 @@
   .kicker { font: 500 13px/1 "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--peri); margin-bottom: 20px; }
   h2 { font: 300 clamp(34px, 4.6vw, 58px)/1.05 "Inter Tight", sans-serif; letter-spacing: -.035em; max-width: 760px; }
   h2 span { color: var(--faint); }
-  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 64px; background: var(--line); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
-  .cell { background: #fff; padding: 36px 32px 40px; }
-  .cell h3 { font: 500 19px/1.3 "Inter Tight", sans-serif; letter-spacing: -.01em; margin: 22px 0 10px; }
-  .cell p { color: var(--muted); font-size: 15px; }
-  .cell code { overflow-wrap: anywhere; font-size: 13px; color: var(--ink); background: #eff0fa; padding: 2px 6px; border-radius: 5px; }
-  .icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(180deg, #eef0ff, #fbeef0); border: 1px solid rgba(88,103,240,.18); color: var(--peri); }
+  .band { background: #f5f4f9; }
+  .row { display: grid; grid-template-columns: 1.15fr 1fr; gap: 72px; align-items: center; }
+  .row + .row { margin-top: 90px; }
+  .row.rev .pic { order: 2; }
+  .pic img, .fleet-pic img {
+    display: block; width: 100%; height: auto;
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 62%, transparent 100%);
+    mask-image: radial-gradient(ellipse at center, #000 62%, transparent 100%);
+    animation: bob 7s ease-in-out infinite;
+  }
+  @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  @media (prefers-reduced-motion: reduce) { .pic img, .fleet-pic img { animation: none; } }
+  .row h2, .fleet h2 { font-size: clamp(30px, 3.4vw, 40px); line-height: 1.1; }
+  .row p, .fleet-p { color: var(--muted); font-size: 17px; margin-top: 20px; max-width: 480px; }
+  .row code, .faq code { font-size: .85em; color: var(--ink); background: #eaeaf6; padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  .checks { list-style: none; margin-top: 28px; display: grid; gap: 12px; }
+  .checks li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; color: var(--ink); }
+  .checks svg { flex: none; margin-top: 3px; color: var(--peri); }
+  .fleet { text-align: center; padding-top: 0; }
+  .fleet h2, .fleet .fleet-p { margin-left: auto; margin-right: auto; }
+  .fleet .fleet-p { max-width: 600px; }
+  .fleet-pic { max-width: 1100px; margin: 48px auto 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; max-width: 900px; margin: 24px auto 0; }
+  .stat b { display: block; font: 300 clamp(40px, 5vw, 56px)/1 "Inter Tight", sans-serif; letter-spacing: -.035em; color: var(--ink); }
+  .stat span { display: block; margin-top: 10px; font-size: 14px; color: var(--muted); }
+  .faq-list { margin-top: 48px; max-width: 760px; border-top: 1px solid var(--line); }
+  .faq details { border-bottom: 1px solid var(--line); }
+  .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 22px 0; font: 500 17px/1.4 "Inter Tight", sans-serif; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; flex: none; font: 300 26px/1 "Inter Tight", sans-serif; color: var(--peri); transition: transform .25s; }
+  .faq details[open] summary::after { transform: rotate(45deg); }
+  .faq details p { color: var(--muted); font-size: 16px; padding: 0 48px 24px 0; }
+  .faq details a { color: var(--peri); text-decoration: underline; text-underline-offset: 3px; }
+  summary:focus-visible { outline: 2px solid var(--peri); outline-offset: 2px; }
 
   .flow { display: grid; grid-template-columns: 1fr 1.15fr; gap: 64px; align-items: center; }
   .steps { list-style: none; margin-top: 40px; display: grid; gap: 28px; }
@@ -207,7 +235,10 @@
   .flinks { display: flex; gap: 20px; }
 
   @media (max-width: 900px) {
-    .grid3 { grid-template-columns: 1fr; }
+    .row { grid-template-columns: 1fr; gap: 32px; }
+    .row.rev .pic { order: 0; }
+    .row + .row { margin-top: 66px; }
+    .row p { max-width: none; }
     .flow { grid-template-columns: 1fr; gap: 48px; }
     .hero { min-height: 1060px; max-height: none; }
     .hero-copy { padding-top: 130px; }
@@ -218,6 +249,8 @@
   @media (max-width: 560px) {
     nav { padding: 18px 16px; }
     section { padding: 66px 16px; }
+    .stats { grid-template-columns: 1fr; gap: 28px; }
+    .faq details p { padding-right: 0; }
     .hero-copy { padding: 16vh 16px 0; }
     .lede { font-size: 16px; }
     .ascii { font-size: 9px; }
@@ -256,7 +289,7 @@
     .photo { background-image: url(hero-mobile.jpg); background-position: 50% 100%; }
     .links { gap: 4px; }
     .links a { padding: 0 8px; }
-    .links a:nth-child(-n+2) { display: none; }
+    .links a:nth-child(-n+3) { display: none; }
     .nav-cta .btn { padding: 0 14px; }
     .finale .install .btn { display: none; }
   }
@@ -277,6 +310,7 @@
     <div class="links">
       <a href="#how">How it works</a>
       <a href="#models">Models</a>
+      <a href="#faq">FAQ</a>
       <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a>
       <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a>
     </div>
@@ -302,27 +336,48 @@
 </header>
 
 <main>
-  <section>
-    <div class="kicker">Why</div>
-    <h2>Subagents shouldn't compete <span>with your session for your machine.</span></h2>
-    <div class="grid3">
-      <div class="cell">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="9" rx="2"/><path d="M7 16h6M10 13v3"/></svg></div>
-        <h3>One machine per subagent</h3>
-        <p>Each subagent runs as its own Claude Code on its own Instabox cloud machine, with a fresh copy of your repo.</p>
+  <div class="band">
+    <section>
+      <div class="row">
+        <div class="pic"><img src="img/machines.jpg" alt="A laptop on a floating island sends glowing threads up to three clouds, each holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div>
+          <div class="kicker">One machine each</div>
+          <h2>Every subagent gets its own computer.</h2>
+          <p>When your Claude Code session starts a subagent, Cloudy Cloud gives it a fresh cloud machine on Instabox. The subagent runs a full Claude Code there, on a copy of your repo. Your laptop only runs your own session.</p>
+          <ul class="checks"><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Sees your tracked files, including uncommitted edits</li><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Runs on Instabox, not on your laptop</li></ul>
+        </div>
       </div>
-      <div class="cell">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="15" r="2"/><circle cx="14" cy="8" r="2"/><path d="M6 7v6M14 10c0 3-4 2-7 4"/></svg></div>
-        <h3>Work lands on a branch</h3>
-        <p>Every subagent commits and pushes to <code>cloudy-cloud/&lt;id&gt;</code> on your GitHub repo. You fetch it when you want it.</p>
+      <div class="row rev">
+        <div class="pic"><img src="img/branches.jpg" alt="Three clouds send coloured lines down a branching path to a stone platform holding three parcels." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div>
+          <div class="kicker">Results on GitHub</div>
+          <h2>Work comes back as a branch.</h2>
+          <p>Each subagent commits and pushes to its own branch on your GitHub repo, named <code>cloudy-cloud/&lt;id&gt;</code>. Open a pull request from it, or pull it down with one <code>git fetch</code>.</p>
+          <ul class="checks"><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>One branch per subagent</li><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Your local folder stays as you left it</li></ul>
+        </div>
       </div>
-      <div class="cell">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h12v8H9l-4 3v-3H4z"/></svg></div>
-        <h3>Open for follow-ups</h3>
-        <p>Send a subagent more messages while it is open. It stops after 60 idle minutes, or when your session ends.</p>
+      <div class="row">
+        <div class="pic"><img src="img/followup.jpg" alt="Paper airplanes fly between a laptop on a floating island and a cloud holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div>
+          <div class="kicker">Follow-ups</div>
+          <h2>Keep the conversation going.</h2>
+          <p>A subagent stays open after it answers. Send it another message and it carries on with the same context. It stops on its own after 60 idle minutes, or when your session ends.</p>
+          <ul class="checks"><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Same context for every follow-up</li><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Idle machines stop by themselves</li></ul>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
+    <section class="fleet">
+      <div class="kicker">Scale</div>
+      <h2>One subagent, or fifty.</h2>
+      <p class="fleet-p">Start as many subagents as the task needs. Cloudy Cloud queues them and starts machines as fast as your Instabox plan allows. Your plan's machine limit caps how many run at once.</p>
+      <div class="fleet-pic"><img src="img/fleet.jpg" alt="Dozens of small clouds, each holding a computer, all connected to one lead cloud." width="2200" height="1221" loading="lazy" decoding="async"></div>
+      <div class="stats">
+        <div class="stat"><b>50</b><span>subagents run at once in our tests, on a paid plan</span></div>
+        <div class="stat"><b>60 min</b><span>idle time before a subagent stops</span></div>
+        <div class="stat"><b>5 min</b><span>to set up</span></div>
+      </div>
+    </section>
+  </div>
 
   <section id="how">
     <div class="flow">
@@ -358,7 +413,7 @@
   <section id="models">
     <div class="kicker">Models</div>
     <h2>Claude for your session. <span>Your choice of model for workers.</span></h2>
-    <p class="models-cap">Workers can use Claude, or GLM, DeepSeek, Particle or OpenRouter with your own provider key.</p>
+    <p class="models-cap">Workers can use Claude, or GLM, DeepSeek, Particle or OpenRouter with your own provider key. Send bulk, well-specified work to a cheaper open model and keep Claude for the hard parts.</p>
     <div class="models">
       <div class="chip">Claude<small>your normal login</small></div>
       <div class="chip">GLM<small>profile: glm</small></div>
@@ -366,6 +421,19 @@
       <div class="chip">Particle<small>profile: particle</small></div>
       <div class="chip">OpenRouter<small>profile: openrouter</small></div>
       <div class="chip">Your own provider</div>
+    </div>
+  </section>
+
+  <section id="faq" class="faq">
+    <div class="kicker">Good to know</div>
+    <h2>Questions, answered simply.</h2>
+    <div class="faq-list">
+        <details><summary><span>What is a subagent?</span></summary><p>When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.</p></details>
+        <details><summary><span>What do I need?</span></summary><p>An Instabox account (a paid plan to run more than a few subagents at once), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.</p></details>
+        <details><summary><span>What can a subagent see?</span></summary><p>Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings.</p></details>
+        <details><summary><span>What happens to the machines?</span></summary><p>A subagent stops after 60 idle minutes or when your session ends. Instabox deletes its machine after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p></details>
+        <details><summary><span>Is it safe?</span></summary><p>Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">setup guide</a> shows how.</p></details>
+        <details><summary><span>Does it change plain <code>claude</code>?</span></summary><p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p></details>
     </div>
   </section>
 
@@ -391,7 +459,7 @@
 <footer>
   <span>cloudycloud.tech</span>
   <span>Runs on Instabox. Not affiliated with Anthropic.</span>
-  <span class="flinks"><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a></span>
+  <span class="flinks"><a href="#faq">FAQ</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a></span>
 </footer>
 <div class="sr" id="live" aria-live="polite"></div>
 
