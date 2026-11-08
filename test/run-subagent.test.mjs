@@ -835,7 +835,7 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   assert.ok(s.cmds.some((c) => c.includes('ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet')), 'nested coordinator gets the fleet skill');
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
   assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
-  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\./);
+  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\. Your workers are deleted as soon as your reply ends.*call cloud_agent_wait on every worker you started/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });
