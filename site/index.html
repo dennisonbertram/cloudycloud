@@ -89,7 +89,7 @@
   }
   h1 em {
     font-style: normal;
-    background: linear-gradient(92deg, #ffffff 0%, #ffe6dc 35%, #ffb9a8 100%);
+    background: linear-gradient(92deg, #ffffff 0%, #fff2ec 40%, #ffd2c2 100%);
     filter: drop-shadow(0 2px 14px rgba(120, 70, 140, .25));
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
@@ -208,13 +208,47 @@
     .ascii { font-size: 9px; }
     footer { flex-direction: column; gap: 8px; padding: 24px 16px; }
   }
+
+  /* ---------- photo hero (overrides) ---------- */
+  .hero { height: 100vh; min-height: 760px; max-height: 1000px; background: #a9a6d6; }
+  .photo { position: absolute; inset: 0; background: url(hero.jpg) 46% 100% / cover no-repeat; }
+  .photo::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(58, 64, 140, .5) 0%, rgba(80, 78, 160, .32) 38%, rgba(110, 90, 170, .12) 52%, transparent 62%); }
+  .edge { position: absolute; top: 0; bottom: 0; width: 16%; z-index: 2; pointer-events: none;
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
+  .edge-l { left: 0; -webkit-mask-image: linear-gradient(90deg, #000, transparent); mask-image: linear-gradient(90deg, #000, transparent); }
+  .edge-r { right: 0; -webkit-mask-image: linear-gradient(270deg, #000, transparent); mask-image: linear-gradient(270deg, #000, transparent); }
+  #sky { z-index: 1; }
+  .hero-copy { text-align: center; padding: 12vh 24px 0; max-width: 900px; }
+  .hero-copy > *, .hero-copy h1 { max-width: none; }
+  .hero h1 { font-size: clamp(42px, 5.6vw, 76px); }
+  .hero .lede { max-width: 560px; margin: 18px auto 0; }
+  .cta-row { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 34px; flex-wrap: wrap; }
+  .cta-row .install { margin: 0; width: 430px; max-width: 100%; }
+  .demo { height: 48px; padding: 0 22px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); background: rgba(40, 40, 90, .22); }
+  .hero-note { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5;
+    padding: 9px 18px; border-radius: 10px; font-size: 12.5px; color: #fff; white-space: nowrap;
+    background: rgba(30, 28, 60, .55); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  @media (max-width: 900px) {
+    .hero { min-height: 860px; max-height: none; }
+    .hero-copy { padding-top: 120px; }
+    .edge { width: 10%; }
+    .demo { display: none; }
+    .hero-note { white-space: normal; width: calc(100% - 32px); text-align: center; }
+  }
+  @media (max-width: 700px) {
+    .hero { height: 100svh; min-height: 740px; }
+    .photo { background-image: url(hero-mobile.jpg); background-position: 50% 100%; }
+  }
 </style>
 </head>
 <body>
 
 <header class="hero">
+  <div class="photo" aria-hidden="true"></div>
   <canvas id="sky" aria-hidden="true"></canvas>
-
+  <div class="edge edge-l" aria-hidden="true"></div>
+  <div class="edge edge-r" aria-hidden="true"></div>
   <nav>
     <a class="brand" href="#">
       <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
@@ -231,45 +265,21 @@
       <a class="btn btn-light" href="#start">Get started</a>
     </div>
   </nav>
-
   <div class="hero-copy">
-    <div class="eyebrow"><b>NEW</b> Open-model workers: GLM, DeepSeek, OpenRouter</div>
     <h1>Your subagents,<br><em>up in the clouds.</em></h1>
-    <p class="lede">Cloudy Cloud gives every Claude Code subagent its own cloud machine. Each one works on a copy of your repo and pushes to its own branch, while your laptop stays quiet.</p>
-    <div class="install" id="start">
-      <code><span>$</span> ./install.sh</code>
-      <button class="copy" aria-label="Copy command" onclick="navigator.clipboard?.writeText('./install.sh')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-      </button>
-      <a class="btn btn-light" href="#how">Get started</a>
-    </div>
-    <p class="hero-note">Bring your own keys. Setup takes about 15 minutes.</p>
-  </div>
-
-  <div class="desk" aria-hidden="true">
-    <div class="laptop side" style="--x:57%;--s:.7;--o:.8" data-l="0">
-      <div class="screen"><pre><span class="p">~/api</span> <span class="w">cloudy-cloud</span>
-<span class="g">●</span> agent 3c91  tests
-<span class="g">●</span> agent a04e  pushing</pre></div>
-      <div class="base"></div><div class="shadow"></div>
-    </div>
-    <div class="laptop main" style="--x:75%" data-l="1">
-      <div class="screen"><pre><span class="p">~/app</span> <span class="w">cloudy-cloud</span>
-<span class="w">› refactor auth, 3 agents</span>
-<span class="g">●</span> agent 7f2a  running
-<span class="g">●</span> agent 19bd  running
-<span class="g">●</span> agent e55c  pushed ✓</pre></div>
-      <div class="base"></div><div class="shadow"></div>
-    </div>
-    <div class="laptop side" style="--x:93%;--s:.7;--o:.8" data-l="2">
-      <div class="screen"><pre><span class="p">~/web</span> <span class="w">cloudy-cloud</span>
-<span class="g">●</span> agent 0d7e  review
-<span class="g">●</span> agent b2f1  idle</pre></div>
-      <div class="base"></div><div class="shadow"></div>
+    <p class="lede">Cloudy Cloud gives every Claude Code subagent its own cloud machine. Each one works on a copy of your repo and pushes to its own branch.</p>
+    <div class="cta-row" id="start">
+      <div class="install">
+        <code><span>$</span> ./install.sh</code>
+        <button class="copy" aria-label="Copy command" onclick="navigator.clipboard?.writeText('./install.sh')">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+        </button>
+        <a class="btn btn-light" href="#how">Get started</a>
+      </div>
+      <a class="btn btn-ghost demo" href="#how">How it works</a>
     </div>
   </div>
-  <div class="hero-fade"></div>
-  <div class="scrim"></div>
+  <div class="hero-note">Bring your own keys. Runs on Instabox. Setup takes about 15 minutes.</div>
 </header>
 
 <main>
@@ -361,168 +371,108 @@
 
 <script>
 (() => {
-  const cv = document.getElementById('sky');
-  const ctx = cv.getContext('2d');
-  const hero = cv.parentElement;
+  const cv = document.getElementById('sky'), ctx = cv.getContext('2d'), hero = cv.parentElement;
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let W, H, dpr;
+  // hero.jpg is 2688x1520, drawn like CSS "cover" at background-position 46% 100%.
+  // In image pixels: tops of the two laptop screens, and spots in the cloud sea they talk to.
+  // hero-mobile.jpg is the 1520x2688 original scaled to 1131x2000; coordinates stay in original pixels.
+  const SCENES = {
+    wide: { IW: 2688, IH: 1520, PX: .46, LAPTOPS: [[1050, 835], [1300, 828]],
+      TARGETS: [[180, 1180], [470, 990], [1880, 960], [2260, 1090], [2580, 1270]],
+      LINKS: [[0, 0], [0, 1], [0, 2], [1, 2], [1, 3], [1, 4]] },
+    tall: { IW: 1520, IH: 2688, PX: .5, LAPTOPS: [[591, 1752], [804, 1747]],
+      TARGETS: [[81, 1908], [336, 1693], [1210, 1680], [1452, 1922]],
+      LINKS: [[0, 0], [0, 1], [0, 2], [1, 2], [1, 3]] },
+  };
+  const PY = 1;
+  let IW, IH, PX, LAPTOPS, TARGETS, LINKS, scene;
+  let W, H, s, ox, oy, pulses = [], bloom = [], flash = [];
+  const map = ([x, y]) => ({ x: ox + x * s, y: oy + y * s });
 
-  // A cloud sprite: overlapping soft puffs, shaded blue underneath.
-  function sprite(w) {
-    const h = Math.round(w * 0.62), c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const g = c.getContext('2d');
-    for (let i = 0; i < 34; i++) {
-      const t = Math.random(), bump = Math.sin(t * Math.PI);
-      const x = w * (0.1 + 0.8 * t);
-      const y = h * (0.66 - bump * 0.26 * Math.random());
-      let r = w * (0.06 + 0.15 * bump * (0.4 + 0.6 * Math.random()));
-      r = Math.min(r, x, w - x, y, h - y);
-      const rg = g.createRadialGradient(x, y - r * .25, 0, x, y, r);
-      rg.addColorStop(0, 'rgba(255,255,255,.7)');
-      rg.addColorStop(.55, 'rgba(255,248,250,.3)');
-      rg.addColorStop(1, 'rgba(255,255,255,0)');
-      g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
-    }
-    g.globalCompositeOperation = 'source-atop';
-    const sh = g.createLinearGradient(0, 0, 0, h);
-    sh.addColorStop(0, 'rgba(255,255,255,0)');
-    sh.addColorStop(.45, 'rgba(225,205,235,.25)');
-    sh.addColorStop(1, 'rgba(150,140,205,.7)');
-    g.fillStyle = sh; g.fillRect(0, 0, w, h);
-    return c;
-  }
-
-  const rand = (a, b) => a + Math.random() * (b - a);
-  // drifting background clouds: [count, min width, max width, alpha, speed px/s, y band]
-  const layers = [[9, 160, 300, .55, 5, [.06, .5]], [6, 300, 520, .7, 10, [.25, .62]], [3, 520, 820, .75, 16, [.7, .86]]];
-  const drift = [];
-  layers.forEach(([n, a, b, alpha, v, band], li) => {
-    for (let i = 0; i < n; i++) drift.push({ img: sprite(Math.round(rand(a, b))), x: Math.random(), band, y: Math.random(), alpha, v, li });
-  });
-
-  // hub clouds: the cloud machines the laptops talk to
-  const WIDE = [[.55, .36], [.65, .21], [.76, .29], [.87, .19], [.96, .37]];
-  const NARROW = [[.08, .66], [.3, .6], [.5, .64], [.7, .6], [.92, .66]];
-  const hubs = WIDE.map(([x, y], i) => ({
-    x, y, img: sprite(i === 2 ? 340 : 270), phase: Math.random() * 6, glow: 0
-  }));
-  const links = [[0, 0], [0, 1], [1, 1], [1, 2], [1, 3], [2, 3], [2, 4]];
-  const laptops = [...document.querySelectorAll('.laptop')];
-  const screens = laptops.map(l => l.querySelector('.screen'));
-  const pulses = [];
-  links.forEach((l, i) => {
-    pulses.push({ link: i, t: Math.random(), v: rand(.12, .22), up: true });
-    pulses.push({ link: i, t: Math.random(), v: rand(.1, .18), up: false });
-  });
-
-  let anchors = [];
   function resize() {
-    dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = Math.min(devicePixelRatio || 1, 2);
     W = hero.clientWidth; H = hero.clientHeight;
-    cv.width = W * dpr; cv.height = H * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    (W < 900 ? NARROW : WIDE).forEach(([x, y], i) => { hubs[i].x = x; hubs[i].y = y; });
-    const hr = hero.getBoundingClientRect();
-    anchors = laptops.map(l => {
-      const r = l.querySelector('.screen').getBoundingClientRect();
-      return r.width ? { x: r.left + r.width / 2 - hr.left, y: r.top - hr.top + 2 } : null;
-    });
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const next = W <= 700 ? 'tall' : 'wide';
+    if (next !== scene) {
+      scene = next; ({ IW, IH, PX, LAPTOPS, TARGETS, LINKS } = SCENES[scene]);
+      pulses = LINKS.flatMap((_, i) => [{ i, t: Math.random(), v: rand(.16, .26), up: true }, { i, t: Math.random(), v: rand(.12, .2), up: false }]);
+      bloom = TARGETS.map(() => 0); flash = LAPTOPS.map(() => 0);
+    }
+    s = Math.max(W / IW, H / IH); ox = (W - IW * s) * PX; oy = (H - IH * s) * PY;
   }
+  const rand = (a, b) => a + Math.random() * (b - a);
   addEventListener('resize', resize); resize();
 
-  const hubPos = (h, time) => ({ x: h.x * W, y: h.y * H + Math.sin(time * .5 + h.phase) * 6 });
-  function bez(p0, p3, t) {
-    const dy = p0.y - p3.y;
-    const p1 = { x: p0.x, y: p0.y - dy * .55 }, p2 = { x: p3.x, y: p3.y + dy * .5 };
+  // soft cloud wisps that drift along the horizon
+  function wisp(w) {
+    const h = Math.round(w * .4), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    for (let i = 0; i < 22; i++) {
+      const t = Math.random(), x = w * (.1 + .8 * t), y = h * (.6 - .2 * Math.sin(t * Math.PI) * Math.random());
+      const r = Math.min(w * (.05 + .1 * Math.sin(t * Math.PI)), x, w - x, y, h - y);
+      const rg = g.createRadialGradient(x, y, 0, x, y, r);
+      rg.addColorStop(0, 'rgba(255,246,248,.5)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
+      g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+    return c;
+  }
+  const wisps = Array.from({ length: 6 }, (_, i) => ({ img: wisp(300 + Math.random() * 400), x: Math.random(), y: .38 + Math.random() * .2, v: 4 + Math.random() * 6, a: .35 + Math.random() * .25 }));
+
+  // arc from a laptop up and over into the cloud sea
+  function point(a, b, t) {
+    const c = { x: (a.x + b.x) / 2, y: Math.min(a.y, b.y) - Math.abs(b.x - a.x) * .1 - 30 * s };
     const u = 1 - t;
-    return { x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x, y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y };
+    return { x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y };
   }
 
-  function drawCloud(c, cx, cy, alpha) {
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(c, cx - c.width / 2, cy - c.height / 2);
-  }
-
-  // faint stars, fixed
-
-  let last = performance.now(), time = 0;
+  let last = performance.now();
   function frame(now) {
-    const dt = Math.min((now - last) / 1000, .05); last = now; time += dt;
+    const dt = Math.min((now - last) / 1000, .05); last = now;
     ctx.clearRect(0, 0, W, H);
 
-
-    const span = W + 900;
-    const drawDrift = li => drift.filter(d => d.li === li).forEach(d => {
-      if (!still) d.x += d.v * dt / span;
-      if (d.x > 1) d.x -= 1;
-      const y = (d.band[0] + (d.band[1] - d.band[0]) * d.y) * H;
-      drawCloud(d.img, d.x * span - 450, y, d.alpha);
+    const span = W + 800;
+    wisps.forEach(w => {
+      if (!still) { w.x += w.v * dt / span; if (w.x > 1) w.x -= 1; }
+      ctx.globalAlpha = w.a; ctx.drawImage(w.img, w.x * span - 400 - w.img.width / 2, w.y * H - w.img.height / 2);
     });
-    drawDrift(0); drawDrift(1);
 
-    const hp = hubs.map(h => hubPos(h, time));
-
-    // connection lines
     ctx.globalCompositeOperation = 'lighter';
-    links.forEach(([l, h]) => {
-      const a = anchors[l]; if (!a) return;
-      const b = { x: hp[h].x, y: hp[h].y + 20 };
-      ctx.globalAlpha = 1; ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(255,255,255,.38)';
+    LINKS.forEach(([l, t]) => {
+      const a = map(LAPTOPS[l]), b = map(TARGETS[t]);
+      ctx.globalAlpha = .5; ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.55)';
       ctx.beginPath(); ctx.moveTo(a.x, a.y);
-      for (let t = .04; t <= 1.001; t += .04) { const p = bez(a, b, t); ctx.lineTo(p.x, p.y); }
+      for (let k = 1; k <= 40; k++) { const p = point(a, b, k / 40); ctx.lineTo(p.x, p.y); }
       ctx.stroke();
     });
 
-    // pulses: up = a task going to the cloud, down = an answer coming back
     pulses.forEach(p => {
-      const [l, h] = links[p.link]; const a = anchors[l]; if (!a) return;
-      const b = { x: hp[h].x, y: hp[h].y + 20 };
+      const [l, t] = LINKS[p.i], a = map(LAPTOPS[l]), b = map(TARGETS[t]);
       if (!still) p.t += p.v * dt;
-      if (p.t >= 1) {
-        p.t = 0; p.v = rand(.1, .22);
-        if (p.up) hubs[h].glow = 1;
-        else { screens[l].classList.add('ping'); setTimeout(() => screens[l].classList.remove('ping'), 420); }
+      if (p.t >= 1) { p.t = 0; p.v = rand(.12, .26); if (p.up) bloom[t] = 1; else flash[l] = 1; }
+      const tt = p.up ? p.t : 1 - p.t, fade = Math.sin(Math.PI * p.t);
+      for (let k = 0; k < 16; k++) {
+        const ss = p.up ? tt - .14 * k / 16 : tt + .14 * k / 16;
+        if (ss < 0 || ss > 1) continue;
+        const q = point(a, b, ss), f = 1 - k / 16;
+        ctx.globalAlpha = fade * f * .55; ctx.fillStyle = p.up ? '#ffffff' : '#ffd6c4';
+        ctx.beginPath(); ctx.arc(q.x, q.y, 1.2 + f * 1.4, 0, 7); ctx.fill();
       }
-      const tt = p.up ? p.t : 1 - p.t;
-      const tail = .16;
-      const fade = Math.sin(Math.PI * p.t);
-      for (let k = 0; k < 14; k++) {
-        const s = p.up ? tt - tail * k / 14 : tt + tail * k / 14;
-        if (s < 0 || s > 1) continue;
-        const q = bez(a, b, s), f = 1 - k / 14;
-        ctx.globalAlpha = fade * f * .5;
-        ctx.fillStyle = p.up ? '#ffffff' : '#ffd9c8';
-        ctx.beginPath(); ctx.arc(q.x, q.y, 1.6 + f * 1.4, 0, 7); ctx.fill();
-      }
-      const q = bez(a, b, tt);
-      const g = ctx.createRadialGradient(q.x, q.y, 0, q.x, q.y, 16);
-      g.addColorStop(0, p.up ? 'rgba(255,255,255,.95)' : 'rgba(255,225,205,.95)');
-      g.addColorStop(1, p.up ? 'rgba(150,170,255,0)' : 'rgba(255,170,150,0)');
-      ctx.globalAlpha = fade; ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(q.x, q.y, 16, 0, 7); ctx.fill();
+      const q = point(a, b, tt), g = ctx.createRadialGradient(q.x, q.y, 0, q.x, q.y, 14);
+      g.addColorStop(0, p.up ? 'rgba(255,255,255,.95)' : 'rgba(255,222,205,.95)');
+      g.addColorStop(1, p.up ? 'rgba(170,180,255,0)' : 'rgba(255,170,150,0)');
+      ctx.globalAlpha = fade; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(q.x, q.y, 14, 0, 7); ctx.fill();
     });
 
-    // glow inside the hub clouds when a task arrives
-    hubs.forEach((h, i) => {
-      h.glow *= Math.pow(.25, dt);
-      const p = hp[i], r = 150;
-      const g = ctx.createRadialGradient(p.x, p.y + 10, 0, p.x, p.y + 10, r);
-      g.addColorStop(0, `rgba(255,236,225,${.12 + .4 * h.glow})`);
-      g.addColorStop(1, 'rgba(255,200,190,0)');
-      ctx.globalAlpha = 1; ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(p.x, p.y + 10, r, 0, 7); ctx.fill();
-    });
-    ctx.globalCompositeOperation = 'source-over';
-
-    hubs.forEach((h, i) => drawCloud(h.img, hp[i].x, hp[i].y, 1));
-    ctx.globalCompositeOperation = 'lighter';
-    hubs.forEach((h, i) => drawCloud(h.img, hp[i].x, hp[i].y, .22 * h.glow));
-    ctx.globalCompositeOperation = 'source-over';
-
-    drawDrift(2);
-    ctx.globalAlpha = 1;
+    // the cloud lights up where a task lands; the laptop screen glows when an answer returns
+    const glow = (pt, r, k, rgb) => {
+      const g = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r);
+      g.addColorStop(0, `rgba(${rgb},${k})`); g.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
+    };
+    TARGETS.forEach((t, i) => { bloom[i] *= Math.pow(.3, dt); glow(map(t), 90 * s / .6, .1 + .45 * bloom[i], '255,236,228'); });
+    LAPTOPS.forEach((l, i) => { flash[i] *= Math.pow(.15, dt); const p = map(l); p.y += 22 * s; glow(p, 40 * s / .6, .08 + .5 * flash[i], '235,225,255'); });
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     if (!still) requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
