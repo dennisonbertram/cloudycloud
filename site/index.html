@@ -211,7 +211,7 @@
 
   /* ---------- photo hero (overrides) ---------- */
   .hero { height: 100vh; min-height: 760px; max-height: 1000px; background: #a9a6d6; }
-  .photo { position: absolute; inset: 0; background: url(hero.jpg) 46% 100% / cover no-repeat; }
+  .photo { position: absolute; inset: 0; background: url(hero.jpg) 50% 100% / cover no-repeat; }
   .photo::after { content: ""; position: absolute; inset: 0;
     background: linear-gradient(180deg, rgba(58, 64, 140, .5) 0%, rgba(80, 78, 160, .32) 38%, rgba(110, 90, 170, .12) 52%, transparent 62%); }
   .edge { position: absolute; top: 0; bottom: 0; width: 16%; z-index: 2; pointer-events: none;
@@ -373,60 +373,19 @@
 (() => {
   const cv = document.getElementById('sky'), ctx = cv.getContext('2d'), hero = cv.parentElement;
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // hero.jpg is 2688x1520, drawn like CSS "cover" at background-position 46% 100%.
-  // In image pixels: tops of the two laptop screens, and spots in the cloud sea they talk to.
-  // hero-mobile.jpg is the 1520x2688 original scaled to 1131x2000; coordinates stay in original pixels.
-  const SCENES = {
-    wide: { IW: 2688, IH: 1520, PX: .46, LAPTOPS: [[1050, 835], [1300, 828]],
-      TARGETS: [[180, 1180], [470, 990], [1880, 960], [2260, 1090], [2580, 1270]],
-      LINKS: [[0, 0], [0, 1], [0, 2], [1, 2], [1, 3], [1, 4]] },
-    tall: { IW: 1520, IH: 2688, PX: .5, LAPTOPS: [[591, 1752], [804, 1747]],
-      TARGETS: [[81, 1908], [336, 1693], [1210, 1680], [1452, 1922]],
-      LINKS: [[0, 0], [0, 1], [0, 2], [1, 2], [1, 3]] },
-  };
-  const PY = 1;
-  let IW, IH, PX, LAPTOPS, TARGETS, LINKS, scene;
-  let W, H, s, ox, oy, pulses = [], bloom = [], flash = [];
-  const map = ([x, y]) => ({ x: ox + x * s, y: oy + y * s });
-
-  function resize() {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
-    W = hero.clientWidth; H = hero.clientHeight;
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const next = W <= 700 ? 'tall' : 'wide';
-    if (next !== scene) {
-      scene = next; ({ IW, IH, PX, LAPTOPS, TARGETS, LINKS } = SCENES[scene]);
-      pulses = LINKS.flatMap((_, i) => [{ i, t: Math.random(), v: rand(.16, .26), up: true }, { i, t: Math.random(), v: rand(.12, .2), up: false }]);
-      bloom = TARGETS.map(() => 0); flash = LAPTOPS.map(() => 0);
-    }
-    s = Math.max(W / IW, H / IH); ox = (W - IW * s) * PX; oy = (H - IH * s) * PY;
-  }
   const rand = (a, b) => a + Math.random() * (b - a);
-  addEventListener('resize', resize); resize();
+  // The photo is drawn like CSS "cover" anchored at (PX, bottom). LAPTOP is the top of the laptop
+  // screen in original image pixels. CLOUDS are the sky clouds it talks to, as fractions of the hero,
+  // kept to the sides so the lines never cross the headline.
+  const SCENES = {
+    wide: { IW: 2688, IH: 1520, PX: .5, LAPTOP: [1310, 934],
+      CLOUDS: [[.1, .17, 300], [.2, .38, 230], [.8, .36, 240], [.9, .15, 320]], SIDE: .16 },
+    tall: { IW: 1520, IH: 2688, PX: .5, LAPTOP: [719, 1572],
+      CLOUDS: [[.03, .08, 170], [.97, .06, 180]], SIDE: .5 },
+  };
+  let scene, cfg, W, H, s, ox, oy, pulses = [], bloom = [], flash = 0, hubs = [];
 
-  // soft cloud wisps that drift along the horizon
-  function wisp(w) {
-    const h = Math.round(w * .4), c = document.createElement('canvas'); c.width = w; c.height = h;
-    const g = c.getContext('2d');
-    for (let i = 0; i < 22; i++) {
-      const t = Math.random(), x = w * (.1 + .8 * t), y = h * (.6 - .2 * Math.sin(t * Math.PI) * Math.random());
-      const r = Math.min(w * (.05 + .1 * Math.sin(t * Math.PI)), x, w - x, y, h - y);
-      const rg = g.createRadialGradient(x, y, 0, x, y, r);
-      rg.addColorStop(0, 'rgba(255,246,248,.5)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
-      g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
-    }
-    return c;
-  }
-  const wisps = Array.from({ length: 6 }, (_, i) => ({ img: wisp(300 + Math.random() * 400), x: Math.random(), y: .38 + Math.random() * .2, v: 4 + Math.random() * 6, a: .35 + Math.random() * .25 }));
-
-  // arc from a laptop up and over into the cloud sea
-  function point(a, b, t) {
-    const c = { x: (a.x + b.x) / 2, y: Math.min(a.y, b.y) - Math.abs(b.x - a.x) * .1 - 30 * s };
-    const u = 1 - t;
-    return { x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y };
-  }
-
-  // puffy clouds in the upper sky: sunlit tops, lavender undersides
+  // a cloud sprite: sunlit top, lavender underside
   function puff(w) {
     const h = Math.round(w * .55), c = document.createElement('canvas'); c.width = w; c.height = h;
     const g = c.getContext('2d');
@@ -435,7 +394,7 @@
       const y = h * (.66 - bump * .26 * Math.random());
       const r = Math.min(w * (.05 + .14 * bump * (.4 + .6 * Math.random())), x, w - x, y, h - y);
       const rg = g.createRadialGradient(x, y - r * .3, 0, x, y, r);
-      rg.addColorStop(0, 'rgba(255,250,250,.75)'); rg.addColorStop(.6, 'rgba(255,244,248,.28)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
+      rg.addColorStop(0, 'rgba(255,250,250,.8)'); rg.addColorStop(.6, 'rgba(255,244,248,.3)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
       g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
     }
     g.globalCompositeOperation = 'source-atop';
@@ -444,43 +403,75 @@
     g.fillStyle = sh; g.fillRect(0, 0, w, h);
     return c;
   }
-  const puffs = Array.from({ length: 7 }, (_, i) => ({ img: puff(220 + Math.random() * 300), x: i / 7 + Math.random() * .08, y: .06 + Math.random() * .26, v: 3 + Math.random() * 5, a: .5 + Math.random() * .3 }));
 
-  let last = performance.now();
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    W = hero.clientWidth; H = hero.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const next = W <= 700 ? 'tall' : 'wide';
+    if (next !== scene) {
+      scene = next; cfg = SCENES[scene];
+      hubs = cfg.CLOUDS.map(([x, y, w]) => ({ x, y, img: puff(w), phase: Math.random() * 6 }));
+      pulses = hubs.flatMap((_, i) => [{ i, t: Math.random(), v: rand(.16, .26), up: true }, { i, t: Math.random(), v: rand(.12, .2), up: false }]);
+      bloom = hubs.map(() => 0);
+    }
+    s = Math.max(W / cfg.IW, H / cfg.IH); ox = (W - cfg.IW * s) * cfg.PX; oy = H - cfg.IH * s;
+  }
+  addEventListener('resize', resize); resize();
+
+  // drifting clouds: puffy ones up high, flat wisps near the horizon
+  const drifting = [
+    ...Array.from({ length: 6 }, (_, i) => ({ img: puff(200 + Math.random() * 260), x: i / 6 + Math.random() * .08, y: .08 + Math.random() * .3, v: 3 + Math.random() * 5, a: .45 + Math.random() * .3, fadeMid: true })),
+    ...Array.from({ length: 5 }, () => ({ img: puff(360 + Math.random() * 300), x: Math.random(), y: .5 + Math.random() * .12, v: 5 + Math.random() * 6, a: .22 + Math.random() * .15, fadeMid: false })),
+  ];
+
+  // the line leaves the laptop sideways, then sweeps up the side of the frame into the cloud
+  function point(a, b, t) {
+    const dir = Math.sign(b.x - a.x) || 1;
+    const p1 = { x: a.x + dir * W * cfg.SIDE, y: a.y - H * .02 }, p2 = { x: b.x, y: b.y + H * .28 };
+    const u = 1 - t;
+    return { x: u*u*u*a.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*b.x, y: u*u*u*a.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*b.y };
+  }
+  const glow = (pt, r, k, rgb) => {
+    const g = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r);
+    g.addColorStop(0, `rgba(${rgb},${k})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
+  };
+
+  let last = performance.now(), time = 0;
   function frame(now) {
-    const dt = Math.min((now - last) / 1000, .05); last = now;
+    const dt = Math.min((now - last) / 1000, .05); last = now; time += dt;
     ctx.clearRect(0, 0, W, H);
+    const k = W <= 700 ? .6 : 1, span = W + 800;
 
-    const span = W + 800;
-    puffs.forEach(w => {
-      if (!still) { w.x += w.v * dt / span; if (w.x > 1) w.x -= 1; }
-      const sc = W <= 700 ? .6 : 1, iw = w.img.width * sc, ih = w.img.height * sc;
-      const cx = w.x * span - 400, keep = Math.min(1, Math.max(.3, Math.abs(cx - W / 2) / (W * .32)));
-      ctx.globalAlpha = w.a * keep; ctx.drawImage(w.img, cx - iw / 2, w.y * H - ih / 2, iw, ih);
+    drifting.forEach(d => {
+      if (!still) { d.x += d.v * dt / span; if (d.x > 1) d.x -= 1; }
+      const iw = d.img.width * k, ih = d.img.height * k, cx = d.x * span - 400;
+      const keep = d.fadeMid ? Math.min(1, Math.max(.3, Math.abs(cx - W / 2) / (W * .32))) : 1;
+      ctx.globalAlpha = d.a * keep; ctx.drawImage(d.img, cx - iw / 2, d.y * H - ih / 2, iw, ih);
     });
-    wisps.forEach(w => {
-      if (!still) { w.x += w.v * dt / span; if (w.x > 1) w.x -= 1; }
-      ctx.globalAlpha = w.a; ctx.drawImage(w.img, w.x * span - 400 - w.img.width / 2, w.y * H - w.img.height / 2);
-    });
+
+    const lap = { x: ox + cfg.LAPTOP[0] * s, y: oy + cfg.LAPTOP[1] * s };
+    const hp = hubs.map(h => ({ x: h.x * W, y: h.y * H + Math.sin(time * .5 + h.phase) * 5 }));
+    const end = i => ({ x: hp[i].x, y: hp[i].y + 14 * k });
 
     ctx.globalCompositeOperation = 'lighter';
-    LINKS.forEach(([l, t]) => {
-      const a = map(LAPTOPS[l]), b = map(TARGETS[t]);
-      ctx.globalAlpha = .5; ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.55)';
+    hubs.forEach((_, i) => {
+      const a = lap, b = end(i);
+      ctx.globalAlpha = .5; ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.6)';
       ctx.beginPath(); ctx.moveTo(a.x, a.y);
-      for (let k = 1; k <= 40; k++) { const p = point(a, b, k / 40); ctx.lineTo(p.x, p.y); }
+      for (let n = 1; n <= 60; n++) { const p = point(a, b, n / 60); ctx.lineTo(p.x, p.y); }
       ctx.stroke();
     });
-
     pulses.forEach(p => {
-      const [l, t] = LINKS[p.i], a = map(LAPTOPS[l]), b = map(TARGETS[t]);
+      const a = lap, b = end(p.i);
       if (!still) p.t += p.v * dt;
-      if (p.t >= 1) { p.t = 0; p.v = rand(.12, .26); if (p.up) bloom[t] = 1; else flash[l] = 1; }
+      if (p.t >= 1) { p.t = 0; p.v = rand(.12, .26); if (p.up) bloom[p.i] = 1; else flash = 1; }
       const tt = p.up ? p.t : 1 - p.t, fade = Math.sin(Math.PI * p.t);
-      for (let k = 0; k < 16; k++) {
-        const ss = p.up ? tt - .14 * k / 16 : tt + .14 * k / 16;
+      for (let n = 0; n < 16; n++) {
+        const ss = p.up ? tt - .12 * n / 16 : tt + .12 * n / 16;
         if (ss < 0 || ss > 1) continue;
-        const q = point(a, b, ss), f = 1 - k / 16;
+        const q = point(a, b, ss), f = 1 - n / 16;
         ctx.globalAlpha = fade * f * .55; ctx.fillStyle = p.up ? '#ffffff' : '#ffd6c4';
         ctx.beginPath(); ctx.arc(q.x, q.y, 1.2 + f * 1.4, 0, 7); ctx.fill();
       }
@@ -489,15 +480,14 @@
       g.addColorStop(1, p.up ? 'rgba(170,180,255,0)' : 'rgba(255,170,150,0)');
       ctx.globalAlpha = fade; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(q.x, q.y, 14, 0, 7); ctx.fill();
     });
+    hubs.forEach((h, i) => { bloom[i] *= Math.pow(.3, dt); glow(hp[i], h.img.width * k * .6, .12 + .4 * bloom[i], '255,236,228'); });
+    flash *= Math.pow(.15, dt); glow({ x: lap.x, y: lap.y + 12 * s }, 50 * k, .1 + .55 * flash, '235,225,255');
 
-    // the cloud lights up where a task lands; the laptop screen glows when an answer returns
-    const glow = (pt, r, k, rgb) => {
-      const g = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r);
-      g.addColorStop(0, `rgba(${rgb},${k})`); g.addColorStop(1, `rgba(${rgb},0)`);
-      ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
-    };
-    TARGETS.forEach((t, i) => { bloom[i] *= Math.pow(.3, dt); glow(map(t), 90 * s / .6, .1 + .45 * bloom[i], '255,236,228'); });
-    LAPTOPS.forEach((l, i) => { flash[i] *= Math.pow(.15, dt); const p = map(l); p.y += 22 * s; glow(p, 40 * s / .6, .08 + .5 * flash[i], '235,225,255'); });
+    // the clouds sit on top of the line ends, and brighten when a task lands
+    ctx.globalCompositeOperation = 'source-over';
+    hubs.forEach((h, i) => { const iw = h.img.width * k, ih = h.img.height * k; ctx.globalAlpha = .95; ctx.drawImage(h.img, hp[i].x - iw / 2, hp[i].y - ih / 2, iw, ih); });
+    ctx.globalCompositeOperation = 'lighter';
+    hubs.forEach((h, i) => { const iw = h.img.width * k, ih = h.img.height * k; ctx.globalAlpha = .35 * bloom[i]; ctx.drawImage(h.img, hp[i].x - iw / 2, hp[i].y - ih / 2, iw, ih); });
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     if (!still) requestAnimationFrame(frame);
   }
