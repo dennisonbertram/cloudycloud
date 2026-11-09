@@ -151,7 +151,6 @@ You bring your own keys and your own cloud account. Your session stays on Claude
 - **Keys:** setup has optional steps for `PARTICLE_API_KEY` ([platform.particle.ai](https://platform.particle.ai)) and `OPENROUTER_API_KEY` ([openrouter.ai/keys](https://openrouter.ai/keys)). You paste an API key; signing in with OpenRouter or ChatGPT is not available. A profile whose key is missing makes `cloud_agent` fail at once.
 - **Your own profiles:** put them in `~/.config/cloudy-cloud/profiles.json` (or the path in `CLOUDY_CLOUD_PROFILES`). They add to or override the built-ins.
 - **Security:** a profile subagent gets that profile's provider key on its machine instead of your Claude token.
-- **Cost:** results from profile subagents show no cost line.
 
 Details and the `profiles.json` format: [Models and keys](https://cloudycloud.tech/docs/models.html).
 
