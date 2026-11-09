@@ -136,6 +136,22 @@ test('start returns at once with starting, before the sandbox exists', async () 
   release();
 });
 
+test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
+  const events = [];
+  const { start, wait, msg, stop } = await setup({ events: (e) => events.push(e) });
+  const id = await start({ prompt: `use ${SECRET} please`, description: 'label' });
+  await wait([id]);
+  await msg(id, 'again');
+  await wait([id]);
+  await stop([id]);
+  const types = events.map((e) => e.type);
+  for (const t of ['agent', 'message', 'machine', 'status', 'reply']) assert.ok(types.includes(t), t);
+  assert.deepEqual(events.filter((e) => e.type === 'message').map((e) => e.text), ['use [redacted] please', 'again']);
+  assert.ok(!JSON.stringify(events).includes(SECRET));
+  assert.equal(events.find((e) => e.type === 'agent').branch, `cloudy-cloud/${id}`);
+  assert.equal(events.at(-1).status, 'stopped');
+});
+
 test('wait returns the result once, then marks it reported; agent stays open', async () => {
   const { start, wait, created, open } = await setup();
   const id = await start({ prompt: 'hi' });

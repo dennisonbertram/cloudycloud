@@ -8,10 +8,11 @@ import { loadEnv, ownerFile } from './config.mjs';
 import { killAll } from './run-subagent.mjs';
 import { buildServer } from './mcp.mjs';
 import { reaperSpawn } from './reaper.mjs';
+import { createEventLog } from './events.mjs';
 
 const owner = randomUUID().slice(0, 12);
 const env = loadEnv();
-const deps = { createSandbox: createInstaboxSandbox(env, undefined, undefined, undefined, owner), env, open: new Map(), tasks: new Map() };
+const deps = { createSandbox: createInstaboxSandbox(env, undefined, undefined, undefined, owner), env, open: new Map(), tasks: new Map(), events: createEventLog(env, owner) };
 
 try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(ownerFile(env), `${owner}\n`); } catch { /* only `coordinator finish` reads it */ }
 

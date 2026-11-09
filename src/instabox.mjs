@@ -92,6 +92,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       throw e;
     }
     return {
+      id: sbx.sandboxId,
       home: '/data/home',
       files: { write: (...a) => call(() => sbx.files.write(...a)), read: (...a) => call(() => sbx.files.read(...a)) },
       kill: () => sbx.kill(),

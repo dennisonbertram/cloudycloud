@@ -147,6 +147,18 @@ These have not been run live:
 - A 50-subagent swarm since subagents started pushing their own work to GitHub.
 - Any single task longer than 10 minutes.
 
+## Dashboard
+
+`cloudy-cloud dashboard` opens a read-only web page on your own machine (`127.0.0.1`, port 4477 or a free one) with every box and the messages between your session and each subagent. `--demo` shows sample data, `--no-open` only prints the link, `--port N` picks the port. The link carries a random per-run token; requests with another `Host` header or without the token are refused. Keys never reach the browser.
+
+Where the data lives (researched in `src/`):
+- **Agent state** (id, status, profile or model, branch, machine id, start time, idle time) was only in memory inside each session's MCP server (`open` map in `run-subagent.mjs`). Nothing was written to disk. `cloud_agent_list` reads that map.
+- **Messages** (task prompt, follow-ups, replies, progress steps) were also only in memory, and reached you only through the MCP reply.
+- **Event log (new):** the MCP server now appends one JSON line per event to `~/.config/cloudy-cloud/events.jsonl` (`CLOUDY_CLOUD_EVENTS` overrides the path; folder mode 700, file mode 600). Event types: `agent`, `message`, `machine`, `status`, `progress`, `reply`. Prompts can contain code, so the file stays on your machine. It never receives keys: exact secret values are scrubbed and key-shaped text (`sk-…`, `ghp_…`, `NAME_KEY=…`, bearer tokens) is redacted before writing. Each text is cut at 20,000 characters. The file is never rotated; delete it to clear history. The dashboard reads the newest 16 MB.
+- **Live machines:** the Instabox API lists machines by label. `src/instabox.mjs` creates each with `metadata {purpose: cloudy-cloud, owner}` and coordinators use `{purpose: cloudy-cloud, role: coordinator, name}`, so `Sandbox.list({ metadata: { purpose: 'cloudy-cloud' } })` finds boxes from sessions that have ended. The label does not hold the agent id, so the event log (`machine` event) is what joins a machine to its agent. A machine with no log entry shows as a bare machine.
+- **Deadline:** an idle agent is deleted 60 minutes after it went idle; other agents show the 8-hour machine backstop.
+- **Gaps:** a `queued` agent is shown as `starting` (the queue does not log its state change). An agent that was active in a session that has since ended is shown as `stopped`. Agents from sessions started before this version have no history. Nested coordinators log on their own machine, not here.
+
 ## Development
 
 ```sh
@@ -158,6 +170,7 @@ The code is in `src/`:
 - `run-subagent.mjs`: the agent lifecycle and the task state.
 - `progress.mjs`: reads claude's `stream-json` output and builds the progress line.
 - `instabox.mjs`: the Instabox machines.
+- `events.mjs`, `dashboard.mjs`, `dashboard.html`: the event log and the local dashboard.
 - `mcp.mjs`: the MCP tools and the `tasks/get` and `tasks/cancel` methods. `server.mjs` starts it on stdio.
 
 The launcher is `bin/cloudy-cloud`.

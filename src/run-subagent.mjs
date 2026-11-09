@@ -84,6 +84,7 @@ async function stop(a, open) {
   a.cancelQueue?.();
   if (open.get(a.id) === a) open.delete(a.id);
   a.status = 'stopped';
+  a.emit?.({ type: 'status', status: 'stopped' });
   if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
   wake(a);
   await a.sandbox?.kill().catch(() => {});
@@ -163,7 +164,7 @@ async function turn(a, message, ctx, t) {
   let stdout, failure;
   try {
     stdout = (await a.sandbox.commands.run(isPi(a) ? piCmd : cmd, {
-      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => t.progress.feed(chunk),
+      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
@@ -267,6 +268,7 @@ async function setup(a, ctx) {
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
+    a.emit?.({ type: 'machine', machine: a.sandbox.id });
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
@@ -359,6 +361,7 @@ async function work(a, message, first, ctx, t) {
   try {
     if (first) await setup(a, ctx);
     a.status = 'running';
+    a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
@@ -370,6 +373,8 @@ async function work(a, message, first, ctx, t) {
   const dead = first ? r.error : r.gone;
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
+  a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
+  a.emit?.({ type: 'status', status: a.status });
   endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
   if (dead) await a.sandbox?.kill().catch(() => {});
   armIdle(a, ctx);
@@ -487,6 +492,9 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
+  a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }) });
+  a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}` });
+  a.emit({ type: 'message', text: prompt });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, prompt, true, ctx, t);
@@ -505,6 +513,8 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   if (a.status === 'failed') return fail(`Agent ${id} failed and cannot take messages. Call cloud_agent_wait for the error, then cloud_agent_stop.`);
   clearTimeout(a.idleTimer);
   a.status = 'running';
+  a.emit?.({ type: 'message', text: message });
+  a.emit?.({ type: 'status', status: 'running' });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, message, false, ctx, t);

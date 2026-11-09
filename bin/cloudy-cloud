@@ -8,6 +8,12 @@ while [ -h "$self" ]; do
 done
 root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
 
+# `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
+if [ "${1:-}" = dashboard ]; then
+  shift
+  exec node "$root/src/dashboard.mjs" "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
