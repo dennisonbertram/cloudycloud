@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command and tool reference · Cloudy Cloud docs</title>
+<meta name="description" content="Every cloudy-cloud command, MCP tool, option and environment variable.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/ai-seamless-sandboxes" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference" aria-current="page">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Command and tool reference</h1>
+<p class="lede">This page lists every <code>cloudy-cloud</code> command and flag, the five tools Claude uses to run cloud agents, and the environment variables and files that change how they behave.</p>
+
+<h2 id="cli">Command line</h2>
+<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. Any other arguments start a Claude Code session.</p>
+
+<h3 id="cli-session">cloudy-cloud</h3>
+<pre><code>cloudy-cloud [claude arguments]</code></pre>
+<p>Starts a normal Claude Code session in the current folder. In that session the built-in <code>Agent</code> and <code>Workflow</code> tools are denied, and Claude starts subagents with the five cloud tools described <a href="#tools">below</a>. Run it from inside a git repository that has a <code>github.com</code> origin, because each cloud agent pushes its work to a branch there.</p>
+<p>Every argument is passed to <code>claude</code> after the flags that <code>cloudy-cloud</code> adds itself (<code>--mcp-config</code>, <code>--settings</code> and <code>--append-system-prompt</code>). There are no <code>cloudy-cloud</code> flags of its own for a session.</p>
+<p>Before it starts Claude, the command checks three things:</p>
+<ul>
+<li>It needs an Instabox API key (from the environment or the config file) and a Claude token or Anthropic API key in the config file. If one is missing, it tells you. In a terminal it offers to run <code>cloudy-cloud setup</code> now. Outside a terminal it exits with status 1.</li>
+<li>If the folder is not a git repository, it prints a warning that subagents cannot start.</li>
+<li>If the repository has no <code>github.com</code> origin, it prints a warning that subagents cannot push their work.</li>
+</ul>
+<p>Example:</p>
+<pre><code>cloudy-cloud --model opus</code></pre>
+<p>It also sets <code>MCP_TOOL_TIMEOUT</code> to 1800000 (30 minutes) unless you already set it.</p>
+
+<h3 id="cli-setup">cloudy-cloud setup</h3>
+<pre><code>cloudy-cloud setup [--check-only]</code></pre>
+<p>Runs <code>install.sh</code> from the cloudy-cloud folder, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same. Setup checks your tools, installs dependencies, links the <code>cloudy-cloud</code> command, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
+<table>
+<thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>--check-only</code></td><td>Check that <code>git</code>, Node.js, <code>npm</code>, <code>curl</code> and <code>claude</code> are installed, then exit. Does not need a terminal and changes nothing.</td></tr>
+</tbody>
+</table>
+<p>Example:</p>
+<pre><code>cloudy-cloud setup --check-only</code></pre>
+
+<h3 id="cli-dashboard">cloudy-cloud dashboard</h3>
+<pre><code>cloudy-cloud dashboard [--demo] [--port N] [--no-open]</code></pre>
+<p>Starts a read-only web page on <code>127.0.0.1</code> that shows your cloud agents, coordinators and the messages between your session and them. It prints a link that contains a random token for this run, and opens it in your browser. Press Ctrl+C to stop it. There is no <code>--help</code> option. See <a href="dashboard.html">Dashboard and app previews</a>.</p>
+<table>
+<thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>--demo</code></td><td>Show sample data instead of your machines. Nothing in it is real.</td></tr>
+<tr><td><code>--port N</code></td><td>Listen on port N, from 0 to 65535. The default is 4477. If that port is in use, the dashboard uses a free port instead. Port 0 always picks a free port.</td></tr>
+<tr><td><code>--no-open</code></td><td>Only print the link. Do not open a browser.</td></tr>
+</tbody>
+</table>
+<p>Example:</p>
+<pre><code>cloudy-cloud dashboard --port 5000 --no-open</code></pre>
+
+<h3 id="cli-open">cloudy-cloud open</h3>
+<pre><code>cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; [--share]
+cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; --unshare</code></pre>
+<p>Reaches an app, such as a dev server, that runs on a cloud agent's machine. The first argument is an agent id (the <code>&lt;id&gt;</code> in the branch <code>cloudy-cloud/&lt;id&gt;</code>, shown by <code>cloud_agent_list</code>), a machine name or a machine id (a coordinator's machine is named <code>coord-NAME</code>). It may use only letters, digits, dots, dashes and underscores. The machine must be running. The command needs your Instabox key.</p>
+<p>With no flag, it opens a private tunnel from <code>http://127.0.0.1:&lt;port&gt;</code> on your computer to that port on the machine. It runs until you press Ctrl-C. Start the app in the background on the machine (for example <code>nohup npm run dev &gt; /tmp/dev.log 2&gt;&amp;1 &amp;</code>), because the foreground processes of a turn end with the turn. The tunnel and any shared link stop when the machine is deleted.</p>
+<table>
+<thead><tr><th>Argument or flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>&lt;port&gt;</code></td><td>A port from 1 to 65535 on the machine. Write <code>LOCAL:REMOTE</code> to use a different port on your computer (not allowed with <code>--share</code> or <code>--unshare</code>).</td></tr>
+<tr><td><code>--share</code></td><td>Publish a private link, with a token in the URL, instead of a tunnel. Anyone who has the link can open the app until the machine is deleted or you unshare it. It never publishes publicly.</td></tr>
+<tr><td><code>--unshare</code></td><td>Remove the link for that port. Cannot be combined with <code>--share</code>.</td></tr>
+</tbody>
+</table>
+<p>Example:</p>
+<pre><code>cloudy-cloud open 3f9a1c2e 5173</code></pre>
+
+<h3 id="cli-coordinator">cloudy-cloud coordinator</h3>
+<pre><code>cloudy-cloud coordinator image [--save]
+cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json]
+cloudy-cloud coordinator attach NAME
+cloudy-cloud coordinator ls
+cloudy-cloud coordinator stop NAME
+cloudy-cloud coordinator finish [--force]</code></pre>
+<p>Manages cloud coordinators: long-lived Claude Code sessions that run on their own Instabox machines and start workers there. All subcommands except <code>finish</code> need your Instabox key. With any other first argument, or none, the command prints this usage line. See <a href="fleets.html">Coordinators and fleets</a> for when to use them.</p>
+
+<h4 id="coordinator-image">coordinator image</h4>
+<p>Builds the machine image that coordinators start from. It is a one-time step. Without <code>--save</code>, it creates an image machine, installs cloudy-cloud on it, and prints the steps to sign in to Claude on it (<code>claude auth login</code> in a shell on the machine). With <code>--save</code>, it saves a snapshot of that machine, stores its id as <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code> in the config file, and deletes the image machine. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.</p>
+<table>
+<thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>--save</code></td><td>Save the signed-in image machine as a snapshot and delete the machine.</td></tr>
+</tbody>
+</table>
+
+<h4 id="coordinator-start">coordinator start</h4>
+<p>Starts a coordinator named NAME on a new machine from the saved image. It sends the current checkout of cloudy-cloud, writes the coordinator's key file (mode 600), clones your repository to <code>~/repo</code>, and starts Claude Code in a <code>tmux</code> session called <code>claude</code>, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after <code>--max-hours</code>. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with <code>coordinator attach</code>. The first time, attach once and accept any trust or Remote Control prompts.</p>
+<table>
+<thead><tr><th>Argument or flag</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>NAME</code></td><td>required</td><td>Lowercase letters, digits and <code>-</code>, up to 40 characters, starting with a letter or digit. A coordinator with the same name must not already exist.</td></tr>
+<tr><td><code>--repo URL</code></td><td>required</td><td>A <code>https://github.com/OWNER/REPO</code> URL.</td></tr>
+<tr><td><code>--branch B</code></td><td>the repository's default branch</td><td>Branch to clone.</td></tr>
+<tr><td><code>--task TEXT</code></td><td>none</td><td>A task for the coordinator to start on. Up to 100,000 bytes. Cannot be empty.</td></tr>
+<tr><td><code>--task-file PATH</code></td><td>none</td><td>Read the task from a local file instead. Same limits.</td></tr>
+<tr><td><code>--max-hours N</code></td><td>24</td><td>Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended.</td></tr>
+<tr><td><code>--json</code></td><td>off</td><td>Print one line of JSON with <code>name</code>, <code>machine</code>, <code>remoteControlName</code> and <code>attach</code> instead of the usual text.</td></tr>
+</tbody>
+</table>
+<p>If neither <code>--task</code> nor <code>--task-file</code> is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved.</p>
+<p>Example:</p>
+<pre><code>cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO --task-file task.md --max-hours 8</code></pre>
+
+<h4 id="coordinator-attach">coordinator attach</h4>
+<p>Prints the command that opens the coordinator's <code>tmux</code> session over SSH. It does not run the command. Copy it into your terminal. It has the form <code>npx --yes instabox@latest ssh &lt;machine&gt; -- tmux attach -t claude</code>.</p>
+<pre><code>cloudy-cloud coordinator attach docs-fleet</code></pre>
+
+<h4 id="coordinator-ls">coordinator ls</h4>
+<p>Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES. It prints <code>No coordinators.</code> when there are none.</p>
+<pre><code>cloudy-cloud coordinator ls</code></pre>
+
+<h4 id="coordinator-stop">coordinator stop</h4>
+<p>Deletes the coordinator's machine now. Its workers are deleted by the coordinator's cleanup process, or at their own deadline (6 hours by default). Anything the coordinator did not push to GitHub is lost.</p>
+<pre><code>cloudy-cloud coordinator stop docs-fleet</code></pre>
+
+<h4 id="coordinator-finish">coordinator finish</h4>
+<p>Runs on the coordinator machine, started by the coordinator itself when its work is done. It checks that the working tree in <code>~/repo</code> is clean, that the current branch and every <code>fleet/*</code> branch are pushed to their upstream, and that none of the coordinator's workers are still running. If all checks pass, it deletes its own machine. If a check fails, it lists the problems and deletes nothing. It refuses to run on a machine that is not a coordinator.</p>
+<table>
+<thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>--force</code></td><td>Skip the git and worker checks and delete the machine anyway.</td></tr>
+</tbody>
+</table>
+<div class="warn"><p><code>--force</code> can delete work that has not been pushed. Use it only when you accept losing that work.</p></div>
+
+<h2 id="tools">Tools Claude uses (MCP)</h2>
+<p><code>cloudy-cloud</code> adds an MCP server named <code>cloud</code> to the session. Claude sees its tools as <code>mcp__cloud__cloud_agent</code> and so on. The session is configured to allow these five tools without asking and to deny the built-in <code>Agent</code> and <code>Workflow</code> tools. You normally ask for subagents in plain language and Claude calls the tools. This section is for when you want to know exactly what each tool takes.</p>
+<p>In a terminal Claude Code session that supports MCP tasks, <code>cloud_agent</code> and <code>cloud_agent_message</code> run as background tasks. Their progress shows in <code>/tasks</code> and the result arrives on its own with the agent id, so Claude does not need <code>cloud_agent_wait</code>. In other clients these two tools return an agent id at once and Claude calls <code>cloud_agent_wait</code>. The server also answers the task methods <code>tasks/get</code> and <code>tasks/cancel</code>.</p>
+
+<h3 id="tool-cloud-agent">cloud_agent</h3>
+<p>Starts a Claude subagent in a remote sandbox on the committed and tracked files of the current repository. It does not include untracked files. The repository needs a <code>github.com</code> origin. The call returns at once while the sandbox starts and the task runs. The agent pushes its work to the origin branch <code>cloudy-cloud/&lt;id&gt;</code>. Nothing is copied into your local repository. The agent stays open for follow-ups until it is stopped or has been idle for 60 minutes.</p>
+<table>
+<thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>prompt</code></td><td>string</td><td>yes</td><td>none</td><td>The full task for the subagent.</td></tr>
+<tr><td><code>description</code></td><td>string</td><td>yes</td><td>none</td><td>A short label for the task.</td></tr>
+<tr><td><code>model</code></td><td>string</td><td>no</td><td>the Claude default</td><td>A Claude model name, such as <code>haiku</code>. For a non-Claude model, use <code>profile</code> instead. It may contain only letters, digits and <code>. _ : -</code>. When <code>profile</code> is also set, <code>/</code> is allowed too.</td></tr>
+<tr><td><code>profile</code></td><td>string</td><td>no</td><td>Claude</td><td>Runs the worker on another model. Built in: <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code> and <code>openrouter</code>. You can add names in <code>profiles.json</code>. An unknown name, or a profile whose key is missing, makes the call fail at once. See <a href="models.html">Models and keys</a>.</td></tr>
+<tr><td><code>role</code></td><td>string, <code>worker</code> or <code>coordinator</code></td><td>no</td><td><code>worker</code></td><td>A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A coordinator cannot use a <code>pi-</code> profile.</td></tr>
+<tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code>. It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
+</tbody>
+</table>
+<p>The call is refused if the session has already started <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code> agents (default 200), or if the folder is not a git repository with at least one commit and a <code>github.com</code> origin.</p>
+
+<h3 id="tool-cloud-agent-message">cloud_agent_message</h3>
+<p>Sends a follow-up message to an open agent that is idle, and continues the same conversation. It returns at once. As an MCP task the reply arrives on its own. Otherwise Claude calls <code>cloud_agent_wait</code>. It is rejected if the agent is busy or gone.</p>
+<table>
+<thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>agent_id</code></td><td>string</td><td>yes</td><td>none</td><td>The id returned by <code>cloud_agent</code>.</td></tr>
+<tr><td><code>message</code></td><td>string</td><td>yes</td><td>none</td><td>The follow-up text.</td></tr>
+</tbody>
+</table>
+
+<h3 id="tool-cloud-agent-wait">cloud_agent_wait</h3>
+<p>Waits until every listed agent finishes its current turn, or until the timeout passes. For each agent it returns the status (<code>starting</code>, <code>running</code>, <code>idle</code>, <code>failed</code> or <code>stopped</code>) and its latest result. Each result is returned once. Later calls mark it as already reported. The tool is read-only.</p>
+<table>
+<thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>agent_ids</code></td><td>array of strings</td><td>yes</td><td>none</td><td>The agent ids to wait for.</td></tr>
+<tr><td><code>timeout_seconds</code></td><td>number</td><td>no</td><td>600</td><td>How long to wait. Values above 1500 are limited to 1500.</td></tr>
+</tbody>
+</table>
+
+<h3 id="tool-cloud-agent-list">cloud_agent_list</h3>
+<p>Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only and takes no parameters.</p>
+
+<h3 id="tool-cloud-agent-stop">cloud_agent_stop</h3>
+<p>Stops agents and deletes their sandboxes. It is safe to repeat, and safe to call with ids that do not exist. Stop agents when they are finished, because they stay open until stopped or idle for 60 minutes.</p>
+<table>
+<thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>agent_ids</code></td><td>array of strings</td><td>yes</td><td>none</td><td>The agent ids to stop.</td></tr>
+</tbody>
+</table>
+
+<h3 id="tool-limits">Limits that apply to the tools</h3>
+<ul>
+<li>An agent that is idle for 60 minutes is stopped. Every agent is stopped when the session ends.</li>
+<li>A single task is stopped after 29 minutes.</li>
+<li>Machines start at most <code>CLOUDY_CLOUD_STARTS_PER_MIN</code> times a minute. Agents waiting for a machine show the status <code>queued</code>.</li>
+<li>Instabox deletes every machine the tool creates after <code>CLOUDY_CLOUD_WORKER_HOURS</code> hours, even if <code>cloudy-cloud</code> has died.</li>
+</ul>
+
+<h2 id="environment">Environment variables and files</h2>
+<p>Environment variables win over values in the config file. An empty value counts as unset.</p>
+
+<h3 id="env-keys">Keys</h3>
+<table>
+<thead><tr><th>Variable</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>INSTABOX_API_KEY</code></td><td>none</td><td>Your Instabox API key. Read from the environment or the config file.</td></tr>
+<tr><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>none</td><td>The long-lived token from <code>claude setup-token</code>. Cloud agents use it to sign in to Claude.</td></tr>
+<tr><td><code>ANTHROPIC_API_KEY</code></td><td>none</td><td>An Anthropic API key, used by cloud agents when there is no Claude token. It is billed separately.</td></tr>
+<tr><td><code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, and any other name ending in <code>_API_KEY</code></td><td>none</td><td>Provider keys for model profiles. A profile's <code>keyName</code> must name one of these. A worker that uses a profile receives that profile's key.</td></tr>
+</tbody>
+</table>
+<div class="note"><p>The launcher only checks the config file for the Claude token, not the environment, so save it there with <code>cloudy-cloud setup</code>. The Instabox key can come from either place.</p></div>
+
+<h3 id="env-settings">Settings</h3>
+<table>
+<thead><tr><th>Variable</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>CLOUDY_CLOUD_CONFIG</code></td><td><code>~/.config/cloudy-cloud/env</code></td><td>Path of the config file.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROFILES</code></td><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Path of the file that adds or overrides model profiles.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_EVENTS</code></td><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>Path of the event log that the dashboard reads. Set it in the environment before you start <code>cloudy-cloud</code> and the dashboard.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_WORKER_HOURS</code></td><td>6</td><td>Hours until the server deletes a worker or nested coordinator machine. At most 24. A value that is not a positive number uses 6.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_STARTS_PER_MIN</code></td><td>25</td><td>The most machine starts per minute. Extra agents wait in the queue.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code></td><td>24</td><td>The most Instabox command and file requests that run at once. Instabox's own limit is 32.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MAX_DEPTH</code></td><td>3</td><td>How many levels of coordinators can exist below your session. Starting a coordinator past this is refused. Workers do not add depth. Passed down to child coordinators.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code></td><td>200</td><td>How many agents one cloudy-cloud session may start. Passed down to child coordinators.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_CHECK_SECONDS</code></td><td>60</td><td>Setup only: how long to wait for the test request that checks your Claude token.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_NO_ANIMATION</code></td><td>unset</td><td>Setup only: set to <code>1</code> to skip the animated banner. The banner is also skipped when <code>CI</code> is set or there is no terminal.</td></tr>
+<tr><td><code>MCP_TOOL_TIMEOUT</code></td><td>1800000</td><td>Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not.</td></tr>
+<tr><td><code>NO_COLOR</code>, <code>CLICOLOR=0</code>, <code>TERM=dumb</code></td><td>unset</td><td>Any of these turns off colour and the animated setup display. Output is plain text with the same messages.</td></tr>
+</tbody>
+</table>
+<div class="note"><p>You can set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, <code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, <code>CLOUDY_CLOUD_WORKER_HOURS</code>, <code>CLOUDY_CLOUD_MAX_DEPTH</code> and <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code> in the config file as well as in the environment.</p></div>
+
+<h3 id="files">Files</h3>
+<table>
+<thead><tr><th>Path</th><th>What it holds</th></tr></thead>
+<tbody>
+<tr><td><code>~/.config/cloudy-cloud/env</code></td><td>The config file. One <code>NAME=value</code> per line, mode 600. <code>cloudy-cloud setup</code> writes it. Only the settings and keys listed above are read from it, plus <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code>, which <code>coordinator image --save</code> writes. Change the location with <code>CLOUDY_CLOUD_CONFIG</code>.</td></tr>
+<tr><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Optional. Adds or overrides model profiles. See <a href="models.html">Models and keys</a>.</td></tr>
+<tr><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>The event log. The MCP server appends one JSON line per agent event (agent, message, machine, status, progress, reply). The file has mode 600 inside a folder with mode 700. It holds your prompts and replies, so it stays on your computer. Key-shaped text is redacted before writing, and each text is cut at 20,000 characters. It is never rotated: delete it to clear the history. The dashboard reads the newest 16 MB.</td></tr>
+<tr><td><code>~/.config/cloudy-cloud/owner</code></td><td>An id the MCP server writes next to the config file, so <code>coordinator finish</code> can tell which running machines are its workers. You do not need to edit it.</td></tr>
+</tbody>
+</table>
+<p>If you used the tool under its old name, claude-cloud, the first run copies <code>~/.config/claude-cloud</code> to <code>~/.config/cloudy-cloud</code> and renames the <code>CLAUDE_CLOUD_</code> keys in the config file. The old folder is left in place.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="models.html"><small>Previous</small><span>Models and keys</span></a>
+<a class="next" href="fleets.html"><small>Next</small><span>Coordinators and fleets</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>
