@@ -465,16 +465,21 @@
   $('v-list').onclick = () => setView('list');
   $('v-fleet').onclick = () => setView('fleet');
 
+  let timer, busy = false;
   async function poll() {
+    if (busy) return;
+    busy = true; clearTimeout(timer);
     try {
-      const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store' });
+      const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
       if (r.status === 401) { S.net = 'auth'; S.data = null; }
       else if (!r.ok) S.net = 'error';
       else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
     } catch { S.net = 'down'; }
-    render();
+    busy = false;
+    try { render(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
   }
-  render(); poll(); setInterval(poll, 3000); setInterval(tick, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.net !== 'auth') poll(); });
+  render(); poll(); setInterval(tick, 1000);
 })();
 </script>
 </body>
