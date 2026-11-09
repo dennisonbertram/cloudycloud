@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coordinators and fleets · Cloudy Cloud docs</title>
+<meta name="description" content="Run a cloud coordinator that manages many workers, and the limits that apply.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/ai-seamless-sandboxes" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets" aria-current="page">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Coordinators and fleets</h1>
+<p class="lede">A coordinator is a Claude session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
+
+<h2 id="when-to-use-one">When to use a coordinator</h2>
+<p>For a few independent tasks, start plain cloud agents from your own session. You wait for them and review their branches yourself.</p>
+<p>Use a <strong>cloud coordinator</strong> when all of these are true:</p>
+<ul>
+<li>The job is long or large.</li>
+<li>You want to leave, or close your laptop.</li>
+<li>The work needs only what is already on GitHub.</li>
+</ul>
+<p>Do not hand a job to a cloud coordinator if it needs untracked local files, secrets or services that exist only on your laptop, or if you want to steer it step by step. Run the fleet from your own session instead.</p>
+<p>There is also a lighter option. A cloud agent started with <code>role: "coordinator"</code> is a Claude subagent that can start its own cloud agents. Use this to build a tree: a coordinator, sub-coordinators for separate areas of the code, then workers. It lives only as long as your session. A cloud coordinator (below) runs on its own machine and keeps working with your laptop closed.</p>
+
+<h2 id="lifecycle">Cloud coordinator lifecycle</h2>
+<h3 id="image">1. Make the coordinator image (once)</h3>
+<p>Remote Control needs a full Claude login. A token from <code>claude setup-token</code> cannot open Remote Control sessions. So you sign in once on an image machine and save it as an Instabox snapshot.</p>
+<pre><code>cloudy-cloud coordinator image</code></pre>
+<p>This creates a machine, installs <code>cloudy-cloud</code> on it, and prints an SSH command. Run that command, then run this in the shell it opens:</p>
+<pre><code>claude auth login</code></pre>
+<p>Finish the browser sign-in, leave the shell, then save the snapshot:</p>
+<pre><code>cloudy-cloud coordinator image --save</code></pre>
+<p>This saves the snapshot id as <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code> in <code>~/.config/cloudy-cloud/env</code> and deletes the image machine. The image machine is deleted by the server after 2 hours if you do not finish.</p>
+
+<h3 id="start">2. Start a coordinator</h3>
+<pre><code>cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branch main --task-file brief.md</code></pre>
+<ul>
+<li><code>NAME</code>: lowercase letters, digits and <code>-</code>, up to 40 characters.</li>
+<li><code>--repo</code>: a github.com https URL. The coordinator clones it into <code>~/repo</code>.</li>
+<li><code>--branch B</code>: the branch to clone. Optional.</li>
+<li><code>--task TEXT</code> or <code>--task-file PATH</code>: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.</li>
+<li><code>--max-hours N</code>: when the server deletes the machine. Default and maximum 24.</li>
+<li><code>--json</code>: print the machine name, Remote Control name and attach command as JSON.</li>
+</ul>
+<p>The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.</p>
+
+<h3 id="attach">3. Reach it</h3>
+<ul>
+<li><strong>Remote Control:</strong> open claude.ai/code or the Claude app and pick the session named <code>NAME</code>.</li>
+<li><strong>Terminal:</strong> <code>cloudy-cloud coordinator attach NAME</code> prints an SSH command that attaches to its tmux session. Run the command it prints.</li>
+</ul>
+<p>The first time, attach once and accept any trust or Remote Control prompts. To list your coordinators and their delete times, run <code>cloudy-cloud coordinator ls</code>.</p>
+
+<h3 id="finish">4. Finish or stop</h3>
+<ul>
+<li>The coordinator ends its own job with <code>~/cloudy-cloud/bin/cloudy-cloud coordinator finish</code>. This deletes its machine only if the working tree is clean, the current branch and every <code>fleet/*</code> branch are pushed, and no worker is still running. If a check fails it tells you what to fix. <code>--force</code> skips the git and worker checks.</li>
+<li>You can delete it at any time with <code>cloudy-cloud coordinator stop NAME</code>.</li>
+<li>If neither happens, the server deletes the machine at its deadline.</li>
+</ul>
+<div class="warn"><p>A coordinator is billed until it is stopped, finished or deleted. Its <code>~/.config/cloudy-cloud/env</code> holds your real Instabox key, your Claude setup-token and your provider API keys, because it needs them to start workers. Anyone who can SSH into the machine can read them. Use keys you can revoke.</p></div>
+
+<h2 id="merging">Getting one result from many workers</h2>
+<p>Each worker pushes a branch named <code>cloudy-cloud/&lt;id&gt;</code>. Starting 100 workers is easy. Reviewing 100 pull requests is not. The <code>cloud-fleet</code> skill teaches Claude these patterns:</p>
+<table>
+<thead><tr><th>Situation</th><th>Pattern</th></tr></thead>
+<tbody>
+<tr><td>Many unrelated small fixes, and reviewers want separate PRs</td><td>Flat fan-out: one PR per branch. Keep it to about 10 to 15.</td></tr>
+<tr><td>One feature or one large job split across many workers</td><td>Trunk merging (the default)</td></tr>
+<tr><td>Stage B needs the merged result of stage A</td><td>Waves</td></tr>
+<tr><td>More than about 50 workers, or clearly separate areas</td><td>Trunk merging with sub-coordinators</td></tr>
+</tbody>
+</table>
+
+<h3 id="trunk">Trunk merging</h3>
+<p>The coordinator creates an integration branch <code>fleet/&lt;topic&gt;</code> and is the only one that merges into it.</p>
+<ol>
+<li>Create and push the trunk before starting workers. Workers copy only tracked files, so commit everything they need first.
+<pre><code>git fetch origin
+git checkout -b fleet/&lt;topic&gt; origin/&lt;base&gt;
+git push -u origin fleet/&lt;topic&gt;</code></pre></li>
+<li>Start the workers. Give each a brief with its goal, the files it owns, the base branch <code>fleet/&lt;topic&gt;</code>, the exact test command, and an instruction to push to its <code>cloudy-cloud/&lt;id&gt;</code> branch before it finishes.</li>
+<li>As workers finish, fetch their branches and merge them one at a time, running the tests after each merge:
+<pre><code>git fetch origin 'refs/heads/cloudy-cloud/*:refs/remotes/origin/cloudy-cloud/*'
+git checkout fleet/&lt;topic&gt;
+git merge --no-ff origin/cloudy-cloud/&lt;id&gt; -m "Merge &lt;description&gt; (&lt;id&gt;)"
+git push origin fleet/&lt;topic&gt;</code></pre></li>
+<li>On a conflict, resolve small ones yourself, or abort the merge and ask the worker to rebase. If the tests fail after a merge, do not push it. Send the worker the failing output.</li>
+<li>When every good branch is merged and the full tests pass, open one PR from <code>fleet/&lt;topic&gt;</code>.</li>
+<li>Delete merged worker branches: <code>git push origin --delete cloudy-cloud/&lt;id&gt;</code>. Keep the branch of a failed worker until you decide what to keep.</li>
+</ol>
+<div class="note"><p>Do not trust a worker that says it is done. Fetch its branch, read the diff and run the tests before merging. If a worker pushed nothing, retry it with a narrower brief that names what is missing.</p></div>
+<p>Only push to <code>cloudy-cloud/*</code> and <code>fleet/*</code> branches. Never push to <code>main</code>. Protect your main branch with a GitHub ruleset, because workers run with permission checks off.</p>
+
+<h3 id="sub-coordinators">Sub-coordinators and waves</h3>
+<p>For large jobs, the top coordinator gives each area to a sub-coordinator with its own sub-trunk <code>fleet/&lt;topic&gt;/&lt;area&gt;</code>. Each sub-coordinator merges its workers, tests its area, and reports. The top coordinator merges the sub-trunks and opens the PR. Git cannot hold both <code>fleet/x</code> and <code>fleet/x/y</code>, so if that happens name them <code>fleet/&lt;topic&gt;-&lt;area&gt;</code>.</p>
+<p>For waves, merge wave 1 into the trunk and push it before you start wave 2. Never start a dependent worker before its dependency is merged and pushed.</p>
+<p>Keep coordinators on Claude, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See <a href="models.html">Models and keys</a>. Check their branches more carefully.</p>
+
+<h2 id="limits">Limits and costs to watch</h2>
+<table>
+<thead><tr><th>Limit</th><th>Value</th></tr></thead>
+<tbody>
+<tr><td>Cloud coordinator delete deadline</td><td>24 hours by default and at most; set shorter with <code>--max-hours N</code>. It cannot be extended. A job that must run longer needs a new coordinator from a pushed branch.</td></tr>
+<tr><td>Worker and nested coordinator delete deadline</td><td><code>CLOUDY_CLOUD_WORKER_HOURS</code>, default 6, at most 24</td></tr>
+<tr><td>Idle agent</td><td>Stopped after 60 minutes with nothing to do</td></tr>
+<tr><td>One task</td><td>Stopped after 29 minutes</td></tr>
+<tr><td>Nesting depth</td><td><code>CLOUDY_CLOUD_MAX_DEPTH</code>, default 3</td></tr>
+<tr><td>Agents per session</td><td><code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>, default 200</td></tr>
+<tr><td>Start rate</td><td><code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, default 25 a minute. Extra agents show as <code>queued</code>.</td></tr>
+<tr><td>Instabox calls at once</td><td><code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, default 24</td></tr>
+</tbody>
+</table>
+<p>Every machine in a tree counts against your Instabox machine limit and start rate. If many agents stay <code>queued</code>, the machine limit is full. Wait, or use fewer, larger tasks. Stop agents you no longer need with <code>cloud_agent_stop</code>, because idle agents cost money until they time out.</p>
+<div class="warn"><p>Only work pushed to GitHub survives. A worker's unpushed work is lost with its machine. When you stop a coordinator, its workers are deleted by its cleanup process or at their own deadline (6 hours by default), so stop or collect them first. Machines your laptop session started are deleted when that session ends, so push or collect their work before you exit.</p></div>
+<p>To see what is running, use the <a href="dashboard.html">dashboard</a>.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="reference.html"><small>Previous</small><span>Command and tool reference</span></a>
+<a class="next" href="dashboard.html"><small>Next</small><span>Dashboard and app previews</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>
