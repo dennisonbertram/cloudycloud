@@ -376,7 +376,7 @@
     const g = h('div', { class: 'fleet' });
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
-      g.append(h('div', { class: 'grid', role: 'list', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, type: 'button', role: 'listitem', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
+      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.description || label(b) }),
         h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b)))));
@@ -430,7 +430,13 @@
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
       const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b), soon(b)])]);
-      if (S.sigs.f !== f) { S.sigs = { f }; main.replaceChildren(fleetView(boxes)); }
+      if (S.sigs.f !== f) {
+        S.sigs = { f };
+        const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
+        main.replaceChildren(fleetView(boxes));
+        const nf = main.querySelector('.fleet'); nf.scrollTop = top;
+        if (fid) nf.querySelector('[data-id="' + CSS.escape(fid) + '"]')?.focus({ preventScroll: true });
+      }
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
