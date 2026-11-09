@@ -93,6 +93,7 @@
   .panel-head h1 { font: 600 20px/1.3 "Inter Tight", Inter, sans-serif; letter-spacing: -.01em; margin: 4px 0 0; }
   .props { grid-auto-flow: row dense; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin-top: 16px; }
   .prop { min-width: 0; }
+  .prop.full { grid-column: 1 / -1; }
   .prop.wide { grid-column: span 2; }
   .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
@@ -208,6 +209,7 @@
   const copyIcon = () => svg('<g fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></g>', '', '0 0 16 16');
   const okIcon = () => svg('<path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8"/>', '', '0 0 16 16');
 
+  const openCmd = (id) => 'cloudy-cloud open ' + id + ' '; // the only place the open syntax lives (copied without <port>: a pasted <port> is a zsh redirect)
   const now = () => Date.now() + (S.skew || 0);
   const dur = (ms) => {
     ms = Math.max(0, ms); const s = Math.floor(ms / 1000);
@@ -300,6 +302,13 @@
 
   const prop = (name, ...val) => { const v = val.flat().filter((x) => x != null && x !== false); return v.length ? h('div', { class: 'prop' }, h('div', { class: 'pl', text: name }), h('div', { class: 'pv' }, v)) : null; };
 
+  const openable = (b) => (b.status === 'running' || b.status === 'idle') && (b.machineState == null || b.machineState === 'running');
+  const openApp = (b) => {
+    const e = prop('Open app', h('span', { class: 'mono', text: 'cloudy-cloud open ' + b.id + ' <port>' }), copyBtn(openCmd(b.id), 'open command')), v = e.querySelector('.pv');
+    e.classList.add('full'); v.classList.add('openapp');
+    v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
+    return e;
+  };
   const wide = (e) => { e?.classList.add('wide'); return e; };
   const pushView = (p) => p.failed
     ? h('span', { class: 'push failed', text: 'push failed', title: 'The last turn could not push. The reply below says what survived.' })
@@ -346,7 +355,8 @@
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
           : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
-            b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null));
+            b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
+        openable(b) && openApp(b)));
     const thread = h('div', { class: 'thread', tabindex: '0', 'aria-label': 'Message thread' }, h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'seclabel', text: 'Activity' }), thread);
     // A finished agent opens at its answer's first line (not its footer); a running one at the bottom.
