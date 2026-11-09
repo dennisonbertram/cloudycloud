@@ -86,6 +86,7 @@ class MD(HTMLParser):
         if tag in ('br', 'img', 'hr', 'input', 'meta', 'link', 'source', 'path', 'rect', 'circle', 'stop'):
             if tag == 'br' and self.capturing(): self.buf += ' '
             return
+        if tag == 'small' and self.capturing(): self.buf += ' — '
         if self.skip == 0 and not self.cap:
             if (not self.home and tag == 'article') or (self.home and (tag == 'main' or 'hero-copy' in cls)):
                 self.cap = 1
@@ -247,7 +248,7 @@ def qa_pairs(slug):
 def ld_blocks(slug):
     ld = []
     if slug == 'home':
-        ld.append({"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Cloudy Cloud",
+        ld.append({"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud",
                    "description": DEFINITION, "applicationCategory": "DeveloperApplication",
                    "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.0",
                    "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},

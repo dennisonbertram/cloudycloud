@@ -108,15 +108,15 @@ Real output, lightly trimmed.
 
 Workers can use Claude, or GLM, DeepSeek, Particle or OpenRouter with your own provider key. Send bulk, well-specified work to a cheaper open model and keep Claude for the hard parts.
 
-Claudeyour normal login
+Claude — your normal login
 
-GLMprofile: glm
+GLM — profile: glm
 
-DeepSeekprofile: deepseek
+DeepSeek — profile: deepseek
 
-Particleprofile: particle
+Particle — profile: particle
 
-OpenRouterprofile: openrouter
+OpenRouter — profile: openrouter
 
 Your own provider
 
