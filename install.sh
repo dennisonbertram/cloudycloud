@@ -323,13 +323,16 @@ warn_shell_env() {
 }
 
 link_command() { # link_command ROOT
-  local root=$1 cur other old
+  local root=$1 cur other old oldpkg
   cur=$(command -v cloudy-cloud) || cur=""
   # npm link made a claude-cloud link that now dangles (this folder no longer has bin/claude-cloud). Remove only a broken link.
   old=$(npm prefix -g 2>/dev/null)/bin/claude-cloud
   if [ -L "$old" ] && [ ! -e "$old" ]; then
     rm -f "$old" && ok "Removed the old claude-cloud command link"
   fi
+  # The npm package used to be named cloudy-cloud; drop that old global link so only the cloudycloud one remains.
+  oldpkg=$(npm root -g 2>/dev/null)/cloudy-cloud
+  [ -L "$oldpkg" ] && rm -f "$oldpkg"
   if [ -z "$cur" ]; then
     (cd "$root" && npm link >/dev/null) || { bad "npm link failed" >&2; exit 1; }
     ok "Linked the cloudy-cloud command"
