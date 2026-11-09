@@ -15,7 +15,7 @@ function isTransientWaitError(e) {
 }
 
 const API = 'https://api.instabox.sh/v1/machines';
-const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in docs/RUNBOOK.md, step 2.4.';
+const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4.';
 
 // Attach the org's GH_TOKEN secret (a proxy placeholder) and wait until Instabox has applied it.
 export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, timeoutMs = 60_000 } = {}) {

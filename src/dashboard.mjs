@@ -27,7 +27,7 @@ export async function listMachines(env, sdk) {
 }
 
 const FIXES = {
-  no_key: 'Add your Instabox key: run ./install.sh from the cloudy-cloud folder, or put INSTABOX_API_KEY=... in ~/.config/cloudy-cloud/env.',
+  no_key: 'Add your Instabox key: run cloudy-cloud setup (or npx cloudycloud setup), or put INSTABOX_API_KEY=... in ~/.config/cloudy-cloud/env.',
   api: 'Check your internet connection and that INSTABOX_API_KEY in ~/.config/cloudy-cloud/env is still valid (create a new one at instabox.sh if not).',
 };
 

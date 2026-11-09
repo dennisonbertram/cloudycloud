@@ -300,7 +300,7 @@ async function setup(a, ctx) {
         break;
       } catch (e) {
         const said = tail(e?.stderr ?? e?.message);
-        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
+        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
         if (n === 3) throw new Error(`The first push to origin ${branch} failed after 3 attempts. Git said: ${said}`);
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
