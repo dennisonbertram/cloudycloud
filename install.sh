@@ -8,6 +8,14 @@ DASH=https://dashboard.instabox.sh/dashboard/api-keys
 
 cfg() { printf '%s' "${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}"; }
 
+stage() {
+  if [ -t 1 ] && [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != dumb ]; then
+    printf '\n  \033[1;36m%s\033[0m  \033[1m%s\033[0m\n\n' "$1" "$2"
+  else
+    printf '\n  %s  %s\n\n' "$1" "$2"
+  fi
+}
+
 valid_ibk() { [[ $1 =~ ^ibk_[a-z2-7]{52}$ ]]; }
 valid_claude() { [[ $1 == sk-ant-oat01-* ]]; }
 claude_len_ok() { [ "${#1}" -eq 108 ]; }
@@ -213,6 +221,11 @@ main() {
   if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
     echo "install.sh asks for keys, so run it in a terminal: ./install.sh"; exit 1
   fi
+  if [ "${1:-}" != --check-only ]; then
+    stage claude-cloud 'local setup'
+    printf 'Six steps. Secret input stays hidden.\nOptional provider keys can be skipped with Enter.\n'
+    stage '1 / 6' 'Check your tools'
+  fi
   check_prereqs || exit 1
   [ "${1:-}" = --check-only ] && exit 0
 
@@ -221,19 +234,25 @@ main() {
 
   local root branch sha
   root=$(cd "$(dirname "$0")" && pwd)
+  stage '2 / 6' 'Install and link the command'
   (cd "$root" && npm install) || { echo "npm install failed." >&2; exit 1; }
   link_command "$root"
 
   warn_shell_env INSTABOX_API_KEY
   warn_shell_env CLAUDE_CODE_OAUTH_TOKEN
+  stage '3 / 6' 'Connect Instabox'
   setup_instabox
+  stage '4 / 6' 'Connect Claude'
   setup_claude
+  stage '5 / 6' 'Connect GitHub'
   setup_github
+  stage '6 / 6' 'Optional model providers'
   setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
+  stage Ready 'Start your first session'
   cat <<MSG
 
 Ready. claude-cloud runs from $root (branch $branch at $sha).

@@ -25,6 +25,13 @@ function stubDir(names, bodies = {}) {
 const nodeStub = '#!/bin/sh\necho v22.1.0\n';
 const all = ['git', 'node', 'npm', 'curl', 'claude'];
 
+test('installer stages are readable plain text when redirected', () => {
+  const r = fn('stage "3 / 6" "Connect Instabox"', [], { NO_COLOR: '1' });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '\n  3 / 6  Connect Instabox\n\n');
+  assert.doesNotMatch(r.stdout, /\x1b/);
+});
+
 test('Instabox key format', () => {
   assert.ok(ok('valid_ibk "$1"', KEY));
   assert.ok(!ok('valid_ibk "$1"', KEY.slice(0, -1)));
