@@ -46,7 +46,10 @@ function context(deps) {
   const configFile = env.CLAUDE_CLOUD_CONFIG || join(homedir(), '.config/claude-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return { env, apiKey, configFile, out, root, ui: deps.ui ?? terminal(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  const stderr = deps.stderr ?? process.stderr;
+  const progressUi = terminal({ stream: stderr });
+  const progress = (message) => { if (stderr.isTTY) stderr.write(`${progressUi.text(`Working: ${message}`)}\n`); };
+  return { env, apiKey, configFile, out, root, progress, ui: deps.ui ?? terminal(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     getSdk: async () => deps.sdk ?? (await import('@insforge/instabox-sdk')) };
 }
 
@@ -69,8 +72,10 @@ async function image(c, args) {
   const existing = await find(Sandbox, c.apiKey, 'coordinator-image');
   if (!args.includes('--save')) {
     if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: claude-cloud coordinator image --save`);
+    c.progress('creating the image machine...');
     const sbx = await Sandbox.create(TEMPLATE, { apiKey: c.apiKey, metadata: { purpose: 'claude-cloud', role: 'coordinator-image' }, autoSuspendMs: 0 });
     try {
+      c.progress('connecting GitHub and installing tools (this can take a few minutes)...');
       await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
@@ -82,6 +87,7 @@ async function image(c, args) {
   const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
   if (!img) fail('No image machine found. Run: claude-cloud coordinator image');
   const sbx = await Sandbox.connect(img.sandboxId, { apiKey: c.apiKey });
+  c.progress('saving the image snapshot...');
   let snap = await sbx.createSnapshot({ name: `claude-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'claude-cloud coordinator image' });
   for (let n = 0; snap.status === 'pending'; n++) {
     if (n > 120) fail(`Snapshot ${snap.id} is still being saved. The image machine was kept; run --save again later.`);
@@ -90,6 +96,7 @@ async function image(c, args) {
   }
   if (snap.status && snap.status !== 'ready') fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`);
   saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
+  c.progress('removing the image machine...');
   await sbx.kill();
   c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
@@ -143,16 +150,20 @@ async function start(c, args) {
   if (!snapshot) fail('No coordinator image yet. Run: claude-cloud coordinator image');
   const { Sandbox } = await c.getSdk();
   if ((await find(Sandbox, c.apiKey, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: claude-cloud coordinator stop ${name}`);
+  c.progress('creating the coordinator machine...');
   const sbx = await Sandbox.create(snapshot, { apiKey: c.apiKey, name: `coord-${name}`, autoSuspendMs: 0,
     metadata: { purpose: 'claude-cloud', role: 'coordinator', name } });
   try {
+    c.progress('connecting GitHub and installing tools (this can take a few minutes)...');
     await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/claude-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, keysFile(c.env)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
+    c.progress('cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
+    c.progress('starting the Claude session...');
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
@@ -187,6 +198,7 @@ async function stop(c, args) {
   const { Sandbox } = await c.getSdk();
   const [m] = await find(Sandbox, c.apiKey, 'coordinator', name);
   if (!m) fail(`No coordinator named ${name}. List them with: claude-cloud coordinator ls`);
+  c.progress('deleting the coordinator machine...');
   await Sandbox.kill(m.sandboxId, { apiKey: c.apiKey });
   c.out(`Deleted coordinator ${name} (machine ${m.name}). Workers it started are deleted by its own claude-cloud cleanup process when its session ends; check with: npx --yes instabox@latest ls --meta purpose=claude-cloud`);
 }

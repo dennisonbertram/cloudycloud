@@ -175,6 +175,19 @@ test('empty terminal list points to image or start according to saved setup', as
   }
 });
 
+test('long-operation progress goes only to interactive stderr', async () => {
+  for (const isTTY of [true, false]) {
+    const f = fixture();
+    const progress = [];
+    f.deps.stderr = { isTTY, columns: 80, write: (s) => progress.push(s) };
+    await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+    assert.equal(progress.length, isTTY ? 4 : 0);
+    assert.doesNotMatch(f.log.out.join('\n'), /Working:/);
+    if (isTTY) assert.match(progress.join(''), /creating[\s\S]*installing[\s\S]*cloning[\s\S]*starting/);
+    for (const key of [IBK, TOK, PROV]) assert.ok(!progress.join('').includes(key));
+  }
+});
+
 test('launcher: coordinator goes to the script; plain claude-cloud still starts claude', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-l-'));
   const stub = join(dir, 'claude');
