@@ -8,6 +8,13 @@ while [ -h "$self" ]; do
 done
 root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
 
+# Only standalone flags belong to this launcher; all other Claude arguments pass through.
+if [ "$#" -eq 1 ]; then
+  case $1 in
+    --help|-h|--version) exec node "$root/src/cli-help.mjs" "$1" ;;
+  esac
+fi
+
 # `claude-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift

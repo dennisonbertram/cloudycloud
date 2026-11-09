@@ -10,7 +10,7 @@ const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd }) {
+function run({ config, cwd, args = [] }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
@@ -19,7 +19,7 @@ function run({ config, cwd }) {
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
   const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLAUDE_CLOUD_CONFIG: cfg };
-  const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
   return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
 
@@ -31,6 +31,22 @@ function repo(origin) {
 }
 
 const full = `INSTABOX_API_KEY=${IBK}\nCLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+
+test('standalone help and version work before setup without launching Claude', () => {
+  for (const arg of ['--help', '-h', '--version']) {
+    const r = run({ config: '', args: [arg] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.started, false);
+    assert.doesNotMatch(r.stdout, /\x1b/);
+    assert.match(r.stdout, arg === '--version' ? /^0\.1\.0\n$/ : /GET STARTED[\s\S]*coordinator --help/);
+  }
+});
+
+test('help with other Claude arguments remains passthrough', () => {
+  const r = run({ config: full, args: ['--help', '--verbose'] });
+  assert.equal(r.started, true);
+  assert.match(r.argv, /--help\n--verbose\n/);
+});
 
 test('missing keys: points to install.sh, exits 1, never starts claude', () => {
   const r = run({ config: '' });
