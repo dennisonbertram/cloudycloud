@@ -56,6 +56,7 @@
   .banner { flex: none; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--err-bg); }
   .banner::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--s-failed); }
   .banner.warn { background: var(--warn-bg); }
+  .banner .fix { display: block; }
   main.stale .sd, main.stale .ev.work::before { animation: none; }
   .banner.warn::before { background: var(--s-starting); }
   .banner code { background: var(--subtle); padding: 1px 6px; border-radius: 4px; user-select: all; }
@@ -399,7 +400,7 @@
     let node = null;
     if (d && S.net === 'down') node = ['', h('span', {}, 'The dashboard server is not answering. Last update ' + clock(S.lastOk) + ', so the list below may be out of date. To restart it, run ', h('code', { text: 'cloudy-cloud dashboard' }), ' and open the new link it prints.')];
     else if (d && S.net === 'error') node = ['', h('span', {}, 'The dashboard server hit an error (last update ' + clock(S.lastOk) + ', trying again every 3 seconds): ', S.err)];
-    else if (d && S.net === 'ok' && d.machines && !d.machines.ok) node = ['warn', h('span', {}, 'Live machines unavailable: ' + d.machines.message + ' Fix: ' + d.machines.fix + ' Session history below still works.')];
+    else if (d && S.net === 'ok' && d.machines && !d.machines.ok) node = ['warn', h('span', {}, h('b', { text: 'Live machines unavailable. ' }), d.machines.message, d.boxes.length ? ' Session history below still works.' : '', h('span', { class: 'fix', text: 'Fix: ' + d.machines.fix }))];
     b.hidden = !node;
     if (node) { b.className = 'banner ' + node[0]; b.replaceChildren(node[1]); }
     const pill = { ok: ['Live', 'live'], down: ['Offline', 'live off'], auth: ['Old link', 'live off'], error: ['Error', 'live off'] }[S.net] || ['Connecting', 'live wait'];
@@ -429,10 +430,11 @@
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
     setTitle(summary(boxes));
+    if (!boxes.length) $('summary').replaceChildren();
     if (!boxes.length) {
       main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'No cloud boxes yet' }),
-        h('p', { text: d.machines.ok ? 'When you start a subagent from a cloudy-cloud session, it appears here with its messages.' : 'Nothing recorded in the session log, and live machines could not be listed.' }),
-        h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first: cloudy-cloud dashboard --demo' })));
+        h('p', { text: d.machines.ok ? 'When you start a subagent from a cloudy-cloud session, it appears here with its messages.' : 'Nothing recorded in the session log yet, and live machines could not be listed (see the message above).' }),
+        h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first with sample data:' }), h('code', { text: 'cloudy-cloud dashboard --demo' })));
       return;
     }
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
