@@ -13,6 +13,8 @@
 <meta property="og:image" content="https://cloudycloud.tech/hero.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#7584c6">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,6 +32,29 @@
     --cyan: #5fd7ff;
     --ice: #87ffff;
     --glass: rgba(14, 24, 54, .55);
+    --band: #f5f4f9; --surface: #fff; --accent: #5867f0; --code: #eaeaf6; --hl: #eceefe;
+    --meter: rgba(40,44,110,.1); --term-line: rgba(255,255,255,.08); --day: block; --nt: none;
+    --hero-photo: url(hero.jpg); --hero-photo-m: url(hero-mobile.jpg);
+    --overlay: linear-gradient(180deg, rgba(58, 64, 140, .5) 0%, rgba(80, 78, 160, .32) 38%, rgba(110, 90, 170, .12) 52%, transparent 62%);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --night: #0b0e24; --band: #0d1029; --surface: #141838; --ink: #eef0ff; --muted: #b4b9dc; --faint: #8a90bd;
+      --line: rgba(255,255,255,.08); --accent: #8b96ff; --code: rgba(255,255,255,.09); --hl: #1a1f4a;
+      --meter: rgba(255,255,255,.1); --term-line: rgba(255,255,255,.2); --day: none; --nt: block;
+      --hero-photo: url(hero-night.jpg); --hero-photo-m: url(hero-mobile-night.jpg);
+      --overlay: linear-gradient(180deg, rgba(8, 10, 40, .3) 0%, rgba(20, 20, 70, .14) 38%, transparent 56%);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+      --night: #0b0e24; --band: #0d1029; --surface: #141838; --ink: #eef0ff; --muted: #b4b9dc; --faint: #8a90bd;
+      --line: rgba(255,255,255,.08); --accent: #8b96ff; --code: rgba(255,255,255,.09); --hl: #1a1f4a;
+      --meter: rgba(255,255,255,.1); --term-line: rgba(255,255,255,.2); --day: none; --nt: block;
+      --hero-photo: url(hero-night.jpg); --hero-photo-m: url(hero-mobile-night.jpg);
+      --overlay: linear-gradient(180deg, rgba(8, 10, 40, .3) 0%, rgba(20, 20, 70, .14) 38%, transparent 56%);
+      color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { background: var(--night); }
@@ -54,7 +79,7 @@
   .links { display: flex; gap: 22px; font-size: 14px; font-weight: 500; color: #fff; }
   .links a { display: inline-flex; align-items: center; min-height: 40px; text-shadow: 0 1px 12px rgba(40,30,100,.55); }
   .links a:hover { color: #fff; text-decoration: underline; }
-  a:focus-visible, button:focus-visible { outline: 2px solid var(--peri); outline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .copy [hidden] { display: none; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .nav-cta { display: flex; gap: 10px; align-items: center; }
@@ -122,7 +147,7 @@
   .install code { flex: 1; min-width: 0; text-align: left; font-size: 13px; color: #f4f6ff; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
   .install code::-webkit-scrollbar { display: none; }
   .install code span { color: #8ea3cc; }
-  .finale .install { background: #fff; border-color: var(--line); box-shadow: 0 10px 40px rgba(88,103,240,.12); }
+  .finale .install { background: var(--surface); border-color: var(--line); box-shadow: 0 10px 40px rgba(88,103,240,.12); }
   .finale .install code { color: var(--ink); } .finale .install code span { color: var(--faint); }
   .copy { background: none; border: 0; color: rgba(255,255,255,.85); cursor: pointer; width: 44px; height: 44px; flex: none; border-radius: 999px; display: grid; place-items: center; }
   .copy:hover { color: #fff; background: rgba(255,255,255,.15); }
@@ -159,27 +184,29 @@
 
   /* ---------- sections ---------- */
   section { position: relative; max-width: 1180px; margin: 0 auto; padding: 90px 32px; }
-  .kicker { font: 500 13px/1 "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--peri); margin-bottom: 20px; }
+  .kicker { font: 500 13px/1 "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 20px; }
   h2 { font: 300 clamp(34px, 4.6vw, 58px)/1.05 "Inter Tight", sans-serif; letter-spacing: -.035em; max-width: 760px; }
   h2 span { color: var(--faint); }
-  .band { background: #f5f4f9; }
+  .band { background: var(--band); }
   .row { display: grid; grid-template-columns: 1.15fr 1fr; gap: 72px; align-items: center; }
   .row + .row { margin-top: 90px; }
   .row.rev .pic { order: 2; }
   .pic img, .fleet-pic img {
-    display: block; width: 100%; height: auto;
+    width: 100%; height: auto;
     -webkit-mask-image: radial-gradient(ellipse at center, #000 62%, transparent 100%);
     mask-image: radial-gradient(ellipse at center, #000 62%, transparent 100%);
     animation: bob 7s ease-in-out infinite;
   }
+  .pic img.day, .fleet-pic img.day { display: var(--day); }
+  .pic img.nt, .fleet-pic img.nt { display: var(--nt); }
   @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
   @media (prefers-reduced-motion: reduce) { .pic img, .fleet-pic img { animation: none; } }
   .row h2, .fleet h2 { font-size: clamp(30px, 3.4vw, 40px); line-height: 1.1; }
   .row p, .fleet-p { color: var(--muted); font-size: 17px; margin-top: 20px; max-width: 480px; }
-  .row code, .faq code { font-size: .85em; color: var(--ink); background: #eaeaf6; padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  .row code, .faq code { font-size: .85em; color: var(--ink); background: var(--code); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
   .checks { list-style: none; margin-top: 28px; display: grid; gap: 12px; }
   .checks li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; color: var(--ink); }
-  .checks svg { flex: none; margin-top: 3px; color: var(--peri); }
+  .checks svg { flex: none; margin-top: 3px; color: var(--accent); }
   .fleet { text-align: center; padding-top: 0; }
   .fleet h2, .fleet .fleet-p { margin-left: auto; margin-right: auto; }
   .fleet .fleet-p { max-width: 600px; }
@@ -191,23 +218,23 @@
   .faq details { border-bottom: 1px solid var(--line); }
   .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 22px 0; font: 500 17px/1.4 "Inter Tight", sans-serif; }
   .faq summary::-webkit-details-marker { display: none; }
-  .faq summary::after { content: "+"; flex: none; font: 300 26px/1 "Inter Tight", sans-serif; color: var(--peri); transition: transform .25s; }
+  .faq summary::after { content: "+"; flex: none; font: 300 26px/1 "Inter Tight", sans-serif; color: var(--accent); transition: transform .25s; }
   .faq details[open] summary::after { transform: rotate(45deg); }
   .faq details p { color: var(--muted); font-size: 16px; padding: 0 48px 24px 0; }
-  .faq details a { color: var(--peri); text-decoration: underline; text-underline-offset: 3px; }
-  summary:focus-visible { outline: 2px solid var(--peri); outline-offset: 2px; }
+  .faq details a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .flow { display: grid; grid-template-columns: 1fr 1.15fr; gap: 64px; align-items: center; }
   .steps { list-style: none; margin-top: 40px; display: grid; gap: 28px; }
   .steps li { display: grid; grid-template-columns: 36px 1fr; gap: 16px; }
-  .steps .n { font: 500 13px/36px "JetBrains Mono", monospace; text-align: center; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--peri); }
+  .steps .n { font: 500 13px/36px "JetBrains Mono", monospace; text-align: center; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--accent); }
   .steps h3 { font: 500 17px/1.4 "Inter Tight", sans-serif; margin-top: 6px; }
   .steps p { color: var(--muted); font-size: 15px; margin-top: 4px; }
-  .steps code { overflow-wrap: anywhere; font-size: 13px; color: var(--ink); background: #eff0fa; padding: 1px 5px; border-radius: 4px; }
+  .steps code { overflow-wrap: anywhere; font-size: 13px; color: var(--ink); background: var(--code); padding: 1px 5px; border-radius: 4px; }
   .term {
     border-radius: 18px; overflow: hidden;
     background: linear-gradient(180deg, #1c2150, #12163a);
-    border: 1px solid rgba(255,255,255,.08);
+    border: 1px solid var(--term-line);
     box-shadow: 0 40px 100px rgba(88, 103, 240, .25), 0 10px 30px rgba(22, 24, 58, .18);
   }
   .term-bar { display: flex; gap: 7px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.07); }
@@ -218,7 +245,7 @@
 
   .models-cap { color: var(--muted); font-size: 16px; margin-top: 20px; max-width: 620px; }
   .models { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
-  .chip { padding: 12px 18px; border-radius: 14px; border: 1px solid var(--line); background: #fff; font-size: 15px; box-shadow: 0 1px 2px rgba(22,24,58,.04); }
+  .chip { padding: 12px 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); font-size: 15px; box-shadow: 0 1px 2px rgba(22,24,58,.04); }
   .chip small { display: block; color: var(--faint); font: 400 12px/1.4 "JetBrains Mono", monospace; margin-top: 2px; }
 
   .finale { text-align: center; padding-bottom: 60px; }
@@ -233,6 +260,57 @@
   footer { max-width: 1180px; margin: 0 auto; padding: 32px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; color: var(--faint); font-size: 13px; }
   footer a { display: inline-flex; align-items: center; min-height: 32px; text-decoration: underline; text-underline-offset: 3px; }
   .flinks { display: flex; gap: 20px; }
+
+
+  /* ---------- why the cloud ---------- */
+  .why-lede { color: var(--muted); font-size: 17px; margin-top: 20px; max-width: 660px; }
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 44px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 24px; box-shadow: 0 1px 2px rgba(22,24,58,.04); }
+  .card h3 { font: 500 18px/1.3 "Inter Tight", sans-serif; }
+  .sub { font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 22px 0 14px; }
+  .m { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+  .mv { font: 500 12px/1.4 "JetBrains Mono", monospace; color: var(--ink); }
+  .bar { grid-column: 1 / -1; height: 6px; border-radius: 6px; background: var(--meter); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .9s cubic-bezier(.2,.7,.2,1), background-color .4s; }
+  .bar.hot i { background: #ff7a59; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .pill { font: 500 12px/1 Inter, sans-serif; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--code); color: var(--ink); opacity: 0; transform: translateY(6px) scale(.96); transition: opacity .35s, transform .35s; }
+  .pill.on { opacity: 1; transform: none; }
+  .status { font-size: 13px; color: var(--muted); margin-top: 18px; }
+  .status b { font-weight: 500; color: var(--ink); }
+  .status.warn b { color: #ff7a59; }
+  .card { display: flex; flex-direction: column; }
+  .empty-cloud { flex: 1; min-height: 120px; border: 1px dashed var(--line); border-radius: 10px; display: grid; place-items: center; text-align: center; padding: 16px; font-size: 13px; color: var(--faint); }
+  .tiles { display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; }
+  .tile { aspect-ratio: 1; border-radius: 5px; background: var(--code); border: 1px solid var(--line); padding: 3px; display: flex; align-items: flex-end; opacity: 0; transform: scale(.6); transition: opacity .3s, transform .3s; }
+  .tile.on { opacity: 1; transform: none; }
+  .tile i { display: block; width: 100%; height: 3px; border-radius: 3px; background: linear-gradient(90deg, transparent, var(--accent), transparent) -60% 0 / 60% 100% no-repeat, var(--meter); animation: busy 1.4s ease-in-out infinite; }
+  .tile:nth-child(3n) i { animation-delay: -.5s; } .tile:nth-child(3n+1) i { animation-delay: -.9s; }
+  @keyframes busy { to { background-position: 160% 0, 0 0; } }
+  .count { display: flex; align-items: baseline; gap: 8px; margin-top: 16px; font-size: 14px; color: var(--muted); }
+  .count b { font: 500 28px/1 "JetBrains Mono", monospace; color: var(--ink); min-width: 2ch; }
+  .why-foot { display: flex; align-items: center; gap: 16px; margin-top: 18px; font-size: 13px; color: var(--faint); }
+  .replay { background: none; border: 0; padding: 6px 0; font: 500 13px/1 Inter, sans-serif; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { .tile i { animation: none; } .bar i, .pill, .tile { transition: none; } }
+
+  /* ---------- compare ---------- */
+  .tw { margin-top: 44px; overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 940px; font-size: 14px; }
+  th, td { padding: 16px 18px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); color: var(--muted); line-height: 1.45; }
+  thead th { font: 500 13px/1.35 Inter, sans-serif; color: var(--ink); background: var(--night); }
+  tbody th { font: 500 14px/1.4 "Inter Tight", sans-serif; color: var(--ink); min-width: 190px; }
+  thead th:first-child, tbody th { position: sticky; left: 0; z-index: 1; background: var(--night); }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+  tr.us th, tr.us td { background: var(--hl); }
+  td { position: relative; }
+  td svg { color: var(--accent); vertical-align: -2px; }
+  .cap { margin-top: 16px; font-size: 13px; color: var(--faint); }
+
+  .theme { background: none; border: 0; color: var(--faint); width: 36px; height: 36px; border-radius: 999px; display: inline-grid; place-items: center; cursor: pointer; }
+  .theme:hover { color: var(--ink); }
+  .theme [hidden] { display: none; }
+  .flinks { align-items: center; }
+  @media (max-width: 900px) { .cmp { grid-template-columns: 1fr; } }
 
   @media (max-width: 900px) {
     .row { grid-template-columns: 1fr; gap: 32px; }
@@ -262,9 +340,9 @@
 
   /* ---------- photo hero (overrides) ---------- */
   .hero { height: 100vh; min-height: 760px; max-height: 1000px; background: #a9a6d6; }
-  .photo { position: absolute; inset: 0; background: url(hero.jpg) 50% 100% / cover no-repeat; }
+  .photo { position: absolute; inset: 0; background: var(--hero-photo) 50% 100% / cover no-repeat; }
   .photo::after { content: ""; position: absolute; inset: 0;
-    background: linear-gradient(180deg, rgba(58, 64, 140, .5) 0%, rgba(80, 78, 160, .32) 38%, rgba(110, 90, 170, .12) 52%, transparent 62%); }
+    background: var(--overlay); }
   .edge { position: absolute; top: 0; bottom: 0; width: 16%; z-index: 2; pointer-events: none;
     backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
   .edge-l { left: 0; -webkit-mask-image: linear-gradient(90deg, #000, transparent); mask-image: linear-gradient(90deg, #000, transparent); }
@@ -286,10 +364,10 @@
   }
   @media (max-width: 700px) {
     .hero { height: 100svh; min-height: 740px; }
-    .photo { background-image: url(hero-mobile.jpg); background-position: 50% 100%; }
+    .photo { background-image: var(--hero-photo-m); background-position: 50% 100%; }
     .links { gap: 4px; }
     .links a { padding: 0 8px; }
-    .links a:nth-child(-n+3) { display: none; }
+    .links a:nth-child(-n+4) { display: none; }
     .nav-cta .btn { padding: 0 14px; }
     .finale .install .btn { display: none; }
   }
@@ -310,6 +388,7 @@
     <div class="links">
       <a href="#how">How it works</a>
       <a href="#models">Models</a>
+      <a href="#compare">Compare</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a>
       <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a>
@@ -331,24 +410,53 @@
       </div>
       <a class="textlink" href="#how">How it works &rarr;</a>
     </div>
-    <p class="hero-note">Bring your own keys. Needs an Instabox account. About 5 minutes to set up.</p>
+    <p class="hero-note">Bring your own keys and cloud account. About 5 minutes to set up.</p>
   </div>
 </header>
 
 <main>
   <div class="band">
+    <section id="why" class="why">
+      <div class="kicker">Why the cloud</div>
+      <h2>Run it from your laptop. <span>Run it at any scale.</span></h2>
+      <p class="why-lede">Subagents on your laptop share its CPU, memory and battery with you. Their builds and tests slow your session down. With Cloudy Cloud you still start and steer everything from your laptop, but the work runs on machines in the cloud.</p>
+      <div class="cmp">
+        <div class="card" id="cardL">
+          <h3>Subagents on your laptop</h3>
+          <div class="sub">Your laptop</div>
+          <div class="m"><span>CPU</span><span class="mv">96%</span><div class="bar hot"><i style="width:96%"></i></div></div><div class="m"><span>Memory</span><span class="mv">88%</span><div class="bar hot"><i style="width:88%"></i></div></div><div class="m"><span>Battery drain</span><span class="mv">High</span><div class="bar hot"><i style="width:92%"></i></div></div>
+          <div class="pills"><span class="pill on">Subagent 1</span><span class="pill on">Subagent 2</span><span class="pill on">Subagent 3</span><span class="pill on">Subagent 4</span></div>
+          <div class="status warn">Your session: <b id="lstat">sluggish</b></div>
+          <div class="sub">Cloud</div>
+          <div class="empty-cloud">No cloud machines.<br>Every subagent runs on your laptop.</div>
+          <div class="count"><b>0</b><span>subagents in the cloud</span></div>
+          <div class="status"><b>All competing for one machine</b></div>
+        </div>
+        <div class="card">
+          <h3>Subagents with Cloudy Cloud</h3>
+          <div class="sub">Your laptop</div>
+          <div class="m"><span>CPU</span><span class="mv">12%</span><div class="bar"><i style="width:12%"></i></div></div><div class="m"><span>Memory</span><span class="mv">30%</span><div class="bar"><i style="width:30%"></i></div></div><div class="m"><span>Battery drain</span><span class="mv">Low</span><div class="bar"><i style="width:12%"></i></div></div>
+          <div class="status">Your session: <b>responsive</b></div>
+          <div class="sub">Cloud</div>
+          <div class="tiles" id="tiles"></div>
+          <div class="count"><b id="count">50</b><span id="clab">subagents running</span></div>
+          <div class="status"><b>Each on its own machine</b></div>
+        </div>
+      </div>
+      <div class="why-foot"><span>Illustration, not a benchmark.</span><button class="replay" id="replay" type="button">Replay</button></div>
+    </section>
     <section>
       <div class="row">
-        <div class="pic"><img src="img/machines.jpg" alt="A laptop on a floating island sends glowing threads up to three clouds, each holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div class="pic"><img class="day" src="img/machines.jpg" alt="A laptop on a floating island sends glowing threads up to three clouds, each holding a small computer." width="1200" height="888" loading="lazy" decoding="async"><img class="nt" src="img/machines-night.jpg" alt="A laptop on a floating island sends glowing threads up to three clouds, each holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
         <div>
           <div class="kicker">One machine each</div>
           <h2>Every subagent gets its own computer.</h2>
-          <p>When your Claude Code session starts a subagent, Cloudy Cloud gives it a fresh cloud machine on Instabox. The subagent runs a full Claude Code there, on a copy of your repo. Your laptop only runs your own session.</p>
-          <ul class="checks"><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Sees your tracked files, including uncommitted edits</li><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Runs on Instabox, not on your laptop</li></ul>
+          <p>When your Claude Code session starts a subagent, Cloudy Cloud gives it a fresh cloud machine. The subagent runs a full Claude Code there, on a copy of your repo. Your laptop only runs your own session.</p>
+          <ul class="checks"><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Sees your tracked files, including uncommitted edits</li><li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Runs in the cloud, not on your laptop</li></ul>
         </div>
       </div>
       <div class="row rev">
-        <div class="pic"><img src="img/branches.jpg" alt="Three clouds send coloured lines down a branching path to a stone platform holding three parcels." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div class="pic"><img class="day" src="img/branches.jpg" alt="Three clouds send coloured lines down a branching path to a stone platform holding three parcels." width="1200" height="888" loading="lazy" decoding="async"><img class="nt" src="img/branches-night.jpg" alt="Three clouds send coloured lines down a branching path to a stone platform holding three parcels." width="1200" height="888" loading="lazy" decoding="async"></div>
         <div>
           <div class="kicker">Results on GitHub</div>
           <h2>Work comes back as a branch.</h2>
@@ -357,7 +465,7 @@
         </div>
       </div>
       <div class="row">
-        <div class="pic"><img src="img/followup.jpg" alt="Paper airplanes fly between a laptop on a floating island and a cloud holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
+        <div class="pic"><img class="day" src="img/followup.jpg" alt="Paper airplanes fly between a laptop on a floating island and a cloud holding a small computer." width="1200" height="888" loading="lazy" decoding="async"><img class="nt" src="img/followup-night.jpg" alt="Paper airplanes fly between a laptop on a floating island and a cloud holding a small computer." width="1200" height="888" loading="lazy" decoding="async"></div>
         <div>
           <div class="kicker">Follow-ups</div>
           <h2>Keep the conversation going.</h2>
@@ -369,8 +477,8 @@
     <section class="fleet">
       <div class="kicker">Scale</div>
       <h2>One subagent, or fifty.</h2>
-      <p class="fleet-p">Start as many subagents as the task needs. Cloudy Cloud queues them and starts machines as fast as your Instabox plan allows. Your plan's machine limit caps how many run at once.</p>
-      <div class="fleet-pic"><img src="img/fleet.jpg" alt="Dozens of small clouds, each holding a computer, all connected to one lead cloud." width="2200" height="1221" loading="lazy" decoding="async"></div>
+      <p class="fleet-p">Start as many subagents as the task needs. Cloudy Cloud queues them and starts machines as fast as your cloud plan allows. Your plan's machine limit caps how many run at once.</p>
+      <div class="fleet-pic"><img class="day" src="img/fleet.jpg" alt="Dozens of small clouds, each holding a computer, all connected to one lead cloud." width="2200" height="1221" loading="lazy" decoding="async"><img class="nt" src="img/fleet-night.jpg" alt="Dozens of small clouds, each holding a computer, all connected to one lead cloud." width="2200" height="1221" loading="lazy" decoding="async"></div>
       <div class="stats">
         <div class="stat"><b>50</b><span>subagents run at once in our tests, on a paid plan</span></div>
         <div class="stat"><b>60 min</b><span>idle time before a subagent stops</span></div>
@@ -386,7 +494,7 @@
         <h2>Install once, then use subagents as usual.</h2>
         <ol class="steps">
           <li><span class="n">1</span><div><h3>Add the skill</h3><p>Run <code>npx skills add dennisonbertram/ai-seamless-sandboxes</code> to add the Cloudy Cloud skill to Claude Code.</p></div></li>
-          <li><span class="n">2</span><div><h3>Run the installer</h3><p>Clone the repo and run <code>./install.sh</code> once. It asks for your Instabox, Claude and GitHub keys and tells you where to get each.</p></div></li>
+          <li><span class="n">2</span><div><h3>Run the installer</h3><p>Clone the repo and run <code>./install.sh</code> once. It asks for your cloud, Claude and GitHub keys and tells you where to get each.</p></div></li>
           <li><span class="n">3</span><div><h3>Start a session</h3><p>Run <code>cloudy-cloud</code> instead of <code>claude</code>, then <code>git fetch origin cloudy-cloud/&lt;id&gt;</code> to pull a subagent's work. Plain <code>claude</code> is unchanged.</p></div></li>
         </ol>
       </div>
@@ -424,14 +532,27 @@
     </div>
   </section>
 
+  <section id="compare" class="compare">
+    <div class="kicker">Compared to</div>
+    <h2>Other ways to run agents in the cloud.</h2>
+    <p class="why-lede">Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the Claude Code session you already use.</p>
+    <div class="tw" role="region" aria-label="Comparison table" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">Product</th><th scope="col">Starts from your local Claude Code session</th><th scope="col">One machine per subagent</th><th scope="col">Results land as</th><th scope="col">Models for workers</th><th scope="col">Hosted app, no setup</th></tr></thead>
+        <tbody><tr class="us"><th scope="row">Cloudy Cloud</th><td><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span class="sr">Yes</span></td><td><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span class="sr">Yes</span></td><td>A git branch per subagent</td><td>Claude or open models (GLM, DeepSeek, OpenRouter)</td><td>No, you run it yourself</td></tr><tr><th scope="row">Claude Code on the web</th><td>No, a separate cloud session</td><td>No, subagents share the session's machine</td><td>A branch and pull request</td><td>Claude only</td><td><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span class="sr">Yes</span></td></tr><tr><th scope="row">Cloud sandboxes: Instabox, boat, Maritime, E2B, Daytona</th><td>No, you wire it up yourself</td><td>You build it</td><td>Files on the machine</td><td>Whatever you install</td><td>Machines and an API, not an agent</td></tr><tr><th scope="row">Hosted coding agents: Codex cloud, Cursor, Copilot, Devin</th><td>No, their own agent and app</td><td>One machine per task</td><td>A branch or pull request</td><td>The vendor's choice</td><td><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span class="sr">Yes</span></td></tr></tbody>
+      </table>
+    </div>
+    <p class="cap">Based on each product's public docs, November 2026. Products change; check their docs for the latest.</p>
+  </section>
+
   <section id="faq" class="faq">
     <div class="kicker">Good to know</div>
     <h2>Questions, answered simply.</h2>
     <div class="faq-list">
         <details><summary><span>What is a subagent?</span></summary><p>When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.</p></details>
-        <details><summary><span>What do I need?</span></summary><p>An Instabox account (a paid plan to run more than a few subagents at once), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.</p></details>
+        <details><summary><span>What do I need?</span></summary><p>An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.</p></details>
         <details><summary><span>What can a subagent see?</span></summary><p>Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings.</p></details>
-        <details><summary><span>What happens to the machines?</span></summary><p>A subagent stops after 60 idle minutes or when your session ends. Instabox deletes its machine after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p></details>
+        <details><summary><span>What happens to the machines?</span></summary><p>A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p></details>
         <details><summary><span>Is it safe?</span></summary><p>Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The <a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">setup guide</a> shows how.</p></details>
         <details><summary><span>Does it change plain <code>claude</code>?</span></summary><p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p></details>
     </div>
@@ -458,8 +579,8 @@
 
 <footer>
   <span>cloudycloud.tech</span>
-  <span>Runs on Instabox. Not affiliated with Anthropic.</span>
-  <span class="flinks"><a href="#faq">FAQ</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a></span>
+  <span>Not affiliated with Anthropic.</span>
+  <span class="flinks"><button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button><a href="#faq">FAQ</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes">GitHub</a><a href="https://github.com/dennisonbertram/ai-seamless-sandboxes/blob/HEAD/docs/RUNBOOK.md">Docs</a></span>
 </footer>
 <div class="sr" id="live" aria-live="polite"></div>
 
@@ -474,6 +595,40 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
   (navigator.clipboard ? navigator.clipboard.writeText(b.dataset.copy) : Promise.reject()).then(done, pick);
 }));
 (() => {
+  const b = document.getElementById('theme'), root = document.documentElement, mq = matchMedia('(prefers-color-scheme: dark)');
+  const cur = () => root.dataset.theme || (mq.matches ? 'dark' : 'light');
+  const sync = () => { const d = cur() === 'dark'; b.setAttribute('aria-label', d ? 'Switch to light mode' : 'Switch to dark mode'); b.querySelector('.i-sun').hidden = !d; b.querySelector('.i-moon').hidden = d; };
+  b.addEventListener('click', () => { const n = cur() === 'dark' ? 'light' : 'dark'; root.setAttribute('data-theme', n); try { localStorage.setItem('theme', n); } catch (e) {} sync(); });
+  mq.addEventListener('change', sync); sync();
+})();
+(() => {
+  const sec = document.getElementById('why'), $$ = q => [...sec.querySelectorAll(q)];
+  const tiles = document.getElementById('tiles');
+  for (let i = 0; i < 50; i++) tiles.insertAdjacentHTML('beforeend', '<div class="tile on"><i></i></div>');
+  const T = $$('.tile'), P = $$('.pill'), L = $$('#cardL .bar'), V = $$('#cardL .mv');
+  const cnt = document.getElementById('count'), clab = document.getElementById('clab'), ls = document.getElementById('lstat');
+  const tier = ['responsive', 'slowing down', 'sluggish'];
+  function setL(n) {
+    const v = [[8, 28, 10], [30, 35, 30], [55, 55, 55], [78, 72, 78], [96, 88, 92]][n];
+    v.forEach((x, i) => { L[i].firstElementChild.style.width = x + '%'; L[i].classList.toggle('hot', x > 80); });
+    V[0].textContent = v[0] + '%'; V[1].textContent = v[1] + '%'; V[2].textContent = v[2] > 80 ? 'High' : v[2] > 40 ? 'Medium' : 'Low';
+    P.forEach((p, i) => p.classList.toggle('on', i < n));
+    const k = n < 2 ? 0 : n < 4 ? 1 : 2; ls.textContent = tier[k]; ls.parentElement.classList.toggle('warn', k > 0);
+  }
+  function setR(n) {
+    T.forEach((t, i) => { t.classList.toggle('on', i < n); t.style.transitionDelay = i < n ? (i % 12) * 25 + 'ms' : '0ms'; });
+    cnt.textContent = n; clab.textContent = n === 1 ? 'subagent running' : 'subagents running';
+  }
+  let timers = [];
+  const reset = () => { timers.forEach(clearTimeout); timers = []; setL(0); setR(0); };
+  const run = () => [[400, () => setL(1)], [1700, () => setL(2)], [3000, () => setL(3)], [4300, () => setL(4)],
+    [600, () => setR(1)], [2200, () => setR(4)], [3800, () => setR(12)], [5200, () => setR(50)]].forEach(([t, f]) => timers.push(setTimeout(f, t)));
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { document.getElementById('replay').hidden = true; return; }
+  reset();
+  new IntersectionObserver((e, o) => { if (e[0].isIntersecting) { o.disconnect(); run(); } }, { threshold: .35 }).observe(sec.querySelector('.cmp'));
+  document.getElementById('replay').addEventListener('click', () => { reset(); setTimeout(run, 80); });
+})();
+(() => {
   const cv = document.getElementById('sky'), ctx = cv.getContext('2d'), hero = cv.parentElement;
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -481,11 +636,13 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
   // screen in original image pixels. CLOUDS are the sky clouds it talks to, as fractions of the hero,
   // kept to the sides so the lines never cross the headline.
   const SCENES = {
-    wide: { IW: 2688, IH: 1520, PX: .5, LAPTOP: [1310, 934],
+    wide: { IW: 2688, IH: 1520, PX: .5, LAPTOP: { l: [1310, 934], d: [1305, 940] },
       CLOUDS: [[.1, .17, 300], [.2, .38, 230], [.8, .36, 240], [.9, .15, 320]], SIDE: .16 },
-    tall: { IW: 1520, IH: 2688, PX: .5, LAPTOP: [719, 1572],
+    tall: { IW: 1520, IH: 2688, PX: .5, LAPTOP: { l: [719, 1572], d: [720, 1586] },
       CLOUDS: [[.03, .08, 170], [.97, .06, 180]], SIDE: .5 },
   };
+  const isDark = () => { const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
+  let dark = isDark();
   let scene, cfg, W, H, s, ox, oy, pulses = [], bloom = [], flash = 0, hubs = [];
 
   // a cloud sprite: sunlit top, lavender underside
@@ -497,12 +654,14 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
       const y = h * (.66 - bump * .26 * Math.random());
       const r = Math.min(w * (.05 + .14 * bump * (.4 + .6 * Math.random())), x, w - x, y, h - y);
       const rg = g.createRadialGradient(x, y - r * .3, 0, x, y, r);
-      rg.addColorStop(0, 'rgba(255,250,250,.8)'); rg.addColorStop(.6, 'rgba(255,244,248,.3)'); rg.addColorStop(1, 'rgba(255,240,245,0)');
+      if (dark) { rg.addColorStop(0, 'rgba(200,205,255,.55)'); rg.addColorStop(.6, 'rgba(190,196,250,.2)'); rg.addColorStop(1, 'rgba(185,190,250,0)'); }
+      else { rg.addColorStop(0, 'rgba(255,250,250,.8)'); rg.addColorStop(.6, 'rgba(255,244,248,.3)'); rg.addColorStop(1, 'rgba(255,240,245,0)'); }
       g.fillStyle = rg; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
     }
     g.globalCompositeOperation = 'source-atop';
     const sh = g.createLinearGradient(0, 0, 0, h);
-    sh.addColorStop(0, 'rgba(255,225,215,.25)'); sh.addColorStop(.5, 'rgba(220,205,240,.2)'); sh.addColorStop(1, 'rgba(150,140,210,.6)');
+    if (dark) { sh.addColorStop(0, 'rgba(190,200,255,.15)'); sh.addColorStop(.5, 'rgba(120,125,210,.2)'); sh.addColorStop(1, 'rgba(55,60,150,.6)'); }
+    else { sh.addColorStop(0, 'rgba(255,225,215,.25)'); sh.addColorStop(.5, 'rgba(220,205,240,.2)'); sh.addColorStop(1, 'rgba(150,140,210,.6)'); }
     g.fillStyle = sh; g.fillRect(0, 0, w, h);
     return c;
   }
@@ -524,9 +683,14 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
 
   // drifting clouds: puffy ones up high, flat wisps near the horizon
   const drifting = [
-    ...Array.from({ length: 6 }, (_, i) => ({ img: puff(200 + Math.random() * 260), x: i / 6 + Math.random() * .08, y: .08 + Math.random() * .3, v: 3 + Math.random() * 5, a: .45 + Math.random() * .3, fadeMid: true })),
-    ...Array.from({ length: 5 }, () => ({ img: puff(360 + Math.random() * 300), x: Math.random(), y: .5 + Math.random() * .12, v: 5 + Math.random() * 6, a: .22 + Math.random() * .15, fadeMid: false })),
+    ...Array.from({ length: 6 }, (_, i) => ({ w: 200 + Math.random() * 260, x: i / 6 + Math.random() * .08, y: .08 + Math.random() * .3, v: 3 + Math.random() * 5, a: .45 + Math.random() * .3, fadeMid: true })),
+    ...Array.from({ length: 5 }, () => ({ w: 360 + Math.random() * 300, x: Math.random(), y: .5 + Math.random() * .12, v: 5 + Math.random() * 6, a: .22 + Math.random() * .15, fadeMid: false })),
   ];
+  const rebuild = () => drifting.forEach(d => { d.img = puff(d.w); });
+  rebuild();
+  const retheme = () => { const d = isDark(); if (d === dark) return; dark = d; scene = null; resize(); rebuild(); };
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', retheme);
+  new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   // the line leaves the laptop sideways, then sweeps up the side of the frame into the cloud
   function point(a, b, t) {
@@ -545,16 +709,16 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
   function frame(now) {
     const dt = Math.min((now - last) / 1000, .05); last = now; time += dt;
     ctx.clearRect(0, 0, W, H);
-    const k = W <= 700 ? .6 : 1, span = W + 800;
+    const nk = dark ? .7 : 1, k = W <= 700 ? .6 : 1, span = W + 800;
 
     drifting.forEach(d => {
       if (!still) { d.x += d.v * dt / span; if (d.x > 1) d.x -= 1; }
       const iw = d.img.width * k, ih = d.img.height * k, cx = d.x * span - 400;
       const keep = d.fadeMid ? Math.min(1, Math.max(.3, Math.abs(cx - W / 2) / (W * .32))) : 1;
-      ctx.globalAlpha = d.a * keep; ctx.drawImage(d.img, cx - iw / 2, d.y * H - ih / 2, iw, ih);
+      ctx.globalAlpha = d.a * keep * nk; ctx.drawImage(d.img, cx - iw / 2, d.y * H - ih / 2, iw, ih);
     });
 
-    const lap = { x: ox + cfg.LAPTOP[0] * s, y: oy + cfg.LAPTOP[1] * s };
+    const lap = { x: ox + cfg.LAPTOP[dark ? 'd' : 'l'][0] * s, y: oy + cfg.LAPTOP[dark ? 'd' : 'l'][1] * s };
     const hp = hubs.map(h => ({ x: h.x * W, y: h.y * H + Math.sin(time * .5 + h.phase) * 5 }));
     const end = i => ({ x: hp[i].x, y: hp[i].y + 14 * k });
 
@@ -588,7 +752,7 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
 
     // the clouds sit on top of the line ends, and brighten when a task lands
     ctx.globalCompositeOperation = 'source-over';
-    hubs.forEach((h, i) => { const iw = h.img.width * k, ih = h.img.height * k; ctx.globalAlpha = .95; ctx.drawImage(h.img, hp[i].x - iw / 2, hp[i].y - ih / 2, iw, ih); });
+    hubs.forEach((h, i) => { const iw = h.img.width * k, ih = h.img.height * k; ctx.globalAlpha = .95 * nk; ctx.drawImage(h.img, hp[i].x - iw / 2, hp[i].y - ih / 2, iw, ih); });
     ctx.globalCompositeOperation = 'lighter';
     hubs.forEach((h, i) => { const iw = h.img.width * k, ih = h.img.height * k; ctx.globalAlpha = .35 * bloom[i]; ctx.drawImage(h.img, hp[i].x - iw / 2, hp[i].y - ih / 2, iw, ih); });
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
