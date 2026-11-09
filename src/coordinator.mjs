@@ -80,8 +80,13 @@ async function image(c, args) {
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
     const info = await sbx.getInfo();
-    c.out(`Image machine ${info.name} is ready and claude-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. ${SSH(info.name, '')}`.trimEnd() +
-      `\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: claude-cloud coordinator image --save`);
+    c.out([c.ui.title('image ready', `Machine: ${info.name}`),
+      c.ui.text('claude-cloud is installed. Sign in to enable Remote Control; a setup-token alone cannot enable it.'),
+      c.ui.section('1 / CONNECT'), c.ui.command(SSH(info.name, '')),
+      c.ui.section('2 / SIGN IN ON THE MACHINE'), c.ui.command('claude auth login'),
+      c.ui.text('Finish the browser sign-in, then leave the shell.'),
+      c.ui.section('3 / SAVE FROM THIS TERMINAL'), c.ui.command('claude-cloud coordinator image --save'),
+      '', c.ui.text('This machine does not pause automatically. Saving the image deletes it; leaving it running can incur charges.'), ''].join('\n'));
     return;
   }
   const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
@@ -98,7 +103,10 @@ async function image(c, args) {
   saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
   c.progress('removing the image machine...');
   await sbx.kill();
-  c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+  c.out([c.ui.title('image saved', `Snapshot: ${snap.id}`),
+    c.ui.text('Deleted the image machine. Its login is ready to reuse.'),
+    c.ui.section('CONFIG'), c.ui.text(`${SNAPSHOT_KEY} saved in ${c.configFile}`),
+    c.ui.section('NEXT'), c.ui.command('claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO'), ''].join('\n'));
 }
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -167,8 +175,12 @@ async function start(c, args) {
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
-  c.out(`Coordinator ${name} is running on machine ${machine}. It never pauses.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
-    `  - Terminal: claude-cloud coordinator attach ${name}\n    (runs: ${SSH(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it with: claude-cloud coordinator stop ${name}`);
+  c.out([c.ui.title('coordinator started', `${name} / ${machine}`),
+    c.ui.text('The machine is running. Attach once to accept any trust or Remote Control prompts.'),
+    c.ui.section('CONNECT'), c.ui.command(`claude-cloud coordinator attach ${name}`),
+    c.ui.section('REMOTE CONTROL'), c.ui.text(`Open https://claude.ai/code or the Claude app and choose "${name}".`),
+    c.ui.section('WHEN FINISHED'), c.ui.command(`claude-cloud coordinator stop ${name}`),
+    '', c.ui.text('This machine never pauses automatically. It can incur charges until stopped.'), ''].join('\n'));
 }
 
 async function attach(c, args) {
@@ -200,7 +212,9 @@ async function stop(c, args) {
   if (!m) fail(`No coordinator named ${name}. List them with: claude-cloud coordinator ls`);
   c.progress('deleting the coordinator machine...');
   await Sandbox.kill(m.sandboxId, { apiKey: c.apiKey });
-  c.out(`Deleted coordinator ${name} (machine ${m.name}). Workers it started are deleted by its own claude-cloud cleanup process when its session ends; check with: npx --yes instabox@latest ls --meta purpose=claude-cloud`);
+  c.out([c.ui.title('coordinator deleted', `${name} / ${m.name}`),
+    c.ui.text('Workers are deleted by its own claude-cloud cleanup process when its session ends. Their removal is not confirmed here.'),
+    c.ui.section('CHECK REMAINING MACHINES'), c.ui.command('npx --yes instabox@latest ls --meta purpose=claude-cloud'), ''].join('\n'));
 }
 
 export async function main(argv, deps = {}) {

@@ -188,6 +188,15 @@ test('long-operation progress goes only to interactive stderr', async () => {
   }
 });
 
+test('lifecycle outcomes include next actions and honest ongoing-use warnings', async () => {
+  const f = fixture();
+  await main(['image'], f.deps);
+  assert.match(f.log.out.join('\n'), /image ready[\s\S]*CONNECT[\s\S]*claude auth login[\s\S]*image --save[\s\S]*charges/);
+  f.log.out.length = 0;
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.match(f.log.out.join('\n'), /coordinator started[\s\S]*attach boss[\s\S]*stop boss[\s\S]*charges/);
+});
+
 test('launcher: coordinator goes to the script; plain claude-cloud still starts claude', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-l-'));
   const stub = join(dir, 'claude');
