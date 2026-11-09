@@ -432,6 +432,7 @@
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
         main.replaceChildren(fleetView(boxes));
+        tick(); // fill the live texts first, or they grow the tiles after the scroll is restored
         const nf = main.querySelector('.fleet'); nf.scrollTop = top;
         if (fid) nf.querySelector('[data-id="' + CSS.escape(fid) + '"]')?.focus({ preventScroll: true });
       }
