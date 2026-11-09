@@ -229,7 +229,7 @@ Later, `cloudy-cloud setup` runs the installer again from any folder. It shows e
 
 ## Start a session
 
-Run `cloudy-cloud` from inside your repo, instead of `claude`. If you skipped the global install, run `npx cloudycloud` instead; everything below works the same:
+Run `cloudy-cloud` from inside your repo, instead of `claude`. The package installs the same command under two names, `cloudy-cloud` and `cloudycloud`; use either. If you skipped the global install, run `npx cloudycloud` instead; everything below works the same:
 
 ```
 cd <your repo>
@@ -507,6 +507,8 @@ These commands run on your computer. `cloudy-cloud` checks the first argument. I
 ```
 cloudy-cloud [claude arguments]
 ```
+
+The package installs the same command under two names, `cloudy-cloud` and `cloudycloud`; use either. Without a global install, `npx cloudycloud` runs the same command. Plain `claude` is not affected.
 
 Starts a normal Claude Code session in the current folder. In that session the built-in `Agent` and `Workflow` tools are denied, and Claude starts subagents with the five cloud tools described below. Run it from inside a git repository that has a `github.com` origin, because each cloud agent pushes its work to a branch there.
 
@@ -1268,12 +1270,16 @@ Subagents run Claude by default. They can also run open models such as GLM and D
 
 Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once.
 
+## How do I start it?
+
+In a terminal, inside a git repo with a GitHub remote, run `cloudy-cloud` where you would run `claude`. It opens a normal Claude Code session; when Claude uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
+
 ## How do I install it?
 
 Run this once in a terminal:
 
 ```
-npx cloudycloud setup
+npx -y cloudycloud setup
 ```
 
 It checks your tools, offers to install the `cloudy-cloud` command, and asks for your keys. The steps are in [Getting started](https://cloudycloud.tech/docs/). The source is on [GitHub](https://github.com/dennisonbertram/cloudycloud) and the package is [cloudycloud on npm](https://www.npmjs.com/package/cloudycloud).
@@ -1300,6 +1306,10 @@ Short answers about what Cloudy Cloud does, what it needs, what it keeps and how
 ### What is a subagent?
 
 When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+
+### How do I start Cloudy Cloud?
+
+Run `cloudy-cloud` instead of `claude`, from inside a git repo with a GitHub remote. It starts a normal Claude Code session in which every subagent runs on its own cloud machine. `cloudycloud` is the same command; if you skipped the global install, use `npx cloudycloud`. Set it up first with `npx -y cloudycloud setup`.
 
 ### What do I need?
 

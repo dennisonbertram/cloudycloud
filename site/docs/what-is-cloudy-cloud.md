@@ -40,12 +40,16 @@ Subagents run Claude by default. They can also run open models such as GLM and D
 
 Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once.
 
+## How do I start it?
+
+In a terminal, inside a git repo with a GitHub remote, run `cloudy-cloud` where you would run `claude`. It opens a normal Claude Code session; when Claude uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
+
 ## How do I install it?
 
 Run this once in a terminal:
 
 ```
-npx cloudycloud setup
+npx -y cloudycloud setup
 ```
 
 It checks your tools, offers to install the `cloudy-cloud` command, and asks for your keys. The steps are in [Getting started](https://cloudycloud.tech/docs/). The source is on [GitHub](https://github.com/dennisonbertram/cloudycloud) and the package is [cloudycloud on npm](https://www.npmjs.com/package/cloudycloud).
