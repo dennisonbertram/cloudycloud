@@ -8,15 +8,15 @@ const ids = { type: 'array', items: { type: 'string' }, description: 'Agent ids'
 const tools = [
   {
     name: 'cloud_agent',
-    description: 'Start a Claude subagent in a remote sandbox on committed and tracked files (no untracked files). The repo needs a github.com origin. Returns at once while the sandbox starts and the task runs in the background. In Claude Code terminal sessions that support MCP tasks, the call becomes a background task: its progress shows in /tasks and the result arrives on its own, with the agent_id. Otherwise it returns an agent_id and you call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. The agent pushes its work to origin branch claude-cloud/<id>; nothing is copied into the local repo.',
+    description: 'Start a Claude subagent in a remote sandbox on committed and tracked files (no untracked files). The repo needs a github.com origin. Returns at once while the sandbox starts and the task runs in the background. In Claude Code terminal sessions that support MCP tasks, the call becomes a background task: its progress shows in /tasks and the result arrives on its own, with the agent_id. Otherwise it returns an agent_id and you call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. The agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Full task for the subagent' },
         description: { type: 'string', description: 'Short task label' },
-        model: { type: 'string', description: 'Optional model name' },
+        model: { type: 'string', description: 'Optional Claude model name, such as haiku. For any non-Claude model use profile instead.' },
         profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, pi-glm, pi-deepseek, pi-particle, openrouter, or a name from profiles.json. Default: Claude.' },
-        role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets claude-cloud installed and can start its own cloud agents (limited by CLAUDE_CLOUD_MAX_DEPTH, default 3).' },
+        role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets cloudy-cloud installed and can start its own cloud agents (limited by CLOUDY_CLOUD_MAX_DEPTH, default 3).' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },
       required: ['prompt', 'description'],

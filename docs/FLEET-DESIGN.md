@@ -11,9 +11,9 @@ Status: **proposal, not built.** Items marked *(verify)* are assumptions to chec
 - **Reach any session.** You can message any coordinator, and through it any worker.
 
 ```
-laptop: claude-cloud (you)
+laptop: cloudy-cloud (you)
   ├── coordinator-1 (Instabox, Opus 5.5, long-lived, reachable by Remote Control/SSH)
-  │     ├── worker (Instabox, DeepSeek)  → pushes claude-cloud/<id>, saves to agent-drive
+  │     ├── worker (Instabox, DeepSeek)  → pushes cloudy-cloud/<id>, saves to agent-drive
   │     └── worker ... (tens to hundreds)
   ├── coordinator-2 ...
   └── coordinator-5 ...
@@ -38,7 +38,7 @@ A profile names the inference endpoint for a session:
 
 - **How it's used:** `cloud_agent` gets a `profile` argument. The worker's Claude Code runs with `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and an auth variable holding the secret's **placeholder**. The real key never reaches the machine.
 - **Claude through the proxy too:** if the Claude token also moves to a proxy secret, the last real credential on worker machines goes away. That closes the prompt-injection risk the README warns about today.
-- **Where profiles come from:** profiles live in `~/.config/claude-cloud/profiles.json`, and `install.sh` can add them.
+- **Where profiles come from:** profiles live in `~/.config/cloudy-cloud/profiles.json`, and `install.sh` can add them.
 - **Status:** built. A profile's optional `harness` (`claude`, the default, or `pi`) picks the worker's agent. The built-in `pi-glm`, `pi-deepseek` and `pi-particle` profiles run the pi coding agent, which talks to Particle's OpenAI API directly, so there is no LiteLLM gateway. Not yet run live.
 - **Compatibility:** DeepSeek and others must offer an Anthropic-compatible API, or run behind a gateway that translates.
 - **Providers (decided):** any number of profiles can be added.
@@ -61,22 +61,22 @@ A profile names the inference endpoint for a session:
   - Opus runs through Anthropic.
 
 ### 3. Cloud coordinators
-- **Starting one:** `claude-cloud coordinator start NAME --profile opus [--repo URL]` creates a long-lived Instabox machine labelled as a coordinator. Then:
-  - it clones the repo and installs `claude-cloud`;
+- **Starting one:** `cloudy-cloud coordinator start NAME --profile opus [--repo URL]` creates a long-lived Instabox machine labelled as a coordinator. Then:
+  - it clones the repo and installs `cloudy-cloud`;
   - it starts Claude Code there in a tmux session, with Remote Control on.
-- **Reaching it:** from claude.ai or the Claude app through Remote Control, or with `claude-cloud coordinator attach NAME` (SSH).
+- **Reaching it:** from claude.ai or the Claude app through Remote Control, or with `cloudy-cloud coordinator attach NAME` (SSH).
 - **Starting workers without the Instabox key:** coordinators start workers with the **Instabox key held as a proxy secret** for `api.instabox.sh`, so coordinator machines don't hold the real key either. *(verify that Instabox's proxy accepts its own API host.)*
 - **Not tied to your laptop:**
   - a coordinator is never deleted by the laptop session's cleanup process;
   - it has no idle timeout;
-  - it stops only with `claude-cloud coordinator stop NAME`, or at a spending or time cap.
+  - it stops only with `cloudy-cloud coordinator stop NAME`, or at a spending or time cap.
 - **Cleanup still works below it:** a coordinator's own workers keep today's cleanup-on-exit, scoped to that coordinator.
 - **Messaging:** you message a coordinator directly through Remote Control or SSH. Its workers are reachable through it with `cloud_agent_message`.
 
 ### 4. Fleet limits and visibility
 - **Labels:** every machine carries `fleet=<id>`, `role=coordinator|worker` and `parent=<coordinator>` metadata.
 - **Limits:** per-fleet caps on machines, concurrent workers and total runtime, set at fleet start. Fan-out stops at the cap.
-- **Visibility:** `claude-cloud fleet ls` shows coordinators, worker counts and status. `claude-cloud fleet stop` stops everything in a fleet.
+- **Visibility:** `cloudy-cloud fleet ls` shows coordinators, worker counts and status. `cloudy-cloud fleet stop` stops everything in a fleet.
 
 ### 5. agent-drive access
 - **How it differs from GitHub:** agent-drive encrypts on the client, so each machine needs a real credential bundle (`AGENT_DRIVE_CREDENTIALS`). The proxy cannot hide it.

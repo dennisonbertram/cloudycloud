@@ -1,17 +1,46 @@
 {
-  "name": "claude-cloud",
+  "name": "cloudycloud",
   "version": "0.1.0",
-  "description": "Run Claude Code subagents in Instabox sandboxes",
+  "description": "Run Claude Code subagents on cloud machines: each one gets its own sandbox and pushes a git branch.",
+  "license": "MIT",
+  "homepage": "https://cloudycloud.tech",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisonbertram/cloudycloud.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dennisonbertram/cloudycloud/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "subagents",
+    "cloud",
+    "sandbox",
+    "instabox",
+    "mcp",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "bin": {
+    "cloudy-cloud": "bin/cloudy-cloud",
+    "cloudycloud": "bin/cloudy-cloud"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "install.sh",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test"
   },
   "dependencies": {
     "@insforge/instabox-sdk": "^0.6.0",
     "@modelcontextprotocol/server": "^2.4.0"
-  },
-  "type": "module",
-  "private": true,
-  "bin": {
-    "claude-cloud": "bin/claude-cloud"
   }
 }

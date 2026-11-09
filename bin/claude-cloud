@@ -1,57 +1,7 @@
 #!/bin/sh
-# Starts Claude Code with every subagent routed to a remote sandbox via the cloud_agent MCP tool.
-self=$0
-while [ -h "$self" ]; do
-  dir=$(cd "$(dirname "$self")" && pwd)
-  self=$(readlink "$self")
-  case $self in /*) ;; *) self=$dir/$self ;; esac
+# Temporary. Sessions started before the rename to Cloudy Cloud still run this path on coordinator machines,
+# with CLAUDE_CLOUD_* settings. Delete this file once no session from before the rename is running.
+for v in $(env | sed -n 's/^CLAUDE_CLOUD_\([A-Z_]*\)=.*/\1/p'); do
+  eval "[ -n \"\${CLOUDY_CLOUD_$v+x}\" ] || export CLOUDY_CLOUD_$v=\"\${CLAUDE_CLOUD_$v}\""
 done
-root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
-
-# `claude-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
-if [ "${1:-}" = coordinator ]; then
-  shift
-  exec node "$root/src/coordinator.mjs" "$@"
-fi
-
-# Keys saved here reach only the MCP server, so the main session keeps its normal login.
-config=${CLAUDE_CLOUD_CONFIG:-$HOME/.config/claude-cloud/env}
-# The Instabox key counts from the environment or the file.
-if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
-  missing='Instabox API key'
-# Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
-# `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
-elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
-  missing='Claude token'
-fi
-if [ -n "${missing:-}" ]; then
-  printf 'claude-cloud is not set up yet (no %s in %s).\nRun: %s/install.sh\n' "$missing" "$config" "$root" >&2
-  exit 1
-fi
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "claude-cloud: warning: this folder is not a git repository, so subagents can't start here. Run claude-cloud from inside a repo with a github.com origin." >&2
-elif ! git remote get-url origin 2>/dev/null | grep -q 'github\.com'; then
-  echo "claude-cloud: warning: this repo has no github.com origin, so subagents can't push their work. Add one: git remote add origin https://github.com/OWNER/REPO.git" >&2
-fi
-case $root in *'"'*|*'\'*) echo "claude-cloud: install path contains a quote or backslash" >&2; exit 1 ;; esac
-
-# Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
-# CLAUDE_CLOUD_CONFIG is included so the server reads the same file as this launcher.
-export CLAUDE_CLOUD_CONFIG="$config"
-envjson='{"CLAUDE_CLOUD_CONFIG":"${CLAUDE_CLOUD_CONFIG:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLAUDE_CLOUD_PROFILES":"${CLAUDE_CLOUD_PROFILES:-}","CLAUDE_CLOUD_STARTS_PER_MIN":"${CLAUDE_CLOUD_STARTS_PER_MIN:-}","CLAUDE_CLOUD_MAX_INSTABOX_CALLS":"${CLAUDE_CLOUD_MAX_INSTABOX_CALLS:-}"}'
-mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
-settings='{"permissions":{"allow":["mcp__cloud__cloud_agent","mcp__cloud__cloud_agent_message","mcp__cloud__cloud_agent_wait","mcp__cloud__cloud_agent_list","mcp__cloud__cloud_agent_stop"],"deny":["Agent","Workflow"]}}'
-prompt='The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. cloud_agent accepts profile to run a worker on another model; the built-in profiles are glm, deepseek, particle and openrouter. Each cloud agent is a full Claude in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first; it returns at once and the agent works in the background. There are two modes, and the tool result tells you which one you are in. (1) Task mode: cloud_agent and cloud_agent_message return an MCP task. Each agent then shows in /tasks with live progress (tool uses, tokens, elapsed time, current step), and its result reaches you automatically when it finishes, with its agent_id. Do not call cloud_agent_wait for these; tell the user they can watch /tasks and stop an agent there. (2) Otherwise the call returns an agent_id and you call cloud_agent_wait with all the agent_ids to get results, and again after each cloud_agent_message. In both modes use cloud_agent_message for follow-ups, cloud_agent_list to check state and progress, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. Starts are paced and queued automatically; a queued agent starts when a machine is free, so start as many as you need at once. Each agent pushes its work to origin branch claude-cloud/<id>; nothing is copied into the local repo automatically. Get an agent'"'"'s work with git fetch origin claude-cloud/<id> (the result says when it was pushed). If an agent fails or disappears, whatever it pushed is still on origin claude-cloud/<id>.'
-
-# On a coordinator machine (set by `coordinator start`) the keys on disk are the real ones.
-if [ -n "${CLAUDE_CLOUD_COORDINATOR:-}" ]; then
-  prompt="$prompt This session is a cloud coordinator. The real Instabox key, the Claude token and any provider API keys are stored on this machine in ~/.config/claude-cloud/env. Never print, share, commit or send these keys anywhere, never read that file into a message or a file, and never pass them to workers except through claude-cloud itself, which starts workers for you."
-fi
-
-# A parent claude-cloud running this as a nested coordinator passes extra rules here, so there is one prompt flag.
-if [ -n "${CLAUDE_CLOUD_EXTRA_PROMPT:-}" ]; then
-  prompt="$prompt $CLAUDE_CLOUD_EXTRA_PROMPT"
-fi
-
-export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"
-exec claude --mcp-config "$mcp" --settings "$settings" --append-system-prompt "$prompt" "$@"
+exec "$(dirname "$(readlink -f "$0")")/cloudy-cloud" "$@"

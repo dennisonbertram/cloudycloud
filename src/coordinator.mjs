@@ -1,19 +1,27 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own Instabox machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]
+import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, hostname as osHostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, PROVIDER_KEY } from './config.mjs';
-import { attachGithubToken } from './instabox.mjs';
+import { loadEnv, ownerFile, PROVIDER_KEY } from './config.mjs';
+import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
+import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
+import { makeUi } from './ui.mjs';
 
 const TEMPLATE = 'agent-browser';
-const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
+const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
 const SECRET_KEYS = ['INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
+const TASK_MAX = 100_000; // bytes
+const API = 'https://api.instabox.sh/v1/machines';
+const IMAGE_SECONDS = 2 * 3600;
+const MAX_HOURS = 24; // Instabox caps deleteAfterSeconds at 86400
+const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
 const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine}${rest ? ` -- ${rest}` : ''}`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
@@ -30,21 +38,23 @@ function saveKey(file, name, value) {
   renameSync(tmp, file);
 }
 
-// The repo URL of claude-cloud itself, as an https URL (git clone on the machine goes through the GH_TOKEN proxy).
+// The GitHub URL of cloudy-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
 function toolRepoUrl(root) {
-  const u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim();
+  let u;
+  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim(); } catch { return ''; }
   const m = u.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+?)(?:\.git)?$/);
-  return m ? `https://github.com/${m[1]}.git` : u;
+  const url = m ? `https://github.com/${m[1]}.git` : u;
+  return REPO_RE.test(url) ? url : ''; // goes into a quoted shell word
 }
 
 // Everything the commands need, injectable for tests.
 function context(deps) {
   const env = deps.env ?? loadEnv();
-  const apiKey = env.INSTABOX_API_KEY || fail('INSTABOX_API_KEY is not set. Run install.sh first.');
-  const configFile = env.CLAUDE_CLOUD_CONFIG || join(homedir(), '.config/claude-cloud/env');
+  const apiKey = env.INSTABOX_API_KEY || fail('INSTABOX_API_KEY is not set. Run: cloudy-cloud setup');
+  const configFile = env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return { env, apiKey, configFile, out, root, fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  return { env, apiKey, configFile, out, root, ui: deps.ui ?? makeUi(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     getSdk: async () => deps.sdk ?? (await import('@insforge/instabox-sdk')) };
 }
 
@@ -52,13 +62,27 @@ const find = async (Sandbox, apiKey, role, name) =>
   (await Sandbox.list({ apiKey, metadata: { role, ...(name && { name }) } }))
     .filter((m) => m.metadata?.role === role && (!name || m.metadata?.name === name));
 
-// Installs or updates claude-cloud on the machine and sets up git's GitHub login. Returns the home folder.
+// Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
+// Marks Claude Code's first-run screens as done in ~/.claude.json and trusts ~/repo. Keys found live on a coordinator.
+const MARK_FIRST_RUN_DONE = `const fs=require('fs'),f=process.env.HOME+'/.claude.json';
+const j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{};
+Object.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'dark',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});
+const p=process.env.HOME+'/repo';j.projects=j.projects||{};
+j.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+fs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});`;
+
 async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
-  await run('gh auth setup-git'); // before any clone, so git uses the GH_TOKEN placeholder
-  await run(`if [ -d ~/claude-cloud/.git ]; then git -C ~/claude-cloud pull --ff-only -q; else git clone -q ${q(toolRepoUrl(root))} ~/claude-cloud; fi && cd ~/claude-cloud && npm install --no-audit --no-fund`);
+  await run('gh auth setup-git'); // before the work-repo clone, so git uses the GH_TOKEN placeholder
+  // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
+  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8' }).trim() || d; } catch { return d; } };
+  await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
+  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
+  const b = toolBundle(root);
+  await sbx.files.write(`${home}/cloudy-cloud.bundle`, b.data);
+  await run(`${toolInstallCmd(b, `${home}/cloudy-cloud.bundle`, toolRepoUrl(root))} && npm install --no-audit --no-fund`, { cwd: home });
   return home;
 }
 
@@ -66,21 +90,24 @@ async function image(c, args) {
   const { Sandbox } = await c.getSdk();
   const existing = await find(Sandbox, c.apiKey, 'coordinator-image');
   if (!args.includes('--save')) {
-    if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: claude-cloud coordinator image --save`);
-    const sbx = await Sandbox.create(TEMPLATE, { apiKey: c.apiKey, metadata: { purpose: 'claude-cloud', role: 'coordinator-image' }, autoSuspendMs: 0 });
+    if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: cloudy-cloud coordinator image --save`);
+    const sbx = await Sandbox.create(TEMPLATE, { apiKey: c.apiKey, metadata: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, autoSuspendMs: 0, fetch: withDeleteAfter(IMAGE_SECONDS, c.fetchFn) });
     try {
       await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
     const info = await sbx.getInfo();
-    c.out(`Image machine ${info.name} is ready and claude-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. ${SSH(info.name, '')}`.trimEnd() +
-      `\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: claude-cloud coordinator image --save`);
+    if (c.ui.on) return c.out([c.ui.ok(`Image machine ${info.name} is ready`, 'cloudy-cloud is installed on it'), '',
+      c.ui.block('Now sign in to Claude on it', [['1', SSH(info.name, '')], ['2', 'In that shell run: claude auth login'], ['3', 'Finish the browser sign-in, then leave the shell']]), '',
+      c.ui.hint('A setup-token cannot open Remote Control sessions, so this sign-in is needed.'), c.ui.hint('Then run: cloudy-cloud coordinator image --save')].join('\n'));
+    c.out(`Image machine ${info.name} is ready and cloudy-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. ${SSH(info.name, '')}`.trimEnd() +
+      `\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: cloudy-cloud coordinator image --save`);
     return;
   }
   const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
-  if (!img) fail('No image machine found. Run: claude-cloud coordinator image');
+  if (!img) fail('No image machine found. Run: cloudy-cloud coordinator image');
   const sbx = await Sandbox.connect(img.sandboxId, { apiKey: c.apiKey });
-  let snap = await sbx.createSnapshot({ name: `claude-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'claude-cloud coordinator image' });
+  let snap = await sbx.createSnapshot({ name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
   for (let n = 0; snap.status === 'pending'; n++) {
     if (n > 120) fail(`Snapshot ${snap.id} is still being saved. The image machine was kept; run --save again later.`);
     await c.sleep(5000);
@@ -89,7 +116,9 @@ async function image(c, args) {
   if (snap.status && snap.status !== 'ready') fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`);
   saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
   await sbx.kill();
-  c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+  if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'), c.ui.hint(`Saved as ${SNAPSHOT_KEY} in ${c.configFile}`),
+    c.ui.hint('Start a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO')].join('\n'));
+  c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -102,61 +131,153 @@ function keysFile(env) {
 
 async function start(c, args) {
   const name = args[0];
-  if (!name || !NAME_RE.test(name)) fail('Usage: claude-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
+  if (!name || !NAME_RE.test(name)) fail('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
   const repo = flag(args, '--repo');
   if (!repo || !REPO_RE.test(repo)) fail('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO');
   const branch = flag(args, '--branch');
   if (branch && !/^[\w./-]+$/.test(branch)) fail('--branch has characters that are not allowed.');
+  const taskFile = flag(args, '--task-file');
+  const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
+  if (task !== undefined) {
+    if (!task.trim()) fail('The task is empty.');
+    if (Buffer.byteLength(task) > TASK_MAX) fail(`The task is larger than ${TASK_MAX / 1000} KB.`);
+  }
+  const hours = flag(args, '--max-hours') === undefined ? MAX_HOURS : Number(flag(args, '--max-hours'));
+  const seconds = Math.round(hours * 3600);
+  if (!(seconds >= 60 && seconds <= MAX_HOURS * 3600)) fail(`--max-hours must be a number up to ${MAX_HOURS} (Instabox deletes a machine after at most 24 hours).`);
+  const deleteAt = new Date(Date.now() + seconds * 1000).toISOString();
   const snapshot = c.env[SNAPSHOT_KEY];
-  if (!snapshot) fail('No coordinator image yet. Run: claude-cloud coordinator image');
+  if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   const { Sandbox } = await c.getSdk();
-  if ((await find(Sandbox, c.apiKey, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: claude-cloud coordinator stop ${name}`);
+  if ((await find(Sandbox, c.apiKey, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
   const sbx = await Sandbox.create(snapshot, { apiKey: c.apiKey, name: `coord-${name}`, autoSuspendMs: 0,
-    metadata: { purpose: 'claude-cloud', role: 'coordinator', name } });
+    fetch: withDeleteAfter(seconds, c.fetchFn), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name } });
   try {
     await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
     const home = await installTool(sbx, c.root);
-    const dir = `${home}/.config/claude-cloud`;
+    const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, keysFile(c.env)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLAUDE_CLOUD_COORDINATOR=1 ${home}/claude-cloud/bin/claude-cloud --remote-control ${q(name)}`)}`);
+    // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
+    // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
+    await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
+    // Give the coordinator's Claude the fleet skill from this laptop, so it matches the instructions the local Claude has.
+    const skillDir = join(c.root, 'skills', 'cloud-fleet');
+    for (const f of readdirSync(skillDir)) await sbx.files.write(`${home}/.claude/skills/cloud-fleet/${f}`, readFileSync(join(skillDir, f)));
+    // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
+    if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
+    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${prompt}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = (await sbx.getInfo()).name;
-  c.out(`Coordinator ${name} is running on machine ${machine}. It never pauses.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
-    `  - Terminal: claude-cloud coordinator attach ${name}\n    (runs: ${SSH(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it with: claude-cloud coordinator stop ${name}`);
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: SSH(machine, 'tmux attach -t claude') }));
+  if (c.ui.on) {
+    const u = c.ui;
+    return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
+      u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), '',
+      u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
+        ['Terminal', `cloudy-cloud coordinator attach ${name}`, `runs: ${SSH(machine, 'tmux attach -t claude')}`]]), '',
+      u.hint('The first time, attach once and accept any trust or Remote Control prompts.'),
+      u.hint(`Stop it earlier with: cloudy-cloud coordinator stop ${name}`)].join('\n'));
+  }
+  c.out(`Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+    `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${SSH(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop ${name}`);
 }
 
 async function attach(c, args) {
-  const [m] = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator', args[0] || fail('Usage: claude-cloud coordinator attach NAME'));
-  if (!m) fail(`No coordinator named ${args[0]}. List them with: claude-cloud coordinator ls`);
+  const [m] = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator', args[0] || fail('Usage: cloudy-cloud coordinator attach NAME'));
+  if (!m) fail(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`);
   c.out(SSH(m.name, 'tmux attach -t claude'));
 }
 
 async function ls(c) {
   const rows = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator');
   if (!rows.length) return c.out('No coordinators.');
-  c.out(['NAME', 'STATE', 'CREATED', 'MACHINE'].join('\t'));
-  for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name].join('\t'));
+  if (c.ui.on) {
+    const u = c.ui, state = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
+    return c.out(u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES'], rows.map((m) => [m.metadata.name, [[m.state ?? '?', state[m.state] ?? u.col.err]], u.rel(m.startedAt),
+      m.name, m.machine?.deleteAt ? [[u.rel(m.machine.deleteAt)], [`  ${m.machine.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [['never', u.col.dim]]])));
+  }
+  c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES'].join('\t'));
+  for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name, m.machine?.deleteAt ?? 'never'].join('\t'));
 }
 
 async function stop(c, args) {
-  const name = args[0] || fail('Usage: claude-cloud coordinator stop NAME');
+  const name = args[0] || fail('Usage: cloudy-cloud coordinator stop NAME');
   const { Sandbox } = await c.getSdk();
   const [m] = await find(Sandbox, c.apiKey, 'coordinator', name);
-  if (!m) fail(`No coordinator named ${name}. List them with: claude-cloud coordinator ls`);
+  if (!m) fail(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`);
   await Sandbox.kill(m.sandboxId, { apiKey: c.apiKey });
-  c.out(`Deleted coordinator ${name} (machine ${m.name}). Workers it started are deleted by its own claude-cloud cleanup process when its session ends; check with: npx --yes instabox@latest ls --meta purpose=claude-cloud`);
+  if (c.ui.on) return c.out([c.ui.ok(`Deleted coordinator ${name}`, `machine ${m.name}`), c.ui.hint('Its workers go with its cleanup, or at their own deadline (6 hours by default).'),
+    c.ui.hint('Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud')].join('\n'));
+  c.out(`Deleted coordinator ${name} (machine ${m.name}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud`);
+}
+
+// Run ON a coordinator machine by the coordinator itself: checks that nothing is lost, then deletes this machine.
+async function finish(c, args, deps) {
+  const force = args.includes('--force');
+  const host = deps.hostname ?? osHostname();
+  const mname = host.startsWith('instabox-') ? host.slice('instabox-'.length) : '';
+  const notHere = `This is not a coordinator machine (hostname ${host}). finish only runs on a machine started with: cloudy-cloud coordinator start`;
+  if (!mname) fail(notHere);
+  const headers = { 'X-API-Key': c.apiKey };
+  const list = async (meta) => {
+    const r = await c.fetchFn(`${API}?metadata=${encodeURIComponent(meta)}`, { headers });
+    if (!r.ok) fail(`Could not list machines: HTTP ${r.status}`);
+    return (await r.json()).machines ?? [];
+  };
+  const me = (await list('role:coordinator')).find((m) => m.name === mname && m.metadata?.role === 'coordinator');
+  if (!me?.id) fail(notHere);
+  const verified = [`machine ${me.name} (${me.id}), coordinator ${me.metadata.name}`];
+  if (force) verified.push('--force: skipped the git and worker checks');
+  else {
+    const repo = deps.repoDir ?? join(homedir(), 'repo');
+    const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const problems = [];
+    let dirty, current, branches;
+    try {
+      dirty = git('status', '--porcelain');
+      current = git('rev-parse', '--abbrev-ref', 'HEAD');
+      branches = git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter((b) => b === current || b.startsWith('fleet/'));
+    } catch (e) { fail(`Could not read the git repo ${repo}: ${e.stderr || e.message}`); }
+    if (dirty) problems.push(`${repo} has uncommitted changes:\n${dirty.split('\n').slice(0, 10).join('\n')}`);
+    if (current === 'HEAD') {
+      let held = '';
+      try { held = git('branch', '-r', '--contains', 'HEAD'); } catch { /* treated as not pushed */ }
+      if (!held) problems.push('HEAD is detached and not contained in any remote branch, so its commits may be unpushed. Push them to a branch first: git push origin HEAD:refs/heads/<branch>');
+    }
+    for (const b of branches) {
+      let ahead;
+      try { ahead = git('rev-list', `${b}@{u}..${b}`); } catch { problems.push(`Branch ${b} has no upstream on GitHub; push it with: git push -u origin ${b}`); continue; }
+      if (ahead) problems.push(`Branch ${b} has ${ahead.split('\n').length} commit(s) not pushed to its upstream; run: git push`);
+    }
+    let owner = '';
+    try { owner = readFileSync(deps.ownerFile ?? ownerFile(c.env), 'utf8').trim(); } catch { /* no server has run here */ }
+    const workers = owner ? (await list(`owner:${owner}`)).filter((m) => m.metadata?.owner === owner && !/delet/.test(m.state ?? '')) : [];
+    if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
+    if (problems.length) fail(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`);
+    verified.push('working tree clean', `pushed: ${branches.join(', ')}`, 'no running workers');
+  }
+  const r = await c.fetchFn(`${API}/${encodeURIComponent(me.id)}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': randomUUID(), 'X-Confirm-Delete': me.id } });
+  if (!r.ok && r.status !== 404) fail(`Delete failed: HTTP ${r.status}`);
+  if (c.ui.on) return c.out([...verified.map((v) => c.ui.ok(v)), c.ui.ok(`Deleted this machine (${me.name})`)].join('\n'));
+  c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${me.name}).`);
 }
 
 export async function main(argv, deps = {}) {
   const [cmd, ...args] = argv;
-  const commands = { image, start, attach, ls, stop };
-  if (!commands[cmd]) fail('Usage: claude-cloud coordinator image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME');
+  const commands = { image, start, attach, ls, stop, finish: (c, a) => finish(c, a, deps) };
+  if (!commands[cmd]) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]');
   return commands[cmd](context(deps), args);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2)).catch((e) => { console.error(`claude-cloud: ${e.message}`); process.exit(1); });
+  main(process.argv.slice(2)).catch((e) => {
+    const u = makeUi({ tty: process.stderr.isTTY });
+    const [first, ...more] = String(e.message).split('\n');
+    console.error(u.on ? [u.err(first), ...more.map((l) => `    ${u.dim(l)}`)].join('\n') : `cloudy-cloud: ${e.message}`);
+    process.exit(1);
+  });
 }

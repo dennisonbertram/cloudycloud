@@ -1,0 +1,104 @@
+#!/bin/sh
+# Starts Claude Code with every subagent routed to a remote sandbox via the cloud_agent MCP tool.
+self=$0
+while [ -h "$self" ]; do
+  dir=$(cd "$(dirname "$self")" && pwd)
+  self=$(readlink "$self")
+  case $self in /*) ;; *) self=$dir/$self ;; esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
+
+# `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
+if [ "${1:-}" = dashboard ]; then
+  shift
+  exec node "$root/src/dashboard.mjs" "$@"
+fi
+
+# `cloudy-cloud open <agent-id-or-machine> <port> [--share|--unshare]` reaches an app running on a cloud machine.
+if [ "${1:-}" = open ]; then
+  shift
+  exec node "$root/src/open.mjs" "$@"
+fi
+
+# `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
+if [ "${1:-}" = coordinator ]; then
+  shift
+  exec node "$root/src/coordinator.mjs" "$@"
+fi
+
+# `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
+case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
+
+# Messages use the same look as install.sh: colour only on a colour terminal (not with NO_COLOR, CLICOLOR=0 or TERM=dumb).
+say_init() {
+  c_x=; c_acc=; c_dim=; c_warn=; c_b=; m_warn='!'; m_hint='>'
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ] && [ "${CLICOLOR:-}" != 0 ]; then
+    c_x=$(printf '\033[0m'); c_b=$(printf '\033[1m')
+    if [ "$(tput colors 2>/dev/null || echo 8)" -ge 256 ]; then
+      c_acc=$(printf '\033[38;5;75m'); c_dim=$(printf '\033[38;5;245m'); c_warn=$(printf '\033[38;5;214m')
+    else
+      c_acc=$(printf '\033[36m'); c_dim=$(printf '\033[2m'); c_warn=$(printf '\033[33m')
+    fi
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) m_warn='▲'; m_hint='›' ;; esac
+  fi
+}
+say_init
+warn() { printf '  %s%s%s %s' "$c_warn" "$m_warn" "$c_x" "$1" >&2; [ -z "${2:-}" ] || printf '  %s%s%s' "$c_dim" "$2" "$c_x" >&2; printf '\n' >&2; }
+hint() { printf '  %s%s %s%s\n' "$c_dim" "$m_hint" "$1" "$c_x" >&2; }
+
+# Keys saved here reach only the MCP server, so the main session keeps its normal login.
+. "$root/bin/migrate-config.sh"; migrate_config
+config=${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}
+find_missing() {
+  missing=
+  # The Instabox key counts from the environment or the file.
+  if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
+    missing='Instabox API key'
+  # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
+  # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
+  elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
+    missing='Claude token'
+  fi
+}
+find_missing
+if [ -n "$missing" ]; then
+  warn "cloudy-cloud is not set up yet" "no $missing in $config"
+  hint "Run: cloudy-cloud setup"
+  [ -t 0 ] || exit 1
+  printf '  %s?%s %sRun setup now?%s %s[Y/n]%s ' "$c_acc" "$c_x" "$c_b" "$c_x" "$c_dim" "$c_x" >&2
+  IFS= read -r answer || answer=n
+  case $answer in n*|N*) exit 1 ;; esac
+  "$root/install.sh" || exit 1
+  find_missing
+  [ -z "$missing" ] || { warn "cloudy-cloud: still no $missing" "run: cloudy-cloud setup"; exit 1; }
+fi
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  warn "This folder is not a git repository, so subagents can't start here." "run cloudy-cloud from inside a repo with a github.com origin"
+elif ! git remote get-url origin 2>/dev/null | grep -q 'github\.com'; then
+  warn "This repo has no github.com origin, so subagents can't push their work." "add one: git remote add origin https://github.com/OWNER/REPO.git"
+fi
+case $root in *'"'*|*'\'*) warn "cloudy-cloud: install path contains a quote or backslash"; exit 1 ;; esac
+
+# Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
+# CLOUDY_CLOUD_CONFIG is included so the server reads the same file as this launcher.
+export CLOUDY_CLOUD_CONFIG="$config"
+envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}"}'
+mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
+settings='{"permissions":{"allow":["mcp__cloud__cloud_agent","mcp__cloud__cloud_agent_message","mcp__cloud__cloud_agent_wait","mcp__cloud__cloud_agent_list","mcp__cloud__cloud_agent_stop"],"deny":["Agent","Workflow"]}}'
+prompt='Workers can run Claude or open models: for a non-Claude model use the profile argument of cloud_agent (pi-particle, pi-glm, pi-deepseek, particle, glm, deepseek, openrouter), never the model argument. The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. cloud_agent accepts profile to run a worker on another model; the built-in profiles are glm, deepseek, particle and openrouter. Each cloud agent is a full Claude in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first; it returns at once and the agent works in the background. There are two modes, and the tool result tells you which one you are in. (1) Task mode: cloud_agent and cloud_agent_message return an MCP task. Each agent then shows in /tasks with live progress (tool uses, tokens, elapsed time, current step), and its result reaches you automatically when it finishes, with its agent_id. Do not call cloud_agent_wait for these; tell the user they can watch /tasks and stop an agent there. (2) Otherwise the call returns an agent_id and you call cloud_agent_wait with all the agent_ids to get results, and again after each cloud_agent_message. In both modes use cloud_agent_message for follow-ups, cloud_agent_list to check state and progress, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. Starts are paced and queued automatically; a queued agent starts when a machine is free, so start as many as you need at once. Each agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo automatically. Get an agent'"'"'s work with git fetch origin cloudy-cloud/<id> (the result says when it was pushed). If an agent fails or disappears, whatever it pushed is still on origin cloudy-cloud/<id>.'
+
+# On a coordinator machine (set by `coordinator start`) the keys on disk are the real ones.
+if [ -n "${CLOUDY_CLOUD_COORDINATOR:-}" ]; then
+  prompt="$prompt This session is a cloud coordinator. The real Instabox key, the Claude token and any provider API keys are stored on this machine in ~/.config/cloudy-cloud/env. Never print, share, commit or send these keys anywhere, never read that file into a message or a file, and never pass them to workers except through cloudy-cloud itself, which starts workers for you."
+  if [ -n "${CLOUDY_CLOUD_DELETE_AT:-}" ]; then
+    prompt="$prompt Your machine is deleted by the server at $CLOUDY_CLOUD_DELETE_AT; push your work well before then. When your work is done, do these steps in order: stop every worker with cloud_agent_stop, push your branches, write your report, then run ~/cloudy-cloud/bin/cloudy-cloud coordinator finish. It refuses while work is unpushed or workers are running, and otherwise deletes this machine. Do not run it until the report is pushed."
+  fi
+fi
+
+# A parent cloudy-cloud running this as a nested coordinator passes extra rules here, so there is one prompt flag.
+if [ -n "${CLOUDY_CLOUD_EXTRA_PROMPT:-}" ]; then
+  prompt="$prompt $CLOUDY_CLOUD_EXTRA_PROMPT"
+fi
+
+export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"
+exec claude --mcp-config "$mcp" --settings "$settings" --append-system-prompt "$prompt" "$@"

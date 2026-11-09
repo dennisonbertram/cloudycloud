@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started · Cloudy Cloud docs</title>
+<meta name="description" content="Install Cloudy Cloud, start a session and run your first subagent on a cloud machine.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index" aria-current="page">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Getting started</h1>
+<p class="lede">Cloudy Cloud runs each Claude Code subagent on its own cloud machine, with a copy of your repo and its own branch. You stay in your local Claude Code session and fetch the finished work from GitHub.</p>
+
+<h2 id="before-you-start">Before you start</h2>
+<p>You need these accounts and tools:</p>
+<ul>
+<li><strong>An Instabox account.</strong> Instabox is the cloud provider supported today. The free plan is too small for more than a few subagents at once; swarms need a paid plan.</li>
+<li><strong>A Claude subscription or an Anthropic API key.</strong> Subagents use a long-lived token from <code>claude setup-token</code>. An API key works too but is billed separately.</li>
+<li><strong>A GitHub repository you can push to.</strong> The repo you work in must have a <code>github.com</code> remote named <code>origin</code>.</li>
+<li><strong>On your computer:</strong> macOS or Linux (tested on macOS), <code>git</code>, Node.js 20 or later, <code>npm</code>, <code>curl</code>, and <a href="https://code.claude.com">Claude Code</a> signed in.</li>
+</ul>
+
+<h2 id="install">Install</h2>
+<!--INSTALL-START-->
+<h3 id="run-the-installer">Run the installer with npx</h3>
+<pre><code>npx cloudycloud setup</code></pre>
+<h3 id="install-with-the-skill">Or add the skill and ask Claude</h3>
+<pre><code>npx skills add dennisonbertram/cloudycloud</code></pre>
+<p>Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run <code>npx cloudycloud setup</code> yourself, because setup asks for secret keys that Claude should not see.</p>
+<h3 id="from-source">From source</h3>
+<pre><code>git clone https://github.com/dennisonbertram/cloudycloud.git
+cd cloudycloud
+./install.sh</code></pre>
+<!--INSTALL-END-->
+<p>Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install <code>cloudy-cloud</code> onto your PATH (<code>npm install -g cloudycloud</code> for the npx route, <code>npm link</code> from source), copies the Cloudy Cloud skills into <code>~/.claude/skills/</code>, and then asks for three keys. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.</p>
+<table>
+<thead><tr><th>Key</th><th>Where to get it</th></tr></thead>
+<tbody>
+<tr><td>Instabox API key (<code>ibk_…</code>)</td><td>Create it at <a href="https://dashboard.instabox.sh/dashboard/api-keys">dashboard.instabox.sh</a>. The installer checks it with Instabox before saving.</td></tr>
+<tr><td>Claude token (<code>sk-ant-oat01-…</code>)</td><td>Run <code>claude setup-token</code> in another terminal, or press Enter at the Claude step and let the installer get it. Your own <code>claude</code> login is not changed.</td></tr>
+<tr><td>GitHub token</td><td>Create a <a href="https://github.com/settings/personal-access-tokens/new">fine-grained token</a> limited to the repos you will use, with Contents set to read and write. The Instabox command-line tool asks for it.</td></tr>
+</tbody>
+</table>
+<p>The Instabox key and Claude token are saved in <code>~/.config/cloudy-cloud/env</code>. The folder has mode 700 and the file is readable only by your user. The GitHub token is stored in Instabox as the secret <code>GH_TOKEN</code>. A subagent's machine only gets a placeholder, never the token.</p>
+<p>Later, <code>cloudy-cloud setup</code> runs the installer again from any folder. It shows each saved key masked and asks before replacing it. Restart any open session to use new keys.</p>
+<div class="warn"><p>Subagents can push to any branch your GitHub token reaches. Add a branch ruleset that blocks direct pushes to your main branch (GitHub: Settings, Rules, Rulesets).</p></div>
+
+<h2 id="start-a-session">Start a session</h2>
+<p>Run <code>cloudy-cloud</code> from inside your repo, instead of <code>claude</code>:</p>
+<pre><code>cd &lt;your repo&gt;
+cloudy-cloud</code></pre>
+<p>This is an ordinary Claude Code session with one change: the built-in <code>Agent</code> tool is turned off, and every subagent goes to a cloud machine through the <code>cloud_agent</code> tools. Plain <code>claude</code> is unaffected. If a key is missing, <code>cloudy-cloud</code> says <code>cloudy-cloud is not set up yet</code> and offers to run setup. If the folder is not a git repo, or has no <code>github.com</code> origin, it warns you that subagents cannot start or push.</p>
+
+<h2 id="first-subagent">Your first subagent</h2>
+<p>Ask in plain language. This prompt is the runbook's check that everything works:</p>
+<pre><code>use a subagent to run hostname, write it to proof.txt, commit and push, and tell me the result</code></pre>
+<p>Claude starts the subagent and returns at once. In a terminal session on Claude Code 2.1.304 or later, the footer shows a count such as <code>3 MCP tasks</code>, and <code>/tasks</code> lists each subagent with a progress line, for example:</p>
+<pre><code>12 tool uses · 48.2k tokens · 3m10s · Edit src/parser.ts</code></pre>
+<p><code>starting machine…</code> means the machine is not up yet. When the subagent finishes, its result reaches Claude automatically. In the VS Code extension, the desktop app, or a one-shot <code>claude -p</code> run, Claude calls <code>cloud_agent_wait</code> instead.</p>
+<p>The answer should name a hostname starting with <code>instabox-sbx-</code> and end with <code>Pushed to origin cloudy-cloud/&lt;id&gt; at &lt;sha&gt;</code>.</p>
+<p>The subagent stays open for follow-up messages until it is stopped. It is stopped after 60 idle minutes, and all subagents are stopped when the session ends.</p>
+<div class="note"><p>Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files, your local MCP servers or your settings.</p></div>
+
+<h2 id="get-the-work-back">Get the work back</h2>
+<p>Nothing is copied into your local repo automatically. Each subagent pushes to its own branch, <code>cloudy-cloud/&lt;id&gt;</code>. Fetch it:</p>
+<pre><code>git fetch origin cloudy-cloud/&lt;id&gt;
+git show FETCH_HEAD:proof.txt</code></pre>
+<p>Then check out, merge, cherry-pick or open a pull request from the branch with ordinary git. For example, <code>git merge FETCH_HEAD</code> merges what you just fetched. To fetch every subagent branch at once:</p>
+<pre><code>git fetch origin 'refs/heads/cloudy-cloud/*:refs/remotes/origin/cloudy-cloud/*'</code></pre>
+
+<h2 id="stop-and-clean-up">Stop and clean up</h2>
+<p>Ask Claude to "stop all subagents", which calls <code>cloud_agent_stop</code> and deletes their machines. In <code>/tasks</code>, select a task and press <code>x</code> to stop a single subagent.</p>
+<ul>
+<li>An idle subagent is stopped after 60 minutes.</li>
+<li>Every subagent is stopped when you exit the session.</li>
+<li>Separately, the Instabox server deletes each worker machine after a fixed time (default 6 hours, set by <code>CLOUDY_CLOUD_WORKER_HOURS</code>, maximum 24).</li>
+</ul>
+<div class="warn"><p>A deleted machine takes unpushed work with it. Only work the subagent pushed to GitHub survives. Fetch what you need before you exit.</p></div>
+<p>To list leftover machines, run <code>npx instabox@latest ls</code>. To delete one, run <code>npx instabox@latest rm &lt;name&gt;</code>.</p>
+
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="how-it-works.html">How it works</a>: what runs where, and what a subagent can see.</li>
+<li><a href="models.html">Models and keys</a>: run workers on open models.</li>
+<li><a href="dashboard.html">Dashboard and app previews</a>: watch your machines in a local web page.</li>
+<li><a href="troubleshooting.html">Troubleshooting, security and FAQ</a>: fix a missing key, a failed push or a queued subagent.</li>
+</ul>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="next" href="how-it-works.html"><small>Next</small><span>How it works</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

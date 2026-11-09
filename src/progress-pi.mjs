@@ -24,6 +24,9 @@ export function createPiProgress(now) {
       const u = j.message.usage;
       tin += num(u?.input) + num(u?.cacheRead) + num(u?.cacheWrite);
       tout += num(u?.output);
+      // responseModel is the model the provider answered with; `model` only repeats the request, so it confirms nothing.
+      p.setModel(j.message.responseModel);
+      p.answered = true;
       last = j.message;
       p.final = undefined; // a retry produced a newer message
     } else if (j?.type === 'agent_settled') settle();

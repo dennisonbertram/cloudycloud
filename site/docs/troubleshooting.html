@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting, security and FAQ · Cloudy Cloud docs</title>
+<meta name="description" content="Fix common errors, see which credentials reach the cloud, and read answers to common questions.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting" aria-current="page">Troubleshooting, security and FAQ</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Troubleshooting, security and FAQ</h1>
+<p class="lede">Find the message you see, what causes it, and the command that fixes it. The security and FAQ sections follow.</p>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+
+<h3 id="not-set-up">"cloudy-cloud is not set up yet"</h3>
+<p>A key is missing from <code>~/.config/cloudy-cloud/env</code>. In a terminal, <code>cloudy-cloud</code> asks <code>Run setup now? [Y/n]</code>. Without a terminal it exits with status 1. Run setup yourself:</p>
+<pre><code>cloudy-cloud setup</code></pre>
+<p>If you changed a key but the session still uses the old one, restart <code>cloudy-cloud</code>. It reads keys once, at start.</p>
+
+<h3 id="key-rejected">The installer rejects a key</h3>
+<ul>
+<li><code>Got 103 of 108 characters, so it looks cut off</code>: the Claude token was cut short when pasted. Press Enter at the Claude step so the installer gets the token itself, or copy the whole token again.</li>
+<li><code>Got N of 56 characters</code> or <code>starts like an Instabox key</code>: the Instabox key is incomplete or has a typo. The dashboard shows a key only once. If you lost it, create a new one at https://dashboard.instabox.sh/dashboard/api-keys.</li>
+<li><code>Claude rejected this token</code>: the token is revoked or from another login. Run <code>cloudy-cloud setup</code> and press Enter at the Claude step.</li>
+<li><code>Stopped the ... step after 3 tries</code>: nothing was changed and the saved key stays. Run <code>cloudy-cloud setup</code> again.</li>
+</ul>
+
+<h3 id="instabox-401">"malformed API key" or 401 from Instabox</h3>
+<p>The Instabox key is wrong or revoked. Run <code>cloudy-cloud setup</code>, replace the key, and restart <code>cloudy-cloud</code>.</p>
+
+<h3 id="no-github-origin">No git repository, or no github.com origin</h3>
+<p>The launcher warns <code>This folder is not a git repository, so subagents can't start here.</code> or <code>This repo has no github.com origin, so subagents can't push their work.</code> Run <code>cloudy-cloud</code> from inside a repo and add an origin:</p>
+<pre><code>git remote add origin https://github.com/OWNER/REPO.git</code></pre>
+<p>Your GitHub token must also include that repository.</p>
+
+<h3 id="push-failed">The first push failed, or "Push failed"</h3>
+<p><code>The first push to origin cloudy-cloud/&lt;id&gt; failed</code> usually means the <code>GH_TOKEN</code> Instabox secret is missing or the token cannot write to this repo. Run <code>cloudy-cloud setup</code>, replace the GitHub token, and check the token's repository list. The secret must be named exactly <code>GH_TOKEN</code>. The same fix applies to <code>The GH_TOKEN Instabox secret could not be attached</code>.</p>
+<p>After each task, <code>cloudy-cloud</code> pushes once more, retrying once after five seconds. If that fails, the result says <code>Push failed: ...; the agent is still open, ask it to push.</code> It may also list <code>Uncommitted changes left in the sandbox</code>. The tool never commits for the agent. While the agent is open, ask it to commit and push.</p>
+
+<h3 id="sandbox-unreachable">"The sandbox could not be reached to push"</h3>
+<p>The machine is gone or not answering. The result continues: <code>Only work the agent already pushed to origin cloudy-cloud/&lt;id&gt; survives.</code> Fetch that branch:</p>
+<pre><code>git fetch origin cloudy-cloud/&lt;id&gt;</code></pre>
+<p>Unpushed work on that machine is lost. A failed agent cannot take messages. Use <code>cloud_agent_wait</code> to read the error, then <code>cloud_agent_stop</code>.</p>
+
+<h3 id="subagent-failed">"Subagent failed, exit code N"</h3>
+<p>The Claude run on the machine exited with an error. The result includes its error output, the push status and the token totals. If the output says <code>Not logged in · Please run /login</code> or shows a 401, no valid Claude token reached the machine. Run <code>claude setup-token</code>, then <code>cloudy-cloud setup</code> and replace the Claude token, then restart. This also happens if you only export <code>ANTHROPIC_API_KEY</code>, because wrappers such as cmux's <code>claude</code> remove it.</p>
+
+<h3 id="queued">A subagent stays "queued"</h3>
+<p>Starts are paced (<code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, default 25 a minute), or your Instabox plan's machine limit is full (<code>quota_exceeded</code>). Paused machines count toward the limit. A subagent blocked by the quota retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you do not need, delete leftover machines (below), or upgrade the plan.</p>
+<p>If you see <code>rate_limited</code> after 5 tries, lower <code>CLOUDY_CLOUD_STARTS_PER_MIN</code> and restart <code>cloudy-cloud</code>.</p>
+
+<h3 id="idle-stopped">An agent was stopped for being idle</h3>
+<p>An agent with nothing to do is stopped after 60 minutes and its machine is deleted. A message to it then returns <code>Agent &lt;id&gt; is not open. It may have been stopped, been idle for 60 minutes, or never existed.</code> A single task is also stopped after 29 minutes. Start a new subagent from the branch the old one pushed.</p>
+
+<h3 id="session-limit">"This session has already started N agents"</h3>
+<p>One session may start 200 agents by default. Stop idle agents or raise <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>.</p>
+
+<h3 id="leftover-machines">Leftover machines</h3>
+<p>When a session ends, a separate cleanup process deletes that session's machines, even after a hard kill. It deletes only machines labelled with that session's id, so it never touches coordinators. Instabox also deletes every machine at its delete deadline (6 hours by default for workers, 24 at most). To check by hand:</p>
+<pre><code>npx instabox@latest ls
+npx instabox@latest rm &lt;name&gt;</code></pre>
+<p>Machines made by this tool have the label <code>purpose=cloudy-cloud</code>. To stop a cloud coordinator, run <code>cloudy-cloud coordinator stop NAME</code>.</p>
+
+<h3 id="agent-unavailable">The session says the built-in Agent tool is unavailable</h3>
+<p>This is expected. <code>cloudy-cloud</code> turns off Claude Code's built-in <code>Agent</code> and <code>Workflow</code> tools. Ask for "a subagent" and it uses <code>cloud_agent</code>. Plain <code>claude</code> keeps its built-in tools.</p>
+
+<h3 id="dashboard-problems">Dashboard problems</h3>
+<ul>
+<li><code>This dashboard link is missing its access key, or it is from an earlier run.</code> (a plain 401 page), or the heading <code>This link is from an earlier run</code> on an open dashboard page: you opened an old or edited link, or the dashboard was restarted. Open the newest link that <code>cloudy-cloud dashboard</code> printed, or run it again. The token changes on every run.</li>
+<li><code>The dashboard cannot reach its server</code>, or the banner <code>The dashboard server is not answering</code> (the list may be out of date): the dashboard process stopped. Run <code>cloudy-cloud dashboard</code> again and open the new link.</li>
+<li><code>Live machines unavailable.</code>: the page could not list machines from Instabox. Check your connection and that <code>INSTABOX_API_KEY</code> in <code>~/.config/cloudy-cloud/env</code> is still valid. Session history still shows.</li>
+</ul>
+<p>See <a href="dashboard.html">Dashboard and app previews</a> for the full dashboard guide.</p>
+
+<h2 id="security">Security</h2>
+
+<h3 id="what-runs-where">What runs where</h3>
+<p>Your Claude Code session and the <code>cloudy-cloud</code> tool server run on your machine. Each subagent runs <code>claude -p</code> on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.</p>
+
+<h3 id="credentials">Which credentials reach the cloud machine</h3>
+<ul>
+<li><strong>Claude token:</strong> placed on each machine. It can only make model requests.</li>
+<li><strong>GitHub token:</strong> never reaches the machine. Instabox stores it as the secret <code>GH_TOKEN</code>. The machine sees a placeholder that Instabox's proxy replaces on requests to <code>github.com</code> and <code>api.github.com</code>.</li>
+<li><strong>Instabox key:</strong> stays in <code>~/.config/cloudy-cloud/env</code> (readable only by you) and in the tool server. It is never put in process arguments.</li>
+<li><strong>Provider keys</strong> (for example Particle): these sit on the worker machines that use them. See <a href="models.html">Models and keys</a>.</li>
+</ul>
+<p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.</p>
+
+<h3 id="dashboard-local">The dashboard is local only</h3>
+<p>The dashboard is a read-only page on <code>127.0.0.1</code>. Requests without the random per-run token, or with another <code>Host</code> header, are refused. Keys never reach the browser.</p>
+
+<h3 id="event-log">The event log</h3>
+<p>The tool server appends one JSON line per event to <code>~/.config/cloudy-cloud/events.jsonl</code> (folder mode 700, file mode 600). Prompts can contain code, so the file stays on your machine. Exact secret values are scrubbed and key-shaped text is redacted before writing. The file is never rotated. Delete it to clear history.</p>
+
+<h3 id="revoking-keys">Revoking keys</h3>
+<p>Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, and the Claude token by revoking it in your Claude account. Then run <code>cloudy-cloud setup</code> to enter new ones. To remove saved keys from your machine:</p>
+<pre><code>rm ~/.config/cloudy-cloud/env</code></pre>
+
+<div class="warn"><p>On a cloud coordinator, <code>~/.config/cloudy-cloud/env</code> holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.</p></div>
+
+<h2 id="faq">FAQ</h2>
+
+<h3 id="faq-cost">What does it cost?</h3>
+<p>The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
+
+<h3 id="faq-models">Which models can subagents use?</h3>
+<p>Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See <a href="models.html">Models and keys</a>.</p>
+
+<h3 id="faq-untracked">Does it copy untracked files?</h3>
+<p>No. A subagent gets files tracked by git, including uncommitted edits to them. Add a new file with <code>git add</code> if the subagent needs it.</p>
+
+<h3 id="faq-sleep">Can work continue with my laptop closed?</h3>
+<p>Not from a laptop session: subagents stop when the session ends. For work that must continue with the laptop closed, use a <a href="fleets.html">cloud coordinator</a>.</p>
+
+<h3 id="faq-kept">What is kept after a subagent stops?</h3>
+<p>Only work pushed to GitHub on branch <code>cloudy-cloud/&lt;id&gt;</code>. The machine is deleted.</p>
+
+<h3 id="faq-plain-claude">Does it change plain <code>claude</code>?</h3>
+<p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p>
+
+<h3 id="faq-uninstall">How do I uninstall it?</h3>
+<p>Delete leftover machines first (see above). If you installed with <code>npx cloudycloud setup</code>, run:</p>
+<pre><code>npm uninstall -g cloudycloud
+rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup</code></pre>
+<p>If you installed from a git clone, run <code>npm unlink -g cloudycloud</code> instead (also <code>npm unlink -g cloudy-cloud</code> for a clone from before the package was renamed), then delete the clone.</p>
+<p>To delete the subagent branches on GitHub, run this in your repo:</p>
+<pre><code>git ls-remote --heads origin 'cloudy-cloud/*' | awk '{print $2}' | xargs -n 50 git push origin --delete</code></pre>
+
+<h3 id="faq-affiliation">Is it affiliated with Anthropic?</h3>
+<p>No.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="dashboard.html"><small>Previous</small><span>Dashboard and app previews</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

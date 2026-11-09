@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works · Cloudy Cloud docs</title>
+<meta name="description" content="What runs where when a subagent runs on a cloud machine, what it can see, and how its work comes back.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works" aria-current="page">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>How it works</h1>
+<p class="lede">The <code>cloudy-cloud</code> command starts Claude Code with its built-in subagents turned off. Every subagent runs on its own cloud machine and pushes its work to a branch on GitHub.</p>
+
+<h2 id="one-subagent">One subagent, start to finish</h2>
+<ol>
+<li><strong>You start <code>cloudy-cloud</code> in a git repo.</strong> It launches Claude Code with the built-in <code>Agent</code> and <code>Workflow</code> tools disabled, an extra system prompt, and an MCP server that provides the <code>cloud_agent</code> tools. The system prompt tells Claude to use <code>cloud_agent</code> for anything that would have used a subagent.</li>
+<li><strong>Claude calls <code>cloud_agent</code></strong> with a prompt and a short description. The call returns at once while the machine starts.</li>
+<li><strong>A snapshot of your repo is made.</strong> It holds the committed files plus your uncommitted edits to tracked files. It is made without touching your working tree or index.</li>
+<li><strong>A machine is created</strong> from the Instabox <code>agent-browser</code> image, and the GitHub token is attached to it as a proxy secret (see <a href="#secrets">Secrets</a>).</li>
+<li><strong>The snapshot is uploaded</strong> as a git bundle and checked out on a new branch, <code>cloudy-cloud/&lt;id&gt;</code>. The branch is pushed to your <code>origin</code> remote right away. If the bundle is over about 9 MB, only the commits GitHub does not already have are uploaded. If that is still too large, the start fails and asks you to push the branch first.</li>
+<li><strong>Claude runs on the machine</strong> with <code>claude -p</code> in the repo folder. The subagent is told to commit after each meaningful step and to push to its own branch only.</li>
+<li><strong>After the turn, the tool pushes once more</strong> in case the subagent forgot (and retries once if GitHub rejects it). It never commits for the subagent. If files were left uncommitted, the reply lists them.</li>
+<li><strong>The result comes back</strong> with the branch name and commit, and token and tool-use totals.</li>
+</ol>
+<p>Fetch the work with <code>git fetch origin cloudy-cloud/&lt;id&gt;</code>. The repo needs a <code>github.com</code> origin, because each subagent pushes there.</p>
+
+<h3 id="getting-the-result">Getting the result: task mode or wait</h3>
+<ul>
+<li><strong>Task mode.</strong> When your Claude Code supports MCP tasks, <code>cloud_agent</code> becomes a background task. Its progress shows in <code>/tasks</code> and the result arrives on its own.</li>
+<li><strong>Otherwise,</strong> <code>cloud_agent</code> returns an <code>agent_id</code> and Claude calls <code>cloud_agent_wait</code> to collect the result. The default wait is 600 seconds and the maximum is 1500. Each result is marked as reported, so a later wait does not repeat it.</li>
+</ul>
+<p>One task is stopped after 29 minutes.</p>
+
+<h2 id="tools">The five tools</h2>
+<table>
+<thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>cloud_agent</code></td><td>Starts a subagent in a new machine.</td></tr>
+<tr><td><code>cloud_agent_message</code></td><td>Sends a follow-up to an open, idle agent. It continues the same Claude session on the same machine. It is rejected if the agent is busy or gone.</td></tr>
+<tr><td><code>cloud_agent_wait</code></td><td>Waits for agents to finish their current turn and returns their results.</td></tr>
+<tr><td><code>cloud_agent_list</code></td><td>Lists every agent with its status, idle minutes and progress (tool uses, tokens, elapsed time, current step).</td></tr>
+<tr><td><code>cloud_agent_stop</code></td><td>Stops agents and deletes their machines. It is safe to repeat.</td></tr>
+</tbody>
+</table>
+<p>An agent's status is one of <code>queued</code>, <code>starting</code>, <code>running</code>, <code>idle</code>, <code>failed</code> or <code>stopped</code>. After a turn ends, the agent is <code>idle</code> and its machine stays open for follow-ups.</p>
+
+<h2 id="lifetimes">How long a machine lives</h2>
+<table>
+<thead><tr><th>What ends it</th><th>When</th></tr></thead>
+<tbody>
+<tr><td>You or Claude call <code>cloud_agent_stop</code></td><td>Immediately.</td></tr>
+<tr><td>Idle timeout</td><td>60 minutes after the agent went idle.</td></tr>
+<tr><td>Session end</td><td>When you quit Claude Code, <code>cloudy-cloud</code> deletes every open machine.</td></tr>
+<tr><td>Cleanup process</td><td>A separate process deletes the session's machines after the session is gone, even after a hard kill. It checks every 2 seconds.</td></tr>
+<tr><td>Delete deadline</td><td>Instabox deletes the machine at a fixed time in any state. The default is 6 hours. Set <code>CLOUDY_CLOUD_WORKER_HOURS</code> to change it, up to 24.</td></tr>
+</tbody>
+</table>
+<div class="warn"><p>Only work that a subagent has pushed to GitHub survives if its machine is lost. The deadline cannot be extended, and the subagent is told its deadline so it can push in time.</p></div>
+
+<h2 id="queueing">Starting many at once</h2>
+<p>You can start many subagents at once. <code>cloudy-cloud</code> paces the starts for Instabox's limits.</p>
+<ul>
+<li>At most 25 machines start per minute, in the order requested. Set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code> to change this. A waiting subagent shows the status <code>queued</code>, for example <code>queued for a machine (12 ahead)</code>.</li>
+<li>If Instabox answers <code>rate_limited</code>, the start is retried after the delay Instabox gives, up to 5 tries.</li>
+<li>If your plan's machine limit is full (<code>quota_exceeded</code>), the subagent stays queued, retries every 60 seconds for up to 30 minutes, and then fails with Instabox's message.</li>
+<li>At most 24 Instabox command and file requests run at once (<code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>). Working subagents share them in turn.</li>
+<li>One session can start at most 200 agents (<code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>).</li>
+</ul>
+<p>Your plan's machine limit still caps how many run at the same time. The rest wait in the queue.</p>
+
+<h2 id="secrets">What reaches the machine</h2>
+<ul>
+<li><strong>GitHub token:</strong> not sent to the machine. The machine gets a placeholder named <code>GH_TOKEN</code>, and Instabox's proxy swaps in the real token for requests to <code>github.com</code> and <code>api.github.com</code>.</li>
+<li><strong>Claude credential:</strong> sent to the machine, as <code>CLAUDE_CODE_OAUTH_TOKEN</code> or <code>ANTHROPIC_API_KEY</code>. For a subagent on another model, the provider key for that profile is sent instead of your Claude credential.</li>
+<li><strong>Instabox API key:</strong> not sent to the machine. It stays in your config file and the local server.</li>
+</ul>
+<div class="warn"><p>Each machine runs Claude with permission checks off, and the Claude credential is on it. A prompt injection on the machine could misuse or leak that credential. A subagent can also push to any branch the GitHub token can reach, so protect your main branch.</p></div>
+<p>Output shown to you is scrubbed of known key values. See <a href="troubleshooting.html">Troubleshooting, security and FAQ</a> for more.</p>
+
+<h2 id="what-does-not-happen">What does not happen</h2>
+<ul>
+<li>Nothing is copied into your local repo. Your branch, working tree and index are not changed. You fetch the branch yourself.</li>
+<li>Untracked files are not sent. If a subagent needs a new file, <code>git add</code> it first (staging counts as tracked) or commit it.</li>
+<li>Your local MCP servers, settings and agents from <code>~/.claude/agents</code> are not available on the machine.</li>
+<li>A subagent's own subagents run inside the same machine, not on new ones.</li>
+</ul>
+
+<h2 id="why-the-cloud">Why the cloud</h2>
+<p>Subagents run on remote machines, so your laptop stays free for your own work. You can run many at once, limited by your Instabox plan and the pacing above, instead of by your computer.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="./"><small>Previous</small><span>Getting started</span></a>
+<a class="next" href="models.html"><small>Next</small><span>Models and keys</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

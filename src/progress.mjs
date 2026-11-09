@@ -6,6 +6,7 @@ const ARG_KEYS = ['file_path', 'path', 'notebook_path', 'command', 'pattern', 'u
 const TOKEN_LIKE = /\b(?:sk-|ghp_|gho_|github_pat_|ibk_)[A-Za-z0-9_-]+/g;
 const STEP_MAX = 60;
 export const STATUS_MAX = 200;
+export const LOCAL_ALIAS = 'worker';
 
 export const num = (n) => (typeof n === 'number' && n > 0 ? n : 0);
 const inputTokens = (u) => num(u?.input_tokens) + num(u?.cache_creation_input_tokens) + num(u?.cache_read_input_tokens);
@@ -21,12 +22,16 @@ export function stepOf(block) {
 
 export function createProgress(now = Date.now) {
   const p = {
-    startedAt: now(), tools: 0, step: '', final: undefined,
+    startedAt: now(), tools: 0, step: '', final: undefined, model: '',
     usage: new Map(), // message id -> { in, out }; the same message repeats in several events, so keep the largest values
     seenTools: new Set(), buf: '',
   };
+  // The model the harness reports. "worker" is the local gateway alias, so it says nothing about what ran.
+  p.setModel = (m) => { if (typeof m === 'string' && m.trim() && m !== LOCAL_ALIAS) p.model = m.trim(); };
   p.event = (j) => {
+    if (j?.type === 'system' && j.subtype === 'init') p.setModel(j.model);
     if (j?.type === 'assistant' && j.message) {
+      p.setModel(j.message.model);
       const u = j.message.usage;
       if (u) {
         const prev = p.usage.get(j.message.id) ?? { in: 0, out: 0 };
@@ -86,7 +91,7 @@ export function fmtElapsed(ms) {
 // "12 tool uses · 48.2k tokens · 3m10s · Edit src/parser.ts". Tokens are input (including cache) plus output.
 export function statusLine(p) {
   const t = p.totals();
-  const parts = [`${t.tools} tool ${t.tools === 1 ? 'use' : 'uses'}`, `${fmtTokens(t.in + t.out)} tokens`, fmtElapsed(p.elapsedMs())];
+  const parts = [...(p.model ? [shortModel(p.model)] : []), `${t.tools} tool ${t.tools === 1 ? 'use' : 'uses'}`, `${fmtTokens(t.in + t.out)} tokens`, fmtElapsed(p.elapsedMs())];
   if (p.step && !p.final) parts.push(p.step);
   return parts.join(' · ');
 }
@@ -96,4 +101,20 @@ export function totalLine(p, { cost: showCost = true } = {}) {
   const t = p.totals();
   const cost = showCost && typeof t.cost === 'number' ? `, $${t.cost.toFixed(4)}` : '';
   return `Total: ${t.tools} tool ${t.tools === 1 ? 'use' : 'uses'}, ${fmtTokens(t.in)} in / ${fmtTokens(t.out)} out tokens${cost}, ${fmtElapsed(p.elapsedMs())}`;
+}
+
+// "z-ai/glm-5.3-flash" -> "glm-5.3-flash"
+export const shortModel = (m) => m.split('/').pop();
+const sameModel = (a, b) => shortModel(a).toLowerCase() === shortModel(b).toLowerCase();
+
+// "Model: ..." line for a result. `req` is { model, host, name } for a profile worker, else undefined (a plain Claude worker:
+// only the reported model is shown, because its --model may be an alias such as haiku).
+export function modelLine(p, req) {
+  const via = req ? ` via ${req.host} (profile ${req.name})` : '';
+  if (!req) return p.model ? `Model: ${p.model}` : 'Model: not reported';
+  // pi records responseModel only when the provider answered with a different model, so its absence after a reply is evidence.
+  if (!p.model && p.answered) return `Model: ${req.model}${via}; pi saw no different model from the provider`;
+  if (!p.model) return `Model: ${req.model} requested${via}; not confirmed by the provider`;
+  if (sameModel(p.model, req.model)) return `Model: ${p.model}${via}`;
+  return `WARNING Model: asked for ${req.model}, provider reported ${p.model}${via}`;
 }

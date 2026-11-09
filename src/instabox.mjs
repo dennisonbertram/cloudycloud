@@ -15,7 +15,7 @@ function isTransientWaitError(e) {
 }
 
 const API = 'https://api.instabox.sh/v1/machines';
-const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in docs/RUNBOOK.md, step 2.4.';
+const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4.';
 
 // Attach the org's GH_TOKEN secret (a proxy placeholder) and wait until Instabox has applied it.
 export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, timeoutMs = 60_000 } = {}) {
@@ -43,8 +43,21 @@ export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, ti
   }
 }
 
+// The SDK (0.6.0) has no deleteAfterSeconds option, but Instabox accepts it in the create request. Instabox then deletes the
+// machine at that time in any state, even if every cloudy-cloud process has died. Pass this as the SDK's `fetch` option: it
+// adds the field to the POST /v1/machines body and leaves every other request alone.
+export const withDeleteAfter = (seconds, fetchFn = fetch) => (url, init = {}) =>
+  fetchFn(url, init.method === 'POST' && /\/v1\/machines\/?$/.test(String(url)) && typeof init.body === 'string'
+    ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body), deleteAfterSeconds: seconds }) } : init);
+
+// Seconds a worker or nested coordinator machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
+export const workerSeconds = (env) => {
+  const h = Number(env.CLOUDY_CLOUD_WORKER_HOURS);
+  return Math.max(60, Math.round((h > 0 ? Math.min(h, 24) : 6) * 3600));
+};
+
 let shared; // one limiter for the whole server process
-const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLAUDE_CLOUD_MAX_INSTABOX_CALLS) : 24));
+const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24));
 
 // Returns createSandbox(envs) for run-subagent. `owner` is the server instance id the reaper deletes by.
 // `sdk`, `fetchFn` and `timing` are injectable for tests. `rt` = { limiter, now, sleep, sliceMs } is too.
@@ -65,11 +78,12 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       }
     }
   };
-  return async (envs) => {
+  return async (envs, { deleteAfterSeconds = workerSeconds(env) } = {}) => {
     if (!env.INSTABOX_API_KEY) throw new Error('INSTABOX_API_KEY is not set.');
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
-      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'claude-cloud', owner }, archiveMs: ARCHIVE_MS,
+      apiKey: env.INSTABOX_API_KEY, envs, metadata: { purpose: 'cloudy-cloud', owner }, archiveMs: ARCHIVE_MS,
+      fetch: withDeleteAfter(deleteAfterSeconds, fetchFn),
     });
     try {
       await attachGithubToken(sbx.sandboxId, env.INSTABOX_API_KEY, fetchFn, timing);
@@ -78,6 +92,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       throw e;
     }
     return {
+      id: sbx.sandboxId,
       home: '/data/home',
       files: { write: (...a) => call(() => sbx.files.write(...a)), read: (...a) => call(() => sbx.files.read(...a)) },
       kill: () => sbx.kill(),
