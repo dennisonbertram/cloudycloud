@@ -129,4 +129,6 @@ test('demo data is labelled and has every status', () => {
   const d = demoState();
   assert.equal(d.demo, true);
   assert.deepEqual([...new Set(d.boxes.map((b) => b.status))].sort(), ['failed', 'idle', 'queued', 'running', 'starting', 'stopped']);
+  const now = d.now;
+  assert.ok(d.boxes.some((b) => ['queued', 'starting', 'running'].includes(b.status) && b.deadline - now < 3_600_000 && b.deadline > now), 'an active box is under one hour from deletion');
 });

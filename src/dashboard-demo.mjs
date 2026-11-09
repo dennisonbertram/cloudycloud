@@ -63,7 +63,7 @@ export function demoState(now = Date.now()) {
       startedAt: ago(7 * H), lastActivity: ago(6.5 * H), stoppedAt: ago(6.5 * H),
       messages: [{ t: ago(7 * H), kind: 'out', text: 'Add a dark palette to tokens.css behind prefers-color-scheme.' }, { t: ago(6.6 * H), kind: 'reply', text: 'Added 24 tokens and a dark block. Pushed at e4410aa.' }],
     }),
-    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', status: 'running', machineState: 'running', startedAt: ago(2 * H), lastActivity: ago(2 * M), deadline: ago(2 * H) + 8 * H, messages: [] },
+    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
   return { now, demo: true, hasLog: true, machines: { ok: true }, boxes };
 }
