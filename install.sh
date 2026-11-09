@@ -322,8 +322,25 @@ warn_shell_env() {
   [ -z "${!1:-}" ] || warn "$1 is also set in your shell" "cloudy-cloud uses the shell value, not the saved one"
 }
 
+# from_npm ROOT: true when this copy was installed by npm or npx (it sits inside node_modules) instead of cloned.
+from_npm() { case $1 in */node_modules/*) return 0 ;; *) return 1 ;; esac; }
+
 link_command() { # link_command ROOT
   local root=$1 cur other old oldpkg
+  if from_npm "$root"; then
+    # An npx copy is a temporary cache folder, so the lasting command comes from a global npm install, never npm link.
+    cur=$(command -v cloudy-cloud) || cur=""
+    if [ -n "$cur" ]; then ok "cloudy-cloud is already on your PATH" "$cur"; return; fi
+    if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
+      npm install -g cloudycloud >/dev/null || { bad "npm install -g cloudycloud failed" >&2; exit 1; }
+      ok "Installed the cloudy-cloud command"
+      command -v cloudy-cloud >/dev/null ||
+        warn "Add this to your shell profile" "export PATH=\"$(npm prefix -g)/bin:\$PATH\""
+    else
+      warn "Skipped. Run it with npx cloudycloud, or install later: npm install -g cloudycloud"
+    fi
+    return
+  fi
   cur=$(command -v cloudy-cloud) || cur=""
   # npm link made a claude-cloud link that now dangles (this folder no longer has bin/claude-cloud). Remove only a broken link.
   old=$(npm prefix -g 2>/dev/null)/bin/claude-cloud
@@ -358,7 +375,11 @@ STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked
 LOCAL_ACCOUNT=""
 
 # rerun_cmd: the command that runs setup again.
-rerun_cmd() { if command -v cloudy-cloud >/dev/null 2>&1; then printf 'cloudy-cloud setup'; else printf './install.sh'; fi; }
+rerun_cmd() {
+  if command -v cloudy-cloud >/dev/null 2>&1; then printf 'cloudy-cloud setup'
+  elif from_npm "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; then printf 'npx cloudycloud setup'
+  else printf './install.sh'; fi
+}
 
 # strip_escapes TEXT: prints TEXT without terminal escape sequences and carriage returns.
 strip_escapes() {
@@ -473,12 +494,23 @@ mask_token() {
     $b =~ s/$t/sk-ant-oat01-(hidden)/g; print $b;'
 }
 
-# Links the fleet skill for every project, so any Claude session knows how to run fleets. Leaves a real folder alone.
+# Makes the bundled skills available in every project. A clone gets links (git pull updates them);
+# an npm copy gets real copies, because its folder is temporary. Leaves a different existing folder alone.
 link_skill() {
-  local dest="$HOME/.claude/skills/cloud-fleet"
+  local root=$1 name dest
   mkdir -p "$HOME/.claude/skills" || return 0
-  if [ -e "$dest" ] && [ ! -L "$dest" ]; then warn "Fleet skill not linked: $dest already exists"; return 0; fi
-  ln -sfn "$1/skills/cloud-fleet" "$dest" && ok "Fleet skill available in every project"
+  for name in cloud-fleet cloudy-cloud-setup; do
+    dest="$HOME/.claude/skills/$name"
+    if from_npm "$root"; then
+      if [ -L "$dest" ]; then warn "Skill $name not copied: $dest is a link"; continue; fi
+      if [ -d "$dest" ] && diff -r "$root/skills/$name" "$dest" >/dev/null 2>&1; then ok "Skill $name is up to date"; continue; fi
+      if [ -e "$dest" ] && ! yn "Replace the skill at $dest with this version?"; then warn "Skill $name left as is"; continue; fi
+      rm -rf "$dest"; cp -R "$root/skills/$name" "$dest" && ok "Copied skill $name to $dest"
+    else
+      if [ -e "$dest" ] && [ ! -L "$dest" ]; then warn "Skill $name not linked: $dest already exists"; continue; fi
+      ln -sfn "$root/skills/$name" "$dest" && ok "Skill $name available in every project"
+    fi
+  done
 }
 
 # capture_token: gets a token from claude setup-token without copying. Prints the token, or a reason on stderr and returns 1.
@@ -757,11 +789,15 @@ main() {
   root=$(cd "$(dirname "$0")" && pwd)
   . "$root/bin/migrate-config.sh"; migrate_config
   log=$(mktemp)
-  spin_start "Installing dependencies"
-  (cd "$root" && npm install --silent --no-audit --no-fund) >"$log" 2>&1 || { spin_stop; cat "$log" >&2; rm -f "$log"; bad "npm install failed." >&2; exit 1; }
-  spin_stop
+  if from_npm "$root"; then
+    ok "Dependencies came with the npm package"
+  else
+    spin_start "Installing dependencies"
+    (cd "$root" && npm install --silent --no-audit --no-fund) >"$log" 2>&1 || { spin_stop; cat "$log" >&2; rm -f "$log"; bad "npm install failed." >&2; exit 1; }
+    spin_stop
+    ok "Dependencies installed" "$SPIN_T"
+  fi
   rm -f "$log"
-  ok "Dependencies installed" "$SPIN_T"
   link_command "$root"
   link_skill "$root"
   LOCAL_ACCOUNT=$(claude_account)
@@ -779,7 +815,12 @@ main() {
   STATUS_GH=${GH_RESULT:-"not confirmed"}
   setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
-  setup_coordinators "$root"
+  if from_npm "$root"; then
+    STATUS_COORD="needs a git clone"
+    hint "Cloud coordinators ship cloudy-cloud from a git checkout, so set them up from a clone: ./install.sh"
+  else
+    setup_coordinators "$root"
+  fi
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
@@ -790,9 +831,13 @@ main() {
   summary_row "Coordinators" "$STATUS_COORD"
   box_close
   echo
-  hint "cloudy-cloud runs from $root"
-  hint "It is on branch $branch at $sha."
-  hint "To update, run this in that folder: git pull && npm install"
+  if from_npm "$root"; then
+    hint "To update, run: npm install -g cloudycloud@latest"
+  else
+    hint "cloudy-cloud runs from $root"
+    hint "It is on branch $branch at $sha."
+    hint "To update, run this in that folder: git pull && npm install"
+  fi
   hint "To change a key later, run: cloudy-cloud setup"
   hint "Restart any open cloudy-cloud session to use the new keys."
   warn "Recommended: block direct pushes to your main branch on GitHub"

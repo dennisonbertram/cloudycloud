@@ -21,7 +21,13 @@ your Mac                                  Instabox (one machine per subagent)
             └──────────────────────────────────── GitHub (your repo)
 ```
 
-**Set up:** clone this repo and run `./install.sh` once. After that, `cloudy-cloud setup` runs it again from any folder. It checks your tools, links `cloudy-cloud`, and asks for three keys, with where to get each one. Details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Setup takes about 5 minutes and needs:
+**Set up:** run this once in a terminal:
+
+```sh
+npx cloudycloud setup
+```
+
+It checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`) and to copy the Cloudy Cloud skills into `~/.claude/skills/`, and asks for three keys, with where to get each one. After that, `cloudy-cloud setup` runs it again from any folder. You can also run `npx skills add dennisonbertram/cloudycloud`, then ask Claude to "set up Cloudy Cloud"; Claude checks your tools and asks you to run the setup command yourself, because it asks for secret keys. From source: `git clone https://github.com/dennisonbertram/cloudycloud.git`, `cd cloudycloud`, then `./install.sh` (cloud coordinators need this route for now). Details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Setup takes about 5 minutes and needs:
 
 - **Accounts:** an Instabox account (a paid plan for more than a few subagents at once), a Claude subscription or API key, and a GitHub repo you can push to.
 - **On your machine:** `git`, Node.js 20 or later, and Claude Code.
@@ -65,7 +71,7 @@ Every machine in a tree counts against your Instabox machine limit and start rat
 
 ## Ways of working
 
-Starting many subagents is easy, but 100 PRs are hard to review. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) teaches Claude how to run a fleet so the output stays manageable: merge worker branches into one `fleet/<topic>` trunk, use sub-coordinators for large jobs, work in waves, and clean up branches. Install it by copying or symlinking it:
+Starting many subagents is easy, but 100 PRs are hard to review. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) teaches Claude how to run a fleet so the output stays manageable: merge worker branches into one `fleet/<topic>` trunk, use sub-coordinators for large jobs, work in waves, and clean up branches. Setup copies it for you; to install it by hand, symlink it:
 
 ```sh
 ln -s "$PWD/skills/cloud-fleet" ~/.claude/skills/cloud-fleet

@@ -61,12 +61,17 @@
 
 <h2 id="install">Install</h2>
 <!--INSTALL-START-->
-<h3 id="run-the-installer">Clone the repo and run the installer</h3>
+<h3 id="run-the-installer">Run the installer with npx</h3>
+<pre><code>npx cloudycloud setup</code></pre>
+<h3 id="install-with-the-skill">Or add the skill and ask Claude</h3>
+<pre><code>npx skills add dennisonbertram/cloudycloud</code></pre>
+<p>Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run <code>npx cloudycloud setup</code> yourself, because setup asks for secret keys that Claude should not see.</p>
+<h3 id="from-source">From source</h3>
 <pre><code>git clone https://github.com/dennisonbertram/cloudycloud.git
 cd cloudycloud
 ./install.sh</code></pre>
 <!--INSTALL-END-->
-<p>Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, runs <code>npm install</code>, links <code>cloudy-cloud</code> onto your PATH, and then asks for three keys. Nothing shows as you paste, and only the last four characters are printed back.</p>
+<p>Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install <code>cloudy-cloud</code> onto your PATH (<code>npm install -g cloudycloud</code> for the npx route, <code>npm link</code> from source), copies the Cloudy Cloud skills into <code>~/.claude/skills/</code>, and then asks for three keys. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.</p>
 <table>
 <thead><tr><th>Key</th><th>Where to get it</th></tr></thead>
 <tbody>

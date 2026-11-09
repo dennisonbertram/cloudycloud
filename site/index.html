@@ -426,8 +426,8 @@
     <p class="lede">Every Claude Code subagent gets its own cloud machine, a copy of your repo, and its own branch. Your laptop stays free for you.</p>
     <div class="cta-row" id="start">
       <div class="install">
-        <code><span>$</span> npx skills add dennisonbertram/cloudycloud</code>
-        <button class="copy" aria-label="Copy install command" data-copy="npx skills add dennisonbertram/cloudycloud">
+        <code><span>$</span> npx cloudycloud setup</code>
+        <button class="copy" aria-label="Copy install command" data-copy="npx cloudycloud setup">
           <svg class="i-copy" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
           <svg class="i-ok" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" hidden><path d="M3 8.5l3.2 3L13 4.5"/></svg>
         </button>
@@ -517,8 +517,8 @@
         <div class="kicker">How it works</div>
         <h2>Install once, then use subagents as usual.</h2>
         <ol class="steps">
-          <li><span class="n">1</span><div><h3>Add the skill</h3><p>Run <code>npx skills add dennisonbertram/cloudycloud</code> to add the Cloudy Cloud skill to Claude Code.</p></div></li>
-          <li><span class="n">2</span><div><h3>Run the installer</h3><p>Clone the repo and run <code>./install.sh</code> once. It asks for your cloud, Claude and GitHub keys and tells you where to get each.</p></div></li>
+          <li><span class="n">1</span><div><h3>Run the installer</h3><p>Run <code>npx cloudycloud setup</code> in a terminal. It checks your tools and installs the <code>cloudy-cloud</code> command and the Cloudy Cloud skills.</p></div></li>
+          <li><span class="n">2</span><div><h3>Add your keys</h3><p>Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. Or run <code>npx skills add dennisonbertram/cloudycloud</code> and ask Claude to "set up Cloudy Cloud".</p></div></li>
           <li><span class="n">3</span><div><h3>Start a session</h3><p>Run <code>cloudy-cloud</code> instead of <code>claude</code>, then <code>git fetch origin cloudy-cloud/&lt;id&gt;</code> to pull a subagent's work. Plain <code>claude</code> is unchanged.</p></div></li>
         </ol>
       </div>
@@ -526,7 +526,7 @@
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><div class="tabs" role="tablist" aria-label="How it works, in three steps"><button role="tab" id="t1" aria-controls="t1p" aria-selected="true" tabindex="0"><span class="lg">1 · Set up once</span><span class="sm">Setup</span></button><button role="tab" id="t2" aria-controls="t2p" aria-selected="false" tabindex="-1"><span class="lg">2 · Inside Claude Code</span><span class="sm">Claude</span></button><button role="tab" id="t3" aria-controls="t3p" aria-selected="false" tabindex="-1"><span class="lg">3 · Get the work</span><span class="sm">Fetch</span></button></div></div>
         <div class="term-body">
-<pre role="tabpanel" id="t1p" aria-labelledby="t1" tabindex="0"><span class="w">$ ./install.sh</span>
+<pre role="tabpanel" id="t1p" aria-labelledby="t1" tabindex="0"><span class="w">$ npx cloudycloud setup</span>
 <span class="blk logo">  █▀▀ █   █▀█ █ █ █▀▄ █▄█   █▀▀ █   █▀█ █ █ █▀▄
   █▄▄ █▄▄ █▄█ █▄█ █▄▀  █    █▄▄ █▄▄ █▄█ █▄█ █▄▀</span>
   <span class="d">Checks your tools, links the command and saves your keys.</span>
@@ -616,8 +616,8 @@
   <section class="finale">
     <h2>Send your subagents up.</h2>
     <div class="install">
-      <code><span>$</span> npx skills add dennisonbertram/cloudycloud</code>
-      <button class="copy" aria-label="Copy install command" data-copy="npx skills add dennisonbertram/cloudycloud">
+      <code><span>$</span> npx cloudycloud setup</code>
+      <button class="copy" aria-label="Copy install command" data-copy="npx cloudycloud setup">
         <svg class="i-copy" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
         <svg class="i-ok" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" hidden><path d="M3 8.5l3.2 3L13 4.5"/></svg>
       </button>
