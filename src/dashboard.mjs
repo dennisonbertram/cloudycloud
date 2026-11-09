@@ -107,10 +107,10 @@ export async function main(argv = process.argv.slice(2)) {
   const pi = argv.indexOf('--port');
   const port = pi >= 0 ? Number(argv[pi + 1]) : DEFAULT_PORT;
   if (pi >= 0 && !(port >= 0 && port < 65536)) { console.error('cloudy-cloud dashboard: --port needs a number from 0 to 65535'); process.exit(1); }
-  const env = loadEnv(), started = Date.now();
+  const env = loadEnv();
   const token = randomBytes(18).toString('base64url');
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
-  const server = await listen(createHandler({ token, html, getState: demo ? async () => ({ ...demoState(started), now: Date.now() }) : liveState(env) }), port);
+  const server = await listen(createHandler({ token, html, getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env) }), port);
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);
