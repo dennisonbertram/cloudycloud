@@ -296,7 +296,7 @@
     for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.map(row)));
     rail.replaceChildren(wrap);
     rail.scrollTop = top;
-    if (focusId) wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]')?.focus({ preventScroll: true });
+    if (focusId) (wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]') || wrap.querySelector('.row[tabindex="0"]'))?.focus({ preventScroll: true });
     tick();
   }
   function listKeys(e) {
@@ -331,6 +331,7 @@
     const old = p.querySelector('.thread');
     const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 8 || S.sticky === b.id;
     const keep = old ? old.scrollTop : 0;
+    const a = document.activeElement, fk = p.contains(a) && (a.getAttribute('aria-label') || a.className || a.tagName);
     const kids = [];
     let run = null;
     const msgs = b.messages || [], last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress';
@@ -374,6 +375,8 @@
     const lastReply = b.messages?.at(-1)?.kind === 'reply' && [...thread.querySelectorAll('.ev.reply')].at(-1);
     if (stick && !active(b) && lastReply) thread.scrollTop = Math.min(thread.scrollHeight - thread.clientHeight, thread.scrollTop + (lastReply.getBoundingClientRect().top - thread.getBoundingClientRect().top) - 12);
     else thread.scrollTop = stick ? thread.scrollHeight : keep;
+    // Keep keyboard focus across the rebuild; if the element is gone (the open command), fall back to the thread.
+    if (fk) ([...p.querySelectorAll('button, .thread, h1')].find((e) => (e.getAttribute('aria-label') || e.className || e.tagName) === fk) || thread).focus({ preventScroll: true });
     S.sticky = null; tick();
   }
 
