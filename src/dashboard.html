@@ -273,7 +273,9 @@
     return el;
   }
 
-  const groupsOf = (boxes) => [['Active', boxes.filter((b) => active(b) || b.status === 'idle')], ['Finished', boxes.filter((b) => !active(b) && b.status !== 'idle')]].filter(([, l]) => l.length);
+  const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
+  const needsYou = (b) => b.status === 'idle' || (b.status === 'failed' && today(b));
+  const groupsOf = (boxes) => [['Needs you', boxes.filter(needsYou)], ['Active', boxes.filter(active)], ['Finished', boxes.filter((b) => !needsYou(b) && !active(b))]].filter(([, l]) => l.length);
   const grp = (name, n) => h('div', { class: 'grp', role: 'presentation' }, name, h('span', { text: String(n) }));
 
   function railView(boxes) {
@@ -380,7 +382,7 @@
 
   // Counts for the top bar and the tab title; returns the two the title needs.
   function summary(boxes) {
-    const c = (f) => boxes.filter(f).length, day = new Date().setHours(0, 0, 0, 0), today = (b) => (b.stoppedAt || b.lastActivity || 0) >= day;
+    const c = (f) => boxes.filter(f).length;
     const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
     const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
     items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
@@ -420,15 +422,15 @@
         h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first: cloudy-cloud dashboard --demo' })));
       return;
     }
-    if (!boxes.some((b) => b.id === S.sel)) S.sel = boxes[0].id;
+    if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description])]);
+      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b)])]);
       if (S.sigs.f !== f) { S.sigs = { f }; main.replaceChildren(fleetView(boxes)); }
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b)])]);
+    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(boxes); }
     const sb = boxes.find((b) => b.id === S.sel);
     const ps = sig(['p', sb.id, sb.status, sb.messages?.length]);
