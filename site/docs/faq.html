@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ · Cloudy Cloud docs</title>
+<meta name="description" content="Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.">
+<!--seo-->
+<link rel="canonical" href="https://cloudycloud.tech/docs/faq.html">
+<link rel="alternate" type="text/markdown" href="faq.md">
+<meta property="og:site_name" content="Cloudy Cloud">
+<meta property="og:type" content="article">
+<meta property="og:title" content="FAQ · Cloudy Cloud docs">
+<meta property="og:description" content="Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.">
+<meta property="og:url" content="https://cloudycloud.tech/docs/faq.html">
+<meta property="og:image" content="https://cloudycloud.tech/hero.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="FAQ · Cloudy Cloud docs">
+<meta name="twitter:description" content="Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"FAQ","description":"Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.","url":"https://cloudycloud.tech/docs/faq.html","mainEntityOfPage":"https://cloudycloud.tech/docs/faq.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
+,{"@type":"ListItem","position":3,"name":"FAQ","item":"https://cloudycloud.tech/docs/faq.html"}]}</script>
+<!--/seo-->
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+<!--ld-->
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is a subagent?", "acceptedAnswer": {"@type": "Answer", "text": "When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop."}}, {"@type": "Question", "name": "What do I need?", "acceptedAnswer": {"@type": "Answer", "text": "An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later."}}, {"@type": "Question", "name": "What can a subagent see?", "acceptedAnswer": {"@type": "Answer", "text": "Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings. Add a new file with git add if the subagent needs it."}}, {"@type": "Question", "name": "What happens to the machines?", "acceptedAnswer": {"@type": "Answer", "text": "A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept."}}, {"@type": "Question", "name": "What is kept after a subagent stops?", "acceptedAnswer": {"@type": "Answer", "text": "Only work pushed to GitHub on branch cloudy-cloud/<id>. The machine is deleted."}}, {"@type": "Question", "name": "Is it safe?", "acceptedAnswer": {"@type": "Answer", "text": "Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The setup guide shows how. See Security for which credentials reach the cloud machine."}}, {"@type": "Question", "name": "Does it change plain claude?", "acceptedAnswer": {"@type": "Answer", "text": "No. Only sessions you start with cloudy-cloud use the cloud."}}, {"@type": "Question", "name": "What does it cost?", "acceptedAnswer": {"@type": "Answer", "text": "The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one."}}, {"@type": "Question", "name": "Which models can subagents use?", "acceptedAnswer": {"@type": "Answer", "text": "Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See Models and keys."}}, {"@type": "Question", "name": "Can work continue with my laptop closed?", "acceptedAnswer": {"@type": "Answer", "text": "Not from a laptop session: subagents stop when the session ends. For work that must continue with the laptop closed, use a cloud coordinator."}}, {"@type": "Question", "name": "How do I uninstall it?", "acceptedAnswer": {"@type": "Answer", "text": "Delete leftover machines first. If you installed with npx cloudycloud setup, run npm uninstall -g cloudycloud, then delete ~/.config/cloudy-cloud, ~/.claude/skills/cloud-fleet and ~/.claude/skills/cloudy-cloud-setup. The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in Troubleshooting."}}, {"@type": "Question", "name": "Is there a hosted version?", "acceptedAnswer": {"@type": "Answer", "text": "Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token."}}, {"@type": "Question", "name": "Is it affiliated with Anthropic?", "acceptedAnswer": {"@type": "Answer", "text": "No."}}]}</script>
+<!--/ld-->
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+        <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
+        <li><a href="faq.html" data-page="faq" aria-current="page">FAQ</a></li>
+        <li><a href="glossary.html" data-page="glossary">Glossary</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>FAQ</h1>
+<p class="lede">Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.</p>
+
+<h2 id="questions">Questions</h2>
+
+<h3 id="what-is-a-subagent">What is a subagent?</h3>
+<p>When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.</p>
+
+<h3 id="need">What do I need?</h3>
+<p>An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.</p>
+
+<h3 id="see">What can a subagent see?</h3>
+<p>Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings. Add a new file with <code>git add</code> if the subagent needs it.</p>
+
+<h3 id="machines">What happens to the machines?</h3>
+<p>A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p>
+
+<h3 id="kept">What is kept after a subagent stops?</h3>
+<p>Only work pushed to GitHub on branch <code>cloudy-cloud/&lt;id&gt;</code>. The machine is deleted.</p>
+
+<h3 id="safe">Is it safe?</h3>
+<p>Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The <a href="https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md">setup guide</a> shows how. See <a href="troubleshooting.html#security">Security</a> for which credentials reach the cloud machine.</p>
+
+<h3 id="plain-claude">Does it change plain <code>claude</code>?</h3>
+<p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p>
+
+<h3 id="cost">What does it cost?</h3>
+<p>The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
+
+<h3 id="models">Which models can subagents use?</h3>
+<p>Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See <a href="models.html">Models and keys</a>.</p>
+
+<h3 id="laptop-closed">Can work continue with my laptop closed?</h3>
+<p>Not from a laptop session: subagents stop when the session ends. For work that must continue with the laptop closed, use a <a href="fleets.html">cloud coordinator</a>.</p>
+
+<h3 id="uninstall">How do I uninstall it?</h3>
+<p>Delete leftover machines first. If you installed with <code>npx cloudycloud setup</code>, run <code>npm uninstall -g cloudycloud</code>, then delete <code>~/.config/cloudy-cloud</code>, <code>~/.claude/skills/cloud-fleet</code> and <code>~/.claude/skills/cloudy-cloud-setup</code>. The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in <a href="troubleshooting.html#faq-uninstall">Troubleshooting</a>.</p>
+
+<h3 id="hosted">Is there a hosted version?</h3>
+<p>Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token.</p>
+
+<h3 id="affiliation">Is it affiliated with Anthropic?</h3>
+<p>No.</p>
+
+<h2 id="more">More help</h2>
+<p>For error messages and fixes, see <a href="troubleshooting.html">Troubleshooting, security and FAQ</a>. For the terms used here, see the <a href="glossary.html">Glossary</a>.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="what-is-cloudy-cloud.html"><small>Previous</small><span>What is Cloudy Cloud?</span></a>
+<a class="next" href="glossary.html"><small>Next</small><span>Glossary</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

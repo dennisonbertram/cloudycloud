@@ -4,14 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cloudy Cloud: Claude Code subagents on their own cloud machines</title>
-<meta name="description" content="Run Claude Code subagents on their own cloud machines. Each one pushes its work to a branch on your GitHub repo.">
+<meta name="description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.">
 <link rel="canonical" href="https://cloudycloud.tech/">
 <meta property="og:title" content="Cloudy Cloud: Claude Code subagents on their own cloud machines">
-<meta property="og:description" content="Run Claude Code subagents on their own cloud machines. Each one pushes its work to a branch on your GitHub repo.">
+<meta property="og:description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.">
 <meta property="og:url" content="https://cloudycloud.tech/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://cloudycloud.tech/hero.jpg">
+<meta property="og:site_name" content="Cloudy Cloud">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Cloudy Cloud: Claude Code subagents on their own cloud machines">
+<meta name="twitter:description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.">
+<link rel="alternate" type="text/markdown" href="index.md">
 <meta name="theme-color" content="#7584c6">
 <meta name="color-scheme" content="light dark">
 <script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
@@ -396,6 +400,12 @@
     .finale .install .btn { display: none; }
   }
 </style>
+<!--ld-->
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "sameAs": ["https://github.com/dennisonbertram/cloudycloud", "https://www.npmjs.com/package/cloudycloud"]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch."}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is a subagent?", "acceptedAnswer": {"@type": "Answer", "text": "When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop."}}, {"@type": "Question", "name": "What do I need?", "acceptedAnswer": {"@type": "Answer", "text": "An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later."}}, {"@type": "Question", "name": "What can a subagent see?", "acceptedAnswer": {"@type": "Answer", "text": "Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings."}}, {"@type": "Question", "name": "What happens to the machines?", "acceptedAnswer": {"@type": "Answer", "text": "A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept."}}, {"@type": "Question", "name": "Is it safe?", "acceptedAnswer": {"@type": "Answer", "text": "Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The setup guide shows how."}}, {"@type": "Question", "name": "Does it change plain claude?", "acceptedAnswer": {"@type": "Answer", "text": "No. Only sessions you start with cloudy-cloud use the cloud."}}, {"@type": "Question", "name": "Is there a hosted version?", "acceptedAnswer": {"@type": "Answer", "text": "Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token."}}]}</script>
+<!--/ld-->
 </head>
 <body>
 
@@ -610,6 +620,7 @@
         <details><summary><span>What happens to the machines?</span></summary><p>A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p></details>
         <details><summary><span>Is it safe?</span></summary><p>Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The <a href="https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md">setup guide</a> shows how.</p></details>
         <details><summary><span>Does it change plain <code>claude</code>?</span></summary><p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p></details>
+        <details><summary><span>Is there a hosted version?</span></summary><p>Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token.</p></details>
     </div>
   </section>
 
