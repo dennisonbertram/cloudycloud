@@ -12,13 +12,13 @@
   :root {
     --page: #fafafb; --surface: #fff; --subtle: #f4f4f6; --border: #e6e6ea; --text: #17181c; --text-2: #5c5f6a; --text-3: #8b8e98; --accent: #5867f0;
     --s-running: #1f9d5c; --s-starting: #b7791f; --s-queued: #8b8e98; --s-idle: #3b82c4; --s-failed: #d1323a; --s-stopped: #8b8e98;
-    --warn-bg: #fdf6e3; --err-bg: #fdecee; --pop: 0 1px 2px rgba(20,20,30,.08), 0 4px 12px rgba(20,20,30,.06);
+    --warn-text: #8a5a00; --warn-bg: #fdf6e3; --err-bg: #fdecee; --pop: 0 1px 2px rgba(20,20,30,.08), 0 4px 12px rgba(20,20,30,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --page: #0c0d10; --surface: #131418; --subtle: #1a1b20; --border: #24252c; --text: #ececf1; --text-2: #a0a3ad; --text-3: #6e717c; --accent: #8b96ff;
       --s-running: #3ecf8e; --s-starting: #f0b54a; --s-idle: #6cb0f0; --s-failed: #ff6b72;
-      --warn-bg: #2a2310; --err-bg: #2d1517; --pop: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.35);
+      --warn-text: #f0b54a; --warn-bg: #2a2310; --err-bg: #2d1517; --pop: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.35);
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -77,6 +77,9 @@
   .l3 { color: var(--text-2); }
   .l3 b { font-weight: 500; color: var(--text); }
   .l2 .mono { font-size: 12px; }
+  .l2 .st { font-weight: 500; }
+  .l2 .soon { color: var(--warn-text); font-weight: 500; }
+  .l3.err { color: var(--s-failed); }
 
   .branch { display: inline-flex; align-items: center; gap: 4px; font: 400 12px/1.4 "JetBrains Mono", monospace; min-width: 0; }
   .branch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -218,7 +221,7 @@
     const m = (b.messages || []).at(-1);
     if (!m) return b.kind === 'machine' ? { text: 'no session log' } : null;
     if (m.kind === 'progress') { const [tool, ...rest] = m.text.split(' '); return { tool, text: rest.length ? ' ' + rest.join(' ') : '' }; }
-    return { text: m.kind === 'out' ? 'you: ' + m.text : (m.error ? 'error: ' : 'reply: ') + m.text };
+    return { text: m.kind === 'out' ? 'you: ' + m.text : (m.error ? 'error: ' : 'reply: ') + m.text, err: !!m.error };
   }
   // Text for one of the live-updating spans (data-live = kind, data-t = timestamp).
   function liveText(el) {
@@ -226,10 +229,11 @@
     if (k === 'age') return dur(now() - t);
     if (k === 'ago') return dur(now() - t) + ' ago';
     if (k === 'rel') return rel(now() - t);
+    if (k === 'del') return t - now() > 0 ? 'deletes in ' + dur(t - now()) : 'deleting now';
     if (k === 'until') return t - now() > 0 ? 'in ' + dur(t - now()) : 'past deadline';
     return '';
   }
-  const live = (k, t, cls) => h('span', { 'data-live': k, 'data-t': t, class: cls, text: '' });
+  const live = (k, t, cls, title) => h('span', { 'data-live': k, 'data-t': t, class: cls, title, text: '' });
   const tick = () => document.querySelectorAll('[data-live]').forEach((el) => { const v = liveText(el); if (el.textContent !== v) el.textContent = v; });
 
   function copyBtn(text) {
@@ -243,24 +247,21 @@
 
   const dot = (st) => h('span', { class: 'sd ' + st });
   const canExpire = (b) => b.deadline && (active(b) || b.status === 'idle');
+  const soon = (b) => canExpire(b) && b.deadline - now() < 3_600_000;
   const deadlineTitle = (b) => b.status === 'idle' ? 'The idle agent is stopped and its machine deleted at this time' : 'Latest time the machine is deleted (the 8-hour backstop)';
-  // "deletes in 7h 42m" / "stopped 2h ago" for the list row's second line.
-  function endNote(b) {
-    if (canExpire(b)) return h('span', { title: deadlineTitle(b) }, 'deletes ', live('until', b.deadline));
-    if ((b.status === 'stopped' || b.status === 'failed') && (b.stoppedAt || stamp(b))) return h('span', {}, b.status + ' ', live('ago', b.stoppedAt || stamp(b)));
-    return null;
-  }
-
   function row(b) {
     const a = lastAct(b), t = stamp(b);
-    const sep = () => ' · ';
-    const l2 = [h('span', { class: 'mono', text: b.id }), sep(), h('span', { class: 'mono', text: label(b) })];
-    const en = endNote(b); if (en) l2.push(sep(), en);
+    // Status in words (the dot colour alone is not enough); the deadline only when it is under an hour away.
+    const parts = [];
+    if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
+    parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
+    if (soon(b)) parts.push(h('span', { class: 'soon', title: deadlineTitle(b) }, live('del', b.deadline)));
+    const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
     const el = h('div', { class: 'row', role: 'option', 'data-id': b.id, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
-      h('div', { class: 'l1' }, dot(b.status), h('span', { class: 'title', text: b.description || '(no description)' }), t && live('rel', t, 'rel')),
+      h('div', { class: 'l1' }, dot(b.status), h('span', { class: 'title', text: b.description || '(no description)' }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
-      a && h('div', { class: 'l3' }, a.tool && h('b', { text: a.tool }), a.text));
+      a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
   }
 
@@ -397,7 +398,7 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline])]);
+    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(boxes); }
     const sb = boxes.find((b) => b.id === S.sel);
     const ps = sig(['p', sb.id, sb.status, sb.messages?.length, sb.lastActivity]);
