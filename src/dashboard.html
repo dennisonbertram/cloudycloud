@@ -47,6 +47,7 @@
   .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
   .live .sd { background: var(--s-running); }
   .live.off .sd { background: var(--s-failed); animation: none; }
+  .live.wait .sd { background: var(--s-queued); animation: none; }
   .tag { font-size: 11px; font-weight: 500; line-height: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-3); }
   .toggle { display: inline-flex; padding: 2px; gap: 2px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--border); }
   .toggle button { height: 24px; padding: 0 12px; border-radius: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); border: 1px solid transparent; }
@@ -175,7 +176,7 @@
     <button id="v-list" aria-pressed="true">List</button>
     <button id="v-fleet" aria-pressed="false">Fleet</button>
   </div>
-  <div class="live" id="live" role="status"><span class="sd running"></span><span id="live-t">Live</span></div>
+  <div class="live wait" id="live" role="status"><span class="sd running"></span><span id="live-t">Connecting</span></div>
 </header>
 <div class="banner" id="banner" hidden role="alert"></div>
 <main id="main">
@@ -192,7 +193,7 @@
   const $ = (id) => kept[id] || document.getElementById(id);
   const NS = 'http://www.w3.org/2000/svg';
   const ORDER = { idle: 0, running: 1, starting: 2, queued: 3, failed: 4, stopped: 5 };
-  const S = { data: null, sel: null, view: 'list', online: false, loaded: false, sigs: {} };
+  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {} };
   try { S.view = localStorage.getItem('cc-view') === 'fleet' ? 'fleet' : 'list'; } catch {}
 
   // Build DOM without innerHTML: every string from the server goes in as text.
@@ -395,12 +396,12 @@
   function banner() {
     const b = $('banner'), d = S.data;
     let node = null;
-    if (!S.online) node = ['', h('span', {}, 'Cannot reach the dashboard server (is it still running?). Showing the last data. Restart it with ', h('code', { text: 'cloudy-cloud dashboard' }), '.')];
+    if (S.net && S.net !== 'ok') node = ['', h('span', {}, 'Cannot reach the dashboard server (is it still running?). Showing the last data. Restart it with ', h('code', { text: 'cloudy-cloud dashboard' }), '.')];
     else if (d && d.machines && !d.machines.ok) node = ['warn', h('span', {}, 'Live machines unavailable: ' + d.machines.message + ' Fix: ' + d.machines.fix + ' Session history below still works.')];
     b.hidden = !node;
     if (node) { b.className = 'banner ' + node[0]; b.replaceChildren(node[1]); }
-    $('live').classList.toggle('off', !S.online);
-    $('live-t').textContent = S.online ? 'Live' : 'Offline';
+    const pill = { ok: ['Live', 'live'], down: ['Offline', 'live off'], auth: ['Old link', 'live off'], error: ['Error', 'live off'] }[S.net] || ['Connecting', 'live wait'];
+    $('live').className = pill[1]; $('live-t').textContent = pill[0];
   }
 
   function render() {
@@ -412,8 +413,9 @@
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
     $('v-fleet').setAttribute('aria-pressed', String(S.view === 'fleet'));
     if (!d) { // loading, or never reached the server
-      if (!S.loaded && S.online !== false) { $('summary').textContent = 'Loading…'; $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
-      else { $('summary').textContent = 'Offline'; main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' }))); }
+      S.sigs = {};
+      if (S.net === null) { $('summary').textContent = 'Loading…'; $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
+      else { $('summary').textContent = ''; main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' }))); }
       return;
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
@@ -466,16 +468,13 @@
   async function poll() {
     try {
       const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store' });
-      if (r.status === 401) throw new Error('token');
-      if (!r.ok) throw new Error('http ' + r.status);
-      S.data = await r.json(); S.skew = S.data.now - Date.now(); S.online = true; S.loaded = true;
-    } catch (e) {
-      S.online = false; S.loaded = true;
-      if (e.message === 'token') S.data = null;
-    }
+      if (r.status === 401) { S.net = 'auth'; S.data = null; }
+      else if (!r.ok) S.net = 'error';
+      else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
+    } catch { S.net = 'down'; }
     render();
   }
-  poll(); setInterval(poll, 3000); setInterval(tick, 1000);
+  render(); poll(); setInterval(poll, 3000); setInterval(tick, 1000);
 })();
 </script>
 </body>
