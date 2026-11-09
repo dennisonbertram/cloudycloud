@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, PROVIDER_KEY } from './config.mjs';
 import { attachGithubToken } from './instabox.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
-import { terminal } from './terminal.mjs';
+import { terminal, coordinatorTable } from './terminal.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
@@ -46,7 +46,7 @@ function context(deps) {
   const configFile = env.CLAUDE_CLOUD_CONFIG || join(homedir(), '.config/claude-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return { env, apiKey, configFile, out, root, fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  return { env, apiKey, configFile, out, root, ui: deps.ui ?? terminal(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     getSdk: async () => deps.sdk ?? (await import('@insforge/instabox-sdk')) };
 }
 
@@ -169,6 +169,7 @@ async function attach(c, args) {
 async function ls(c) {
   const rows = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator');
   if (!rows.length) return c.out('No coordinators.');
+  if (c.ui.isTTY) return c.out(coordinatorTable(rows, c.ui));
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE'].join('\t'));
   for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name].join('\t'));
 }

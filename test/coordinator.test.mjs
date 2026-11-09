@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
+import { terminal } from '../src/terminal.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
@@ -144,6 +145,19 @@ test('attach prints the ssh command', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', metadata: { role: 'coordinator', name: 'a' } }] });
   await main(['attach', 'a'], f.deps);
   assert.equal(f.log.out[0], 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude');
+});
+
+test('interactive list is formatted while piped output retains TSV', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: '2026-01-02', metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.ui = terminal({ isTTY: true, columns: 100, env: { NO_COLOR: '1' } });
+  await main(['ls'], f.deps);
+  assert.match(f.log.out.join('\n'), /NAME +STATE +CREATED +MACHINE/);
+  assert.doesNotMatch(f.log.out.join('\n'), /\t/);
+  f.log.out.length = 0;
+  f.deps.ui = terminal({ isTTY: false });
+  await main(['ls'], f.deps);
+  assert.equal(f.log.out[0], 'NAME\tSTATE\tCREATED\tMACHINE');
+  assert.match(f.log.out[1], /^a\trunning\t.*\tcoord-a$/);
 });
 
 test('launcher: coordinator goes to the script; plain claude-cloud still starts claude', () => {
