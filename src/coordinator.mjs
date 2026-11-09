@@ -96,6 +96,36 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
+function validateArgs(cmd, args) {
+  const usage = `Run: claude-cloud coordinator ${cmd} --help`;
+  const invalid = (message) => fail(`${message}\n${usage}`);
+  if (cmd === 'image') {
+    if (args.length && !(args.length === 1 && args[0] === '--save')) invalid('Expected image or image --save.');
+    return;
+  }
+  if (cmd === 'ls') {
+    if (args.length) invalid('ls takes no arguments.');
+    return;
+  }
+  if (!NAME_RE.test(args[0] ?? '')) invalid('NAME must use lowercase letters, digits and hyphens (1–40 characters).');
+  if (cmd !== 'start') {
+    if (args.length !== 1) invalid(`${cmd} takes exactly one NAME.`);
+    return;
+  }
+  const seen = new Set();
+  for (let i = 1; i < args.length; i += 2) {
+    const option = args[i];
+    if (!['--repo', '--branch'].includes(option)) invalid(`Unknown argument: ${option}`);
+    if (seen.has(option)) invalid(`Repeated option: ${option}`);
+    if (!args[i + 1] || args[i + 1].startsWith('--')) invalid(`Missing value for ${option}.`);
+    seen.add(option);
+  }
+  const repo = flag(args, '--repo');
+  if (!repo || !REPO_RE.test(repo)) invalid('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO');
+  const branch = flag(args, '--branch');
+  if (branch && !/^[\w./-]+$/.test(branch)) invalid('--branch has characters that are not allowed.');
+}
+
 // What goes in the coordinator's own env file: the Instabox key, the Claude setup-token and provider keys.
 function keysFile(env) {
   return `${Object.entries(env).filter(([k, v]) => v && (SECRET_KEYS.includes(k) || PROVIDER_KEY.test(k)))
@@ -155,10 +185,11 @@ async function stop(c, args) {
 export async function main(argv, deps = {}) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop };
-  if (['--help', '-h'].includes(cmd) || (Object.hasOwn(commands, cmd) && args.length === 1 && ['--help', '-h'].includes(args[0]))) {
+  if ((['--help', '-h'].includes(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && ['--help', '-h'].includes(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined, deps.ui ?? terminal()));
   }
-  if (!commands[cmd]) fail('Usage: claude-cloud coordinator image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME');
+  if (!Object.hasOwn(commands, cmd)) fail('Usage: claude-cloud coordinator <command>\nRun: claude-cloud coordinator --help');
+  validateArgs(cmd, args);
   return commands[cmd](context(deps), args);
 }
 

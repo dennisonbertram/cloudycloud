@@ -20,6 +20,23 @@ test('coordinator help is local, with dedicated guidance for each command', asyn
   }
 });
 
+test('invalid arguments are rejected before credentials or SDK access', async () => {
+  for (const args of [
+    ['start'], ['start', 'Bad'], ['start', 'boss', '--repo'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--branch'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--repo', 'https://github.com/o/s'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--typo', 'x'],
+    ['ls', '--all'], ['image', '--save', '--save'], ['stop'], ['stop', 'a', 'b'],
+    ['attach', 'Bad'], ['constructor'], ['--help', 'extra'],
+  ]) {
+    await assert.rejects(main(args, { env: {}, get sdk() { throw new Error('SDK touched'); } }), (e) => {
+      assert.match(e.message, /claude-cloud coordinator/);
+      assert.doesNotMatch(e.message, /INSTABOX_API_KEY|SDK touched/);
+      return true;
+    }, args.join(' '));
+  }
+});
+
 function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
