@@ -78,7 +78,8 @@
   .l3 b { font-weight: 500; color: var(--text); }
   .l2 .mono { font-size: 12px; }
   .l2 .st { font-weight: 500; }
-  .l2 .soon { color: var(--warn-text); font-weight: 500; }
+  .soon { color: var(--warn-text); font-weight: 500; }
+  .tile .soon { font-size: 12px; }
   .l3.err { color: var(--s-failed); }
 
   .branch { display: inline-flex; align-items: center; gap: 4px; font: 400 12px/1.4 "JetBrains Mono", monospace; min-width: 0; }
@@ -130,6 +131,8 @@
   .fleet .grp { padding: 16px 0 8px; background: var(--page); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
   .tile { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+  .tile.failed { border-color: var(--s-failed); background: var(--err-bg); }
+  .tile.idle { border-color: var(--s-idle); }
   .tile:hover { background: var(--subtle); }
   .tile .top { display: flex; align-items: center; gap: 6px; font-size: 12px; }
   .tile .top .rel { margin-left: auto; }
@@ -256,6 +259,7 @@
   const dot = (st) => h('span', { class: 'sd ' + st });
   const canExpire = (b) => b.deadline && (active(b) || b.status === 'idle');
   const soon = (b) => canExpire(b) && b.deadline - now() < 3_600_000;
+  const soonTag = (b) => soon(b) && h('span', { class: 'soon', title: deadlineTitle(b) }, live('del', b.deadline));
   const deadlineTitle = (b) => b.status === 'idle' ? 'The idle agent is stopped and its machine deleted at this time' : 'Latest time the machine is deleted (the 8-hour backstop)';
   function row(b) {
     const a = lastAct(b), t = stamp(b);
@@ -263,7 +267,7 @@
     const parts = [];
     if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
-    if (soon(b)) parts.push(h('span', { class: 'soon', title: deadlineTitle(b) }, live('del', b.deadline)));
+    const s = soonTag(b); if (s) parts.push(s);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
     const el = h('div', { class: 'row', role: 'option', 'data-id': b.id, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
@@ -372,10 +376,10 @@
     const g = h('div', { class: 'fleet' });
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
-      g.append(h('div', { class: 'grid', role: 'list', 'aria-label': name }, list.map((b) => h('button', { class: 'tile', type: 'button', role: 'listitem', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
+      g.append(h('div', { class: 'grid', role: 'list', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, type: 'button', role: 'listitem', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.description || label(b) }),
-        h('span', { class: 'm', text: b.id + ' · ' + label(b) })))));
+        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b)))));
     }
     return g;
   }
@@ -425,7 +429,7 @@
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b)])]);
+      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b), soon(b)])]);
       if (S.sigs.f !== f) { S.sigs = { f }; main.replaceChildren(fleetView(boxes)); }
       tick(); return;
     }
