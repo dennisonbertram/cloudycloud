@@ -40,8 +40,6 @@
   .brand { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1; white-space: nowrap; }
   .brand svg { height: 16px; width: 23px; }
   .brand b { font-weight: 600; }
-  .brand i { font-style: normal; color: var(--text-3); }
-  .brand span { color: var(--text-2); }
   .summary { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: 8px; font-size: 12px; color: var(--text-2); }
   .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .stat b { font-weight: 500; color: var(--text); }
@@ -169,10 +167,10 @@
 <header>
   <div class="brand">
     <svg viewBox="0 0 26 18" fill="none" aria-hidden="true"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#5fd7ff"/></linearGradient></defs></svg>
-    <b>Cloudy Cloud</b><i>/</i><span>Agents</span>
+    <b>Cloudy Cloud</b>
   </div>
   <div class="summary" id="summary" aria-live="polite">Loading…</div>
-  <span class="tag" id="demo" hidden>Demo data</span>
+  <span class="tag" id="demo" title="Sample data from cloudy-cloud dashboard --demo" hidden>Demo</span>
   <div class="toggle" role="group" aria-label="View">
     <button id="v-list" aria-pressed="true">List</button>
     <button id="v-fleet" aria-pressed="false">Fleet</button>
