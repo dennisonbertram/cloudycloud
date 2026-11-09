@@ -21,7 +21,7 @@ your Mac                                  Instabox (one machine per subagent)
             └──────────────────────────────────── GitHub (your repo)
 ```
 
-**Set up:** clone this repo and run `./install.sh` once. After that, `cloudy-cloud setup` runs it again from any folder. It checks your tools, links `cloudy-cloud`, and asks for three keys, with where to get each one. Details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Setup takes about 15 minutes and needs:
+**Set up:** clone this repo and run `./install.sh` once. After that, `cloudy-cloud setup` runs it again from any folder. It checks your tools, links `cloudy-cloud`, and asks for three keys, with where to get each one. Details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Setup takes about 5 minutes and needs:
 
 - **Accounts:** an Instabox account (a paid plan for more than a few subagents at once), a Claude subscription or API key, and a GitHub repo you can push to.
 - **On your machine:** `git`, Node.js 20 or later, and Claude Code.

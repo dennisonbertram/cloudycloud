@@ -153,6 +153,7 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 
 - Start all agents first, in one go. The tool queues and paces starts and limits Instabox calls itself. Do not add sleeps or batch them by hand.
 - In task mode (terminal Claude Code 2.1.304 or later) results arrive on their own. Do not call `cloud_agent_wait`. Otherwise call `cloud_agent_wait` with all the ids, and again after each `cloud_agent_message`.
+- **A nested coordinator's workers are deleted when its reply ends.** Each coordinator turn is one `-p` run, and its workers go when that run exits, pushed or not. A coordinator always calls `cloud_agent_wait` on every worker and does not end its reply until all have finished.
 - Use `cloud_agent_list` to see status and progress. `queued` is normal while machines start.
 - Never trust a worker's reply. A worker saying "done" does not mean the work is pushed or correct. Fetch the branch, look at the diff, run the tests, then merge.
 - Check the branch exists: `git ls-remote --heads origin 'cloudy-cloud/<id>'`.
