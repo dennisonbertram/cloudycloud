@@ -13,7 +13,7 @@
 
   // GitHub star count (same cache key as the homepage)
   (() => {
-    const K = 'gh-stars', u = 'https://api.github.com/repos/dennisonbertram/ai-seamless-sandboxes';
+    const K = 'gh-stars', u = 'https://api.github.com/repos/dennisonbertram/cloudycloud';
     const show = n => {
       if (!Number.isFinite(n) || n < 0) return;
       const t = n >= 1000 ? (Math.floor(n / 100) / 10).toString().replace(/\.0$/, '') + 'k' : String(n);

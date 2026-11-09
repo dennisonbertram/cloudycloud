@@ -18,8 +18,8 @@ This covers setting up `cloudy-cloud`, using it, operating it day to day, and fi
 ### 2.1 Install and enter your keys
 
 ```sh
-git clone https://github.com/dennisonbertram/ai-seamless-sandboxes.git
-cd ai-seamless-sandboxes
+git clone https://github.com/dennisonbertram/cloudycloud.git
+cd cloudycloud
 ./install.sh
 ```
 
