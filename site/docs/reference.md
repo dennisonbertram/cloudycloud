@@ -34,13 +34,22 @@ cloudy-cloud --model opus
 
 It also sets `MCP_TOOL_TIMEOUT` to 1800000 (30 minutes) unless you already set it.
 
+### cloudy-cloud --help and --version
+
+```
+cloudy-cloud --help
+cloudy-cloud --version
+```
+
+`--help` (also `-h` or `help`, when it is the only argument) prints Cloudy Cloud's own commands, then points to `claude --help` for Claude Code's options. `--version` prints the Cloudy Cloud version. With any other arguments, everything goes to Claude Code, for example `cloudy-cloud -p "<prompt>" --allowedTools "Bash(git fetch *)"`; see [Run without the interactive UI](https://cloudycloud.tech/docs/#no-interactive-ui).
+
 ### cloudy-cloud setup
 
 ```
 cloudy-cloud setup [--check-only]
 ```
 
-Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx cloudycloud setup` runs it without installing anything first. Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
+Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx -y cloudycloud setup` runs it without installing anything first (`-y` skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. If an older `cloudy-cloud` global command blocks the install, setup offers to replace it (`npm rm -g cloudy-cloud`, then `npm install -g cloudycloud`). Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
 
 | Flag | Meaning |
 |---|---|

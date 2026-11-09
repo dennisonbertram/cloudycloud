@@ -401,7 +401,7 @@
   }
 </style>
 <!--ld-->
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.1", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "sameAs": ["https://github.com/dennisonbertram/cloudycloud", "https://www.npmjs.com/package/cloudycloud"]}</script>
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch."}</script>
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is a subagent?", "acceptedAnswer": {"@type": "Answer", "text": "When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop."}}, {"@type": "Question", "name": "What do I need?", "acceptedAnswer": {"@type": "Answer", "text": "An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later."}}, {"@type": "Question", "name": "What can a subagent see?", "acceptedAnswer": {"@type": "Answer", "text": "Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings."}}, {"@type": "Question", "name": "What happens to the machines?", "acceptedAnswer": {"@type": "Answer", "text": "A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept."}}, {"@type": "Question", "name": "Is it safe?", "acceptedAnswer": {"@type": "Answer", "text": "Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The setup guide shows how."}}, {"@type": "Question", "name": "Does it change plain claude?", "acceptedAnswer": {"@type": "Answer", "text": "No. Only sessions you start with cloudy-cloud use the cloud."}}, {"@type": "Question", "name": "Is there a hosted version?", "acceptedAnswer": {"@type": "Answer", "text": "Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token."}}]}</script>
@@ -436,8 +436,8 @@
     <p class="lede">Every Claude Code subagent gets its own cloud machine, a copy of your repo, and its own branch. Your laptop stays free for you.</p>
     <div class="cta-row" id="start">
       <div class="install">
-        <code><span>$</span> npx cloudycloud setup</code>
-        <button class="copy" aria-label="Copy install command" data-copy="npx cloudycloud setup">
+        <code><span>$</span> npx -y cloudycloud setup</code>
+        <button class="copy" aria-label="Copy install command" data-copy="npx -y cloudycloud setup">
           <svg class="i-copy" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
           <svg class="i-ok" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" hidden><path d="M3 8.5l3.2 3L13 4.5"/></svg>
         </button>
@@ -527,7 +527,7 @@
         <div class="kicker">How it works</div>
         <h2>Install once, then use subagents as usual.</h2>
         <ol class="steps">
-          <li><span class="n">1</span><div><h3>Run the installer</h3><p>Run <code>npx cloudycloud setup</code> in a terminal. It checks your tools and installs the <code>cloudy-cloud</code> command and the Cloudy Cloud skills.</p></div></li>
+          <li><span class="n">1</span><div><h3>Run the installer</h3><p>Run <code>npx -y cloudycloud setup</code> in a terminal. It checks your tools and installs the <code>cloudy-cloud</code> command and the Cloudy Cloud skills.</p></div></li>
           <li><span class="n">2</span><div><h3>Add your keys</h3><p>Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. Or run <code>npx skills add dennisonbertram/cloudycloud</code> and ask Claude to "set up Cloudy Cloud".</p></div></li>
           <li><span class="n">3</span><div><h3>Start a session</h3><p>Run <code>cloudy-cloud</code> instead of <code>claude</code>, then <code>git fetch origin cloudy-cloud/&lt;id&gt;</code> to pull a subagent's work. Plain <code>claude</code> is unchanged.</p></div></li>
         </ol>
@@ -627,8 +627,8 @@
   <section class="finale">
     <h2>Send your subagents up.</h2>
     <div class="install">
-      <code><span>$</span> npx cloudycloud setup</code>
-      <button class="copy" aria-label="Copy install command" data-copy="npx cloudycloud setup">
+      <code><span>$</span> npx -y cloudycloud setup</code>
+      <button class="copy" aria-label="Copy install command" data-copy="npx -y cloudycloud setup">
         <svg class="i-copy" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
         <svg class="i-ok" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" hidden><path d="M3 8.5l3.2 3L13 4.5"/></svg>
       </button>
