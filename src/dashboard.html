@@ -143,6 +143,7 @@
   .tile .d { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .tile .m { font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+  .state h2:focus { outline: none; }
   .state { margin: auto; max-width: 440px; text-align: center; padding: 40px 24px; font-size: 14px; color: var(--text-2); }
   .state h2 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
   .state code { display: inline-block; margin-top: 12px; padding: 6px 12px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--border); color: var(--text); user-select: all; }
@@ -250,6 +251,10 @@
   }
   const live = (k, t, cls, title) => h('span', { 'data-live': k, 'data-t': t, class: cls, title, text: '' });
   const tick = () => document.querySelectorAll('[data-live]').forEach((el) => { const v = liveText(el); if (el.textContent !== v) el.textContent = v; });
+
+  // Replace children only when the markup changes: every rewrite re-announces a live region and drops focus.
+  // Use it only for elements without event handlers (it keeps the old nodes when the markup is equal).
+  const put = (el, ...kids) => { const n = h('div', {}, kids); if (el.innerHTML === n.innerHTML) return false; el.replaceChildren(...n.childNodes); return true; };
 
   function copyBtn(text, what) {
     const b = h('button', { class: 'copy', type: 'button', 'aria-label': 'Copy ' + what, title: 'Copy ' + what }, copyIcon());
@@ -399,7 +404,7 @@
     const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
     const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
     items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
-    $('summary').replaceChildren(...items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
+    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
     return { failed, idle };
   }
 
@@ -410,9 +415,9 @@
     else if (d && S.net === 'error') node = ['', h('span', {}, 'The dashboard server hit an error (last update ' + clock(S.lastOk) + ', trying again every 3 seconds): ', S.err)];
     else if (d && S.net === 'ok' && d.machines && !d.machines.ok) node = ['warn', h('span', {}, h('b', { text: 'Live machines unavailable. ' }), d.machines.message, d.boxes.length ? ' Session history below still works.' : '', h('span', { class: 'fix', text: 'Fix: ' + d.machines.fix }))];
     b.hidden = !node;
-    if (node) { b.className = 'banner ' + node[0]; b.replaceChildren(node[1]); }
+    if (node) { b.className = 'banner ' + node[0]; put(b, node[1]); }
     const pill = { ok: ['Live', 'live'], down: ['Offline', 'live off'], auth: ['Old link', 'live off'], error: ['Error', 'live off'] }[S.net] || ['Connecting', 'live wait'];
-    $('live').className = pill[1]; $('live-t').textContent = pill[0];
+    $('live').className = pill[1]; put($('live-t'), pill[0]);
   }
 
   function render() {
@@ -426,23 +431,25 @@
     $('v-fleet').setAttribute('aria-pressed', String(S.view === 'fleet'));
     if (!d) { // loading, or never reached the server
       S.sigs = {};
-      if (S.net === null) { $('summary').textContent = 'Loading…'; $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
+      if (S.net === null) { put($('summary'), 'Loading…'); $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
       else {
-        $('summary').textContent = '';
-        const full = S.net === 'auth' ? [h('h2', { text: 'This link is from an earlier run' }), h('p', { text: 'The dashboard was restarted, and each start makes a new link. Open the newest link in your terminal, or start the dashboard again:' }), h('code', { text: 'cloudy-cloud dashboard' })]
-          : S.net === 'error' ? [h('h2', { text: 'The dashboard server hit an error' }), h('p', { text: S.err }), h('p', { text: 'Trying again every 3 seconds.' })]
-          : [h('h2', { text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' })];
-        main.replaceChildren(h('div', { class: 'state full' }, full));
+        put($('summary'));
+        const full = S.net === 'auth' ? [h('h2', { tabindex: '-1', text: 'This link is from an earlier run' }), h('p', { text: 'The dashboard was restarted, and each start makes a new link. Open the newest link in your terminal, or start the dashboard again:' }), h('code', { text: 'cloudy-cloud dashboard' })]
+          : S.net === 'error' ? [h('h2', { tabindex: '-1', text: 'The dashboard server hit an error' }), h('p', { text: S.err }), h('p', { text: 'Trying again every 3 seconds.' })]
+          : [h('h2', { tabindex: '-1', text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' })];
+        const had = main.contains(document.activeElement);
+        if (put(main, h('div', { class: 'state full' }, full)) && had) main.querySelector('h2').focus();
       }
       return;
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
-    setTitle(summary(boxes));
-    if (!boxes.length) $('summary').replaceChildren();
+    setTitle(boxes.length ? summary(boxes) : undefined);
     if (!boxes.length) {
-      main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'No cloud boxes yet' }),
+      put($('summary'));
+      const had = main.contains(document.activeElement);
+      if (put(main, h('div', { class: 'state full' }, h('h2', { tabindex: '-1', text: 'No cloud boxes yet' }),
         h('p', { text: d.machines.ok ? 'When you start a subagent from a cloudy-cloud session, it appears here with its messages.' : 'Nothing recorded in the session log yet, and live machines could not be listed (see the message above).' }),
-        h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first with sample data:' }), h('code', { text: 'cloudy-cloud dashboard --demo' })));
+        h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first with sample data:' }), h('code', { text: 'cloudy-cloud dashboard --demo' }))) && had) main.querySelector('h2').focus();
       return;
     }
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
