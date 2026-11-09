@@ -45,6 +45,7 @@
   .summary { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: 8px; font-size: 12px; color: var(--text-2); }
   .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .stat b { font-weight: 500; color: var(--text); }
+  .stat.failed, .stat.failed b { color: var(--s-failed); }
   .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
   .live .sd { background: var(--s-running); }
   .live.off .sd { background: var(--s-failed); animation: none; }
@@ -346,11 +347,14 @@
     return g;
   }
 
+  // Counts for the top bar and the tab title; returns the two the title needs.
   function summary(boxes) {
-    const c = (f) => boxes.filter(f).length, day = new Date().setHours(0, 0, 0, 0);
-    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', c((b) => b.status === 'idle')]].filter((i) => i[2]);
-    items.push(['stopped', 'Finished today', c((b) => (b.status === 'stopped' || b.status === 'failed') && (b.stoppedAt || b.lastActivity || 0) >= day)]);
-    $('summary').replaceChildren(...items.map(([st, name, n]) => h('span', { class: 'stat' }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
+    const c = (f) => boxes.filter(f).length, day = new Date().setHours(0, 0, 0, 0), today = (b) => (b.stoppedAt || b.lastActivity || 0) >= day;
+    const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
+    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
+    items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
+    $('summary').replaceChildren(...items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
+    return { failed, idle };
   }
 
   function banner() {
@@ -368,7 +372,8 @@
     const d = S.data, main = $('main');
     banner();
     $('demo').hidden = !(d && d.demo);
-    document.title = (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard';
+    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' idle'); document.title = (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    setTitle();
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
     $('v-fleet').setAttribute('aria-pressed', String(S.view === 'fleet'));
     if (!d) { // loading, or never reached the server
@@ -377,7 +382,7 @@
       return;
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
-    summary(boxes);
+    setTitle(summary(boxes));
     if (!boxes.length) {
       main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'No cloud boxes yet' }),
         h('p', { text: d.machines.ok ? 'When you start a subagent from a cloudy-cloud session, it appears here with its messages.' : 'Nothing recorded in the session log, and live machines could not be listed.' }),
