@@ -56,6 +56,7 @@
   .banner { flex: none; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--err-bg); }
   .banner::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--s-failed); }
   .banner.warn { background: var(--warn-bg); }
+  main.stale .sd, main.stale .ev.work::before { animation: none; }
   .banner.warn::before { background: var(--s-starting); }
   .banner code { background: var(--subtle); padding: 1px 6px; border-radius: 4px; user-select: all; }
 
@@ -396,8 +397,9 @@
   function banner() {
     const b = $('banner'), d = S.data;
     let node = null;
-    if (S.net && S.net !== 'ok') node = ['', h('span', {}, 'Cannot reach the dashboard server (is it still running?). Showing the last data. Restart it with ', h('code', { text: 'cloudy-cloud dashboard' }), '.')];
-    else if (d && d.machines && !d.machines.ok) node = ['warn', h('span', {}, 'Live machines unavailable: ' + d.machines.message + ' Fix: ' + d.machines.fix + ' Session history below still works.')];
+    if (d && S.net === 'down') node = ['', h('span', {}, 'The dashboard server is not answering. Last update ' + clock(S.lastOk) + ', so the list below may be out of date. To restart it, run ', h('code', { text: 'cloudy-cloud dashboard' }), ' and open the new link it prints.')];
+    else if (d && S.net === 'error') node = ['', h('span', {}, 'The dashboard server hit an error (last update ' + clock(S.lastOk) + ', trying again every 3 seconds): ', S.err)];
+    else if (d && S.net === 'ok' && d.machines && !d.machines.ok) node = ['warn', h('span', {}, 'Live machines unavailable: ' + d.machines.message + ' Fix: ' + d.machines.fix + ' Session history below still works.')];
     b.hidden = !node;
     if (node) { b.className = 'banner ' + node[0]; b.replaceChildren(node[1]); }
     const pill = { ok: ['Live', 'live'], down: ['Offline', 'live off'], auth: ['Old link', 'live off'], error: ['Error', 'live off'] }[S.net] || ['Connecting', 'live wait'];
@@ -408,14 +410,21 @@
     const d = S.data, main = $('main');
     banner();
     $('demo').hidden = !(d && d.demo);
-    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' idle'); document.title = (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' idle'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
     setTitle();
+    main.classList.toggle('stale', !!d && S.net !== 'ok');
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
     $('v-fleet').setAttribute('aria-pressed', String(S.view === 'fleet'));
     if (!d) { // loading, or never reached the server
       S.sigs = {};
       if (S.net === null) { $('summary').textContent = 'Loading…'; $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
-      else { $('summary').textContent = ''; main.replaceChildren(h('div', { class: 'state full' }, h('h2', { text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' }))); }
+      else {
+        $('summary').textContent = '';
+        const full = S.net === 'auth' ? [h('h2', { text: 'This link is from an earlier run' }), h('p', { text: 'The dashboard was restarted, and each start makes a new link. Open the newest link in your terminal, or start the dashboard again:' }), h('code', { text: 'cloudy-cloud dashboard' })]
+          : S.net === 'error' ? [h('h2', { text: 'The dashboard server hit an error' }), h('p', { text: S.err }), h('p', { text: 'Trying again every 3 seconds.' })]
+          : [h('h2', { text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' })];
+        main.replaceChildren(h('div', { class: 'state full' }, full));
+      }
       return;
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
@@ -472,7 +481,7 @@
     try {
       const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
       if (r.status === 401) { S.net = 'auth'; S.data = null; }
-      else if (!r.ok) S.net = 'error';
+      else if (!r.ok) { S.net = 'error'; S.err = String((await r.json().catch(() => null))?.error || 'HTTP ' + r.status); }
       else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
     } catch { S.net = 'down'; }
     busy = false;
