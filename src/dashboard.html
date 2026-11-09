@@ -372,7 +372,7 @@
     const g = h('div', { class: 'fleet' });
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
-      g.append(h('div', { class: 'grid', role: 'list', 'aria-label': name }, list.map((b) => h('button', { class: 'tile', type: 'button', role: 'listitem', title: b.id + ': ' + b.status, onclick: () => { select(b.id, true); setView('list'); } },
+      g.append(h('div', { class: 'grid', role: 'list', 'aria-label': name }, list.map((b) => h('button', { class: 'tile', type: 'button', role: 'listitem', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.description || label(b) }),
         h('span', { class: 'm', text: b.id + ' · ' + label(b) })))));
