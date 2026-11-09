@@ -69,6 +69,22 @@ ln -s "$PWD/skills/cloud-fleet" ~/.claude/skills/cloud-fleet
 
 ## Quick reference
 
+### Terminal guide
+
+`claude-cloud --help` and `claude-cloud --version` work before setup.
+Use `claude-cloud coordinator --help` for the lifecycle guide, or
+`claude-cloud coordinator start --help` for a command's arguments.
+Only standalone `--help`, `-h`, and `--version` belong to this launcher;
+other arguments still pass to Claude. Run `claude --help` for Claude's own options.
+
+Coordinator lists adapt to your terminal width, with full values in a stacked
+layout in narrow windows. Pipes retain the four-column TSV format (NAME, STATE,
+CREATED, MACHINE), and `attach` still prints only a copyable SSH command.
+Provisioning progress goes to interactive stderr, never into stdout data.
+Set `NO_COLOR` (even to an empty value) or `TERM=dumb` for unstyled text.
+Machines do not pause automatically: stop coordinators when finished, and check
+remaining workers separately as the stop command explains.
+
 | Task | How |
 | --- | --- |
 | **Start a session** | `claude-cloud` from inside a git repo that has a GitHub `origin` |

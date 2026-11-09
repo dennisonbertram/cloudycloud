@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, PROVIDER_KEY } from './config.mjs';
 import { attachGithubToken } from './instabox.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
-import { terminal, coordinatorTable, formatError } from './terminal.mjs';
+import { terminal, coordinatorTable, coordinatorFields, formatError } from './terminal.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
@@ -202,7 +202,7 @@ async function ls(c) {
   }
   if (c.ui.isTTY) return c.out(coordinatorTable(rows, c.ui));
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE'].join('\t'));
-  for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name].join('\t'));
+  for (const m of rows) c.out(coordinatorFields(m).join('\t'));
 }
 
 async function stop(c, args) {
