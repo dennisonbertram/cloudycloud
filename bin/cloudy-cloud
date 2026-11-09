@@ -29,6 +29,32 @@ fi
 # `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
 case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
 
+# `cloudy-cloud --version` prints the package version; `--help`, `-h` and `help` (alone) print Cloudy Cloud's own help.
+if [ $# -eq 1 ]; then
+  case $1 in
+    --version) sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json"; exit 0 ;;
+    --help|-h|help)
+      cat <<'EOF'
+Cloudy Cloud: Claude Code with every subagent on its own cloud machine.
+
+Usage: cloudy-cloud [command]
+
+  (no command)           start a Claude Code session
+  setup [--check-only]   check your tools and save your keys
+  dashboard              open a read-only web page about your cloud machines
+  open <agent> <port>    reach an app running on a cloud machine
+  coordinator            manage cloud coordinators
+  --version              print the version
+
+Any other arguments go to claude, for example: cloudy-cloud -p "<prompt>"
+
+Docs: https://cloudycloud.tech/docs/
+Claude Code's own options: claude --help
+EOF
+      exit 0 ;;
+  esac
+fi
+
 # Messages use the same look as install.sh: colour only on a colour terminal (not with NO_COLOR, CLICOLOR=0 or TERM=dumb).
 say_init() {
   c_x=; c_acc=; c_dim=; c_warn=; c_b=; m_warn='!'; m_hint='>'

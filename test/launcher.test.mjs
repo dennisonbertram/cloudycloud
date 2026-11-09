@@ -118,3 +118,14 @@ test('missing keys without a terminal: message and exit 1, no prompt', () => {
   assert.equal(r.status, 1);
   assert.doesNotMatch(r.stderr, /Run setup now/);
 });
+
+test('--help, -h and help print Cloudy Cloud help; --version prints the package version; claude is not started', () => {
+  for (const a of ['--help', '-h', 'help']) {
+    const r = spawnSync('/bin/sh', [launcher, a], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /Usage: cloudy-cloud/);
+    assert.match(r.stdout, /Claude Code's own options: claude --help/);
+  }
+  const v = spawnSync('/bin/sh', [launcher, '--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+  assert.equal(v.stdout.trim(), JSON.parse(readFileSync('package.json', 'utf8')).version);
+});
