@@ -368,7 +368,7 @@ install_global_done() {
   line=$(printf '%s\n' "$2" | grep -v 'npm error code\|A complete log\|^npm error *$' | grep -m1 '[[:alnum:]]')
   bad "npm could not install the cloudy-cloud command" "${line#npm error }"
   hint "To fix it yourself, run: $3"
-  hint "If that fails, run: npm install -g --force cloudycloud"
+  hint "If that fails, check what is at $(npm prefix -g 2>/dev/null)/bin/cloudy-cloud, move it away yourself, then run: npm install -g cloudycloud"
   warn "Continuing without it. Run it with npx cloudycloud"
 }
 
