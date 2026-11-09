@@ -11,6 +11,15 @@ const TOK = 'sk-ant-oat01-REALTOKEN0123';
 const PROV = 'sk-or-PROVIDERKEY0123';
 const applied = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
 
+test('coordinator help is local, with dedicated guidance for each command', async () => {
+  for (const args of [['--help'], ['-h'], ...['image', 'start', 'attach', 'ls', 'stop'].map((cmd) => [cmd, '--help'])]) {
+    const output = [];
+    await main(args, { env: {}, out: (s) => output.push(s), get sdk() { throw new Error('must not load SDK'); } });
+    assert.match(output.join('\n'), /USAGE[\s\S]*claude-cloud coordinator/);
+    assert.doesNotMatch(output.join('\n'), /\x1b/);
+  }
+});
+
 function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));

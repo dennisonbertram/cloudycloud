@@ -7,6 +7,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, PROVIDER_KEY } from './config.mjs';
 import { attachGithubToken } from './instabox.mjs';
+import { coordinatorHelp } from './cli-help.mjs';
+import { terminal } from './terminal.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
@@ -153,6 +155,9 @@ async function stop(c, args) {
 export async function main(argv, deps = {}) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop };
+  if (['--help', '-h'].includes(cmd) || (Object.hasOwn(commands, cmd) && args.length === 1 && ['--help', '-h'].includes(args[0]))) {
+    return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined, deps.ui ?? terminal()));
+  }
   if (!commands[cmd]) fail('Usage: claude-cloud coordinator image [--save] | start NAME --repo URL [--branch B] | attach NAME | ls | stop NAME');
   return commands[cmd](context(deps), args);
 }
