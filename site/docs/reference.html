@@ -69,7 +69,7 @@
 
 <h3 id="cli-setup">cloudy-cloud setup</h3>
 <pre><code>cloudy-cloud setup [--check-only]</code></pre>
-<p>Runs <code>install.sh</code> from the cloudy-cloud folder, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same. Setup checks your tools, installs dependencies, links the <code>cloudy-cloud</code> command, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
+<p>Runs the bundled <code>install.sh</code>, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same, and <code>npx cloudycloud setup</code> runs it without installing anything first. Setup checks your tools, offers to install the <code>cloudy-cloud</code> command (<code>npm install -g cloudycloud</code>, or a link when you run it from a git clone), copies the Cloudy Cloud skills into <code>~/.claude/skills</code>, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
 <table>
 <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
 <tbody>

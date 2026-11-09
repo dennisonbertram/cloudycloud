@@ -159,9 +159,10 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <p>No. Only sessions you start with <code>cloudy-cloud</code> use the cloud.</p>
 
 <h3 id="faq-uninstall">How do I uninstall it?</h3>
-<p>Delete leftover machines first (see above), then run these in any folder, and delete the folder you installed from:</p>
-<pre><code>npm unlink -g cloudy-cloud
-rm -rf ~/.config/cloudy-cloud</code></pre>
+<p>Delete leftover machines first (see above). If you installed with <code>npx cloudycloud setup</code>, run:</p>
+<pre><code>npm uninstall -g cloudycloud
+rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup</code></pre>
+<p>If you installed from a git clone, run <code>npm unlink -g cloudycloud</code> instead (also <code>npm unlink -g cloudy-cloud</code> for a clone from before the package was renamed), then delete the clone.</p>
 <p>To delete the subagent branches on GitHub, run this in your repo:</p>
 <pre><code>git ls-remote --heads origin 'cloudy-cloud/*' | awk '{print $2}' | xargs -n 50 git push origin --delete</code></pre>
 

@@ -118,7 +118,7 @@ git show FETCH_HEAD:proof.txt
 | **Replace a key** (Claude token, Instabox key or GitHub token) | Run `cloudy-cloud setup`, answer `y` for that key, then restart `cloudy-cloud`. A running session keeps the old key until you restart it. |
 | **Remove all saved keys** | `rm ~/.config/cloudy-cloud/env` |
 | **Update the tool** | `git pull && npm install` in the folder that `install.sh` printed, then restart `cloudy-cloud` |
-| **Uninstall** | `npm unlink -g cloudycloud` (on an install from before the rename, also `npm unlink -g cloudy-cloud`), then delete the folder and `~/.config/cloudy-cloud` |
+| **Uninstall** | npm install: `npm uninstall -g cloudycloud`. Git clone: `npm unlink -g cloudycloud` (on a clone from before the rename, also `npm unlink -g cloudy-cloud`), then delete the folder. Then delete `~/.config/cloudy-cloud` and the two skills in `~/.claude/skills` (`cloud-fleet`, `cloudy-cloud-setup`) |
 
 ## 6. Troubleshooting
 
