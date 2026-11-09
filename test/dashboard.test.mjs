@@ -168,3 +168,13 @@ test('a page that cannot be read is a 500 and the server keeps running', { timeo
     assert.equal((await get(port, `/api/state?t=${TOKEN}`)).status, 200);
   } finally { s.close(); }
 });
+
+test('small-text colour tokens meet 4.5:1 in light and dark', () => {
+  const css = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  const [light, dark] = [...css.matchAll(/:root\s*{([^}]*)}/g)].map((m) => Object.fromEntries([...m[1].matchAll(/--([\w-]+):\s*(#[0-9a-f]{3,6})\b/gi)].map((x) => [x[1], x[2]])));
+  const lum = (h) => { if (h.length === 4) h = '#' + [...h.slice(1)].map((d) => d + d).join(''); const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  for (const [name, t] of [['light', light], ['dark', { ...light, ...dark }]])
+    for (const fg of ['text-2', 'text-3', 't-running', 't-starting', 't-idle', 's-failed', 'accent'])
+      for (const bg of ['page', 'surface']) assert.ok(ratio(t[fg], t[bg]) >= 4.5, `${name} --${fg} on --${bg}: ${ratio(t[fg], t[bg]).toFixed(2)}`);
+});
