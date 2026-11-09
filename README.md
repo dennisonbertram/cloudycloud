@@ -24,8 +24,10 @@ your Mac                                  Instabox (one machine per subagent)
 **Set up:** run this once in a terminal:
 
 ```sh
-npx cloudycloud setup
+npx -y cloudycloud setup
 ```
+
+(`-y` skips npm's "Ok to proceed?" question.) Start a session with `cloudy-cloud`, or `npx cloudycloud` if you skipped the global install. `cloudy-cloud --help` lists the commands and `cloudy-cloud --version` prints the version. To run once without the interactive UI: `cloudy-cloud -p "<prompt>" --allowedTools "Bash(git fetch *)" "Bash(git show *)"`; without such a flag your session cannot run `git fetch` to check a subagent's branch, because there is nobody to approve it. See `claude --help` for `--permission-mode`.
 
 It checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`) and to copy the Cloudy Cloud skills into `~/.claude/skills/`, and asks for three keys, with where to get each one. After that, `cloudy-cloud setup` runs it again from any folder. You can also run `npx skills add dennisonbertram/cloudycloud`, then ask Claude to "set up Cloudy Cloud"; Claude checks your tools and asks you to run the setup command yourself, because it asks for secret keys. From source: `git clone https://github.com/dennisonbertram/cloudycloud.git`, `cd cloudycloud`, then `./install.sh` (cloud coordinators need this route for now). Details: [docs/RUNBOOK.md](docs/RUNBOOK.md). Setup takes about 5 minutes and needs:
 

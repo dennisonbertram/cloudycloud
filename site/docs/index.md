@@ -20,8 +20,10 @@ You need these accounts and tools:
 ### Run the installer with npx
 
 ```
-npx cloudycloud setup
+npx -y cloudycloud setup
 ```
+
+The `-y` skips npm's own "Ok to proceed?" question. Without it, npm asks that first; answer `y`.
 
 ### Or add the skill and ask Claude
 
@@ -29,7 +31,7 @@ npx cloudycloud setup
 npx skills add dennisonbertram/cloudycloud
 ```
 
-Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run `npx cloudycloud setup` yourself, because setup asks for secret keys that Claude should not see.
+Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run `npx -y cloudycloud setup` yourself, because setup asks for secret keys that Claude should not see.
 
 ### From source
 
@@ -39,7 +41,7 @@ cd cloudycloud
 ./install.sh
 ```
 
-Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source), copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks for three keys. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.
+Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source). If an older `cloudy-cloud` command is already installed, setup says so and offers to replace it; if npm still fails, setup prints the fix commands and carries on, and you can use `npx cloudycloud` instead, copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks for three keys. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.
 
 | Key | Where to get it |
 |---|---|
@@ -55,7 +57,7 @@ Later, `cloudy-cloud setup` runs the installer again from any folder. It shows e
 
 ## Start a session
 
-Run `cloudy-cloud` from inside your repo, instead of `claude`:
+Run `cloudy-cloud` from inside your repo, instead of `claude`. If you skipped the global install, run `npx cloudycloud` instead; everything below works the same:
 
 ```
 cd <your repo>
@@ -63,6 +65,22 @@ cloudy-cloud
 ```
 
 This is an ordinary Claude Code session with one change: the built-in `Agent` tool is turned off, and every subagent goes to a cloud machine through the `cloud_agent` tools. Plain `claude` is unaffected. If a key is missing, `cloudy-cloud` says `cloudy-cloud is not set up yet` and offers to run setup. If the folder is not a git repo, or has no `github.com` origin, it warns you that subagents cannot start or push.
+
+### Run without the interactive UI
+
+Pass a prompt with `-p` to run once and print the answer. Any argument other than the Cloudy Cloud commands goes to Claude Code:
+
+```
+cloudy-cloud -p "use a subagent to run hostname, then report the result"
+```
+
+Without a terminal there is nobody to approve permission prompts, so your session cannot run commands such as `git fetch` to check a subagent's branch. Allow the commands you want with `--allowedTools`, or pick a mode with `--permission-mode` (`acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk` or `plan`):
+
+```
+cloudy-cloud -p "<prompt>" --allowedTools "Bash(git fetch *)" "Bash(git show *)"
+```
+
+Put `--allowedTools` after the prompt, because it takes a list. See `claude --help` for all options. `cloudy-cloud --help` prints Cloudy Cloud's own help, and `cloudy-cloud --version` prints the version.
 
 ## Your first subagent
 

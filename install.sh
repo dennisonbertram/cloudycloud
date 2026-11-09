@@ -325,6 +325,53 @@ warn_shell_env() {
 # from_npm ROOT: true when this copy was installed by npm or npx (it sits inside node_modules) instead of cloned.
 from_npm() { case $1 in */node_modules/*) return 0 ;; *) return 1 ;; esac; }
 
+# install_global: npm install -g cloudycloud. An older global cloudy-cloud link (from the old package name, or an
+# npm link of a git clone) makes npm fail with EEXIST, so offer to replace it. A failure never stops setup.
+install_global() {
+  local bin target out rc fix='npm rm -g cloudy-cloud && npm install -g cloudycloud'
+  bin=$(npm prefix -g 2>/dev/null)/bin/cloudy-cloud
+  if [ -L "$bin" ]; then
+    target=$(readlink "$bin")
+    case $target in
+      */node_modules/cloudycloud/*) ;;
+      *)
+        ask "An older cloudy-cloud command is already installed" "$bin points to $target" \
+          "It comes from the old package name cloudy-cloud, or from npm link on a git clone." \
+          "npm cannot install over it. Replacing it removes only that link and package."
+        if yn "Replace it (npm rm -g cloudy-cloud, then npm install -g cloudycloud)?"; then
+          spin_start "Replacing the old cloudy-cloud command"
+          out=$(npm rm -g cloudy-cloud 2>&1 >/dev/null); rc=$?
+          [ "$rc" -ne 0 ] || { out=$(npm install -g cloudycloud 2>&1 >/dev/null); rc=$?; }
+          spin_stop
+          install_global_done "$rc" "$out" "$fix"
+        else
+          warn "Left the old command in place. Run it with npx cloudycloud, or replace it later: $fix"
+        fi
+        return ;;
+    esac
+  fi
+  spin_start "Installing cloudycloud"
+  out=$(npm install -g cloudycloud 2>&1 >/dev/null); rc=$?
+  spin_stop
+  install_global_done "$rc" "$out" "$fix"
+}
+
+# install_global_done RC NPM_OUTPUT FIX_COMMAND
+install_global_done() {
+  local line
+  if [ "$1" -eq 0 ]; then
+    ok "Installed the cloudy-cloud command"
+    command -v cloudy-cloud >/dev/null ||
+      warn "Add this to your shell profile" "export PATH=\"$(npm prefix -g)/bin:\$PATH\""
+    return
+  fi
+  line=$(printf '%s\n' "$2" | grep -v 'npm error code\|A complete log\|^npm error *$' | grep -m1 '[[:alnum:]]')
+  bad "npm could not install the cloudy-cloud command" "${line#npm error }"
+  hint "To fix it yourself, run: $3"
+  hint "If that fails, check what is at $(npm prefix -g 2>/dev/null)/bin/cloudy-cloud, move it away yourself, then run: npm install -g cloudycloud"
+  warn "Continuing without it. Run it with npx cloudycloud"
+}
+
 link_command() { # link_command ROOT
   local root=$1 cur other old oldpkg
   if from_npm "$root"; then
@@ -334,10 +381,7 @@ link_command() { # link_command ROOT
     case $cur in */_npx/* | "${root%/node_modules/*}"/node_modules/*) cur="" ;; esac
     if [ -n "$cur" ]; then ok "cloudy-cloud is already on your PATH" "$cur"; return; fi
     if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
-      npm install -g cloudycloud >/dev/null || { bad "npm install -g cloudycloud failed" >&2; exit 1; }
-      ok "Installed the cloudy-cloud command"
-      command -v cloudy-cloud >/dev/null ||
-        warn "Add this to your shell profile" "export PATH=\"$(npm prefix -g)/bin:\$PATH\""
+      install_global
     else
       warn "Skipped. Run it with npx cloudycloud, or install later: npm install -g cloudycloud"
     fi

@@ -68,7 +68,7 @@ const taskParams = fromJsonSchema({ type: 'object', properties: { taskId: { type
 // deps: { createSandbox, env, open, tasks, cwd? }. One server per connection.
 export function buildServer(deps) {
   deps.count ??= { started: 0 }; // agents started by this server, for the per-session cap
-  const server = new Server({ name: 'cloud', version: '0.1.0' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
+  const server = new Server({ name: 'cloud', version: '0.1.1' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {
     const h = handlers[req.params.name];

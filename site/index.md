@@ -43,7 +43,7 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Run the installer
 
-1. Run `npx cloudycloud setup` in a terminal. It checks your tools and installs the `cloudy-cloud` command and the Cloudy Cloud skills.
+1. Run `npx -y cloudycloud setup` in a terminal. It checks your tools and installs the `cloudy-cloud` command and the Cloudy Cloud skills.
 
 ### Add your keys
 
@@ -165,4 +165,4 @@ Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and
 
 ## Send your subagents up.
 
-`$ npx cloudycloud setup` [Read the docs](https://cloudycloud.tech/docs/)
+`$ npx -y cloudycloud setup` [Read the docs](https://cloudycloud.tech/docs/)
