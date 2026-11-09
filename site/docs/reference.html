@@ -78,6 +78,7 @@
 
 <h3 id="cli-session">cloudy-cloud</h3>
 <pre><code>cloudy-cloud [claude arguments]</code></pre>
+<p>The package installs the same command under two names, <code>cloudy-cloud</code> and <code>cloudycloud</code>; use either. Without a global install, <code>npx cloudycloud</code> runs the same command. Plain <code>claude</code> is not affected.</p>
 <p>Starts a normal Claude Code session in the current folder. In that session the built-in <code>Agent</code> and <code>Workflow</code> tools are denied, and Claude starts subagents with the five cloud tools described <a href="#tools">below</a>. Run it from inside a git repository that has a <code>github.com</code> origin, because each cloud agent pushes its work to a branch there.</p>
 <p>Every argument is passed to <code>claude</code> after the flags that <code>cloudy-cloud</code> adds itself (<code>--mcp-config</code>, <code>--settings</code> and <code>--append-system-prompt</code>). There are no <code>cloudy-cloud</code> flags of its own for a session.</p>
 <p>Before it starts Claude, the command checks three things:</p>

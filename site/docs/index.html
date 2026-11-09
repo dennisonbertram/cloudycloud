@@ -108,7 +108,7 @@ cd cloudycloud
 <div class="warn"><p>Subagents can push to any branch your GitHub token reaches. Add a branch ruleset that blocks direct pushes to your main branch (GitHub: Settings, Rules, Rulesets).</p></div>
 
 <h2 id="start-a-session">Start a session</h2>
-<p>Run <code>cloudy-cloud</code> from inside your repo, instead of <code>claude</code>. If you skipped the global install, run <code>npx cloudycloud</code> instead; everything below works the same:</p>
+<p>Run <code>cloudy-cloud</code> from inside your repo, instead of <code>claude</code>. The package installs the same command under two names, <code>cloudy-cloud</code> and <code>cloudycloud</code>; use either. If you skipped the global install, run <code>npx cloudycloud</code> instead; everything below works the same:</p>
 <pre><code>cd &lt;your repo&gt;
 cloudy-cloud</code></pre>
 <p>This is an ordinary Claude Code session with one change: the built-in <code>Agent</code> tool is turned off, and every subagent goes to a cloud machine through the <code>cloud_agent</code> tools. Plain <code>claude</code> is unaffected. If a key is missing, <code>cloudy-cloud</code> says <code>cloudy-cloud is not set up yet</code> and offers to run setup. If the folder is not a git repo, or has no <code>github.com</code> origin, it warns you that subagents cannot start or push.</p>

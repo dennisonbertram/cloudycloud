@@ -57,7 +57,7 @@ Later, `cloudy-cloud setup` runs the installer again from any folder. It shows e
 
 ## Start a session
 
-Run `cloudy-cloud` from inside your repo, instead of `claude`. If you skipped the global install, run `npx cloudycloud` instead; everything below works the same:
+Run `cloudy-cloud` from inside your repo, instead of `claude`. The package installs the same command under two names, `cloudy-cloud` and `cloudycloud`; use either. If you skipped the global install, run `npx cloudycloud` instead; everything below works the same:
 
 ```
 cd <your repo>
