@@ -527,3 +527,45 @@ test('link_command (npm mode): a cloudy-cloud found only in the npx cache does n
   const global = stubDir(['cloudy-cloud']); // a real global install lives outside node_modules
   assert.match(run(global), /already on your PATH/);
 });
+
+// A stub npm that logs its calls; "install" fails with EEXIST while the old link exists unless it was removed first.
+function npmStub(withOldLink) {
+  const prefix = tmp(), calls = join(prefix, 'calls');
+  mkdirSync(join(prefix, 'bin'));
+  const link = join(prefix, 'bin/cloudy-cloud');
+  if (withOldLink) symlinkSync('../lib/node_modules/cloudy-cloud/bin/cloudy-cloud', link);
+  const dir = stubDir(['npm'], { npm: `#!/bin/sh
+echo "npm $*" >> "${calls}"
+case "$*" in
+  "prefix -g") echo "${prefix}" ;;
+  "rm -g cloudy-cloud") rm -f "${link}" ;;
+  "install -g cloudycloud") if [ -L "${link}" ]; then echo "npm error code EEXIST" >&2; echo "npm error EEXIST: file already exists" >&2; exit 1; fi ;;
+esac
+` });
+  return { dir, calls, link };
+}
+const runLink = (stub, answer) => fn(`yn() { case "$1" in Install*) return 0 ;; *) return ${answer} ;; esac; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${stub.dir}:/usr/bin:/bin` }); // no real cloudy-cloud on PATH
+
+test('link_command (npm mode): npm install failure explains the fix and setup continues', () => {
+  const s = npmStub(false);
+  writeFileSync(join(s.dir, 'npm'), readFileSync(join(s.dir, 'npm'), 'utf8').replace('"install -g cloudycloud") if', '"install -g cloudycloud") if true; then echo "npm error code EEXIST" >&2; echo "npm error EEXIST: file already exists" >&2; exit 1; fi; if'));
+  const r = runLink(s, 0);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /could not install[^\n]*EEXIST: file already exists/);
+  assert.match(r.stdout, /npm rm -g cloudy-cloud && npm install -g cloudycloud/);
+  assert.match(r.stdout, /npx cloudycloud/);
+});
+
+test('link_command (npm mode): an old cloudy-cloud link is replaced only with a yes, removal first', () => {
+  const s = npmStub(true);
+  const r = runLink(s, 0);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /older cloudy-cloud command/);
+  assert.match(r.stdout, /Installed the cloudy-cloud command/);
+  const calls = readFileSync(s.calls, 'utf8');
+  assert.ok(calls.indexOf('rm -g cloudy-cloud') < calls.indexOf('install -g cloudycloud'));
+  const n = npmStub(true);
+  const no = runLink(n, 1);
+  assert.doesNotMatch(readFileSync(n.calls, 'utf8'), /rm -g|install -g/);
+  assert.match(no.stdout, /Left the old command in place/);
+});
