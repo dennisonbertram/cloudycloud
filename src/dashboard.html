@@ -254,7 +254,7 @@
 
   // Replace children only when the markup changes: every rewrite re-announces a live region and drops focus.
   // Use it only for elements without event handlers (it keeps the old nodes when the markup is equal).
-  const put = (el, ...kids) => { const n = h('div', {}, kids); if (el.innerHTML === n.innerHTML) return false; el.replaceChildren(...n.childNodes); return true; };
+  const put = (el, ...kids) => { const n = h('div', {}, kids.flat(Infinity)); if (el.innerHTML === n.innerHTML) return false; el.replaceChildren(...n.childNodes); return true; };
 
   function copyBtn(text, what) {
     const b = h('button', { class: 'copy', type: 'button', 'aria-label': 'Copy ' + what, title: 'Copy ' + what }, copyIcon());
