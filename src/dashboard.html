@@ -181,7 +181,7 @@
   const kept = { rail: document.getElementById('rail'), panel: document.getElementById('panel') };
   const $ = (id) => kept[id] || document.getElementById(id);
   const NS = 'http://www.w3.org/2000/svg';
-  const ORDER = { running: 0, starting: 1, queued: 2, idle: 3, failed: 4, stopped: 5 };
+  const ORDER = { idle: 0, running: 1, starting: 2, queued: 3, failed: 4, stopped: 5 };
   const S = { data: null, sel: null, view: 'list', online: false, loaded: false, sigs: {} };
   try { S.view = localStorage.getItem('cc-view') === 'fleet' ? 'fleet' : 'list'; } catch {}
 
