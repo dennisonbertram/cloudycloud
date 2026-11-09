@@ -44,10 +44,11 @@ test('resolveTarget maps agent id and coordinator name; errors are plain', () =>
 });
 
 test('default opens a private tunnel with an exact argv', async () => {
-  const { calls, out, d } = deps();
+  const { calls, out, d } = deps([], { env: { INSTABOX_API_KEY: 'ibk_saved' } });
   assert.equal(await run(['7c1e90ab', '8080:3000'], d), 0);
   assert.equal(out[0], 'Forwarding http://127.0.0.1:8080 to port 3000 on mach-aaa. Press Ctrl-C to stop.');
-  assert.deepEqual(calls[0], [['npx', '--yes', 'instabox@latest', 'port-forward', 'mach-aaa', '8080:3000'], { inherit: true }]);
+  assert.deepEqual(calls[0], [['npx', '--yes', 'instabox@latest', 'port-forward', 'mach-aaa', '8080:3000'], { inherit: true, env: { INSTABOX_API_KEY: 'ibk_saved' } }]);
+  assert.ok(calls.every(([, o]) => o.env.INSTABOX_API_KEY === 'ibk_saved'));
 });
 
 test('--share publishes privately and --unshare unpublishes', async () => {

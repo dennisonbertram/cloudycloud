@@ -514,3 +514,16 @@ test('banner: the final frame has the wordmark, three cloud rows, and no line ov
   const early = fn('UI=1; UTF=1; WIDE=0; banner_frame 3', [], { LC_ALL: 'en_US.UTF-8' }).stdout;
   assert.notEqual(early.replace(/\u001b\[[0-9;]*[A-Za-z]/g, ''), lines.join('\n') + '\n');
 });
+
+test('link_command (npm mode): a cloudy-cloud found only in the npx cache does not count as installed', () => {
+  const cache = join(tmp(), '_npx/abc123/node_modules');
+  const bin = join(cache, '.bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, 'cloudy-cloud'), 0o755);
+  const run = (path) => fn(`yn() { echo ASKED; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${path}:${process.env.PATH}` }).stdout;
+  const npx = run(bin);
+  assert.match(npx, /ASKED/);
+  assert.doesNotMatch(npx, /already on your PATH/);
+  const global = stubDir(['cloudy-cloud']); // a real global install lives outside node_modules
+  assert.match(run(global), /already on your PATH/);
+});

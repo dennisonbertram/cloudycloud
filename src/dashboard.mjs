@@ -55,7 +55,7 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
 
 // The request handler, separate from listen() so tests can drive it without a network.
 export function createHandler({ token, getState, html }) {
-  const eq = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const eq = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
   return async (req, res) => {
     const send = (code, body, type = 'text/plain; charset=utf-8') => {
       res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': CSP, 'Cross-Origin-Resource-Policy': 'same-origin' });

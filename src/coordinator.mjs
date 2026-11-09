@@ -243,6 +243,11 @@ async function finish(c, args, deps) {
       branches = git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter((b) => b === current || b.startsWith('fleet/'));
     } catch (e) { fail(`Could not read the git repo ${repo}: ${e.stderr || e.message}`); }
     if (dirty) problems.push(`${repo} has uncommitted changes:\n${dirty.split('\n').slice(0, 10).join('\n')}`);
+    if (current === 'HEAD') {
+      let held = '';
+      try { held = git('branch', '-r', '--contains', 'HEAD'); } catch { /* treated as not pushed */ }
+      if (!held) problems.push('HEAD is detached and not contained in any remote branch, so its commits may be unpushed. Push them to a branch first: git push origin HEAD:refs/heads/<branch>');
+    }
     for (const b of branches) {
       let ahead;
       try { ahead = git('rev-list', `${b}@{u}..${b}`); } catch { problems.push(`Branch ${b} has no upstream on GitHub; push it with: git push -u origin ${b}`); continue; }

@@ -77,7 +77,7 @@ test('ls shows the delete time', async () => {
 });
 
 // finish: a real git repo with a bare "origin".
-function repoFixture({ dirty = false, unpushed = false, fleetUnpushed = false } = {}) {
+function repoFixture({ dirty = false, unpushed = false, fleetUnpushed = false, detached = '' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-fin-'));
   const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd, encoding: 'utf8' });
   git(dir, 'init', '-q', '--bare', '-b', 'main', 'origin.git');
@@ -88,6 +88,11 @@ function repoFixture({ dirty = false, unpushed = false, fleetUnpushed = false } 
   git(repo, 'checkout', '-q', '-b', 'fleet/x'); git(repo, 'push', '-q', '-u', 'origin', 'fleet/x');
   if (fleetUnpushed) { writeFileSync(join(repo, 'b'), '2'); git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'b'); git(repo, 'checkout', '-q', 'main'); }
   if (unpushed) { git(repo, 'checkout', '-q', 'main'); writeFileSync(join(repo, 'c'), '3'); git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'c'); }
+  if (detached) { // detached HEAD: 'unpushed' has a new local commit, 'pushed' sits on origin/main
+    git(repo, 'checkout', '-q', 'main');
+    if (detached === 'unpushed') { writeFileSync(join(repo, 'd'), '4'); git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'd'); }
+    git(repo, 'checkout', '-q', '--detach');
+  }
   if (dirty) writeFileSync(join(repo, 'dirty'), 'x');
   return repo;
 }
@@ -126,6 +131,18 @@ test('finish refuses a dirty tree, unpushed commits, and unpushed fleet branches
     await assert.rejects(main(['finish'], f.deps), re);
     assert.equal(deleted(f.log).length, 0);
   }
+});
+
+test('finish refuses a detached HEAD with unpushed commits, allows one that origin has, and --force skips it', async () => {
+  const bad = finishFx({ detached: 'unpushed' });
+  await assert.rejects(main(['finish'], bad.deps), /detached.*push/is);
+  assert.equal(deleted(bad.log).length, 0);
+  const good = finishFx({ detached: 'pushed' });
+  await main(['finish'], good.deps);
+  assert.equal(deleted(good.log).length, 1);
+  const forced = finishFx({ detached: 'unpushed' });
+  await main(['finish', '--force'], forced.deps);
+  assert.equal(deleted(forced.log).length, 1);
 });
 
 test('finish refuses while workers it owns are running; names cloud_agent_stop', async () => {

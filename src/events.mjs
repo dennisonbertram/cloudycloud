@@ -54,7 +54,7 @@ export function readEvents(file) {
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const ACTIVE = new Set(['queued', 'starting', 'running']);
 const IDLE_MS = 60 * 60_000; // run-subagent.mjs stops an agent after 60 idle minutes
-const ARCHIVE_MS = 8 * 60 * 60_000; // instabox.mjs archive backstop
+const DEFAULT_WORKER_MS = 6 * 60 * 60_000; // default server delete time (CLOUDY_CLOUD_WORKER_HOURS) when an old log has no deleteAt
 
 // The push outcome run-subagent.mjs writes at the end of every reply; the last matching line wins.
 // Returns { sha, branch }, { failed: true }, or undefined.
@@ -79,7 +79,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
     a.lastActivity = e.t;
     if (e.type === 'agent') {
       Object.assign(a, { description: e.description, profile: e.profile, role: e.role, model: e.model, branch: e.branch, startedAt: e.t });
-    } else if (e.type === 'machine') a.machine = e.machine;
+    } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {
       a.status = e.status;
       if (e.status === 'idle') a.idleSince = e.t;
@@ -91,7 +91,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
   for (const a of agents.values()) {
     if (ACTIVE.has(a.status) && a.pid && !alive(a.pid)) { a.status = 'stopped'; a.stoppedAt = a.lastActivity; a.sessionEnded = true; }
     if (a.status === 'idle') a.deadline = a.idleSince + IDLE_MS;
-    else if (ACTIVE.has(a.status) && a.startedAt) a.deadline = a.startedAt + ARCHIVE_MS;
+    else if (ACTIVE.has(a.status) && a.startedAt) a.deadline = a.deleteAt ?? a.startedAt + DEFAULT_WORKER_MS;
     a.messages = a.messages.slice(-300);
   }
   return [...agents.values()].filter((a) => a.startedAt).sort((x, y) => y.startedAt - x.startedAt);

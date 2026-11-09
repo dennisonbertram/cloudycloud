@@ -268,7 +268,7 @@ async function setup(a, ctx) {
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
-    a.emit?.({ type: 'machine', machine: a.sandbox.id });
+    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
@@ -492,7 +492,7 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
-  a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }) });
+  a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}` });
   a.emit({ type: 'message', text: prompt });
   const t = newTurn(a);

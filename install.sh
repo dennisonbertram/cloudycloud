@@ -330,6 +330,8 @@ link_command() { # link_command ROOT
   if from_npm "$root"; then
     # An npx copy is a temporary cache folder, so the lasting command comes from a global npm install, never npm link.
     cur=$(command -v cloudy-cloud) || cur=""
+    # npx puts its own temporary .bin first on PATH; a command found there (or inside this package's node_modules) is not installed.
+    case $cur in */_npx/* | "${root%/node_modules/*}"/node_modules/*) cur="" ;; esac
     if [ -n "$cur" ]; then ok "cloudy-cloud is already on your PATH" "$cur"; return; fi
     if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
       npm install -g cloudycloud >/dev/null || { bad "npm install -g cloudycloud failed" >&2; exit 1; }

@@ -53,8 +53,8 @@ export function resolveTarget(id, { machines, events, alive }) {
 }
 
 const INSTABOX = ['npx', '--yes', 'instabox@latest'];
-const defaultSpawn = (argv, { inherit } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'] });
+const defaultSpawn = (argv, { inherit, env } = {}) => new Promise((resolve) => {
+  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...(env?.INSTABOX_API_KEY && { INSTABOX_API_KEY: env.INSTABOX_API_KEY }) } });
   let stdout = '', stderr = '';
   p.stdout?.on('data', (d) => (stdout += d));
   p.stderr?.on('data', (d) => (stderr += d));
@@ -65,7 +65,7 @@ const defaultSpawn = (argv, { inherit } = {}) => new Promise((resolve) => {
 export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const out = deps.out ?? ((s) => console.log(s)), err = deps.err ?? ((s) => console.error(s));
-  const spawn = deps.spawn ?? defaultSpawn;
+  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
   try {
     const a = parseArgs(argv);
     let machines;

@@ -178,3 +178,19 @@ test('small-text colour tokens meet 4.5:1 in light and dark', () => {
     for (const fg of ['text-2', 'text-3', 't-running', 't-starting', 't-idle', 's-failed', 'accent'])
       for (const bg of ['page', 'surface']) assert.ok(ratio(t[fg], t[bg]) >= 4.5, `${name} --${fg} on --${bg}: ${ratio(t[fg], t[bg]).toFixed(2)}`);
 });
+
+test('a multi-byte token of the right character count is a 401, not a crash', async () => {
+  const s = await serve(), { port } = s.address();
+  try {
+    assert.equal((await get(port, `/api/state?t=${encodeURIComponent('é'.repeat(24))}`)).status, 401);
+    assert.equal((await get(port, `/api/state?t=${TOKEN}`)).status, 200);
+  } finally { s.close(); }
+});
+
+test('foldAgents uses the real delete time as the deadline, else 6 hours', () => {
+  const ev = (id, deleteAt) => [{ t: 1000, id, type: 'agent', description: 'd', role: 'worker' }, { t: 1001, id, type: 'machine', machine: 'm', ...(deleteAt && { deleteAt }) }, { t: 1002, id, type: 'status', status: 'running' }];
+  const [a] = foldAgents(ev('a1', 5000), { alive: () => true });
+  assert.equal(a.deadline, 5000);
+  const [b] = foldAgents(ev('b1'), { alive: () => true });
+  assert.equal(b.deadline, 1000 + 6 * 3600_000);
+});

@@ -152,6 +152,22 @@ test('an agent writes its events (task, machine, reply, status) with keys redact
   assert.equal(events.at(-1).status, 'stopped');
 });
 
+test('an agent description containing a secret is logged scrubbed', async () => {
+  const events = [];
+  const { start } = await setup({ events: (e) => events.push(e) });
+  await start({ description: `deploy with ${SECRET}` });
+  assert.equal(events.find((e) => e.type === 'agent').description, 'deploy with [redacted]');
+  assert.ok(!JSON.stringify(events).includes(SECRET));
+});
+
+test('the machine event records when the server deletes the machine', async () => {
+  const events = [];
+  const { start, wait } = await setup({ events: (e) => events.push(e) });
+  const id = await start();
+  await wait([id]);
+  assert.ok(events.find((e) => e.type === 'machine').deleteAt > Date.now());
+});
+
 test('wait returns the result once, then marks it reported; agent stays open', async () => {
   const { start, wait, created, open } = await setup();
   const id = await start({ prompt: 'hi' });
