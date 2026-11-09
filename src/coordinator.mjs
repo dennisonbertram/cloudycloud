@@ -168,7 +168,15 @@ async function attach(c, args) {
 
 async function ls(c) {
   const rows = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator');
-  if (!rows.length) return c.out('No coordinators.');
+  if (!rows.length) {
+    if (!c.ui.isTTY) return c.out('No coordinators.');
+    const ready = !!c.env[SNAPSHOT_KEY];
+    return c.out([c.ui.title('coordinators', 'No coordinators yet.'),
+      c.ui.text(ready ? 'Your image is saved. Start your first cloud session.' : 'First, prepare an image with your Claude login.'),
+      c.ui.section('NEXT'),
+      c.ui.command(ready ? 'claude-cloud coordinator start NAME --repo https://github.com/OWNER/REPO' : 'claude-cloud coordinator image'),
+      '', c.ui.text('No coordinator machines were found. Image and worker machines are listed separately by Instabox.'), ''].join('\n'));
+  }
   if (c.ui.isTTY) return c.out(coordinatorTable(rows, c.ui));
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE'].join('\t'));
   for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name].join('\t'));

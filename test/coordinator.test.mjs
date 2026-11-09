@@ -160,6 +160,21 @@ test('interactive list is formatted while piped output retains TSV', async () =>
   assert.match(f.log.out[1], /^a\trunning\t.*\tcoord-a$/);
 });
 
+test('empty terminal list points to image or start according to saved setup', async () => {
+  for (const snapshot of ['', 'sn_1']) {
+    const f = fixture({ snapshot });
+    f.deps.ui = terminal({ isTTY: true, columns: 80, env: { NO_COLOR: '1' } });
+    await main(['ls'], f.deps);
+    const output = f.log.out.join('\n');
+    assert.match(output, /No coordinators yet/);
+    assert.ok(output.includes(snapshot ? 'coordinator start NAME' : 'coordinator image'));
+    f.log.out.length = 0;
+    f.deps.ui = terminal({ isTTY: false });
+    await main(['ls'], f.deps);
+    assert.deepEqual(f.log.out, ['No coordinators.']);
+  }
+});
+
 test('launcher: coordinator goes to the script; plain claude-cloud still starts claude', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-l-'));
   const stub = join(dir, 'claude');
