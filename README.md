@@ -102,6 +102,12 @@ The session gets five tools in place of the built-in `Agent` tool:
 | `cloud_agent_list` | Shows every subagent's status and progress |
 | `cloud_agent_stop` | Stops subagents and deletes their machines |
 
+## Reaching an app on a cloud machine
+
+`cloudy-cloud open <agent-id-or-machine> <port>` opens a private tunnel from `http://127.0.0.1:<port>` on your computer to that port on the agent's machine (it runs `npx --yes instabox@latest port-forward`). Use the agent id from `cloud_agent_list` (the `<id>` in branch `cloudy-cloud/<id>`) or a coordinator name. `LOCAL:REMOTE` picks another local port. `--share` publishes a private link instead (`port publish --private`; anyone with the link can open the app) and `--unshare` removes it. It never publishes publicly.
+
+Two limits: start the app in the background on the machine (`nohup npm run dev > /tmp/dev.log 2>&1 &`), because a turn's foreground processes end with the turn; and the tunnel or link stops when the machine is deleted (workers after 60 idle minutes or when the session ends; coordinators live longer).
+
 ## Limits
 
 Read these before relying on it:

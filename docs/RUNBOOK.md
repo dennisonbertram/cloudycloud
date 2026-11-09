@@ -181,6 +181,7 @@ Remote Control needs a full Claude login. A token from `claude setup-token` can 
 | `cloudy-cloud coordinator ls` | Lists coordinators: name, state, created time, machine name, and the time the server deletes the machine. |
 | `cloudy-cloud coordinator stop NAME` | Deletes that coordinator's machine. Its workers are deleted by its own `cloudy-cloud` cleanup process when its session ends, or by their own delete deadline. |
 | `cloudy-cloud coordinator finish [--force]` | Run on the coordinator machine, by the coordinator. Deletes that machine after checking that the work is on GitHub (see 8.5). It refuses to run on a laptop. |
+| `cloudy-cloud open <agent-id-or-machine> <port> [--share]` | Reaches an app on an agent or coordinator machine. Default: private tunnel to `127.0.0.1:<port>` until Ctrl-C (`LOCAL:REMOTE` allowed). `--share` prints a private link (anyone with it can open the app); `--unshare` removes it. Start the app in the background on the machine (`nohup npm run dev > /tmp/dev.log 2>&1 &`); it ends when the machine is deleted. |
 
 The first time you attach, accept any trust or Remote Control prompts. Then pick the session named NAME in claude.ai/code.
 

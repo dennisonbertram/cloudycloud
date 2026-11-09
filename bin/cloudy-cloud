@@ -14,6 +14,12 @@ if [ "${1:-}" = dashboard ]; then
   exec node "$root/src/dashboard.mjs" "$@"
 fi
 
+# `cloudy-cloud open <agent-id-or-machine> <port> [--share|--unshare]` reaches an app running on a cloud machine.
+if [ "${1:-}" = open ]; then
+  shift
+  exec node "$root/src/open.mjs" "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
