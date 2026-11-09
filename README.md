@@ -20,7 +20,7 @@ Subagents that run on your laptop share its CPU, memory and network. Ten of them
 
 Requirements:
 
-- **Accounts:** an [Instabox](https://instabox.sh) account (the cloud provider supported today; its free plan is too small for more than a few subagents at once), a Claude subscription or an Anthropic API key, and a GitHub repo you can push to.
+- **Accounts:** an [Instabox](https://instabox.sh) account (the cloud provider supported today; its free plan is too small for more than a few subagents at once), a Claude subscription (setup makes a long-lived token with `claude setup-token`) or an Anthropic API key (add `ANTHROPIC_API_KEY=...` to `~/.config/cloudy-cloud/env` yourself; setup only asks for the token), and a GitHub repo you can push to.
 - **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and [Claude Code](https://code.claude.com) signed in.
 
 Run setup once, in a terminal:
@@ -37,7 +37,7 @@ npx -y cloudycloud setup
 | Claude token (`sk-ant-oat01-...`) | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
 | GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents set to read and write. It is stored in Instabox as the secret `GH_TOKEN`. |
 
-Setup also has optional steps for model provider keys (Particle.ai, OpenRouter). The Instabox key and the Claude token are saved in `~/.config/cloudy-cloud/env` (folder mode 700, file mode 600). Run `cloudy-cloud setup` again from any folder to change a key.
+Setup also has optional steps for model provider keys (Particle.ai, OpenRouter). The Instabox key and the Claude token are saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600). Run `cloudy-cloud setup` again from any folder to change a key.
 
 ![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/setup.jpg)
 
@@ -112,7 +112,7 @@ your computer                              cloud machine (one per subagent)
 | Session end | When you quit Claude Code, every open machine is deleted. A separate cleanup process does the same after a hard kill. |
 | Delete deadline | Instabox deletes the machine at a fixed time in any state. The default is 6 hours (`CLOUDY_CLOUD_WORKER_HOURS`, at most 24). It cannot be extended. |
 
-Only work a subagent has pushed to GitHub survives if its machine is lost. A single task is stopped after 29 minutes.
+Only work a subagent has pushed to GitHub survives if its machine is lost. A single turn of Claude on the machine is stopped after 29 minutes (machine start-up and queueing are not counted).
 
 Many subagents at once are paced for Instabox's limits. A subagent waiting for a machine shows the status `queued`. Your plan's machine limit still caps how many run at the same time. More in [How it works](https://cloudycloud.tech/docs/how-it-works.html).
 
@@ -122,7 +122,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 cloudy-cloud dashboard
 ```
 
-This opens a read-only web page on your own machine (`127.0.0.1`) that lists every subagent and coordinator, its status, model, branch, deadline, and the messages between your session and it. Add `--demo` to see sample data, `--no-open` to only print the link, or `--port N` to pick a port (default 4477).
+This opens a read-only web page on your own machine (`127.0.0.1`) that lists every subagent and coordinator with its status. For subagents started from your session it also shows the model, branch, deadline and the messages between your session and the subagent. Cloud coordinators and machines with no local log show only their status. Add `--demo` to see sample data, `--no-open` to only print the link, or `--port N` to pick a port (default 4477).
 
 ![Dashboard in list view with demo data: a list of subagents on the left and the activity of one running subagent on the right](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/dashboard.jpg)
 
@@ -150,7 +150,7 @@ You bring your own keys and your own cloud account. Your session stays on Claude
 
 - **Keys:** setup has optional steps for `PARTICLE_API_KEY` ([platform.particle.ai](https://platform.particle.ai)) and `OPENROUTER_API_KEY` ([openrouter.ai/keys](https://openrouter.ai/keys)). You paste an API key; signing in with OpenRouter or ChatGPT is not available. A profile whose key is missing makes `cloud_agent` fail at once.
 - **Your own profiles:** put them in `~/.config/cloudy-cloud/profiles.json` (or the path in `CLOUDY_CLOUD_PROFILES`). They add to or override the built-ins.
-- **Security:** a profile subagent gets that profile's provider key on its machine instead of your Claude token.
+- **Security:** an ordinary profile subagent gets that profile's provider key on its machine instead of your Claude token. Coordinators are different; see [Security](#security).
 
 Details and the `profiles.json` format: [Models and keys](https://cloudycloud.tech/docs/models.html).
 
@@ -161,7 +161,7 @@ A coordinator is a subagent that can start subagents of its own, so one session 
 - **Nested coordinators:** `cloud_agent` with `role: "coordinator"`. They live as long as a worker. Depth is limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3) and one session may start at most `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` agents (default 200).
 - **Cloud coordinators:** long-lived sessions on their own machines, so work continues with your laptop closed (`cloudy-cloud coordinator start NAME --repo URL`). The server deletes the machine after `--max-hours` (default and maximum 24).
 
-Cloud coordinators need a git clone install for now: run `./install.sh` from a clone of this repo, because they ship cloudy-cloud from a git checkout. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) (copied by setup) teaches Claude to keep fleet output manageable: merge worker branches into one `fleet/<topic>` trunk instead of opening 100 PRs. Every machine in a tree counts against your Instabox machine limit. More in [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.html).
+Both kinds of coordinator need a git clone install for now: run `./install.sh` from a clone of this repo, because a coordinator ships cloudy-cloud to its machine from a git checkout. From an npm install, `role: "coordinator"` fails with a message saying so. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) (copied by setup) teaches Claude to keep fleet output manageable: merge worker branches into one `fleet/<topic>` trunk instead of opening 100 PRs. Every machine in a tree counts against your Instabox machine limit. More in [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.html).
 
 ## Commands
 
@@ -188,36 +188,37 @@ Full reference with every option and environment variable: [Command and tool ref
 | `cloud_agent_list` | Shows every subagent's status and progress. |
 | `cloud_agent_stop` | Stops subagents and deletes their machines. |
 
-In a terminal session, `/tasks` lists each subagent with a progress line, and selecting one and pressing `x` stops it.
+In a terminal session, `/tasks` lists each subagent with a progress line. Selecting the first task of a subagent and pressing `x` stops the subagent and deletes its machine; cancelling a follow-up message only stops that turn, and the subagent stays open.
 
 ## Security
 
 - **GitHub token:** it never reaches the machine. The machine gets a placeholder, and Instabox's proxy swaps in the real token for requests to GitHub. A subagent can still push to any branch the token can reach, so protect your main branch.
 - **Claude credential:** it is on the machine, and each machine runs Claude with permission checks off. A prompt injection there could misuse or leak it. A subagent on a profile gets the provider key instead.
-- **Instabox API key:** it stays on your computer, in the config file and the local server.
-- **Dashboard:** local only. It listens on `127.0.0.1`, needs a random per-run token in the link, accepts only GET and HEAD requests, and never sends keys to the browser. The event log it reads (`~/.config/cloudy-cloud/events.jsonl`, mode 600) can contain your prompts and code, so treat it as private.
+- **Instabox API key:** for ordinary subagents it stays on your computer, in the config file and the local server.
+- **Coordinators:** a coordinator starts machines itself, so its machine holds real keys: the Instabox key, your Claude credential and every provider key you have configured (nested and cloud coordinators alike, even with a profile). Anyone who can reach a coordinator machine can read them; use keys you can revoke.
+- **Dashboard:** local only. It listens on `127.0.0.1`, needs a random per-run token in the link, accepts only GET and HEAD requests, and never sends keys to the browser. The event log it reads (`~/.config/cloudy-cloud/events.jsonl`, created with mode 600) can contain your prompts and code, so treat it as private.
 
 See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troubleshooting.html).
 
 ## Limits and known issues
 
 - Subagents see only files tracked by git. They cannot use your local MCP servers, your settings, or agents in `~/.claude/agents`.
-- A subagent's own subagents run inside the same machine, not on new ones.
+- An ordinary subagent's own subagents run inside the same machine, not on new ones. Only coordinators start new machines.
 - Tested on macOS.
 - Two items are still open: the Particle.ai key sits on worker machines that use it (moving it into an Instabox proxy secret is planned), and agent-drive access for workers is not built. See [docs/STATUS.md](docs/STATUS.md) for what has been proven live.
 - Task mode (`/tasks`) does not work in the VS Code extension, the desktop app, or `claude -p`. There Claude uses `cloud_agent_wait`.
-- Cloud coordinators are set up only from a git clone for now.
+- Coordinators (nested and cloud) need a git clone install for now.
 - Problems? See [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html) and [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Uninstall
 
-Delete any leftover machines first (`npx instabox@latest ls`). Then:
+Delete any leftover machines first: list them with `npx instabox@latest ls` and delete each with `npx instabox@latest rm <name>`. Then:
 
 ```sh
 npm uninstall -g cloudycloud
 ```
 
-and remove `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet` and `~/.claude/skills/cloudy-cloud-setup`. If you installed from a git clone, run `npm unlink` instead of the first command. Full steps, including deleting the `cloudy-cloud/*` branches on GitHub: [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
+and remove `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet` and `~/.claude/skills/cloudy-cloud-setup`. If you installed from a git clone, run `npm unlink -g cloudycloud` instead of the first command. Full steps, including deleting the `cloudy-cloud/*` branches on GitHub: [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
 
 ## Hosted version
 
