@@ -184,8 +184,8 @@
 </header>
 <div class="banner" id="banner" hidden role="alert"></div>
 <main id="main">
-  <section class="rail" id="rail" aria-label="Boxes"></section>
-  <section class="panel" id="panel" aria-label="Messages"></section>
+  <section class="rail" id="rail" aria-label="Agents"></section>
+  <section class="panel" id="panel" aria-label="Agent detail"></section>
 </main>
 
 <script>
@@ -272,7 +272,9 @@
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
     const s = soonTag(b); if (s) parts.push(s);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
-    const el = h('div', { class: 'row', role: 'option', 'data-id': b.id, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
+    const el = h('div', { class: 'row', role: 'option', 'data-id': b.id,
+      'aria-label': [b.status, b.description || '(no description)', b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
+      'aria-description': a ? ((a.tool || '') + a.text).trim().slice(0, 140) : null, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
       h('div', { class: 'l1' }, dot(b.status), h('span', { class: 'title', text: b.description || '(no description)' }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
@@ -283,15 +285,15 @@
   const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
   const needsYou = (b) => b.status === 'idle' || (b.status === 'failed' && today(b));
   const groupsOf = (boxes) => [['Needs you', boxes.filter(needsYou)], ['Active', boxes.filter(active)], ['Finished', boxes.filter((b) => !needsYou(b) && !active(b))]].filter(([, l]) => l.length);
-  const grp = (name, n) => h('div', { class: 'grp', role: 'presentation' }, name, h('span', { text: String(n) }));
+  const grp = (name, n) => h('div', { class: 'grp', 'aria-hidden': 'true' }, name, h('span', { text: String(n) }));
 
   function railView(boxes) {
     const rail = $('rail');
     const focusId = document.activeElement?.closest?.('[data-id]')?.dataset.id;
     const top = rail.scrollTop;
-    const wrap = h('div', { role: 'listbox', 'aria-label': 'Boxes' });
+    const wrap = h('div', { role: 'listbox', 'aria-label': 'Agent list' });
     wrap.addEventListener('keydown', listKeys);
-    for (const [name, list] of groupsOf(boxes)) { wrap.append(grp(name, list.length)); for (const b of list) wrap.append(row(b)); }
+    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.map(row)));
     rail.replaceChildren(wrap);
     rail.scrollTop = top;
     if (focusId) wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]')?.focus({ preventScroll: true });
@@ -379,7 +381,7 @@
     const g = h('div', { class: 'fleet' });
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
-      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', title: b.id + ': ' + b.status, onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
+      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.description || label(b) }),
         h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b)))));
