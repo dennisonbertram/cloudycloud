@@ -145,3 +145,26 @@ test('demo data is labelled and has every status', () => {
   const now = d.now;
   assert.ok(d.boxes.some((b) => ['queued', 'starting', 'running'].includes(b.status) && b.deadline - now < 3_600_000 && b.deadline > now), 'an active box is under one hour from deletion');
 });
+
+test('401 explains the fix and never contains the token', async () => {
+  const s = await serve(), { port } = s.address();
+  try {
+    for (const path of ['/', '/?t=wrong', '/api/state']) {
+      const r = await get(port, path);
+      assert.equal(r.status, 401);
+      assert.equal(r.body, 'This dashboard link is missing its access key, or it is from an earlier run.\nOpen the newest link that cloudy-cloud dashboard printed in your terminal, or run cloudy-cloud dashboard again.\n');
+      assert.ok(!r.body.includes(TOKEN));
+      assert.equal(r.headers['content-type'], 'text/plain; charset=utf-8');
+    }
+  } finally { s.close(); }
+});
+
+test('a page that cannot be read is a 500 and the server keeps running', { timeout: 5000 }, async () => {
+  const s = await serve({ html: () => { throw new Error('ENOENT: no such file'); } }), { port } = s.address();
+  try {
+    const r = await get(port, `/?t=${TOKEN}`);
+    assert.equal(r.status, 500);
+    assert.ok(r.body.startsWith('Could not read the dashboard page: '));
+    assert.equal((await get(port, `/api/state?t=${TOKEN}`)).status, 200);
+  } finally { s.close(); }
+});

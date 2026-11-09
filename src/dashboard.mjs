@@ -67,8 +67,12 @@ export function createHandler({ token, getState, html }) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Read-only\n');
     const url = new URL(req.url, 'http://localhost');
     const given = url.searchParams.get('t') ?? '';
-    if (!eq(given, token)) return send(401, 'Missing or wrong token. Open the URL that cloudy-cloud dashboard printed.\n');
-    if (url.pathname === '/') return send(200, typeof html === 'function' ? html() : html, 'text/html; charset=utf-8');
+    if (!eq(given, token)) return send(401, 'This dashboard link is missing its access key, or it is from an earlier run.\nOpen the newest link that cloudy-cloud dashboard printed in your terminal, or run cloudy-cloud dashboard again.\n');
+    if (url.pathname === '/') {
+      let page;
+      try { page = typeof html === 'function' ? html() : html; } catch (e) { return send(500, 'Could not read the dashboard page: ' + redact(e.message) + '\n'); }
+      return send(200, page, 'text/html; charset=utf-8');
+    }
     if (url.pathname === '/api/state') {
       try { return send(200, JSON.stringify(await getState()), 'application/json'); } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
     }
