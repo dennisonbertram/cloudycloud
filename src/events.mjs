@@ -56,8 +56,18 @@ const ACTIVE = new Set(['queued', 'starting', 'running']);
 const IDLE_MS = 60 * 60_000; // run-subagent.mjs stops an agent after 60 idle minutes
 const ARCHIVE_MS = 8 * 60 * 60_000; // instabox.mjs archive backstop
 
+// The push outcome run-subagent.mjs writes at the end of every reply; the last matching line wins.
+// Returns { sha, branch }, { failed: true }, or undefined.
+export function pushOf(text) {
+  for (const line of String(text).split('\n').reverse()) {
+    const m = /^Pushed to origin (\S+) at ([0-9a-f]{7,40})\./.exec(line);
+    if (m) return { sha: m[2], branch: m[1] };
+    if (line.startsWith('Push failed:') || line.startsWith('The sandbox could not be reached to push.')) return { failed: true };
+  }
+}
+
 // Folds events into one record per agent: { id, description, status, profile, role, model, branch, machine, startedAt,
-// lastActivity, deadline, stoppedAt, messages: [{t, kind: out|reply|progress, text, error?}] }.
+// lastActivity, deadline, stoppedAt, push: {sha, branch, t} | {failed, t} from the last reply, messages: [{t, kind: out|reply|progress, text, error?}] }.
 // An agent whose server process has died while it looked active is shown as stopped (the reaper deletes its machine).
 export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
   const agents = new Map();
@@ -75,7 +85,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
     } else if (e.type === 'message') a.messages.push({ t: e.t, kind: 'out', text: e.text });
-    else if (e.type === 'reply') a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error });
+    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; }
     else if (e.type === 'progress') a.messages.push({ t: e.t, kind: 'progress', text: e.text });
   }
   for (const a of agents.values()) {

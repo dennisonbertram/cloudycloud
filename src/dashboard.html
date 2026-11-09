@@ -91,8 +91,10 @@
   .panel-head { flex: none; padding: 20px 32px; border-bottom: 1px solid var(--border); }
   .crumb { font-size: 12px; color: var(--text-3); }
   .panel-head h1 { font: 600 20px/1.3 "Inter Tight", Inter, sans-serif; letter-spacing: -.01em; margin: 4px 0 0; }
-  .props { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin-top: 16px; }
+  .props { grid-auto-flow: row dense; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin-top: 16px; }
   .prop { min-width: 0; }
+  .prop.wide { grid-column: span 2; }
+  .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
   .pv { font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .back { display: none; margin-bottom: 8px; color: var(--accent); font-size: 13px; font-weight: 500; padding: 4px 0; }
@@ -240,11 +242,11 @@
   const live = (k, t, cls, title) => h('span', { 'data-live': k, 'data-t': t, class: cls, title, text: '' });
   const tick = () => document.querySelectorAll('[data-live]').forEach((el) => { const v = liveText(el); if (el.textContent !== v) el.textContent = v; });
 
-  function copyBtn(text) {
-    const b = h('button', { class: 'copy', type: 'button', 'aria-label': 'Copy branch name', title: 'Copy branch name' }, copyIcon());
+  function copyBtn(text, what) {
+    const b = h('button', { class: 'copy', type: 'button', 'aria-label': 'Copy ' + what, title: 'Copy ' + what }, copyIcon());
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await navigator.clipboard.writeText(text); b.replaceChildren(okIcon()); setTimeout(() => b.replaceChildren(copyIcon()), 1400); } catch { b.title = 'Copy failed: select the branch name instead'; }
+      try { await navigator.clipboard.writeText(text); b.replaceChildren(okIcon()); setTimeout(() => b.replaceChildren(copyIcon()), 1400); } catch { b.title = 'Copy failed: select the text instead'; }
     });
     return b;
   }
@@ -298,6 +300,11 @@
 
   const prop = (name, ...val) => { const v = val.flat().filter((x) => x != null && x !== false); return v.length ? h('div', { class: 'prop' }, h('div', { class: 'pl', text: name }), h('div', { class: 'pv' }, v)) : null; };
 
+  const wide = (e) => { e?.classList.add('wide'); return e; };
+  const pushView = (p) => p.failed
+    ? h('span', { class: 'push failed', text: 'push failed', title: 'The last turn could not push. The reply below says what survived.' })
+    : h('span', { class: 'push', title: "Last commit pushed from the agent's machine, at " + new Date(p.t).toLocaleString() }, 'pushed ', h('span', { class: 'mono', text: p.sha }));
+
   function panelView(b) {
     const p = $('panel');
     if (!b) { p.replaceChildren(h('div', { class: 'state' }, h('h2', { text: 'Select a box' }), h('p', { text: 'Pick an agent on the left to read its messages.' }))); return; }
@@ -335,10 +342,11 @@
       h('div', { class: 'props' },
         prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: b.status })),
         prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
-        prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch))),
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
-        prop('Deletes', canExpire(b) ? h('span', { title: deadlineTitle(b) }, live('until', b.deadline)) : gone ? h('span', {}, 'Deleted', b.stoppedAt && [' ', live('ago', b.stoppedAt)]) : null),
-        prop('Session', b.sessionEnded && 'Ended')));
+        wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
+        canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
+          : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
+            b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null));
     const thread = h('div', { class: 'thread', tabindex: '0', 'aria-label': 'Message thread' }, h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'seclabel', text: 'Activity' }), thread);
     // A finished agent opens at its answer's first line (not its footer); a running one at the bottom.
