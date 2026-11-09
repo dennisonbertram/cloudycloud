@@ -1,6 +1,13 @@
 // Sample data for `cloudy-cloud dashboard --demo`. Nothing here is real.
 const M = 60_000, H = 60 * M;
 
+// A failed turn: the exit line, a long npm log, then the footer the real server writes.
+const failedText = ['Subagent failed, exit code 1.',
+  'npm ERR! code E403', 'npm ERR! 403 403 Forbidden - GET https://registry.npmjs.org/date-fns',
+  ...Array.from({ length: 38 }, (_, i) => `npm verb stack step ${i + 1}: request to https://registry.npmjs.org/date-fns failed, reason: 403`),
+  '', 'The sandbox could not be reached to push. Only work the agent already pushed to origin cloudy-cloud/90aa13fc survives.',
+  'Model: claude-sonnet-5-5', 'Total: 9 tool uses, 41.2k in / 3.1k out tokens, $0.2140, 12m 4s'].join('\n');
+
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const box = (o) => ({ kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}` });
@@ -47,7 +54,7 @@ export function demoState(now = Date.now()) {
       messages: [
         { t: ago(3 * H), kind: 'out', text: 'Replace moment with date-fns in src/lib/dates.ts and every caller.' },
         { t: ago(2.7 * H), kind: 'progress', text: 'Bash npm install date-fns' },
-        { t: ago(2.6 * H), kind: 'reply', error: true, text: 'Subagent failed, exit code 1.\nnpm ERR! 403 Forbidden - GET https://registry.npmjs.org/date-fns\n\nOnly work the agent already pushed to origin cloudy-cloud/90aa13fc survives.' },
+        { t: ago(2.6 * H), kind: 'reply', error: true, text: failedText },
       ],
     }),
     box({

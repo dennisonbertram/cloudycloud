@@ -298,7 +298,7 @@
     const p = $('panel');
     if (!b) { p.replaceChildren(h('div', { class: 'state' }, h('h2', { text: 'Select a box' }), h('p', { text: 'Pick an agent on the left to read its messages.' }))); return; }
     const old = p.querySelector('.thread');
-    const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 60 || S.sticky === b.id;
+    const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 8 || S.sticky === b.id;
     const keep = old ? old.scrollTop : 0;
     const kids = [];
     let run = null;
@@ -332,7 +332,10 @@
         prop('Session', b.sessionEnded && 'Ended')));
     const thread = h('div', { class: 'thread', tabindex: '0', 'aria-label': 'Message thread' }, h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'seclabel', text: 'Activity' }), thread);
-    thread.scrollTop = stick ? thread.scrollHeight : keep;
+    // A finished agent opens at its answer's first line (not its footer); a running one at the bottom.
+    const lastReply = b.messages?.at(-1)?.kind === 'reply' && [...thread.querySelectorAll('.ev.reply')].at(-1);
+    if (stick && !active(b) && lastReply) thread.scrollTop = Math.min(thread.scrollHeight - thread.clientHeight, thread.scrollTop + (lastReply.getBoundingClientRect().top - thread.getBoundingClientRect().top) - 12);
+    else thread.scrollTop = stick ? thread.scrollHeight : keep;
     S.sticky = null; tick();
   }
 
@@ -401,7 +404,7 @@
     const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(boxes); }
     const sb = boxes.find((b) => b.id === S.sel);
-    const ps = sig(['p', sb.id, sb.status, sb.messages?.length, sb.lastActivity]);
+    const ps = sig(['p', sb.id, sb.status, sb.messages?.length]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     tick();
   }
