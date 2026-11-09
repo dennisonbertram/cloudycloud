@@ -1,9 +1,21 @@
+import { stripVTControlCharacters } from 'node:util';
+
+export const safeText = (value) => stripVTControlCharacters(String(value))
+  .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '')
+  .replace(/\t/g, ' ');
+
+export function formatError(error, ui = terminal({ stream: process.stderr })) {
+  const message = safeText(error?.message ?? error)
+    .replace(/\b(?:sk-|ghp_|gho_|github_pat_|ibk_)[A-Za-z0-9_-]+/g, '[redacted]');
+  return [`\n  ${ui.paint('1;31', 'error')}  ${ui.paint('1', 'claude-cloud')}`, ui.text(message), ''].join('\n');
+}
+
 // Human-facing CLI output only. MCP messages never pass through this renderer.
 export function terminal({ stream = process.stdout, env = process.env, columns = stream.columns ?? 80, isTTY = !!stream.isTTY } = {}) {
   const color = isTTY && !Object.hasOwn(env, 'NO_COLOR') && env.TERM !== 'dumb';
   const paint = (code, value) => color ? `\x1b[${code}m${value}\x1b[0m` : String(value);
   const width = Math.max(24, columns);
-  const text = (value, indent = 2) => String(value).split('\n').map((line) => {
+  const text = (value, indent = 2) => safeText(value).split('\n').map((line) => {
     const lines = []; let current = '';
     for (const word of line.split(/\s+/).filter(Boolean)) {
       if (current && current.length + word.length + 1 > width - indent) { lines.push(current); current = ''; }

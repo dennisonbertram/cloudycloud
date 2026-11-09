@@ -32,8 +32,7 @@ elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/de
   missing='Claude token'
 fi
 if [ -n "${missing:-}" ]; then
-  printf 'claude-cloud is not set up yet (no %s in %s).\nRun: %s/install.sh\n' "$missing" "$config" "$root" >&2
-  exit 1
+  exec node "$root/src/cli-help.mjs" --setup-error "$missing" "$config" "$root"
 fi
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "claude-cloud: warning: this folder is not a git repository, so subagents can't start here. Run claude-cloud from inside a repo with a github.com origin." >&2

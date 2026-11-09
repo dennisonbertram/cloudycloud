@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { terminal, coordinatorTable } from '../src/terminal.mjs';
+import { terminal, coordinatorTable, formatError } from '../src/terminal.mjs';
 
 const rows = [{ metadata: { name: 'review-api' }, state: 'running', startedAt: '2026-01-02T03:04:05Z', name: 'coord-review-api' }];
 const plain = (columns) => terminal({ columns, isTTY: true, env: { NO_COLOR: '1' } });
@@ -12,4 +12,10 @@ test('coordinator list fits wide columns and stacks full values on narrow termin
   for (const value of ['review-api', 'running', '2026-01-02T03:04:05.000Z', 'coord-review-api']) assert.ok(narrow.includes(value));
   assert.match(narrow, /Machine: coord-review-api/);
   assert.ok(narrow.split('\n').every((line) => line.length <= 48));
+});
+
+test('errors keep recovery guidance while removing terminal controls and token-shaped secrets', () => {
+  const output = formatError(new Error('HTTP 401\x1b[2J\r\x07 ibk_FAKEKEY123 sk-ant-test123\nRun: claude-cloud coordinator --help'), plain(80));
+  assert.match(output, /error  claude-cloud[\s\S]*HTTP 401[\s\S]*Run: claude-cloud coordinator --help/);
+  assert.doesNotMatch(output, /[\x1b\r\x07]|ibk_FAKEKEY|sk-ant-test/);
 });

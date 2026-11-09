@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, PROVIDER_KEY } from './config.mjs';
 import { attachGithubToken } from './instabox.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
-import { terminal, coordinatorTable } from './terminal.mjs';
+import { terminal, coordinatorTable, formatError } from './terminal.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLAUDE_CLOUD_COORDINATOR_SNAPSHOT';
@@ -229,5 +229,5 @@ export async function main(argv, deps = {}) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2)).catch((e) => { console.error(`claude-cloud: ${e.message}`); process.exit(1); });
+  main(process.argv.slice(2)).catch((e) => { console.error(formatError(e)); process.exitCode = 1; });
 }

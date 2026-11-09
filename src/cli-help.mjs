@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { terminal } from './terminal.mjs';
+import { terminal, formatError } from './terminal.mjs';
 
 export const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -63,5 +63,11 @@ export function coordinatorHelp(command, ui = terminal()) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  console.log(process.argv[2] === '--version' ? version : rootHelp());
+  if (process.argv[2] === '--setup-error') {
+    const [, , , missing, config, root] = process.argv;
+    console.error(formatError(`claude-cloud is not set up yet (no ${missing}).\nConfig: ${config}\nRun: ${root}/install.sh`));
+    process.exitCode = 1;
+  } else {
+    console.log(process.argv[2] === '--version' ? version : rootHelp());
+  }
 }
