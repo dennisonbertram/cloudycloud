@@ -110,6 +110,8 @@
   .ev.prog::before { left: -22px; top: 11px; width: 5px; height: 5px; background: var(--text-3); border: 0; }
   .chip { flex: none; min-width: 56px; text-align: center; padding: 2px 6px; border-radius: 4px; background: var(--subtle); font: 400 11px/1.4 "JetBrains Mono", monospace; color: var(--text); }
   .ptxt { flex: 1; min-width: 0; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev.prog.now::before { background: var(--accent); }
+  .ev.prog.now .ptxt { color: var(--text); }
   .ptime, .btime { flex: none; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); }
   .blk { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--surface); }
   .ev.out .blk { background: var(--subtle); }
@@ -212,7 +214,9 @@
     if (hr < 48) return hr + 'h ' + (m % 60) + 'm'; return Math.floor(hr / 24) + 'd';
   };
   const rel = (ms) => dur(ms).split(' ')[0]; // one unit, for the compact time column
-  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  // Time of day for today; weekday and date otherwise. Hover shows the full date and time.
+  const clock = (t) => { const d = new Date(t), today = new Date(now()).toDateString() === d.toDateString(); return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const timeEl = (cls, t) => h('time', { class: cls, text: clock(t), title: new Date(t).toLocaleString(), datetime: new Date(t).toISOString() });
   const active = (b) => ['queued', 'starting', 'running'].includes(b.status);
   const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
   const stamp = (b) => b.lastActivity || b.startedAt;
@@ -302,22 +306,27 @@
     const keep = old ? old.scrollTop : 0;
     const kids = [];
     let run = null;
-    for (const m of b.messages || []) {
+    const msgs = b.messages || [], last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress';
+    for (const m of msgs) {
       if (m.kind === 'progress') {
         if (!run) { run = h('div', { class: 'run', 'aria-label': 'Progress' }); kids.push(run); }
         const [tool, ...rest] = m.text.split(' ');
-        run.append(h('div', { class: 'ev prog' }, h('span', { class: 'chip', text: tool }), h('span', { class: 'ptxt', text: rest.join(' ') }), h('time', { class: 'ptime', text: clock(m.t) })));
+        run.append(h('div', { class: 'ev prog' + (nowRow && m === last ? ' now' : '') }, h('span', { class: 'chip', text: tool }), h('span', { class: 'ptxt', text: rest.join(' ') }), timeEl('ptime', m.t)));
         continue;
       }
       run = null;
       const out = m.kind === 'out';
       kids.push(h('div', { class: 'ev ' + (out ? 'out' : 'reply') + (m.error ? ' err' : '') },
         h('div', { class: 'blk' },
-          h('div', { class: 'bh' }, h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), h('time', { class: 'btime', text: clock(m.t) })),
+          h('div', { class: 'bh' }, h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
           h('div', { class: 'bb', text: m.text }))));
     }
-    if (active(b)) kids.push(h('div', { class: 'ev work' }, 'Working…'));
-    if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : 'No session messages: this box is not tracked by a session log on this computer.' })));
+    if (b.kind === 'agent' && active(b)) {
+      const turnT = msgs.findLast((m) => m.kind === 'out')?.t ?? b.startedAt;
+      kids.push(h('div', { class: 'ev work' }, b.status === 'queued' ? 'Queued: waiting for a free machine…' : b.status === 'starting' ? 'Starting the machine…'
+        : h('span', { title: "Time since your last message, and since the agent's last tool step" }, 'Working · ', live('age', turnT), nowRow && [' · last step ', live('ago', last.t)])));
+    }
+    if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : b.kind === 'coordinator' ? 'This coordinator runs in the cloud, so its messages are not recorded on this computer. Its workers are listed as machines without a session log.' : 'No session messages: this box is not tracked by a session log on this computer.' })));
     const gone = b.status === 'stopped' || b.status === 'failed';
     const head = h('div', { class: 'panel-head' },
       h('button', { class: 'back', type: 'button', onclick: () => { $('main').classList.remove('detail'); } }, '← Agents'),
