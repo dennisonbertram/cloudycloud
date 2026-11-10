@@ -32,6 +32,10 @@ The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud 
 
 A named setting that runs a worker on another model, such as `glm`, `deepseek` or `openrouter`. With no profile, a subagent runs Claude.
 
+### MCP sync
+
+The opt-in copy of chosen MCP servers from your Claude Code settings to cloud subagents. You add each server with `cloudy-cloud mcp add NAME`. The list is saved in `~/.config/cloudy-cloud/mcp.json`, and tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+
 ### Branch cloudy-cloud/<id>
 
 The git branch a subagent works on and pushes to your `origin` remote; `<id>` is the agent id shown by `cloud_agent_list`.

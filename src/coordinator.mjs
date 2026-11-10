@@ -11,6 +11,9 @@ import { profileKeyNames } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
 import { makeUi } from './ui.mjs';
+import { coordinatorHelp } from './cli-help.mjs';
+import { safeText } from './terminal.mjs';
+import { redact } from './events.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
@@ -55,7 +58,11 @@ function context(deps) {
   const configFile = env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env');
   const out = deps.out ?? ((s) => console.log(s));
   const root = deps.root ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return { env, apiKey, configFile, out, root, ui: deps.ui ?? makeUi(), fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  // Progress for slow steps goes to stderr, and only on a terminal, so piped output stays clean.
+  const stderr = deps.stderr ?? process.stderr;
+  const ui = deps.ui ?? makeUi();
+  const progress = (message) => { if (stderr.isTTY) stderr.write(`${ui.hint(message)}\n`); };
+  return { env, apiKey, configFile, out, root, progress, ui, fetchFn: deps.fetchFn ?? fetch, sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     getSdk: async () => deps.sdk ?? (await import('@insforge/instabox-sdk')) };
 }
 
@@ -92,8 +99,10 @@ async function image(c, args) {
   const existing = await find(Sandbox, c.apiKey, 'coordinator-image');
   if (!args.includes('--save')) {
     if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: cloudy-cloud coordinator image --save`);
+    c.progress('Creating the image machine...');
     const sbx = await Sandbox.create(TEMPLATE, { apiKey: c.apiKey, metadata: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, autoSuspendMs: 0, fetch: withDeleteAfter(IMAGE_SECONDS, c.fetchFn) });
     try {
+      c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
       await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
@@ -108,6 +117,7 @@ async function image(c, args) {
   const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
   if (!img) fail('No image machine found. Run: cloudy-cloud coordinator image');
   const sbx = await Sandbox.connect(img.sandboxId, { apiKey: c.apiKey });
+  c.progress('Saving the image snapshot...');
   let snap = await sbx.createSnapshot({ name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
   for (let n = 0; snap.status === 'pending'; n++) {
     if (n > 120) fail(`Snapshot ${snap.id} is still being saved. The image machine was kept; run --save again later.`);
@@ -153,16 +163,20 @@ async function start(c, args) {
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   const { Sandbox } = await c.getSdk();
   if ((await find(Sandbox, c.apiKey, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
+  c.progress('Creating the coordinator machine...');
   const sbx = await Sandbox.create(snapshot, { apiKey: c.apiKey, name: `coord-${name}`, autoSuspendMs: 0,
     fetch: withDeleteAfter(seconds, c.fetchFn), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name } });
   try {
+    c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     await attachGithubToken(sbx.sandboxId, c.apiKey, c.fetchFn);
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, keysFile(c.env)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
+    c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
+    c.progress('Starting the Claude session...');
     // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
     // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
     await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
@@ -197,14 +211,28 @@ async function attach(c, args) {
 
 async function ls(c) {
   const rows = await find((await c.getSdk()).Sandbox, c.apiKey, 'coordinator');
-  if (!rows.length) return c.out('No coordinators.');
+  if (!rows.length) {
+    if (!c.ui.on) return c.out('No coordinators.');
+    return c.out([c.ui.warn('No coordinators yet'),
+      c.ui.hint(c.env[SNAPSHOT_KEY] ? 'Start one with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO'
+        : 'First save a sign-in image with: cloudy-cloud coordinator image')].join('\n'));
+  }
+  // Names and states come from the server, so strip terminal control characters before printing them.
+  const clean = (v) => safeText(v ?? '').replace(/\n/g, ' ');
+  const when = (v) => { const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : 'unknown'; };
+  const data = rows.map((m) => ({ name: clean(m.metadata?.name) || 'unnamed', state: clean(m.state) || 'unknown', created: when(m.startedAt), machine: clean(m.name) || 'unknown',
+    deleteAt: m.machine?.deleteAt ? clean(m.machine.deleteAt) : '' }));
   if (c.ui.on) {
-    const u = c.ui, state = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
-    return c.out(u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES'], rows.map((m) => [m.metadata.name, [[m.state ?? '?', state[m.state] ?? u.col.err]], u.rel(m.startedAt),
-      m.name, m.machine?.deleteAt ? [[u.rel(m.machine.deleteAt)], [`  ${m.machine.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [['never', u.col.dim]]])));
+    const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
+    const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), d.machine,
+      d.deleteAt ? [[u.rel(d.deleteAt)], [`  ${d.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [['never', u.col.dim]]]);
+    const table = u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES'], cells);
+    // A window too narrow for the table gets one short block per coordinator instead of wrapped columns.
+    if (!table.split('\n').some((l) => l.replace(/\x1b\[[0-9;]*m/g, '').length > u.width)) return c.out(table);
+    return c.out(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`].join('\n')).join('\n\n'));
   }
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES'].join('\t'));
-  for (const m of rows) c.out([m.metadata.name, m.state, new Date(m.startedAt).toISOString(), m.name, m.machine?.deleteAt ?? 'never'].join('\t'));
+  for (const d of data) c.out([d.name, d.state, d.created, d.machine, d.deleteAt || 'never'].join('\t'));
 }
 
 async function stop(c, args) {
@@ -212,6 +240,7 @@ async function stop(c, args) {
   const { Sandbox } = await c.getSdk();
   const [m] = await find(Sandbox, c.apiKey, 'coordinator', name);
   if (!m) fail(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`);
+  c.progress('Deleting the coordinator machine...');
   await Sandbox.kill(m.sandboxId, { apiKey: c.apiKey });
   if (c.ui.on) return c.out([c.ui.ok(`Deleted coordinator ${name}`, `machine ${m.name}`), c.ui.hint('Its workers go with its cleanup, or at their own deadline (6 hours by default).'),
     c.ui.hint('Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud')].join('\n'));
@@ -269,18 +298,44 @@ async function finish(c, args, deps) {
   c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${me.name}).`);
 }
 
+// Rejects bad arguments before any key is read or the network is touched.
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours'];
+function validateArgs(cmd, args) {
+  const bad = (message) => fail(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`);
+  if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
+  if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
+  if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
+  if (!NAME_RE.test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
+  if (cmd !== 'start') { if (args.length !== 1) bad(`${cmd} takes exactly one NAME.`); return; }
+  const seen = new Set();
+  for (let i = 1; i < args.length; i++) {
+    const option = args[i];
+    if (option === '--json') { if (seen.has(option)) bad('Repeated option: --json'); seen.add(option); continue; }
+    if (!START_OPTIONS.includes(option)) bad(`Unknown argument: ${option}`);
+    if (seen.has(option)) bad(`Repeated option: ${option}`);
+    if (args[i + 1] === undefined || (option !== '--task' && args[i + 1].startsWith('--'))) bad(`Missing value for ${option}.`);
+    seen.add(option);
+    i++;
+  }
+}
+
 export async function main(argv, deps = {}) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop, finish: (c, a) => finish(c, a, deps) };
-  if (!commands[cmd]) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]');
+  const isHelp = (a) => a === '--help' || a === '-h';
+  if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
+    return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
+  }
+  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
+  validateArgs(cmd, args);
   return commands[cmd](context(deps), args);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).catch((e) => {
     const u = makeUi({ tty: process.stderr.isTTY });
-    const [first, ...more] = String(e.message).split('\n');
-    console.error(u.on ? [u.err(first), ...more.map((l) => `    ${u.dim(l)}`)].join('\n') : `cloudy-cloud: ${e.message}`);
+    const [first, ...more] = redact(safeText(e.message ?? e)).split('\n');
+    console.error(u.on ? [u.err(first), ...more.map((l) => `    ${u.dim(l)}`)].join('\n') : `cloudy-cloud: ${[first, ...more].join('\n')}`);
     process.exit(1);
   });
 }

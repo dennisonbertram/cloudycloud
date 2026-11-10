@@ -61,6 +61,7 @@
         <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting" aria-current="page">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -135,6 +136,15 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 </ul>
 <p>See <a href="dashboard.html">Dashboard and app previews</a> for the full dashboard guide.</p>
 
+<h3 id="mcp-problems">MCP server problems</h3>
+<ul>
+<li><code>The Instabox secret MCP_..._TOKEN could not be attached</code>: the secret does not exist. Create it with <code>printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NAME_TOKEN --host HOST</code>. Creating a secret needs your <code>instabox login</code> session, not the API key.</li>
+<li><code>MCP servers skipped: NAME (REASON)</code> at the end of a reply: the entry in <code>mcp.json</code> did not pass the checks. Fix it in Claude Code and run <code>cloudy-cloud mcp add NAME</code> again.</li>
+<li><code>MCP servers: ... (failed: NAME)</code>: the server was sent but did not connect on the machine. Check the token, the host in <code>--host</code> and the server's address.</li>
+<li><code>Could not read FILE: ...</code>: <code>mcp.json</code> is not valid JSON. Fix or delete the file.</li>
+</ul>
+<p>See <a href="mcp.html">MCP servers for subagents</a> for what a cloud machine can and cannot run.</p>
+
 <h2 id="security">Security</h2>
 
 <h3 id="what-runs-where">What runs where</h3>
@@ -145,6 +155,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <li><strong>Claude token:</strong> placed on each machine. It can only make model requests.</li>
 <li><strong>GitHub token:</strong> never reaches the machine. Instabox stores it as the secret <code>GH_TOKEN</code>. The machine sees a placeholder that Instabox's proxy replaces on requests to <code>github.com</code> and <code>api.github.com</code>.</li>
 <li><strong>Instabox key:</strong> stays in <code>~/.config/cloudy-cloud/env</code> (readable only by you) and in the tool server. It is never put in process arguments.</li>
+<li><strong>MCP server tokens:</strong> only for servers you added with <code>cloudy-cloud mcp add</code>. The token stays in Instabox as <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without <code>--host</code>. With <code>--allow-literal</code> the real token is on the machine. See <a href="mcp.html">MCP servers for subagents</a>.</li>
 <li><strong>Provider keys</strong> (for example Particle): these sit on the worker machines that use them. See <a href="models.html">Models and keys</a>.</li>
 </ul>
 <p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.</p>
@@ -193,7 +204,7 @@ rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/clou
 <p>No.</p>
     </article>
     <nav class="pn" aria-label="Previous and next page">
-<a class="prev" href="dashboard.html"><small>Previous</small><span>Dashboard and app previews</span></a>
+<a class="prev" href="mcp.html"><small>Previous</small><span>MCP servers for subagents</span></a>
 <a class="next" href="what-is-cloudy-cloud.html"><small>Next</small><span>What is Cloudy Cloud?</span></a>
     </nav>
   </main>

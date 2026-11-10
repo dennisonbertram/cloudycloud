@@ -61,6 +61,7 @@
         <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -106,7 +107,7 @@
 <p>A profile worker receives only its own provider key. It never receives your Claude credential. If the key for a profile is missing, <code>cloud_agent</code> fails at once and names the key.</p>
 
 <h3 id="pi-profiles">The pi profiles</h3>
-<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line.</p>
+<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get no MCP servers from <code>cloudy-cloud mcp add</code>.</p>
 
 <h2 id="openrouter">OpenRouter</h2>
 <p>To use OpenRouter:</p>

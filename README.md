@@ -154,6 +154,20 @@ You bring your own keys and your own cloud account. Your session stays on Claude
 
 Details and the `profiles.json` format: [Models and keys](https://cloudycloud.tech/docs/models.html).
 
+## MCP servers
+
+Cloud subagents have no MCP servers until you copy some. Copying is opt-in, one server at a time:
+
+```sh
+cloudy-cloud mcp add notion
+printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com
+cloudy-cloud mcp ls
+```
+
+`mcp add` finds the server in your Claude Code settings, saves it to `~/.config/cloudy-cloud/mcp.json` and prints the exact `secrets set` command for its token. Run that command once with the real token, signed in with `instabox login` (the Instabox API key cannot create secrets). Every subagent you start afterwards gets the server, and the reply ends with a line such as `MCP servers: notion`. Remove one with `cloudy-cloud mcp rm notion`.
+
+Only remote `https` servers on public hosts and `npx` or `uvx` servers are accepted. No OAuth sign-in, no localhost or local paths, no secrets in URLs or arguments, and `pi` profile workers get none. Once you have copied a server, a repo's own `.mcp.json` is no longer loaded on the machine. The token stays in Instabox and is added only to requests to the host you named; never store the secret without `--host`. `--allow-literal` is an explicit, confirmed exception that puts the real token on the machine of each subagent you start; a coordinator's own session gets it, but the workers the coordinator starts do not. Details: [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+
 ## Coordinators
 
 A coordinator is a subagent that can start subagents of its own, so one session can run a tree of work and merge the results into one branch. There are two kinds:
@@ -173,6 +187,7 @@ Both kinds of coordinator need a git clone install for now: run `./install.sh` f
 | `cloudy-cloud setup [--check-only]` | Checks your tools and saves your keys. `--check-only` only checks tools. |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
+| `cloudy-cloud mcp add <name> [--allow-literal]` \| `ls` \| `rm <name>` | Chooses which of your MCP servers cloud subagents get. |
 | `cloudy-cloud coordinator ...` | Manages cloud coordinators: `image`, `start`, `attach`, `ls`, `stop`, `finish`. |
 | `cloudy-cloud --version` | Prints the version. |
 
@@ -195,6 +210,7 @@ In a terminal session, `/tasks` lists each subagent with a progress line. Select
 - **GitHub token:** it never reaches the machine. The machine gets a placeholder, and Instabox's proxy swaps in the real token for requests to GitHub. A subagent can still push to any branch the token can reach, so protect your main branch.
 - **Claude credential:** it is on the machine, and each machine runs Claude with permission checks off. A prompt injection there could misuse or leak it. A subagent on a profile gets the provider key instead.
 - **Instabox API key:** for ordinary subagents it stays on your computer, in the config file and the local server.
+- **MCP server tokens:** for servers you add with `cloudy-cloud mcp add`, the token stays in Instabox as the secret `MCP_<NAME>_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host you named, so a subagent can use the token against that host but cannot read it. Create the secret with `--host`; without it, a prompt injection could send the token to any host. With `--allow-literal` the real token is on the machine instead (a coordinator's session, not its workers), and you confirm that at the prompt.
 - **Coordinators:** a coordinator starts machines itself, so its machine holds real keys: the Instabox key, your Claude credential and the provider keys that profiles use (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` and any `keyName` in your `profiles.json`; nested and cloud coordinators alike, even with a profile). Other `*_API_KEY` variables in your shell are not sent. Anyone who can reach a coordinator machine can read them; use keys you can revoke.
 - **Dashboard:** local only. It listens on `127.0.0.1`, needs a random per-run token in the link, accepts only GET and HEAD requests, and never sends keys to the browser. The event log it reads (`~/.config/cloudy-cloud/events.jsonl`, created with mode 600) can contain your prompts and code, so treat it as private.
 
@@ -202,7 +218,7 @@ See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troublesho
 
 ## Limits and known issues
 
-- Subagents see only files tracked by git. They cannot use your local MCP servers, your settings, or agents in `~/.claude/agents`.
+- Subagents see only files tracked by git. They cannot see your settings or agents in `~/.claude/agents`. They get MCP servers only if you copy them with `cloudy-cloud mcp add`, and only remote `https` servers on public hosts and `npx` or `uvx` servers can be copied (see [MCP servers](#mcp-servers)).
 - An ordinary subagent's own subagents run inside the same machine, not on new ones. Only coordinators start new machines.
 - Tested on macOS.
 - Two items are still open: the Particle.ai key sits on worker machines that use it (moving it into an Instabox proxy secret is planned), and agent-drive access for workers is not built. See [docs/STATUS.md](docs/STATUS.md) for what has been proven live.

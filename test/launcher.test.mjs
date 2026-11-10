@@ -129,3 +129,44 @@ test('--help, -h and help print Cloudy Cloud help; --version prints the package 
   const v = spawnSync('/bin/sh', [launcher, '--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
   assert.equal(v.stdout.trim(), JSON.parse(readFileSync('package.json', 'utf8')).version);
 });
+
+test('mcp subcommand runs src/mcp-cli.mjs with the remaining arguments', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  const argvFile = join(dir, 'argv');
+  writeFileSync(join(dir, 'node'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  chmodSync(join(dir, 'node'), 0o755);
+  const r = spawnSync('/bin/sh', [launcher, 'mcp', 'ls'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir } });
+  assert.equal(r.status, 0);
+  const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
+  assert.match(argv[0], /src\/mcp-cli\.mjs$/);
+  assert.equal(argv[1], 'ls');
+});
+
+test("Claude Code's own mcp subcommands still go to claude", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  for (const [cmd, file] of [['node', 'node-argv'], ['claude', 'claude-argv']]) {
+    writeFileSync(join(dir, cmd), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(dir, file)}"\n`);
+    chmodSync(join(dir, cmd), 0o755);
+  }
+  const cfg = join(dir, 'env');
+  writeFileSync(cfg, full);
+  const env = { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg };
+  for (const args of [['mcp', 'list'], ['mcp', 'add', 'x', '--', 'npx', 'y'], ['mcp', 'get', 'x']]) {
+    const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: repo('https://github.com/test/repo.git'), encoding: 'utf8', env, input: '' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(readFileSync(join(dir, 'claude-argv'), 'utf8').endsWith(`${args.join('\n')}\n`), args.join(' '));
+    assert.ok(!existsSync(join(dir, 'node-argv')), args.join(' '));
+  }
+});
+
+test('mcp add <name> --allow-literal goes to src/mcp-cli.mjs with the flag', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  const argvFile = join(dir, 'argv');
+  writeFileSync(join(dir, 'node'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  chmodSync(join(dir, 'node'), 0o755);
+  const r = spawnSync('/bin/sh', [launcher, 'mcp', 'add', 'notion', '--allow-literal'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir } });
+  assert.equal(r.status, 0, r.stderr);
+  const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
+  assert.match(argv[0], /src\/mcp-cli\.mjs$/);
+  assert.deepEqual(argv.slice(1), ['add', 'notion', '--allow-literal']);
+});

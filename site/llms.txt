@@ -14,6 +14,7 @@ Each page below also has its text as Markdown at its URL with `.html` replaced b
 - [Models and keys](https://cloudycloud.tech/docs/models.md): Choose Claude or an open model for a subagent and set up the keys each one needs.
 - [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.md): Run a cloud coordinator that manages many workers, and the limits that apply.
 - [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.md): Watch your cloud agents in a local web page and open apps running on their machines.
+- [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.md): Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.
 
 ## Reference
 

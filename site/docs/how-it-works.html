@@ -61,6 +61,7 @@
         <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -134,6 +135,7 @@
 <ul>
 <li><strong>GitHub token:</strong> not sent to the machine. The machine gets a placeholder named <code>GH_TOKEN</code>, and Instabox's proxy swaps in the real token for requests to <code>github.com</code> and <code>api.github.com</code>.</li>
 <li><strong>Claude credential:</strong> sent to the machine, as <code>CLAUDE_CODE_OAUTH_TOKEN</code> or <code>ANTHROPIC_API_KEY</code>. For a subagent on another model, the provider key for that profile is sent instead of your Claude credential.</li>
+<li><strong>MCP server tokens:</strong> only if you added a server that needs one. The token stays in Instabox as a secret named <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you chose. With <code>mcp add --allow-literal</code> the real value is on the machine instead.</li>
 <li><strong>Instabox API key:</strong> not sent to the machine. It stays in your config file and the local server.</li>
 </ul>
 <div class="warn"><p>Each machine runs Claude with permission checks off, and the Claude credential is on it. A prompt injection on the machine could misuse or leak that credential. A subagent can also push to any branch the GitHub token can reach, so protect your main branch.</p></div>
@@ -143,7 +145,8 @@
 <ul>
 <li>Nothing is copied into your local repo. Your branch, working tree and index are not changed. You fetch the branch yourself.</li>
 <li>Untracked files are not sent. If a subagent needs a new file, <code>git add</code> it first (staging counts as tracked) or commit it.</li>
-<li>Your local MCP servers, settings and agents from <code>~/.claude/agents</code> are not available on the machine.</li>
+<li>Your local MCP servers are not available on the machine, except the ones you copy with <code>cloudy-cloud mcp add</code> (remote <code>https</code> servers and <code>npx</code> or <code>uvx</code> servers). See <a href="mcp.html">MCP servers for subagents</a>.</li>
+<li>Your settings and agents from <code>~/.claude/agents</code> are not available on the machine.</li>
 <li>A subagent's own subagents run inside the same machine, not on new ones.</li>
 </ul>
 

@@ -61,6 +61,7 @@
         <li><a href="reference.html" data-page="reference" aria-current="page">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -74,7 +75,7 @@
 <p class="lede">This page lists every <code>cloudy-cloud</code> command and flag, the five tools Claude uses to run cloud agents, and the environment variables and files that change how they behave.</p>
 
 <h2 id="cli">Command line</h2>
-<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. Any other arguments start a Claude Code session.</p>
+<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
 
 <h3 id="cli-session">cloudy-cloud</h3>
 <pre><code>cloudy-cloud [claude arguments]</code></pre>
@@ -196,6 +197,12 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 </table>
 <div class="warn"><p><code>--force</code> can delete work that has not been pushed. Use it only when you accept losing that work.</p></div>
 
+<h3 id="cli-mcp">cloudy-cloud mcp</h3>
+<pre><code>cloudy-cloud mcp add NAME [--allow-literal]
+cloudy-cloud mcp ls
+cloudy-cloud mcp rm NAME</code></pre>
+<p>Chooses which of your Claude Code MCP servers cloud subagents get. <code>add</code> copies one server from your Claude Code settings (local, project or user scope) to <code>~/.config/cloudy-cloud/mcp.json</code>, replaces a secret value with <code>${MCP_&lt;NAME&gt;_TOKEN}</code> and prints the <code>npx --yes instabox@latest secrets set ... --host ...</code> command that stores the value once in Instabox. <code>ls</code> lists the saved servers and the secrets they need. <code>rm</code> removes one. Only <code>https</code> servers on public hosts and <code>npx</code> or <code>uvx</code> servers are accepted; a refused server prints <code>Not added: REASON</code> and exits with status 1. <code>--allow-literal</code> asks you to confirm and then copies the real token to the machines instead of using an Instabox secret. All of this is described in <a href="mcp.html">MCP servers for subagents</a>.</p>
+
 <h2 id="tools">Tools Claude uses (MCP)</h2>
 <p><code>cloudy-cloud</code> adds an MCP server named <code>cloud</code> to the session. Claude sees its tools as <code>mcp__cloud__cloud_agent</code> and so on. The session is configured to allow these five tools without asking and to deny the built-in <code>Agent</code> and <code>Workflow</code> tools. You normally ask for subagents in plain language and Claude calls the tools. This section is for when you want to know exactly what each tool takes.</p>
 <p>In a terminal Claude Code session that supports MCP tasks, <code>cloud_agent</code> and <code>cloud_agent_message</code> run as background tasks. Their progress shows in <code>/tasks</code> and the result arrives on its own with the agent id, so Claude does not need <code>cloud_agent_wait</code>. In other clients these two tools return an agent id at once and Claude calls <code>cloud_agent_wait</code>. The server also answers the task methods <code>tasks/get</code> and <code>tasks/cancel</code>.</p>
@@ -213,6 +220,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code>. It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
 </tbody>
 </table>
+<p>When <code>~/.config/cloudy-cloud/mcp.json</code> holds at least one valid server, a Claude subagent (not a <code>pi</code> profile) starts with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>, so a repo's own <code>.mcp.json</code> is not loaded on the machine. The reply ends with an <code>MCP servers:</code> line. See <a href="mcp.html">MCP servers for subagents</a>.</p>
 <p>The call is refused if the session has already started <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code> agents (default 200), or if the folder is not a git repository with at least one commit and a <code>github.com</code> origin.</p>
 
 <h3 id="tool-cloud-agent-message">cloud_agent_message</h3>
@@ -276,6 +284,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <tbody>
 <tr><td><code>CLOUDY_CLOUD_CONFIG</code></td><td><code>~/.config/cloudy-cloud/env</code></td><td>Path of the config file.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_PROFILES</code></td><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Path of the file that adds or overrides model profiles.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MCP</code></td><td><code>~/.config/cloudy-cloud/mcp.json</code></td><td>Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_EVENTS</code></td><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>Path of the event log that the dashboard reads. Set it in the environment before you start <code>cloudy-cloud</code> and the dashboard.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_WORKER_HOURS</code></td><td>6</td><td>Hours until the server deletes a worker or nested coordinator machine. At most 24. A value that is not a positive number uses 6.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_STARTS_PER_MIN</code></td><td>25</td><td>The most machine starts per minute. Extra agents wait in the queue.</td></tr>
@@ -296,6 +305,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <tbody>
 <tr><td><code>~/.config/cloudy-cloud/env</code></td><td>The config file. One <code>NAME=value</code> per line, mode 600. <code>cloudy-cloud setup</code> writes it. Only the settings and keys listed above are read from it, plus <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code>, which <code>coordinator image --save</code> writes. Change the location with <code>CLOUDY_CLOUD_CONFIG</code>.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Optional. Adds or overrides model profiles. See <a href="models.html">Models and keys</a>.</td></tr>
+<tr><td><code>~/.config/cloudy-cloud/mcp.json</code></td><td>Optional. The MCP servers that cloud subagents get, in Claude Code's <code>mcpServers</code> format, mode 600. <code>cloudy-cloud mcp add</code> writes it. Secret values are stored as <code>${MCP_&lt;NAME&gt;_TOKEN}</code> references unless you used <code>--allow-literal</code>. See <a href="mcp.html">MCP servers for subagents</a>.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>The event log. The MCP server appends one JSON line per agent event (agent, message, machine, status, progress, reply). The file has mode 600 inside a folder with mode 700. It holds your prompts and replies, so it stays on your computer. Key-shaped text is redacted before writing, and each text is cut at 20,000 characters. It is never rotated: delete it to clear the history. The dashboard reads the newest 16 MB.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/owner</code></td><td>An id the MCP server writes next to the config file, so <code>coordinator finish</code> can tell which running machines are its workers. You do not need to edit it.</td></tr>
 </tbody>
