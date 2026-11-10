@@ -987,6 +987,7 @@ The top bar counts running, starting, idle and failed agents and those finished 
 Select a box to see:
 
 - **Status**, **Model** (or profile) and **Started**.
+- **MCP**: the names of the MCP servers the subagent has, when it has any.
 - **Branch**: the `cloudy-cloud/<id>` branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.
 - **Deletes**: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (`CLOUDY_CLOUD_WORKER_HOURS`, at most 24), which can be earlier.
 - **Open app**: for a running or idle agent, the command `cloudy-cloud open <id> <port>` with a copy button. See below.
