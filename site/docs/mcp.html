@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP servers for subagents · Cloudy Cloud docs</title>
+<meta name="description" content="Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.">
+<!--seo-->
+<link rel="canonical" href="https://cloudycloud.tech/docs/mcp.html">
+<link rel="alternate" type="text/markdown" href="mcp.md">
+<meta property="og:site_name" content="Cloudy Cloud">
+<meta property="og:type" content="article">
+<meta property="og:title" content="MCP servers for subagents · Cloudy Cloud docs">
+<meta property="og:description" content="Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.">
+<meta property="og:url" content="https://cloudycloud.tech/docs/mcp.html">
+<meta property="og:image" content="https://cloudycloud.tech/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Cloudy Cloud: your subagents, up in the clouds">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
+<meta name="twitter:title" content="MCP servers for subagents · Cloudy Cloud docs">
+<meta name="twitter:description" content="Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"MCP servers for subagents","description":"Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.","url":"https://cloudycloud.tech/docs/mcp.html","mainEntityOfPage":"https://cloudycloud.tech/docs/mcp.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
+,{"@type":"ListItem","position":3,"name":"MCP servers for subagents","item":"https://cloudycloud.tech/docs/mcp.html"}]}</script>
+<!--/seo-->
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp" aria-current="page">MCP servers for subagents</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+        <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
+        <li><a href="faq.html" data-page="faq">FAQ</a></li>
+        <li><a href="glossary.html" data-page="glossary">Glossary</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>MCP servers for subagents</h1>
+<p class="lede">Cloud subagents have no MCP servers unless you choose some. <code>cloudy-cloud mcp add</code> copies a server from your Claude Code settings to the list that every cloud subagent gets. It is off until you add one.</p>
+
+<h2 id="setup">Add a server</h2>
+<p>Three steps. Replace <code>notion</code> with the name Claude Code shows in <code>claude mcp list</code>.</p>
+<ol>
+<li>Copy the server: <code>cloudy-cloud mcp add notion</code>. It finds the server in your Claude Code settings, shows what it found, and saves it.</li>
+<li>If the server needs a token, run the <code>secrets set</code> command that step 1 printed. You run it once per token.</li>
+<li>Start subagents as usual. The reply ends with a line such as <code>MCP servers: notion</code>.</li>
+</ol>
+<p>This is the output for a server that sends a token in a header:</p>
+<pre><code>cloudy-cloud mcp add notion
+Found notion in ~/.claude.json (user scope):
+  type     http
+  url      https://mcp.notion.com/mcp
+  headers  Authorization: Bearer ntn_…9f3a
+This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.
+It is written as ${MCP_NOTION_TOKEN}; Instabox adds the real value to requests to mcp.notion.com only.
+  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com
+Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start from now on gets it.</code></pre>
+<p>Run the stored-once command with the real token in <code>$TOKEN</code>. It must be an Instabox secret created with your <code>instabox login</code> session. Creating a secret with the Instabox API key from your cloudy-cloud config fails with <code>missing_scope: workspace:admin</code>. If you have not signed in, run <code>npx --yes instabox@latest login</code> first.</p>
+<p>The list is read each time a subagent starts, so you do not need to restart <code>cloudy-cloud</code>. Subagents that are already running keep the servers they started with.</p>
+
+<h3 id="where-from">Where the server is found</h3>
+<p>It searches your Claude Code settings in this order and uses the first match: the local scope (the entry for the current folder in <code>~/.claude.json</code>), the project scope (<code>.mcp.json</code> in the repo root), then the user scope (<code>mcpServers</code> in <code>~/.claude.json</code>). The first output line says which one it used. If the name is not found, it prints <code>No MCP server named NAME in your Claude Code config. See: claude mcp list</code> and exits with status 1.</p>
+<p>If the name is already in the list, the command prints <code>Replacing the existing NAME entry.</code> and overwrites it.</p>
+
+<h2 id="commands">Commands</h2>
+<table>
+<thead><tr><th>Command</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>cloudy-cloud mcp add NAME</code></td><td>Copies one server from Claude Code's settings to <code>~/.config/cloudy-cloud/mcp.json</code>. A token is replaced by a reference and the command to store it is printed.</td></tr>
+<tr><td><code>cloudy-cloud mcp add NAME --allow-literal</code></td><td>The consent path. See <a href="#allow-literal">Putting the real token on the machine</a>.</td></tr>
+<tr><td><code>cloudy-cloud mcp ls</code></td><td>Lists the servers subagents get, one per line: name, type, target (the host, or the <code>npx</code> or <code>uvx</code> package) and the secrets it needs. With none, it prints <code>No MCP servers are shared with cloud subagents. Add one with: cloudy-cloud mcp add &lt;name&gt;</code>.</td></tr>
+<tr><td><code>cloudy-cloud mcp rm NAME</code></td><td>Removes one server from the list. It does not delete the Instabox secret; use <code>npx --yes instabox@latest secrets rm MCP_NAME_TOKEN</code> for that.</td></tr>
+</tbody>
+</table>
+<p>Any other <code>cloudy-cloud mcp</code> command, such as <code>cloudy-cloud mcp list</code>, goes to Claude Code's own <code>claude mcp</code>.</p>
+
+<h2 id="what-works">What can be copied</h2>
+<p>A cloud machine cannot reach your computer, so only two kinds of server work:</p>
+<ul>
+<li><strong>Remote servers</strong> of type <code>http</code> or <code>sse</code> with an <code>https</code> URL on a public host. Headers are allowed.</li>
+<li><strong><code>npx</code> and <code>uvx</code> servers</strong> (stdio). The command must be exactly <code>npx</code> or <code>uvx</code>, because those are installed on the machine.</li>
+</ul>
+<p>Everything else is refused with a reason on the line <code>Not added: REASON</code>, and <code>mcp add</code> exits with status 1:</p>
+<table>
+<thead><tr><th>Reason you may see</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><code>the command is X; only npx and uvx servers can run on a cloud machine</code></td><td>A local program or script is not on the machine.</td></tr>
+<tr><td><code>arg X is a local path, which does not exist on the machine</code></td><td>An argument starts with <code>/</code>, contains <code>~</code> or has a <code>..</code> part.</td></tr>
+<tr><td><code>url points at localhost, which does not exist on the machine</code></td><td>The host is <code>localhost</code>, <code>*.local</code>, <code>0.0.0.0</code>, <code>::1</code>, or a <code>127.*</code>, <code>10.*</code>, <code>192.168.*</code> or <code>172.16-31.*</code> address.</td></tr>
+<tr><td><code>url must be https</code></td><td>Plain <code>http</code> URLs are not copied.</td></tr>
+<tr><td><code>uses OAuth sign-in, which a headless subagent cannot complete</code></td><td>A subagent cannot open a browser to sign in.</td></tr>
+<tr><td><code>uses headersHelper, a local script the machine does not have</code></td><td>The script would not exist on the machine.</td></tr>
+<tr><td><code>type X is not supported on a cloud machine</code></td><td>Only <code>http</code>, <code>sse</code> and stdio are accepted.</td></tr>
+<tr><td><code>url carries a secret value; send it in a header instead, ...</code> and <code>an argument carries a secret value; pass it in env instead, ...</code></td><td>A key in a URL or an argument would sit on the machine as plain text. Instabox replaces tokens only in request headers.</td></tr>
+<tr><td><code>references ${X}; cloud machines only expand MCP_&lt;NAME&gt;_TOKEN secrets</code></td><td>Other <code>${...}</code> variables are not available on the machine.</td></tr>
+</tbody>
+</table>
+<p>The same checks run again every time a subagent starts, on whatever is in <code>mcp.json</code>.</p>
+<div class="warn"><p>These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no MCP servers for the <code>pi</code> profiles (<code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code>). A <code>pi</code> worker gets none.</p></div>
+
+<h2 id="secrets">Tokens and secrets</h2>
+<p>The token is never written to <code>mcp.json</code>. <code>mcp add</code> replaces each secret value in <code>env</code> or <code>headers</code> with <code>${MCP_&lt;NAME&gt;_TOKEN}</code>. <code>NAME</code> is the server name in capitals with <code>-</code> changed to <code>_</code>, so <code>notion</code> becomes <code>MCP_NOTION_TOKEN</code>. A second secret on the same server is <code>MCP_&lt;NAME&gt;_2_TOKEN</code>, and so on. A header is treated as secret when it is <code>Authorization</code>, its value starts with <code>Bearer</code>, its name ends in <code>KEY</code>, <code>TOKEN</code>, <code>SECRET</code> or <code>PASSWORD</code>, or the value looks like a known key format. The same name rule applies to <code>env</code> values.</p>
+<p>You store the real value once in Instabox with the command <code>mcp add</code> prints:</p>
+<pre><code>printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com</code></pre>
+<ul>
+<li>For a remote server, <code>--host</code> is the URL's host.</li>
+<li>For an <code>npx</code> or <code>uvx</code> server, <code>mcp add</code> asks <code>Which HTTPS hosts does this server send the token to? (comma-separated, exact hostnames, required)</code>. It does not accept an empty answer. It also needs a terminal for that question. Without one it prints <code>Not added: a secret without a host list would be sent to any host the subagent reaches.</code></li>
+<li>Never create the secret without <code>--host</code>. Instabox would then add the value to a request to any host, so a prompt injection could send it to a server the attacker controls.</li>
+<li>Instabox replaces the placeholder only in HTTPS request headers sent to the listed hosts. Both <code>Authorization: Bearer ...</code> and a custom header name were checked this way, from <code>curl</code> and from Node <code>fetch</code>. To other hosts the machine's placeholder stays a placeholder.</li>
+</ul>
+<p>When a subagent starts, all the secret names it needs are attached to its machine together with <code>GH_TOKEN</code>. If one does not exist, the start fails with a message such as:</p>
+<pre><code>The Instabox secret MCP_NOTION_TOKEN could not be attached. Create it with: printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host &lt;host&gt;</code></pre>
+<p>If the Instabox error does not name the secret, the message is the usual <code>GH_TOKEN</code> one, followed by <code>Secrets tried: GH_TOKEN, MCP_NOTION_TOKEN</code>.</p>
+<p>Two server names that map to the same secret name (<code>my-srv</code> and <code>my_srv</code>) cannot both be added. <code>mcp add</code> prints <code>Not added: OTHER already uses MCP_MY_SRV_TOKEN. Rename one of the two servers in Claude Code first.</code></p>
+<div class="note"><p>A subagent can still <em>use</em> the token against the listed hosts, the way it can use <code>GH_TOKEN</code> against GitHub. It cannot read the real value.</p></div>
+
+<h3 id="allow-literal">Putting the real token on the machine</h3>
+<p>Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, <code>cloudy-cloud mcp add NAME --allow-literal</code> keeps the real value in <code>mcp.json</code> and copies it to every cloud machine. It only applies to values in <code>env</code> and <code>headers</code>. It is off unless you pass the flag.</p>
+<div class="warn"><p>With <code>--allow-literal</code>, the real token sits on the machine in a file with mode 600. Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.</p></div>
+<p>The command prints this warning, then asks <code>Copy the real NAME token onto cloud machines? [y/N]</code>. Anything other than <code>y</code> or <code>yes</code> cancels it with <code>Not added. Run without --allow-literal to keep the token in Instabox.</code> It also needs a terminal, so you can confirm. Without one it prints <code>Not added: --allow-literal needs a terminal so you can confirm.</code> No Instabox secret is created for a server added this way. The entry in <code>mcp.json</code> gets <code>"cloudyCloudAllowLiteral": true</code>, which is removed before the file is sent to the machine. Remove the server with <code>cloudy-cloud mcp rm NAME</code>.</p>
+
+<h2 id="files">Files and what the machine gets</h2>
+<ul>
+<li><code>~/.config/cloudy-cloud/mcp.json</code> on your computer, in Claude Code's own format: <code>{"mcpServers": {...}}</code>. <code>mcp add</code> writes it with mode 600 in a folder with mode 700. Set <code>CLOUDY_CLOUD_MCP</code> to use another path. If the file does not exist, the feature is off and nothing changes. If it is not valid JSON, <code>cloud_agent</code> fails with <code>Could not read FILE: ...</code> and the parse error.</li>
+<li>On each cloud machine, the checked servers are written to <code>~/.config/cloudy-cloud/mcp.json</code> (mode 600), and Claude is started with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>. This happens only for Claude subagents and only when at least one server passed the checks.</li>
+<li>Because of <code>--strict-mcp-config</code>, a repo's own <code>.mcp.json</code> is not loaded on the machine once you have a server in the list. Without the list, nothing changes from before.</li>
+<li>Coordinators get the same list. The list holds references, not secret values, so it adds no secret to a coordinator machine.</li>
+</ul>
+
+<h2 id="see-what-ran">See which servers a subagent had</h2>
+<ul>
+<li><strong>The reply footer</strong> ends with a line such as <code>MCP servers: notion, context7 (failed: linear)</code>. It lists the servers that connected and, in brackets, the ones that did not. If none connected it says <code>MCP servers: none connected</code>.</li>
+<li>If you allowed a real token, another line says <code>MCP servers with a real token on the machine (you allowed it): NAME</code>.</li>
+<li>Entries that did not pass the checks appear as <code>MCP servers skipped: NAME (REASON)</code>.</li>
+<li>For a <code>pi</code> worker the line is <code>MCP servers: none (pi workers do not get MCP servers yet)</code>.</li>
+<li><strong><code>cloud_agent_list</code></strong> shows a line <code>mcp notion, context7</code> under each subagent that has servers.</li>
+<li><strong>The dashboard</strong> shows an MCP row in the agent's details with the server names. It never shows entries or tokens.</li>
+</ul>
+<p>The footer lines appear only when the list has servers or skipped entries.</p>
+
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="dashboard.html"><small>Previous</small><span>Dashboard and app previews</span></a>
+<a class="next" href="troubleshooting.html"><small>Next</small><span>Troubleshooting, security and FAQ</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

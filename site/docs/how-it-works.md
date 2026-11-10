@@ -66,6 +66,7 @@ Your plan's machine limit still caps how many run at the same time. The rest wai
 
 - **GitHub token:** not sent to the machine. The machine gets a placeholder named `GH_TOKEN`, and Instabox's proxy swaps in the real token for requests to `github.com` and `api.github.com`.
 - **Claude credential:** sent to the machine, as `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. For a subagent on another model, the provider key for that profile is sent instead of your Claude credential.
+- **MCP server tokens:** only if you added a server that needs one. The token stays in Instabox as a secret named `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you chose. With `mcp add --allow-literal` the real value is on the machine instead.
 - **Instabox API key:** not sent to the machine. It stays in your config file and the local server.
 
 > Warning: Each machine runs Claude with permission checks off, and the Claude credential is on it. A prompt injection on the machine could misuse or leak that credential. A subagent can also push to any branch the GitHub token can reach, so protect your main branch.
@@ -76,7 +77,8 @@ Output shown to you is scrubbed of known key values. See [Troubleshooting, secur
 
 - Nothing is copied into your local repo. Your branch, working tree and index are not changed. You fetch the branch yourself.
 - Untracked files are not sent. If a subagent needs a new file, `git add` it first (staging counts as tracked) or commit it.
-- Your local MCP servers, settings and agents from `~/.claude/agents` are not available on the machine.
+- Your local MCP servers are not available on the machine, except the ones you copy with `cloudy-cloud mcp add` (remote `https` servers and `npx` or `uvx` servers). See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+- Your settings and agents from `~/.claude/agents` are not available on the machine.
 - A subagent's own subagents run inside the same machine, not on new ones.
 
 ## Why the cloud

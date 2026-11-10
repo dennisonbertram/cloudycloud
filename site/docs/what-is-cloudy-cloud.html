@@ -61,6 +61,7 @@
         <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud" aria-current="page">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -81,7 +82,7 @@
 <p>Subagents that run on your laptop share its CPU, memory and battery with you, so their builds and tests can slow your session down. With Cloudy Cloud you still start and steer everything from your laptop, but each subagent runs on its own machine in the cloud.</p>
 <ul>
 <li><strong>Where it runs:</strong> on a cloud machine, one per subagent.</li>
-<li><strong>What it sees:</strong> files tracked by git in your repo, including uncommitted edits. It cannot see untracked files, your local MCP servers or your personal Claude settings.</li>
+<li><strong>What it sees:</strong> files tracked by git in your repo, including uncommitted edits. It cannot see untracked files or your personal Claude settings. It has your MCP servers only if you copy them with <code>cloudy-cloud mcp add</code>.</li>
 <li><strong>What you get back:</strong> a git branch per subagent, <code>cloudy-cloud/&lt;id&gt;</code>, pushed to your GitHub repo, plus a reply with the branch, commit and token totals.</li>
 <li><strong>How long it lives:</strong> a subagent stops after 60 idle minutes or when your session ends. Its machine is deleted at a fixed deadline, 6 hours by default and 24 at most. Only work pushed to GitHub is kept.</li>
 </ul>
