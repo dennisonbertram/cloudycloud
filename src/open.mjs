@@ -1,9 +1,9 @@
 // `cloudy-cloud open <agent-id-or-machine> <port> [--share|--unshare]`: reach an app a cloud agent runs on its machine.
-import { spawn as nodeSpawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from './config.mjs';
 import { eventsFile, foldAgents, readEvents } from './events.mjs';
 import { listMachines } from './dashboard.mjs';
+import { loadProvider } from './providers/index.mjs';
 
 export const USAGE = `Usage: cloudy-cloud open <agent-id-or-machine> <port> [--share]
        cloudy-cloud open <agent-id-or-machine> <port> --unshare
@@ -35,11 +35,11 @@ export function parseArgs(argv) {
   return { id, port, share, unshare };
 }
 
-// Returns the Instabox machine id for an agent id (from the event log) or a machine id/name; throws with a plain fix.
+// Returns the provider's machine id for an agent id (from the event log) or a machine id/name; throws with a plain fix.
 export function resolveTarget(id, { machines, events, alive }) {
   const live = new Map(machines.map((m) => [m.id, m]));
   const agents = foldAgents(events, { alive });
-  const check = (m, label) => (m.state === 'running' ? m.id : fail(`${label} is not running (state: ${m.state}). Its machine was stopped or deleted; start a new agent or coordinator.`));
+  const check = (m, label) => (m.status === 'running' ? m.id : fail(`${label} is not running (state: ${m.state}). Its machine was stopped or deleted; start a new agent or coordinator.`));
   const agent = agents.find((a) => a.id === id);
   if (agent) {
     const m = live.get(agent.machine);
@@ -52,42 +52,35 @@ export function resolveTarget(id, { machines, events, alive }) {
   fail(`Unknown id "${id}". Running agent ids: ${known.join(', ') || 'none'}. Running machines: ${names.join(', ') || 'none'}.`);
 }
 
-const INSTABOX = ['npx', '--yes', 'instabox@latest'];
-const defaultSpawn = (argv, { inherit, env } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...(env?.INSTABOX_API_KEY && { INSTABOX_API_KEY: env.INSTABOX_API_KEY }) } });
-  let stdout = '', stderr = '';
-  p.stdout?.on('data', (d) => (stdout += d));
-  p.stderr?.on('data', (d) => (stderr += d));
-  p.on('error', (e) => resolve({ code: 1, stdout, stderr: String(e.message) }));
-  p.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
-});
-
 export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const out = deps.out ?? ((s) => console.log(s)), err = deps.err ?? ((s) => console.error(s));
-  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
   try {
     const a = parseArgs(argv);
+    const provider = deps.provider ?? await loadProvider(env);
+    const Name = provider.name[0].toUpperCase() + provider.name.slice(1);
+    const signIn = `If ${Name} is not signed in, run: cloudy-cloud setup`;
     let machines;
-    try { machines = await (deps.list ?? listMachines)(env); } catch (e) {
-      if (e.code === 'no_key') fail('Instabox is not signed in. Run: cloudy-cloud setup');
-      fail(`Could not list your machines (${e.message}). Check your internet connection and that INSTABOX_API_KEY is still valid.`);
+    try { machines = await (deps.list ?? listMachines)(env, provider); } catch (e) {
+      if (e.code === 'no_key') fail(`${Name} is not signed in. Run: cloudy-cloud setup`);
+      fail(`Could not list your machines (${e.message}). Check your internet connection and that ${provider.keyName} is still valid.`);
     }
     const events = (deps.events ?? (() => readEvents(eventsFile(env))))();
     const machine = resolveTarget(a.id, { machines, events, alive: deps.alive });
-    if (a.unshare) return (await spawn([...INSTABOX, 'port', 'unpublish', machine, a.port])).code;
+    const need = (cap, what) => provider.caps[cap] || fail(`${Name} does not support ${what}.`);
+    if (a.unshare) { need('hasPublish', 'published links'); return await provider.unpublishPort(machine, a.port); }
     if (a.share) {
-      const r = await spawn([...INSTABOX, 'port', 'publish', machine, a.port, '--private', '--json']);
-      if (r.code !== 0) fail(`Publishing failed: ${(r.stderr || r.stdout || '').trim().slice(0, 300)}\nIf Instabox is not signed in, run: cloudy-cloud setup`);
-      let url;
-      try { url = JSON.parse(r.stdout).url; } catch { /* fall through */ }
-      out(url ?? r.stdout.trim());
+      need('hasPublish', 'published links');
+      let r;
+      try { r = await provider.publishPort(machine, a.port); } catch (e) { fail(`Publishing failed: ${e.message}\n${signIn}`); }
+      out(r.url);
       out(`Anyone with this link can open the app until the machine is deleted or you run: cloudy-cloud open ${a.id} ${a.port} --unshare`);
       return 0;
     }
+    need('hasPortForward', 'port forwarding');
     const [local, remote = local] = a.port.split(':');
     out(`Forwarding http://127.0.0.1:${local} to port ${remote} on ${machine}. Press Ctrl-C to stop.`);
-    return (await spawn([...INSTABOX, 'port-forward', machine, a.port], { inherit: true })).code;
+    return await provider.forwardPort(machine, a.port);
   } catch (e) {
     err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud open: ${e.message}`);
     return 1;

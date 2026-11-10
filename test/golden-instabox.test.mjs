@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createProvider } from '../src/providers/instabox.mjs';
 import { reap } from '../src/reaper.mjs';
 import { listMachines } from '../src/dashboard.mjs';
 import { run as openRun } from '../src/open.mjs';
@@ -52,23 +53,24 @@ test('Instabox requests are unchanged', async () => {
     reaperCalls.push({ http: init.method ?? 'GET', url: String(url), headers: init.headers });
     return init.method === 'DELETE' ? { ok: true, status: 200 } : { ok: true, status: 200, json: async () => ({ machines: [{ id: 'm1', metadata: { owner: 'o1' } }, { id: 'm2', metadata: { owner: 'o2' } }] }) };
   };
-  await reap({ owner: 'o1', apiKey: KEY, fetchFn: reaperFetch });
+  await reap({ owner: 'o1', provider: createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: reaperFetch }) });
   record.reaper = reaperCalls;
 
-  // list used by the dashboard (SDK)
+  // list used by the dashboard (raw HTTP through the adapter; was SDK Sandbox.list, a deliberate change in #23)
   const listCalls = [];
-  const rows = await listMachines({ INSTABOX_API_KEY: KEY }, { Sandbox: { async list(o) {
-    listCalls.push(o);
-    return [{ sandboxId: 'm1', name: 'box', state: 'running', startedAt: '2026-01-02T03:04:05Z', archiveAt: '2026-01-03T03:04:05Z', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' } }];
-  } } });
+  const rows = await listMachines({ INSTABOX_API_KEY: KEY }, createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: async (url, init = {}) => {
+    listCalls.push({ http: init.method ?? 'GET', url: String(url), headers: init.headers });
+    return { ok: true, status: 200, json: async () => ({ machines: [{ id: 'm1', name: 'box', state: 'running', createdAt: '2026-01-02T03:04:05Z', archiveAt: '2026-01-03T03:04:05Z', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' } }] }) };
+  } }));
   record.dashboardList = { calls: listCalls, rows };
 
   // ports (npx instabox argv)
   const argvs = [];
-  const machines = [{ id: 'mach-aaa', name: 'box-aaa', state: 'running' }];
+  const machines = [{ id: 'mach-aaa', name: 'box-aaa', state: 'running', status: 'running' }];
   const events = [{ t: 1, id: '7c1e90ab', type: 'agent', description: 'a' }, { t: 2, id: '7c1e90ab', type: 'machine', machine: 'mach-aaa' }];
-  const d = { env: { INSTABOX_API_KEY: KEY }, list: async () => machines, events: () => events, alive: () => true, out: () => {}, err: () => {},
-    spawn: async (argv, o) => { argvs.push({ argv, inherit: !!o.inherit, envNames: Object.keys(o.env ?? {}) }); return { code: 0, stdout: '{"url":"https://x.example/"}' }; } };
+  const spawn = async (argv, o) => { argvs.push({ argv, inherit: !!o.inherit, envNames: o.env === KEY ? ['INSTABOX_API_KEY'] : [] }); return { code: 0, stdout: '{"url":"https://x.example/"}' }; }; // the adapter passes the key as o.env and names the variable itself
+  const env = { INSTABOX_API_KEY: KEY };
+  const d = { env, provider: createProvider(env, { spawn }), list: async () => machines, events: () => events, alive: () => true, out: () => {}, err: () => {} };
   for (const args of [['7c1e90ab', '8080:3000'], ['7c1e90ab', '3000', '--share'], ['7c1e90ab', '3000', '--unshare']]) assert.equal(await openRun(args, d), 0);
   record.ports = argvs;
 
