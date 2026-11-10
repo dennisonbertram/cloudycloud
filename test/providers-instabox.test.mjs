@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProvider } from '../src/providers/instabox.mjs';

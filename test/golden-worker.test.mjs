@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 // Golden: what a worker start, one follow-up message and a stop send to the sandbox. Must not change in the provider refactor.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

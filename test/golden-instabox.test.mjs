@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 // Golden: every SDK call and HTTP request that today's Instabox code makes for create, secrets, sandbox calls, list,
 // delete and ports. Must not change in the provider refactor. (Worker and coordinator goldens are in their own files.)
 import { test } from 'node:test';

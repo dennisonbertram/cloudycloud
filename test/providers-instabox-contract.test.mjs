@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 // The shared provider contract, run against the real Instabox adapter with an in-memory fake SDK and fetch.
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider } from '../src/providers/instabox.mjs';

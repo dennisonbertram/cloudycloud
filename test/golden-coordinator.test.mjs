@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 // Golden: what `coordinator image`, `image --save`, `start`, `ls`, `attach`, `stop` and `finish` send to Instabox
 // (SDK calls, HTTP requests, commands and files on the machine) and print. Must not change in the provider refactor.
 import { test } from 'node:test';
