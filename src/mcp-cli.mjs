@@ -10,6 +10,7 @@ import { redact } from './events.mjs';
 import { checkServer, isLiteralSecret, mcpConfigText, mcpFile } from './mcpsync.mjs';
 
 const REF_RE = /\$\{(MCP_[A-Z0-9_]+_TOKEN)\}/g;
+const ALLOW = 'cloudyCloudAllowLiteral'; // set only by --allow-literal; read by run-subagent
 const HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
 const tilde = (p, env) => { const h = env.HOME || homedir(); return p.startsWith(h + '/') ? `~${p.slice(h.length)}` : p; };
@@ -38,12 +39,13 @@ function findSource(name, env, cwd) {
   return hit && { entry: hit[0], file: hit[1], scope: hit[2] };
 }
 
-async function add(name, ctx) {
+async function add(name, ctx, allowLiteral = false) {
   const { env, out, err } = ctx;
   if (!name) { err('Usage: cloudy-cloud mcp add <name>'); return 1; }
   const src = findSource(name, env, ctx.cwd);
   if (!src) { err(`No MCP server named ${name} in your Claude Code config. See: claude mcp list`); return 1; }
   const e = JSON.parse(JSON.stringify(src.entry));
+  const orig = JSON.parse(JSON.stringify(src.entry));
   out(`Found ${name} in ${tilde(src.file, env)} (${src.scope} scope):`);
   const rows = [['type', e.type || 'stdio']];
   if (e.url) rows.push(['url', showUrl(String(e.url))]);
@@ -66,8 +68,19 @@ async function add(name, ctx) {
   }
   for (const [k, v] of rows) out(`  ${k.padEnd(8)} ${v}`);
 
+  // Consent path (off unless --allow-literal): keep the real value and put it on the machines.
+  let literal = false;
+  if (allowLiteral && refs.length) {
+    out('WARNING: with --allow-literal the real token is copied onto every cloud machine (in a mode-600 file) instead of staying in Instabox.');
+    out('Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere.');
+    if (!ctx.isTTY) { err('Not added: --allow-literal needs a terminal so you can confirm.'); return 1; }
+    const yes = /^y(es)?$/i.test((await ctx.ask(`Copy the real ${name} token onto cloud machines? [y/N] `)).trim());
+    if (!yes) { err('Not added. Run without --allow-literal to keep the token in Instabox.'); return 1; }
+    literal = true;
+  }
+
   let hosts = [];
-  if (refs.length) {
+  if (refs.length && !literal) {
     if (e.url) hosts = [hostOf(e)];
     else {
       if (!ctx.isTTY) { err('Not added: a secret without a host list would be sent to any host the subagent reaches.'); err('Run this in a terminal.'); return 1; }
@@ -79,6 +92,7 @@ async function add(name, ctx) {
     }
   }
   const check = checkServer(name, e);
+  if (literal && check.ok) check.entry = { ...orig, [ALLOW]: true }, check.secrets = [];
   if (!check.ok) { err(`Not added: ${check.reason}`); return 1; }
 
   const file = mcpFile(env);
@@ -95,7 +109,8 @@ async function add(name, ctx) {
   writeFileSync(file, mcpConfigText(servers) + '\n', { mode: 0o600 });
   chmodSync(file, 0o600);
 
-  const uniq = [...new Set(refs)];
+  const uniq = literal ? [] : [...new Set(refs)];
+  if (literal) out(`${name} will carry its real token on cloud machines because you allowed it. Remove it with: cloudy-cloud mcp rm ${name}`);
   if (uniq.length) {
     const h = hosts.map((x) => `--host ${x}`).join(' ');
     out('This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.');
@@ -134,13 +149,14 @@ export async function main(argv, ctx = {}) {
     ask: async (q) => { const rl = createInterface({ input: process.stdin, output: process.stderr }); try { return await rl.question(q); } finally { rl.close(); } },
     ...ctx,
   };
-  const [cmd, name] = argv;
+  const allow = argv.includes('--allow-literal');
+  const [cmd, name] = argv.filter((x) => x !== '--allow-literal');
   try {
-    if (cmd === 'add') return await add(name, ctx);
+    if (cmd === 'add') return await add(name, ctx, allow);
     if (cmd === 'ls') return ls(ctx);
     if (cmd === 'rm') return rm(name, ctx);
   } catch (e) { ctx.err(e.message); return 1; }
-  ctx.err('Usage: cloudy-cloud mcp add <name> | ls | rm <name>');
+  ctx.err('Usage: cloudy-cloud mcp add <name> [--allow-literal] | ls | rm <name>');
   return 1;
 }
 

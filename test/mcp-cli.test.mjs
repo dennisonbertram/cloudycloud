@@ -175,3 +175,20 @@ test('add: local scope is found under the current folder inside a git repo', asy
   assert.equal(code, 0, err.join('\n'));
   assert.match(out[0], /\(local scope\)/);
 });
+
+test('add --allow-literal: warns, asks (default No), and stores the real value with the consent flag only after yes', async () => {
+  const { home, env } = setup({ mcpServers: { notion } });
+  const no = await run(['add', 'notion', '--allow-literal'], env, home, { ask: async () => '' });
+  assert.equal(no.code, 1);
+  assert.match(no.out, /WARNING: .*permission checks off|permission checks off/);
+  assert.ok(!existsSync(env.CLOUDY_CLOUD_MCP));
+  const yes = await run(['add', 'notion', '--allow-literal'], env, home, { ask: async () => 'y' });
+  assert.equal(yes.code, 0);
+  const e = JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers.notion;
+  assert.equal(e.cloudyCloudAllowLiteral, true);
+  assert.equal(e.headers.Authorization, `Bearer ${TOKEN}`);
+  assert.ok(!yes.out.includes(TOKEN) && !yes.err.includes(TOKEN));
+  const plain = await run(['add', 'notion'], env, home);
+  assert.ok(!JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers.notion.cloudyCloudAllowLiteral);
+  assert.equal(plain.code, 0);
+});

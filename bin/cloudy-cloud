@@ -29,7 +29,8 @@ fi
 # `cloudy-cloud mcp add <name>|ls|rm <name>` chooses which MCP servers cloud subagents get.
 # Claude Code's own `mcp list`, `mcp add <name> -- <cmd>` and so on still go to claude below.
 if [ "${1:-}" = mcp ]; then
-  case "$#:${2:-}" in 1:|2:ls|3:add|3:rm) shift; exec node "$root/src/mcp-cli.mjs" "$@" ;; esac
+  case "$#:${2:-}" in 1:|2:ls|3:add|3:rm) shift; exec node "$root/src/mcp-cli.mjs" "$@" ;;
+    4:add) if [ "${4:-}" = --allow-literal ]; then shift; exec node "$root/src/mcp-cli.mjs" "$@"; fi ;; esac
 fi
 
 # `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
