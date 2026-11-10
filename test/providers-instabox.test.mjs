@@ -1,0 +1,110 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createProvider } from '../src/providers/instabox.mjs';
+import { createInstaboxSandbox } from '../src/instabox.mjs';
+
+const KEY = 'ib-secret-key';
+const done = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
+const timing = { pollMs: 5, timeoutMs: 100 };
+
+function fakeSdk() {
+  const calls = { create: [], snapshot: [], connect: [] };
+  const box = () => ({
+    sandboxId: 'm-1', kill: async () => true, getInfo: async () => ({ name: 'machine-x' }),
+    files: { write: async () => {}, read: async () => new Uint8Array() },
+    commands: { run: async () => ({ stdout: 'ok', stderr: '', exitCode: 0 }) },
+    createSnapshot: async (o) => { calls.snapshot.push(o); return { id: 'snap-1', status: 'pending' }; },
+  });
+  return { calls, sdk: { Sandbox: {
+    create: async (image, opts) => { calls.create.push({ image, opts }); return box(); },
+    connect: async (id, opts) => { calls.connect.push({ id, opts }); return box(); },
+    getSnapshot: async (id) => ({ id, status: 'ready' }),
+  } } };
+}
+function fakeFetch(handler = () => new Response('{}')) {
+  const calls = [];
+  const f = async (url, init = {}) => {
+    calls.push({ url: String(url), ...init });
+    if (init.method === 'GET' && /secrets$/.test(String(url))) return Response.json(done);
+    return handler(String(url), init);
+  };
+  return { f, calls };
+}
+
+test('provider.create sends the same SDK call and secrets PATCH as createInstaboxSandbox', async () => {
+  const a = fakeSdk(), fa = fakeFetch(), b = fakeSdk(), fb = fakeFetch();
+  const env = { INSTABOX_API_KEY: KEY };
+  const sbx = await createProvider(env, { sdk: a.sdk, fetchFn: fa.f, timing })
+    .create({ image: 'agent-browser', envs: { A: '1' }, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 21600, secrets: ['MCP_X_TOKEN'] });
+  await createInstaboxSandbox(env, b.sdk, fb.f, timing, 'o1')({ A: '1' }, { deleteAfterSeconds: 21600, secrets: ['MCP_X_TOKEN'] });
+  assert.equal(sbx.id, 'm-1');
+  assert.deepEqual(Object.keys(a.calls.create[0].opts), Object.keys(b.calls.create[0].opts));
+  const strip = (c) => ({ ...c, opts: { ...c.opts, fetch: undefined } });
+  assert.deepEqual(strip(a.calls.create[0]), strip(b.calls.create[0]));
+  assert.equal(a.calls.create[0].opts.archiveMs, 8 * 3600_000);
+  assert.deepEqual(fa.calls.map((c) => [c.method, c.url, c.body]), fb.calls.map((c) => [c.method, c.url, c.body]));
+  assert.equal(fa.calls[0].body, '{"secrets":["GH_TOKEN","MCP_X_TOKEN"]}');
+  assert.ok(!JSON.stringify(fa.calls).includes('ghp_'));
+});
+
+test('coordinator-style create: name, neverSuspend (no archiveMs), name from getInfo', async () => {
+  const { sdk, calls } = fakeSdk();
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing });
+  const s1 = await p.create({ image: 'snap', labels: { purpose: 'cloudy-cloud', role: 'coordinator' }, name: 'coord-a', ttlSeconds: 60, neverSuspend: true });
+  assert.equal(s1.name, 'coord-a');
+  assert.equal(calls.create[0].opts.autoSuspendMs, 0);
+  assert.equal(calls.create[0].opts.archiveMs, undefined);
+  const s2 = await p.create({ image: 'tpl', labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 60, neverSuspend: true });
+  assert.equal(s2.name, 'machine-x');
+});
+
+test('caps follow the environment', () => {
+  const c = createProvider({ CLOUDY_CLOUD_MAX_INSTABOX_CALLS: '7', CLOUDY_CLOUD_STARTS_PER_MIN: '3' }).caps;
+  assert.equal(c.maxConcurrentCalls, 7);
+  assert.equal(c.startsPerMin, 3);
+  const d = createProvider({}).caps;
+  assert.deepEqual([d.maxConcurrentCalls, d.startsPerMin, d.maxForegroundMs, d.maxTtlSeconds, d.uploadMaxBytes], [24, 25, 600000, 86400, 10485760]);
+  assert.ok(d.hasServerTTL && d.hasProxySecrets && d.hasSnapshots && d.hasPortForward && d.hasPublish);
+});
+
+test('list uses raw GET with metadata, filters client-side and maps rows', async () => {
+  const { f, calls } = fakeFetch(() => Response.json({ machines: [
+    { id: 'a', name: 'n1', state: 'running', createdAt: '2026-01-01T00:00:00Z', metadata: { owner: 'o1', purpose: 'cloudy-cloud' }, deleteAt: '2026-01-02T00:00:00Z' },
+    { id: 'b', name: 'n2', state: 'error', createdAt: '2026-01-01T00:00:00Z', metadata: { owner: 'other' } },
+  ] }));
+  const rows = await createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: f }).list({ owner: 'o1' });
+  assert.equal(calls[0].url, 'https://api.instabox.sh/v1/machines?metadata=owner%3Ao1');
+  assert.deepEqual(calls[0].headers, { 'X-API-Key': KEY });
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0].id, rows[0].status, rows[0].state, rows[0].deleteAt, rows[0].labels.owner], ['a', 'running', 'running', '2026-01-02T00:00:00Z', 'o1']);
+});
+
+test('delete sends the confirm headers; 404 resolves; 500 rejects after 3 attempts', async () => {
+  const ok = fakeFetch(() => new Response('', { status: 404 }));
+  await createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: ok.f }).delete('x');
+  assert.equal(ok.calls[0].url, 'https://api.instabox.sh/v1/machines/x');
+  assert.equal(ok.calls[0].method, 'DELETE');
+  assert.equal(ok.calls[0].headers['X-Confirm-Delete'], 'x');
+  assert.ok(ok.calls[0].headers['Idempotency-Key']);
+  const bad = fakeFetch(() => new Response('', { status: 500 }));
+  await assert.rejects(createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: bad.f }).delete('x'), (e) => e.code === 'transient');
+  assert.equal(bad.calls.length, 3);
+});
+
+test('missing key gives code no_key; localMachineName; snapshot and ports', async () => {
+  await assert.rejects(createProvider({}, { fetchFn: fakeFetch().f }).list({}), (e) => e.code === 'no_key');
+  const spawned = [];
+  const { sdk, calls } = fakeSdk();
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing,
+    spawn: async (argv, o) => { spawned.push([argv, o]); return { code: 0, stdout: '{"url":"https://u"}', stderr: '' }; } });
+  assert.equal(p.localMachineName('instabox-abc'), 'abc');
+  assert.equal(p.localMachineName('laptop'), '');
+  assert.deepEqual(await p.snapshot(await p.connect('m-1'), { name: 's', description: 'd' }), { id: 'snap-1', status: 'pending' });
+  assert.deepEqual(calls.snapshot[0], { name: 's', description: 'd' });
+  assert.deepEqual(await p.getSnapshot('snap-1'), { id: 'snap-1', status: 'ready' });
+  assert.deepEqual(await p.publishPort('m', '3000'), { url: 'https://u' });
+  assert.deepEqual(spawned[0][0], ['npx', '--yes', 'instabox@latest', 'port', 'publish', 'm', '3000', '--private', '--json']);
+  assert.equal(await p.forwardPort('m', '3000:80'), 0);
+  assert.equal(spawned[1][1].inherit, true);
+  assert.ok(!spawned[1][0].includes(KEY));
+});
