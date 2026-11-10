@@ -73,6 +73,9 @@ test('profileKeyNames lists the keys profiles use, not every *_API_KEY in the en
   assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const f = file({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'mm', keyName: 'OTHER_API_KEY' }, bad: { keyName: 'lower' }, worse: null });
   assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
+  // A coordinator has no profiles.json, so it still needs the key of a built-in profile that the laptop file overrides.
+  const over = file({ openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', model: 'mm', keyName: 'MINE_API_KEY' } });
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const broken = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'p.json');
   writeFileSync(broken, '{not json');
   assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
