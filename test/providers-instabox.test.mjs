@@ -146,6 +146,7 @@ test('the injected spawn gets the whole env object', async () => {
   const p = createProvider(env, { spawn: async (argv, o) => { seen.push(o.env); return { code: 0, stdout: '', stderr: '' }; } });
   await p.unpublishPort('m', '3000');
   assert.equal(seen[0], env);
+});
 
 // Wire assertions moved from test/reaper.test.mjs and test/open.test.mjs (reaper and `open` now go through the provider).
 test('wire: list and delete use the raw API with the key, confirm and idempotency headers; delete retries twice', async () => {
