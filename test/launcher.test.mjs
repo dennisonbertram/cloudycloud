@@ -141,3 +141,20 @@ test('mcp subcommand runs src/mcp-cli.mjs with the remaining arguments', () => {
   assert.match(argv[0], /src\/mcp-cli\.mjs$/);
   assert.equal(argv[1], 'ls');
 });
+
+test("Claude Code's own mcp subcommands still go to claude", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  for (const [cmd, file] of [['node', 'node-argv'], ['claude', 'claude-argv']]) {
+    writeFileSync(join(dir, cmd), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(dir, file)}"\n`);
+    chmodSync(join(dir, cmd), 0o755);
+  }
+  const cfg = join(dir, 'env');
+  writeFileSync(cfg, full);
+  const env = { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg };
+  for (const args of [['mcp', 'list'], ['mcp', 'add', 'x', '--', 'npx', 'y'], ['mcp', 'get', 'x']]) {
+    const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: repo('https://github.com/test/repo.git'), encoding: 'utf8', env, input: '' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(readFileSync(join(dir, 'claude-argv'), 'utf8').endsWith(`${args.join('\n')}\n`), args.join(' '));
+    assert.ok(!existsSync(join(dir, 'node-argv')), args.join(' '));
+  }
+});

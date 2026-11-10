@@ -26,10 +26,10 @@ if [ "${1:-}" = coordinator ]; then
   exec node "$root/src/coordinator.mjs" "$@"
 fi
 
-# `cloudy-cloud mcp add|ls|rm` chooses which MCP servers cloud subagents get.
+# `cloudy-cloud mcp add <name>|ls|rm <name>` chooses which MCP servers cloud subagents get.
+# Claude Code's own `mcp list`, `mcp add <name> -- <cmd>` and so on still go to claude below.
 if [ "${1:-}" = mcp ]; then
-  shift
-  exec node "$root/src/mcp-cli.mjs" "$@"
+  case "$#:${2:-}" in 1:|2:ls|3:add|3:rm) shift; exec node "$root/src/mcp-cli.mjs" "$@" ;; esac
 fi
 
 # `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
