@@ -1120,7 +1120,7 @@ test('consent never delivers a secret in a url or an argument', async () => {
     g: { command: 'npx', args: ['-y', 'srv', k], cloudyCloudAllowLiteral: true },
   });
   const r = await wait([await start({})]);
-  assert.match(r, /MCP servers skipped: u \(url carries a secret value[^\n]*; g \(an argument carries a secret value/);
+  assert.match(r, /MCP servers skipped: u \(url carries a secret value[^\n]*; g \(argument 3 carries a secret value/);
   assert.ok(!JSON.stringify(sandboxes[0].written).includes(k));
 });
 
@@ -1129,12 +1129,14 @@ const OPAQUE_SERVER = { type: 'http', url: 'https://l.example.com/mcp', headers:
 
 test('a consented literal token echoed by the agent is scrubbed from the reply, the events and follow-up turns', async () => {
   const events = [];
-  const { start, wait, deps } = await mcpSetup({ yes: OPAQUE_SERVER }, { events: (e) => events.push(e) });
-  const id = (await start({ prompt: `ECHO ${OPAQUE}` })).content[0].text.match(/agent_id: (\S+)/)[1];
+  const { start, wait, msg } = await mcpSetup({ yes: OPAQUE_SERVER }, { events: (e) => events.push(e) });
+  const id = await start({ prompt: `ECHO ${OPAQUE}` });
   const r = await wait([id]);
   assert.ok(!r.includes(OPAQUE), r);
-  const r2 = await (async () => { await messageAgent({ agent_id: id, message: `ECHO again ${OPAQUE}` }, deps); return wait([id]); })();
+  await msg(id, `ECHO again ${OPAQUE}`);
+  const r2 = await wait([id]);
   assert.ok(!r2.includes(OPAQUE), r2);
+  assert.ok(r2.includes('[redacted]'), 'the echo reached the reply, so the scrub is what hid it');
   assert.ok(!JSON.stringify(events).includes(OPAQUE), 'events never hold the token');
 });
 
