@@ -31,6 +31,14 @@ export function loadProfiles(env = process.env) {
   return { ...BUILTIN, ...user };
 }
 
+// Names of the provider keys that profiles use (built-in and profiles.json). Only these go to a coordinator's machine,
+// never every *_API_KEY that happens to be set in the shell. An unreadable profiles.json leaves the built-in names.
+export function profileKeyNames(env = process.env) {
+  let profiles = BUILTIN;
+  try { profiles = loadProfiles(env); } catch { /* resolveProfile reports the broken file when a profile is used */ }
+  return [...new Set(Object.values(profiles).map((p) => p?.keyName).filter((k) => typeof k === 'string' && PROVIDER_KEY.test(k)))];
+}
+
 // Returns { ok: profile } or { error: text }. `model` is the optional per-call model.
 export function resolveProfile(name, model, env = process.env) {
   if (typeof name !== 'string' || !NAME.test(name)) return { error: `invalid profile: must match ${NAME}` };

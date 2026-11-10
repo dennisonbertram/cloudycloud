@@ -6,7 +6,8 @@ import { homedir, hostname as osHostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, PROVIDER_KEY } from './config.mjs';
+import { loadEnv, ownerFile } from './config.mjs';
+import { profileKeyNames } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
 import { makeUi } from './ui.mjs';
@@ -123,9 +124,11 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
-// What goes in the coordinator's own env file: the Instabox key, the Claude setup-token and provider keys.
+// What goes in the coordinator's own env file: the Instabox key, the Claude setup-token and the provider keys that
+// profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
 function keysFile(env) {
-  return `${Object.entries(env).filter(([k, v]) => v && (SECRET_KEYS.includes(k) || PROVIDER_KEY.test(k)))
+  const names = new Set([...SECRET_KEYS, 'ANTHROPIC_API_KEY', ...profileKeyNames(env)]);
+  return `${Object.entries(env).filter(([k, v]) => v && names.has(k))
     .map(([k, v]) => `${k}=${v}`).join('\n')}\n`;
 }
 

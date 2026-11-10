@@ -9,6 +9,7 @@ import { main } from '../src/coordinator.mjs';
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
 const PROV = 'sk-or-PROVIDERKEY0123';
+const OTHER = 'sk_live_UNRELATED0123'; // an *_API_KEY in the shell that no profile uses
 const applied = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
 
 function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
@@ -32,7 +33,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
     async kill(id) { log.killed.push(id); return true; },
   } };
   const fetchFn = async (url, init) => { log.fetches.push({ url, ...init }); return init.method === 'PATCH' ? new Response('{}') : Response.json(applied); };
-  const env = { INSTABOX_API_KEY: IBK, CLAUDE_CODE_OAUTH_TOKEN: TOK, OPENROUTER_API_KEY: PROV, CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
+  const env = { INSTABOX_API_KEY: IBK, CLAUDE_CODE_OAUTH_TOKEN: TOK, OPENROUTER_API_KEY: PROV, STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
   const deps = { sdk, fetchFn, env, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s) };
   return { log, deps, configFile, mk };
 }
@@ -76,6 +77,7 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
   assert.ok(w.d.includes(`INSTABOX_API_KEY=${IBK}`) && w.d.includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOK}`) && w.d.includes(`OPENROUTER_API_KEY=${PROV}`));
   assert.ok(!w.d.includes('PATH='));
+  assert.ok(!w.d.includes('STRIPE_API_KEY') && !w.d.includes(OTHER), 'a key no profile uses stays on the laptop');
   for (const c of f.log.cmds) for (const secret of [IBK, TOK, PROV]) assert.ok(!c.includes(secret), `secret in command: ${c}`);
   assert.ok(f.log.cmds.some((c) => /chmod 600/.test(c)));
   assert.ok(f.log.cmds.some((c) => /git clone -q -b 'main' 'https:\/\/github.com\/o\/r'/.test(c)));
@@ -91,6 +93,16 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const text = f.log.out.join('\n');
   assert.match(text, /"boss"/);
   assert.match(text, /coordinator attach boss/);
+});
+
+test('start sends the key of a profile from profiles.json, and still not an unrelated key', async () => {
+  const f = fixture();
+  writeFileSync(f.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'm', keyName: 'MINE_API_KEY' } }));
+  f.deps.env.MINE_API_KEY = 'mine-KEY-0123';
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--branch', 'main'], f.deps);
+  const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
+  assert.ok(w.d.includes('MINE_API_KEY=mine-KEY-0123') && w.d.includes(`OPENROUTER_API_KEY=${PROV}`));
+  assert.ok(!w.d.includes('STRIPE_API_KEY'));
 });
 
 test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {

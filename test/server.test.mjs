@@ -30,8 +30,8 @@ async function repo() {
 }
 
 // A client for one connection. mode: 'modern' (2026-07-28, with or without the tasks extension) or 'legacy' (2025-11-25 initialize).
-async function connect(mode) {
-  const child = spawn('node', [ENTRY], { cwd: await repo(), stdio: ['pipe', 'pipe', 'pipe'] });
+async function connect(mode, env = {}) {
+  const child = spawn('node', [ENTRY], { cwd: await repo(), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
   children.push(child);
   const pending = new Map();
   let id = 0, buf = '';
@@ -183,4 +183,15 @@ test('older protocol revision (2025-11-25): all five tools are listed and work w
   assert.match(text(await c.call('cloud_agent_message', { agent_id: id, message: 'OK again' })), /status: running/);
   assert.match(text(await c.call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 10 })), /done OK/);
   assert.match(text(await c.call('cloud_agent_stop', { agent_ids: [id] })), /stopped/);
+});
+
+test('start pacing is shared by every cloud_agent call of one server', async () => {
+  const c = await connect('modern', { CLOUDY_CLOUD_STARTS_PER_MIN: '1' });
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push(text(await c.call('cloud_agent', { prompt: 'HANG pace', description: `d${i}` })).match(/agent_id: ([0-9a-f]{8})/)[1]);
+  await tick(500);
+  const list = text(await c.call('cloud_agent_list', {}));
+  assert.equal(ids.filter((id) => new RegExp(`${id}  queued`).test(list)).length, 2, list);
+  assert.match(list, /queued for a machine \(1 ahead\)/);
+  await c.call('cloud_agent_stop', { agent_ids: ids });
 });

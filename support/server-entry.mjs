@@ -35,4 +35,5 @@ const createSandbox = async () => {
   };
 };
 
-serveStdio(() => buildServer({ createSandbox, env: {}, open: new Map(), tasks: new Map(), cancelWaitMs: 3000 }));
+const perMin = process.env.CLOUDY_CLOUD_STARTS_PER_MIN;
+serveStdio(() => buildServer({ createSandbox, env: perMin ? { CLOUDY_CLOUD_STARTS_PER_MIN: perMin } : {}, open: new Map(), tasks: new Map(), cancelWaitMs: 3000 }));

@@ -9,7 +9,7 @@ import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
+import { resolveProfile, profileKeyNames, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
 import { createProgress, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 
@@ -64,9 +64,11 @@ function helpers(env) {
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
 }
+// The start queue paces every machine create of one server, so it must be one object for all tool calls.
+export const startQueue = (env) => createStartQueue({ perMin: Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || 25 });
 const ctxOf = (deps) => {
   deps.tasks ??= new Map();
-  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLOUDY_CLOUD_STARTS_PER_MIN) || 25 });
+  deps.queue ??= startQueue(deps.env);
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
 };
 const isPi = (a) => a.profile?.harness === 'pi';
@@ -323,7 +325,7 @@ async function installCoordinator(a, ctx, envs) {
   await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
   await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
-  const names = ['INSTABOX_API_KEY', claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];
+  const names = ['INSTABOX_API_KEY', claudeKey, ...profileKeyNames(env).filter((k) => k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];
   const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
