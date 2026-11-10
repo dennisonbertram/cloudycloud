@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { redact } from '../src/events.mjs';
+import { createFakeProvider } from './fake-provider.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
@@ -54,15 +55,21 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   });
   const sdk = { Sandbox: {
     async create(template, opts) { log.create.push({ template, opts }); return sandbox('m_new', opts.name ?? 'sbx-abc'); },
-    async list({ metadata }) { return machines.filter((m) => Object.entries(metadata).every(([k, v]) => m.metadata[k] === v)); },
     async connect(id) { return sandbox(id, 'img-1'); },
     async getSnapshot(id) { return { id, status: 'ready' }; },
     async kill(id) { log.killed.push(id); return true; },
   } };
-  const fetchFn = async (url, init) => { log.fetches.push({ url, ...init }); return init.method === 'PATCH' ? new Response('{}') : Response.json(applied); };
+  // The adapter lists and deletes machines over raw HTTP; `machines` uses the old SDK row shape and is served as API rows.
+  const fetchFn = async (url, init = {}) => {
+    log.fetches.push({ url, ...init });
+    if (init.method === 'DELETE') { log.killed.push(decodeURIComponent(String(url).split('/').pop())); return new Response('{}'); }
+    if (init.method === 'PATCH') return new Response('{}');
+    if (/\/secrets$/.test(url)) return Response.json(applied);
+    return Response.json({ machines: machines.map((m) => ({ id: m.sandboxId, name: m.name, state: m.state, createdAt: m.startedAt, metadata: m.metadata, deleteAt: m.machine?.deleteAt })) });
+  };
   const env = { INSTABOX_API_KEY: IBK, CLAUDE_CODE_OAUTH_TOKEN: TOK, OPENROUTER_API_KEY: PROV, CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
   const deps = { sdk, fetchFn, env, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s) };
-  return { log, deps, configFile, mk };
+  return { log, deps, configFile, mk, machines };
 }
 
 test('image creates a labelled machine, installs cloudy-cloud and prints the login steps', async () => {
@@ -79,7 +86,7 @@ test('image creates a labelled machine, installs cloudy-cloud and prints the log
 
 test('image --save records the snapshot id and deletes the image machine', async () => {
   const f = fixture({ snapshot: '' });
-  f.deps.sdk.Sandbox.list = async () => [f.mk('m_img', 'img-1', { role: 'coordinator-image' })];
+  f.machines.push(f.mk('m_img', 'img-1', { role: 'coordinator-image' }));
   await main(['image', '--save'], f.deps);
   assert.equal(f.log.snapshots.length, 1);
   assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
@@ -279,6 +286,29 @@ test('start uploads the laptop cloudy-cloud as a bundle and never clones the too
   assert.match(clones[0], /github\.com\/o\/r/);
 });
 
+
+test('image and start refuse a provider without snapshots, before creating anything', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSnapshots: false });
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
+  for (const args of [['image'], ['image', '--save'], ['start', 'boss', '--repo', 'https://github.com/o/r']]) {
+    await assert.rejects(main(args, { provider, env, out: () => {} }), /^Error: Provider fake has no snapshots, which coordinators need\.$/, args.join(' '));
+  }
+  assert.equal(provider.log.create.length, 0);
+  assert.equal(provider.log.list.length, 0);
+});
+
+test('start asks the provider for a never-suspending machine from the snapshot with a server deadline', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' });
+  provider.create = async (o) => {
+    provider.log.create.push(o);
+    return { id: 'm1', name: 'coord-boss', home: '/h', files: { write: async () => {} }, kill: async () => {},
+      commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
+  };
+  const out = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, root: resolve('.'), out: (x) => out.push(x) });
+  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 86400, neverSuspend: true }]);
+  assert.match(out.join('\n'), /fake ssh coord-boss -- tmux attach -t claude/);
+});
 
 // ---- how it looks ----
 import { makeUi } from '../src/ui.mjs';
