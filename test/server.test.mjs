@@ -2,7 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -194,4 +194,36 @@ test('start pacing is shared by every cloud_agent call of one server', async () 
   assert.equal(ids.filter((id) => new RegExp(`${id}  queued`).test(list)).length, 2, list);
   assert.match(list, /queued for a machine \(1 ahead\)/);
   await c.call('cloud_agent_stop', { agent_ids: ids });
+});
+
+// A token the user allowed onto the machine (mcp add --allow-literal). Not a real credential.
+const TOKEN = 'OpaqueCredentialExample938412';
+async function literalMcp() {
+  const file = join(await mkdtemp(join(tmpdir(), 'cc-mcp-')), 'mcp.json');
+  await writeFile(file, JSON.stringify({ mcpServers: { yes: { type: 'http', url: 'https://l.example.com/mcp', headers: { 'X-Api-Key': TOKEN }, cloudyCloudAllowLiteral: true } } }));
+  return { CLOUDY_CLOUD_MCP: file };
+}
+
+test('a consented literal MCP token is redacted in the reply to a follow-up message, not only in the first reply', async () => {
+  const c = await connect('modern', await literalMcp());
+  const id = text(await c.call('cloud_agent', { prompt: `ECHO ${TOKEN}`, description: 'd' })).match(/agent_id: ([0-9a-f]{8})/)[1];
+  const r1 = text(await c.call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 10 }));
+  assert.ok(r1.includes('[redacted]') && !r1.includes(TOKEN), r1);
+  await c.call('cloud_agent_message', { agent_id: id, message: `ECHO again ${TOKEN}` });
+  const r2 = text(await c.call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 10 }));
+  assert.ok(r2.includes('ECHO again [redacted]'), r2);
+  assert.ok(!r2.includes(TOKEN), r2);
+  await c.call('cloud_agent_stop', { agent_ids: [id] });
+});
+
+test('with the tasks extension, no task response of a follow-up turn holds a consented literal MCP token', async () => {
+  const c = await connect('modern+tasks', await literalMcp());
+  const t1 = (await c.call('cloud_agent', { prompt: `ECHO ${TOKEN}`, description: 'd' })).result;
+  const first = await c.poll(t1.taskId, done);
+  const agent = t1.taskId.split('-')[1];
+  const t2 = (await c.call('cloud_agent_message', { agent_id: agent, message: `ECHO again ${TOKEN}` })).result;
+  const second = await c.poll(t2.taskId, done);
+  assert.match(second.last.result.result.content[0].text, /ECHO again \[redacted\]/);
+  assert.ok(!JSON.stringify([t1, first.seen, t2, second.seen]).includes(TOKEN));
+  await c.call('cloud_agent_stop', { agent_ids: [agent] });
 });
