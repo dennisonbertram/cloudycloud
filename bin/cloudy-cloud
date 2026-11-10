@@ -26,6 +26,12 @@ if [ "${1:-}" = coordinator ]; then
   exec node "$root/src/coordinator.mjs" "$@"
 fi
 
+# `cloudy-cloud mcp add|ls|rm` chooses which MCP servers cloud subagents get.
+if [ "${1:-}" = mcp ]; then
+  shift
+  exec node "$root/src/mcp-cli.mjs" "$@"
+fi
+
 # `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
 case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
 
@@ -44,6 +50,7 @@ Usage: cloudy-cloud [command]
   dashboard              open a read-only web page about your cloud machines
   open <agent> <port>    reach an app running on a cloud machine
   coordinator            manage cloud coordinators
+  mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
 
 Any other arguments go to claude, for example: cloudy-cloud -p "<prompt>"
