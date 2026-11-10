@@ -1,6 +1,7 @@
 // Detached cleanup process. The server starts it; once the server is gone it deletes every machine the server owned.
 // Usage: node reaper.mjs <server pid> <instance id>. The API key comes from the chosen provider's key variable
 // (provider.keyName) and CLOUDY_CLOUD_PROVIDER picks the provider, as in the server. It never loads a provider SDK.
+import { spawn as nodeSpawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadProvider } from './providers/index.mjs';
 
@@ -15,6 +16,12 @@ export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env)
   options: { detached: true, stdio: 'ignore', env: { ...baseEnv, [provider.keyName]: apiKey, CLOUDY_CLOUD_PROVIDER: provider.name } },
 });
 
+// Starts the detached reaper for the server. The server calls this with its provider and the key from its own env.
+export function startReaper(pid, owner, env, provider, spawnFn = nodeSpawn) {
+  const { command, args, options } = reaperSpawn(pid, owner, env[provider.keyName], provider);
+  spawnFn(command, args, options).on('error', () => {}).unref();
+}
+
 export const isAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; }
 };
@@ -26,7 +33,8 @@ export async function reap({ owner, provider, log = () => {} }) {
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;
-    try { await provider.delete(m.id); deleted++; } catch (e) { log(`delete ${m.id} failed: ${e.message}`); }
+    let logged = false; // the adapter logs each failed attempt itself; log the final error only if it did not
+    try { await provider.delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; } catch (e) { if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
   }
   return deleted;
 }

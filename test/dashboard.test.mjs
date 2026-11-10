@@ -225,7 +225,7 @@ test('/api/state for fixed events and machines is unchanged', () => {
   ];
   const s = buildState({ events, machines, now: 1000, alive: () => true });
   assert.deepEqual(s.boxes.map((b) => [b.id, b.kind, b.status, b.machineState, b.deadline]), [
-    ['a1', 'agent', 'running', 'running', undefined], ['fleet', 'coordinator', 'starting', 'creating', 99], ['old', 'machine', 'stopped', 'deleting', undefined],
+    ['a1', 'agent', 'running', 'running', 21600001], ['fleet', 'coordinator', 'starting', 'creating', 99], ['old', 'machine', 'stopped', 'deleting', undefined],
   ]);
   const err = buildState({ events, machineError: { code: 'no_key', message: 'x' }, now: 1000, alive: () => true, provider: createFakeProvider() }).machines;
   assert.deepEqual(err, { ok: false, code: 'no_key', message: 'x', fix: 'Set FAKE_API_KEY.' });

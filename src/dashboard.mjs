@@ -21,7 +21,7 @@ const GENERIC_FIX = 'Check CLOUDY_CLOUD_PROVIDER and your internet connection, t
 export async function listMachines(env, provider) {
   provider ??= await loadProvider(env);
   if (!env[provider.keyName]) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
-  return (await provider.list({ purpose: 'cloudy-cloud' })).map((m) => ({
+  return (await provider.list({ purpose: 'cloudy-cloud' }, { sdk: true })).map((m) => ({
     id: m.id, name: m.name, role: m.labels?.role, owner: m.labels?.owner, state: m.state, status: m.status,
     startedAt: m.startedAt, archiveAt: m.archiveAt,
   }));
