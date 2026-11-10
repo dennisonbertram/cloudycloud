@@ -158,3 +158,15 @@ test("Claude Code's own mcp subcommands still go to claude", () => {
     assert.ok(!existsSync(join(dir, 'node-argv')), args.join(' '));
   }
 });
+
+test('mcp add <name> --allow-literal goes to src/mcp-cli.mjs with the flag', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  const argvFile = join(dir, 'argv');
+  writeFileSync(join(dir, 'node'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  chmodSync(join(dir, 'node'), 0o755);
+  const r = spawnSync('/bin/sh', [launcher, 'mcp', 'add', 'notion', '--allow-literal'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir } });
+  assert.equal(r.status, 0, r.stderr);
+  const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
+  assert.match(argv[0], /src\/mcp-cli\.mjs$/);
+  assert.deepEqual(argv.slice(1), ['add', 'notion', '--allow-literal']);
+});

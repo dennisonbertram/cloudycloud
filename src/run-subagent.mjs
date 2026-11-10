@@ -84,7 +84,9 @@ function agentMcp(env) {
   const out = { servers: { ...servers }, skipped: [], secrets: new Set(secrets), literal: [] };
   let raw;
   for (const x of skipped) {
-    raw ??= x.reason.startsWith('contains a secret value') ? JSON.parse(readFileSync(mcpFile(env), 'utf8')).mcpServers : {};
+    // Only a literal env or header value is consentable; secrets in a url or an argument have other reasons.
+    if (!x.reason.startsWith('contains a secret value')) { out.skipped.push(x); continue; }
+    raw ??= JSON.parse(readFileSync(mcpFile(env), 'utf8')).mcpServers;
     const e = raw[x.name];
     // Re-check with the literal env/header values swapped for a reference: any other problem still rejects the server.
     const mask = (m) => m && Object.fromEntries(Object.keys(m).map((k) => [k, '${MCP_X_TOKEN}']));
