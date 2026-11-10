@@ -146,4 +146,41 @@ test('the injected spawn gets the whole env object', async () => {
   const p = createProvider(env, { spawn: async (argv, o) => { seen.push(o.env); return { code: 0, stdout: '', stderr: '' }; } });
   await p.unpublishPort('m', '3000');
   assert.equal(seen[0], env);
+
+// Wire assertions moved from test/reaper.test.mjs and test/open.test.mjs (reaper and `open` now go through the provider).
+test('wire: list and delete use the raw API with the key, confirm and idempotency headers; delete retries twice', async () => {
+  const calls = [];
+  let d = 0;
+  const fetchFn = async (url, init = {}) => {
+    calls.push({ url: String(url), ...init });
+    if (init.method === 'DELETE') return Response.json({}, { status: [500, 500, 500][d++] ?? 500 });
+    return Response.json({ machines: [{ id: 'm1', metadata: { owner: 'abc123def456' } }] });
+  };
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn });
+  assert.deepEqual((await p.list({ owner: 'abc123def456' })).map((m) => m.id), ['m1']);
+  assert.equal(calls[0].url, 'https://api.instabox.sh/v1/machines?metadata=owner%3Aabc123def456');
+  assert.equal(calls[0].headers['X-API-Key'], KEY);
+  await assert.rejects(p.delete('m1'), (e) => !e.message.includes(KEY));
+  const dels = calls.filter((c) => c.method === 'DELETE');
+  assert.equal(dels.length, 3);
+  assert.equal(dels[0].url, 'https://api.instabox.sh/v1/machines/m1');
+  assert.equal(dels[0].headers['X-Confirm-Delete'], 'm1');
+  assert.equal(dels[0].headers['X-API-Key'], KEY);
+  assert.ok(dels[0].headers['Idempotency-Key']);
+});
+
+test('wire: port commands use the exact npx instabox argv and the key only in env', async () => {
+  const calls = [];
+  const spawn = async (argv, o) => { calls.push([argv, o]); return { code: 0, stdout: '{"url":"https://x.example/?_token=t"}' }; };
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { spawn });
+  assert.equal(await p.forwardPort('mach-aaa', '8080:3000'), 0);
+  assert.deepEqual(await p.publishPort('mach-aaa', '3000'), { url: 'https://x.example/?_token=t' });
+  assert.equal(await p.unpublishPort('mach-aaa', '3000'), 0);
+  assert.deepEqual(calls.map(([a]) => a), [
+    ['npx', '--yes', 'instabox@latest', 'port-forward', 'mach-aaa', '8080:3000'],
+    ['npx', '--yes', 'instabox@latest', 'port', 'publish', 'mach-aaa', '3000', '--private', '--json'],
+    ['npx', '--yes', 'instabox@latest', 'port', 'unpublish', 'mach-aaa', '3000'],
+  ]);
+  assert.equal(calls[0][1].inherit, true);
+  assert.ok(calls.every(([a, o]) => o.env.INSTABOX_API_KEY === KEY && !a.includes(KEY) && !a.includes('--public')));
 });

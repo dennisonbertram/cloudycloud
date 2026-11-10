@@ -108,9 +108,10 @@
   "dashboardList": {
     "calls": [
       {
-        "apiKey": "<API_KEY>",
-        "metadata": {
-          "purpose": "cloudy-cloud"
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines?metadata=purpose%3Acloudy-cloud",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
         }
       }
     ],
@@ -121,6 +122,7 @@
         "role": "coordinator",
         "owner": "o1",
         "state": "running",
+        "status": "running",
         "startedAt": 1767323045000,
         "archiveAt": 1767409445000
       }
