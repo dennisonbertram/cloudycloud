@@ -103,7 +103,7 @@ Two server names that map to the same secret name (`my-srv` and `my_srv`) cannot
 
 ### Putting the real token on the machine
 
-Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to every cloud machine. It only applies to values in `env` and `headers`. It is off unless you pass the flag.
+Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to the machine of each subagent you start. A coordinator's own session gets it, but the workers a coordinator starts do not: consent is not passed down, so those workers skip the server. It only applies to values in `env` and `headers`. It is off unless you pass the flag.
 
 > Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
 

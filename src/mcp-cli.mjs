@@ -77,7 +77,7 @@ async function add(name, ctx, allowLiteral = false) {
   // Consent path (off unless --allow-literal): keep the real value and put it on the machines.
   let literal = false;
   if (allowLiteral && literals) {
-    out('WARNING: with --allow-literal the real token is copied onto every cloud machine (in a mode-600 file) instead of staying in Instabox.');
+    out('WARNING: with --allow-literal the real token is copied onto the machine of each subagent you start, though not onto the workers a coordinator starts (in a mode-600 file) instead of staying in Instabox.');
     out('Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere.');
     if (!ctx.isTTY) { err('Not added: --allow-literal needs a terminal so you can confirm.'); return 1; }
     const yes = /^y(es)?$/i.test((await ctx.ask(`Copy the real ${name} token onto cloud machines? [y/N] `)).trim());

@@ -81,7 +81,7 @@ Other commands: `cloudy-cloud mcp ls` lists what is saved and which secrets it n
 
 **What reaches the machine.** The checked servers are written to `~/.config/cloudy-cloud/mcp.json` on the machine (mode 600) and Claude starts with `--mcp-config` for that file and `--strict-mcp-config`. A repo's own `.mcp.json` is therefore not loaded there once you have added a server. Tokens are written as `${MCP_<NAME>_TOKEN}` references. Instabox replaces the placeholder only in HTTPS request headers sent to the hosts you named. Coordinators get the same file.
 
-**Real token on the machine.** `cloudy-cloud mcp add <name> --allow-literal` keeps the real `env` or header value in `mcp.json` and copies it to every machine, after a warning and a `[y/N]` question in a terminal. Permission checks are off on the machine, so a prompt injection could leak that token. Use a token you can revoke. The reply then adds `MCP servers with a real token on the machine (you allowed it): <name>`.
+**Real token on the machine.** `cloudy-cloud mcp add <name> --allow-literal` keeps the real `env` or header value in `mcp.json` and copies it to the machine of each subagent you start (a coordinator's own session gets it, its workers do not), after a warning and a `[y/N]` question in a terminal. Permission checks are off on the machine, so a prompt injection could leak that token. Use a token you can revoke. The reply then adds `MCP servers with a real token on the machine (you allowed it): <name>`.
 
 ## 3. Check that it works
 
@@ -182,7 +182,7 @@ git show FETCH_HEAD:proof.txt
    - **Instabox key and Claude token:** these stay in `~/.config/cloudy-cloud/env` and the MCP server. They never appear in process arguments.
    - **Claude token on the machine:** only the Claude token is placed on each machine.
    - **GitHub token:** it stays in Instabox. The machine sees only a placeholder, which Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
-   - **MCP tokens:** for servers added with `cloudy-cloud mcp add`, each token is an Instabox secret named `MCP_<NAME>_TOKEN`, attached in the same call as `GH_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host given with `--host`. With `--allow-literal` the real value is on the machine instead.
+   - **MCP tokens:** for servers added with `cloudy-cloud mcp add`, each token is an Instabox secret named `MCP_<NAME>_TOKEN`, attached in the same call as `GH_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host given with `--host`. With `--allow-literal` the real value is on the machine instead (not on a coordinator's workers).
 
 ## 8. Cloud coordinators
 
