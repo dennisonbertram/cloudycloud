@@ -1,20 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/mcp-cli.mjs';
-
-// Minimal stand-in for src/mcpsync.mjs (issue #10); the real module is imported when no `sync` is injected.
-const sync = {
-  mcpFile: (env) => env.CLOUDY_CLOUD_MCP,
-  mcpConfigText: (servers) => JSON.stringify({ mcpServers: servers }, null, 2),
-  checkServer: (name, e) => {
-    if (e.oauth) return { ok: false, reason: 'uses OAuth sign-in, which a headless subagent cannot complete' };
-    if (!e.url && !['npx', 'uvx'].includes(e.command)) return { ok: false, reason: `the command is ${e.command}; only npx and uvx servers can run on a cloud machine` };
-    return { ok: true, entry: e, secrets: [] };
-  },
-};
 
 function setup(claude, { project } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'mcpcli-'));
@@ -25,7 +15,7 @@ function setup(claude, { project } = {}) {
 }
 async function run(argv, env, home, extra = {}) {
   const out = [], err = [];
-  const code = await main(argv, { env, cwd: home, sync, isTTY: true, out: (s) => out.push(s), err: (s) => err.push(s), ...extra });
+  const code = await main(argv, { env, cwd: home, isTTY: true, out: (s) => out.push(s), err: (s) => err.push(s), ...extra });
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 const TOKEN = 'ntn_abcdefghijklmnop9f3a';
@@ -131,4 +121,57 @@ test('ls, replace and rm', async () => {
   const again = await run(['rm', 'notion'], env, home);
   assert.equal(again.code, 1);
   assert.equal(again.err, 'No server named notion in ~/.config/cloudy-cloud/mcp.json.');
+});
+
+// The real src/mcpsync.mjs decides; these cases leaked a literal value before the CLI and the loader shared one rule.
+const FAKE = 'FAKEFAKEFAKE5678';
+const noLeak = (home, env, r) => {
+  assert.ok(!r.out.includes(FAKE) && !r.err.includes(FAKE), r.out + r.err);
+  assert.ok(!existsSync(env.CLOUDY_CLOUD_MCP) || !readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8').includes(FAKE));
+};
+
+test('add: a Basic Authorization header is masked and stored as a reference', async () => {
+  const { home, env } = setup({ mcpServers: { basic: { type: 'http', url: 'https://api.example.com/mcp', headers: { Authorization: `Basic dXNl${FAKE}` } } } });
+  const r = await run(['add', 'basic'], env, home);
+  assert.equal(r.code, 0, r.err);
+  assert.match(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8'), /"Authorization": "\$\{MCP_BASIC_TOKEN\}"/);
+  assert.match(r.out, /secrets set MCP_BASIC_TOKEN --host api\.example\.com/);
+  noLeak(home, env, r);
+});
+
+test('add: a key in the url or in an argument is never printed and not added', async () => {
+  const { home, env } = setup({ mcpServers: {
+    u: { type: 'http', url: `https://mcp.exa.ai/mcp?exaApiKey=${FAKE}` },
+    a: { command: 'npx', args: ['-y', 'x-mcp', `--api-key=sk-${FAKE}`] },
+  } });
+  const u = await run(['add', 'u'], env, home);
+  assert.equal(u.code, 1);
+  assert.match(u.err, /^Not added: url carries a secret value/);
+  noLeak(home, env, u);
+  const a = await run(['add', 'a'], env, home);
+  assert.equal(a.code, 1);
+  assert.match(a.err, /^Not added: an argument carries a secret value/);
+  noLeak(home, env, a);
+});
+
+test('add: two servers whose names map to the same secret name are refused', async () => {
+  const h = (n) => ({ type: 'http', url: `https://${n}.example.com`, headers: { Authorization: 'Bearer abcdefghijklmnop' } });
+  const { home, env } = setup({ mcpServers: { 'my-srv': h('a'), my_srv: h('b') } });
+  assert.equal((await run(['add', 'my-srv'], env, home)).code, 0);
+  const r = await run(['add', 'my_srv'], env, home);
+  assert.equal(r.code, 1);
+  assert.equal(r.err, 'Not added: my-srv already uses MCP_MY_SRV_TOKEN. Rename one of the two servers in Claude Code first.');
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers), ['my-srv']);
+});
+
+test('add: local scope is found under the current folder inside a git repo', async () => {
+  const { home, env } = setup({});
+  execFileSync('git', ['init', '-q'], { cwd: home });
+  const sub = join(home, 'sub');
+  mkdirSync(sub);
+  writeFileSync(env.CLOUDY_CLOUD_CLAUDE_JSON, JSON.stringify({ projects: { [sub]: { mcpServers: { x: { type: 'http', url: 'https://x.example.com' } } } } }));
+  const out = [], err = [];
+  const code = await main(['add', 'x'], { env, cwd: sub, isTTY: true, out: (s) => out.push(s), err: (s) => err.push(s) });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(out[0], /\(local scope\)/);
 });
