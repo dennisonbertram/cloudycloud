@@ -53,6 +53,7 @@ async function add(name, ctx, allowLiteral = false) {
   const base = `MCP_${name.toUpperCase().replace(/-/g, '_')}`;
   let n = 0;
   const refs = [];
+  let literals = 0; // values rewritten to a reference here; only these are what --allow-literal is about
   for (const [field, label] of [['env', 'env'], ['headers', 'headers']]) {
     const lines = [];
     for (const [k, v] of Object.entries(e[field] || {})) {
@@ -62,6 +63,7 @@ async function add(name, ctx, allowLiteral = false) {
         const ref = `${base}${n++ ? `_${n}` : ''}_TOKEN`;
         e[field][k] = `${/^Bearer /.test(v) ? 'Bearer ' : ''}\${${ref}}`;
         refs.push(ref);
+        literals++;
       } else refs.push(...[...String(v).matchAll(REF_RE)].map((m) => m[1]));
     }
     lines.forEach((l, i) => rows.push([i ? '' : label, l]));
@@ -70,7 +72,7 @@ async function add(name, ctx, allowLiteral = false) {
 
   // Consent path (off unless --allow-literal): keep the real value and put it on the machines.
   let literal = false;
-  if (allowLiteral && refs.length) {
+  if (allowLiteral && literals) {
     out('WARNING: with --allow-literal the real token is copied onto every cloud machine (in a mode-600 file) instead of staying in Instabox.');
     out('Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere.');
     if (!ctx.isTTY) { err('Not added: --allow-literal needs a terminal so you can confirm.'); return 1; }

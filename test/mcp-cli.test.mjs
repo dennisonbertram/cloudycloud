@@ -192,3 +192,15 @@ test('add --allow-literal: warns, asks (default No), and stores the real value w
   assert.ok(!JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers.notion.cloudyCloudAllowLiteral);
   assert.equal(plain.code, 0);
 });
+
+test('add --allow-literal on a server that already uses only references asks nothing and stores it the normal way', async () => {
+  const refd = { type: 'http', url: 'https://mcp.notion.com/mcp', headers: { Authorization: 'Bearer ${MCP_NOTION_TOKEN}' } };
+  const { home, env } = setup({ mcpServers: { notion: refd } });
+  let asked = false;
+  const r = await run(['add', 'notion', '--allow-literal'], env, home, { ask: async () => { asked = true; return 'y'; } });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(asked, false);
+  assert.doesNotMatch(r.out, /WARNING/);
+  assert.equal(JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers.notion.cloudyCloudAllowLiteral, undefined);
+  assert.match(r.out, /secrets set MCP_NOTION_TOKEN --host mcp\.notion\.com/);
+});
