@@ -7,11 +7,10 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 import { redact } from './events.mjs';
-import { checkServer, cleanEntry, isLiteralSecret, mcpConfigText, mcpFile, secretArgs } from './mcpsync.mjs';
+import { checkServer, cleanEntry, HOST_RE, isLiteralSecret, mcpConfigText, mcpFile, secretArgs } from './mcpsync.mjs';
 
 const REF_RE = /\$\{(MCP_[A-Z0-9_]+_TOKEN)\}/g;
 const ALLOW = 'cloudyCloudAllowLiteral'; // set only by --allow-literal; read by run-subagent
-const HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
 const tilde = (p, env) => { const h = env.HOME || homedir(); return p.startsWith(h + '/') ? `~${p.slice(h.length)}` : p; };
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw new Error(`Could not read ${f}: ${e.message}`); } };

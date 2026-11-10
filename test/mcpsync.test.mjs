@@ -175,3 +175,9 @@ test('rejection reasons never repeat a value from the entry', () => {
     { command: 'npx', env: { A: `\${${t}}` } }, { command: 'npx', env: { A: 'hunter2hunter2', [`${t}_TOKEN`]: 'x' } },
   ]) assert.ok(!reason('s', entry).includes(t.slice(0, 12)) && !JSON.stringify(reason('s', entry)).includes('hunter2'), JSON.stringify(entry));
 });
+
+test('a url host that is not a plain hostname is rejected by the loader too', () => {
+  const r = checkServer('inj', { type: 'http', url: 'https://example.com;id/mcp' });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /plain hostname/);
+});

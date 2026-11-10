@@ -33,6 +33,9 @@ export function isLiteralSecret(key, value, header = false) {
 }
 
 // Indexes of arguments that hold a credential: `--password=x`, or the value after `--api-key`. References are fine.
+// A plain DNS hostname: letters, digits, dots and hyphens only (shared with the CLI).
+export const HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+
 export function secretArgs(args) {
   const out = [];
   args.forEach((a, i) => {
@@ -83,6 +86,7 @@ export function checkServer(name, entry) {
     if (u.protocol !== 'https:') return no(u.protocol === 'http:' && privateHost(u.hostname) ? 'url points at localhost, which does not exist on the machine' : 'url must be https');
     if (u.username || u.password) return no('url carries a secret value; send it in a header instead, which cloudy-cloud mcp add stores as an Instabox secret');
     if (privateHost(u.hostname)) return no('url points at localhost, which does not exist on the machine');
+    if (!HOST_RE.test(u.hostname)) return no('url host is not a plain hostname');
     const bad = take(entry.url);
     if (bad) return no(bad);
     // Instabox only swaps secrets into request headers, so a key in the url would sit on the machine as plain text.
