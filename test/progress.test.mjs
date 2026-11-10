@@ -161,3 +161,10 @@ test('no init event or no mcp fields: mcp stays undefined and mcpLine is empty',
   assert.equal(parseStream(JSON.stringify({ type: 'system', subtype: 'init', model: 'x' })).mcp, undefined);
   assert.equal(mcpLine(parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [] }))), '');
 });
+
+test('servers listed only in mcp_server_errors (skipped by Claude Code) count as failed', () => {
+  const only = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [], mcp_server_errors: { linear: 'invalid config' } }));
+  assert.equal(mcpLine(only), 'MCP servers: none connected (failed: linear)');
+  const mixed = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'notion', status: 'connected' }], mcp_server_errors: { linear: 'invalid config' } }));
+  assert.equal(mcpLine(mixed), 'MCP servers: notion (failed: linear)');
+});

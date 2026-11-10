@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF } from '../src/mcpsync.mjs';
+import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF, isLiteralSecret } from '../src/mcpsync.mjs';
 import { redact } from '../src/events.mjs';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'mcp-'));
@@ -87,6 +87,24 @@ test('rejects literal secrets in env and headers', () => {
   assert.match(reason('s', { type: 'http', url: 'https://a.com', headers: { 'X-Custom': 'Bearer abcdefghijklmnop' } }), msg);
   // a reference in a credential slot is fine
   ok({ command: 'npx', env: { GITHUB_TOKEN: '${MCP_GH_TOKEN}' } });
+});
+
+test('rejects a secret in the url query, an argument, or a map on the wrong server type', () => {
+  assert.match(reason('s', { type: 'http', url: 'https://mcp.exa.ai/mcp?exaApiKey=abcdefgh1234' }), /url carries a secret/);
+  assert.match(reason('s', { type: 'http', url: 'https://a.com/mcp?x=ghp_abcdefghijklmnop' }), /url carries a secret/);
+  ok({ type: 'http', url: 'https://a.com/mcp?region=eu' });
+  assert.match(reason('s', { command: 'npx', args: ['x', '--api-key=sk-abcdefghijkl'] }), /argument carries a secret/);
+  // env on an http entry and headers on a stdio entry are still copied to the machine, so they are checked too
+  assert.match(reason('s', { type: 'http', url: 'https://a.com', env: { X_TOKEN: 'literal' } }), /contains a secret value/);
+  assert.match(reason('s', { command: 'npx', headers: { Authorization: 'Bearer abcdefghijklmnop' } }), /contains a secret value/);
+});
+
+test('isLiteralSecret is the one rule the CLI shares', () => {
+  assert.equal(isLiteralSecret('Authorization', 'Basic dXNlcjpwYXNz', true), true);
+  assert.equal(isLiteralSecret('Authorization', 'Bearer ${MCP_X_TOKEN}', true), false);
+  assert.equal(isLiteralSecret('LINEAR_API_KEY', 'lin_api_abc', false), true);
+  assert.equal(isLiteralSecret('REGION', 'eu', false), false);
+  assert.equal(isLiteralSecret('OTHER', 'ghp_abcdefghijklmnop', false), true);
 });
 
 test('rejects references that are not MCP_*_TOKEN', () => {
