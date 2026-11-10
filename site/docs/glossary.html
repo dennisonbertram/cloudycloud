@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary · Cloudy Cloud docs</title>
+<meta name="description" content="The terms used in the Cloudy Cloud docs, such as subagent, worker, coordinator, profile and delete deadline.">
+<!--seo-->
+<link rel="canonical" href="https://cloudycloud.tech/docs/glossary.html">
+<link rel="alternate" type="text/markdown" href="glossary.md">
+<meta property="og:site_name" content="Cloudy Cloud">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Glossary · Cloudy Cloud docs">
+<meta property="og:description" content="The terms used in the Cloudy Cloud docs, such as subagent, worker, coordinator, profile and delete deadline.">
+<meta property="og:url" content="https://cloudycloud.tech/docs/glossary.html">
+<meta property="og:image" content="https://cloudycloud.tech/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Cloudy Cloud: your subagents, up in the clouds">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
+<meta name="twitter:title" content="Glossary · Cloudy Cloud docs">
+<meta name="twitter:description" content="The terms used in the Cloudy Cloud docs, such as subagent, worker, coordinator, profile and delete deadline.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Glossary","description":"The terms used in the Cloudy Cloud docs, such as subagent, worker, coordinator, profile and delete deadline.","url":"https://cloudycloud.tech/docs/glossary.html","mainEntityOfPage":"https://cloudycloud.tech/docs/glossary.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
+,{"@type":"ListItem","position":3,"name":"Glossary","item":"https://cloudycloud.tech/docs/glossary.html"}]}</script>
+<!--/seo-->
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+<!--ld-->
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "DefinedTermSet", "name": "Cloudy Cloud glossary", "url": "https://cloudycloud.tech/docs/glossary.html", "hasDefinedTerm": [{"@type": "DefinedTerm", "name": "Subagent", "description": "A helper agent that Claude Code hands a piece of work to. Cloudy Cloud runs each subagent on its own cloud machine instead of on your laptop.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Cloud agent", "description": "A Claude subagent started with the cloud_agent tool: it runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Worker", "description": "The default role of a cloud agent: it does the task it was given and does not start agents of its own.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Coordinator", "description": "A cloud agent started with role: \"coordinator\", which gets cloudy-cloud installed and can start its own cloud agents, limited by CLOUDY_CLOUD_MAX_DEPTH (default 3). A cloud coordinator is the longer-lived kind that runs on its own machine and keeps working with your laptop closed.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Box (machine)", "description": "The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud agent. It is deleted when the agent stops or at its delete deadline.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Profile", "description": "A named setting that runs a worker on another model, such as glm, deepseek or openrouter. With no profile, a subagent runs Claude.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Branch cloudy-cloud/<id>", "description": "The git branch a subagent works on and pushes to your origin remote; <id> is the agent id shown by cloud_agent_list.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Task mode", "description": "The way cloud_agent runs as a background task when your Claude Code supports MCP tasks, so its progress shows in /tasks and its result arrives on its own.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Idle stop", "description": "Cloudy Cloud stops a subagent that has been idle for 60 minutes, and stops every subagent when the session ends.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Delete deadline", "description": "The fixed time at which Instabox deletes a machine in any state: 6 hours by default for workers (set CLOUDY_CLOUD_WORKER_HOURS, up to 24) and at most 24 hours for a cloud coordinator. It cannot be extended, so push your work before it.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Reaper", "description": "A separate cleanup process that the session starts. After the session is gone, even after a hard kill, it deletes every machine the session created.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Setup-token", "description": "The long-lived token that claude setup-token creates (it starts with sk-ant-oat01-). It lets cloud agents use your Claude subscription, as CLAUDE_CODE_OAUTH_TOKEN.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Event log", "description": "The file ~/.config/cloudy-cloud/events.jsonl, where the MCP server appends one JSON line per agent event. It stays on your computer and the dashboard reads it.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}, {"@type": "DefinedTerm", "name": "Dashboard", "description": "A read-only web page on your own machine, opened with cloudy-cloud dashboard, that shows every box and the messages between your session and each subagent.", "inDefinedTermSet": "https://cloudycloud.tech/docs/glossary.html"}]}</script>
+<!--/ld-->
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+        <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
+        <li><a href="faq.html" data-page="faq">FAQ</a></li>
+        <li><a href="glossary.html" data-page="glossary" aria-current="page">Glossary</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Glossary</h1>
+<p class="lede">The terms used in the Cloudy Cloud docs, with one short definition each.</p>
+
+<h2 id="terms">Terms</h2>
+
+<h3 id="subagent">Subagent</h3>
+<p>A helper agent that Claude Code hands a piece of work to. Cloudy Cloud runs each subagent on its own cloud machine instead of on your laptop.</p>
+
+<h3 id="cloud-agent">Cloud agent</h3>
+<p>A Claude subagent started with the <code>cloud_agent</code> tool: it runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.</p>
+
+<h3 id="worker">Worker</h3>
+<p>The default role of a cloud agent: it does the task it was given and does not start agents of its own.</p>
+
+<h3 id="coordinator">Coordinator</h3>
+<p>A cloud agent started with <code>role: "coordinator"</code>, which gets <code>cloudy-cloud</code> installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A cloud coordinator is the longer-lived kind that runs on its own machine and keeps working with your laptop closed.</p>
+
+<h3 id="box">Box (machine)</h3>
+<p>The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud agent. It is deleted when the agent stops or at its delete deadline.</p>
+
+<h3 id="profile">Profile</h3>
+<p>A named setting that runs a worker on another model, such as <code>glm</code>, <code>deepseek</code> or <code>openrouter</code>. With no profile, a subagent runs Claude.</p>
+
+<h3 id="branch">Branch cloudy-cloud/&lt;id&gt;</h3>
+<p>The git branch a subagent works on and pushes to your <code>origin</code> remote; <code>&lt;id&gt;</code> is the agent id shown by <code>cloud_agent_list</code>.</p>
+
+<h3 id="task-mode">Task mode</h3>
+<p>The way <code>cloud_agent</code> runs as a background task when your Claude Code supports MCP tasks, so its progress shows in <code>/tasks</code> and its result arrives on its own.</p>
+
+<h3 id="idle-stop">Idle stop</h3>
+<p>Cloudy Cloud stops a subagent that has been idle for 60 minutes, and stops every subagent when the session ends.</p>
+
+<h3 id="delete-deadline">Delete deadline</h3>
+<p>The fixed time at which Instabox deletes a machine in any state: 6 hours by default for workers (set <code>CLOUDY_CLOUD_WORKER_HOURS</code>, up to 24) and at most 24 hours for a cloud coordinator. It cannot be extended, so push your work before it.</p>
+
+<h3 id="reaper">Reaper</h3>
+<p>A separate cleanup process that the session starts. After the session is gone, even after a hard kill, it deletes every machine the session created.</p>
+
+<h3 id="setup-token">Setup-token</h3>
+<p>The long-lived token that <code>claude setup-token</code> creates (it starts with <code>sk-ant-oat01-</code>). It lets cloud agents use your Claude subscription, as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.</p>
+
+<h3 id="event-log">Event log</h3>
+<p>The file <code>~/.config/cloudy-cloud/events.jsonl</code>, where the MCP server appends one JSON line per agent event. It stays on your computer and the dashboard reads it.</p>
+
+<h3 id="dashboard">Dashboard</h3>
+<p>A read-only web page on your own machine, opened with <code>cloudy-cloud dashboard</code>, that shows every box and the messages between your session and each subagent.</p>
+
+<h2 id="more">Related pages</h2>
+<p>See <a href="how-it-works.html">How it works</a>, <a href="reference.html">Command and tool reference</a> and the <a href="faq.html">FAQ</a>.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="faq.html"><small>Previous</small><span>FAQ</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

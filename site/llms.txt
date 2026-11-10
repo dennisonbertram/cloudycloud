@@ -1,0 +1,30 @@
+# Cloudy Cloud
+
+> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.
+
+Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.1.1). Install and set up with `npx cloudycloud setup`. The code is at https://github.com/dennisonbertram/cloudycloud. You need an account with a cloud sandbox provider (Instabox is supported today), Claude credentials (a Claude subscription or an API key), a GitHub repo you can push to, and Node.js 20 or later. Cloudy Cloud has no price of its own; you pay your own providers. A hosted version is coming.
+
+Each page below also has its text as Markdown at its URL with `.html` replaced by `.md`. [llms-full.txt](https://cloudycloud.tech/llms-full.txt) holds all of them in one file.
+
+## Docs
+
+- [Getting started](https://cloudycloud.tech/docs/index.md): Install Cloudy Cloud, start a session and run your first subagent on a cloud machine.
+- [What is Cloudy Cloud?](https://cloudycloud.tech/docs/what-is-cloudy-cloud.md): What Cloudy Cloud is, how it differs from running subagents locally, who it is for and what it costs.
+- [How it works](https://cloudycloud.tech/docs/how-it-works.md): What runs where when a subagent runs on a cloud machine, what it can see, and how its work comes back.
+- [Models and keys](https://cloudycloud.tech/docs/models.md): Choose Claude or an open model for a subagent and set up the keys each one needs.
+- [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.md): Run a cloud coordinator that manages many workers, and the limits that apply.
+- [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.md): Watch your cloud agents in a local web page and open apps running on their machines.
+
+## Reference
+
+- [Command and tool reference](https://cloudycloud.tech/docs/reference.md): Every cloudy-cloud command, MCP tool, option and environment variable.
+- [FAQ](https://cloudycloud.tech/docs/faq.md): Short answers about what Cloudy Cloud does, what it needs, what it keeps and how to remove it.
+- [Glossary](https://cloudycloud.tech/docs/glossary.md): The terms used in the Cloudy Cloud docs, such as subagent, worker, coordinator, profile and delete deadline.
+- [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troubleshooting.md): Fix common errors, see which credentials reach the cloud, and read answers to common questions.
+
+## Optional
+
+- [Cloudy Cloud homepage](https://cloudycloud.tech/index.md): Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.
+- [Source code on GitHub](https://github.com/dennisonbertram/cloudycloud): The repository, README and issues.
+- [Setup guide (RUNBOOK)](https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md): Step-by-step setup and operations guide.
+- [cloudycloud on npm](https://www.npmjs.com/package/cloudycloud): The npm package.

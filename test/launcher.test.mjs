@@ -5,12 +5,12 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlin
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const launcher = resolve('bin/claude-cloud');
+const launcher = resolve('bin/cloudy-cloud');
 const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd, args = [] }) {
+function run({ config, cwd }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
@@ -18,8 +18,8 @@ function run({ config, cwd, args = [] }) {
   chmodSync(stub, 0o755);
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
-  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLAUDE_CLOUD_CONFIG: cfg };
-  const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg };
+  const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
   return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
 
@@ -32,27 +32,11 @@ function repo(origin) {
 
 const full = `INSTABOX_API_KEY=${IBK}\nCLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
 
-test('standalone help and version work before setup without launching Claude', () => {
-  for (const arg of ['--help', '-h', '--version']) {
-    const r = run({ config: '', args: [arg] });
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.started, false);
-    assert.doesNotMatch(r.stdout, /\x1b/);
-    assert.match(r.stdout, arg === '--version' ? /^0\.1\.0\n$/ : /GET STARTED[\s\S]*coordinator --help/);
-  }
-});
-
-test('help with other Claude arguments remains passthrough', () => {
-  const r = run({ config: full, args: ['--help', '--verbose'] });
-  assert.equal(r.started, true);
-  assert.match(r.argv, /--help\n--verbose\n/);
-});
-
 test('missing keys: points to install.sh, exits 1, never starts claude', () => {
   const r = run({ config: '' });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not set up yet/);
-  assert.match(r.stderr, /Run: .*install\.sh/);
+  assert.match(r.stderr, /Run: cloudy-cloud setup/);
   assert.equal(r.started, false);
 });
 
@@ -60,7 +44,7 @@ test('missing Claude token only: still stops with install.sh message', () => {
   const r = run({ config: `INSTABOX_API_KEY=${IBK}\n` });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Claude token/);
-  assert.match(r.stderr, /install\.sh/);
+  assert.match(r.stderr, /cloudy-cloud setup/);
   assert.equal(r.started, false);
 });
 
@@ -92,28 +76,56 @@ test('no origin at all: warns and still starts', () => {
   assert.equal(r.started, true);
 });
 
-test('reached through a linked folder (as npm link installs it), the install.sh path is the real clone', () => {
+test('reached through a linked folder (as npm link installs it), the missing-keys message points to cloudy-cloud setup', () => {
   const linkDir = mkdtempSync(join(tmpdir(), 'cc-link-'));
-  const pkg = join(linkDir, 'claude-cloud');
-  symlinkSync(resolve('.'), pkg); // like <npm prefix>/lib/node_modules/claude-cloud -> the clone
+  const pkg = join(linkDir, 'cloudy-cloud');
+  symlinkSync(resolve('.'), pkg); // like <npm prefix>/lib/node_modules/cloudy-cloud -> the clone
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
-  const r = spawnSync('/bin/sh', [join(pkg, 'bin/claude-cloud')], {
-    cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CLOUD_CONFIG: join(dir, 'env') }, input: '', encoding: 'utf8',
+  const r = spawnSync('/bin/sh', [join(pkg, 'bin/cloudy-cloud')], {
+    cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env') }, input: '', encoding: 'utf8',
   });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, new RegExp(`Run: ${realpathSync(resolve('.')).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/install\\.sh`));
+  assert.match(r.stderr, /Run: cloudy-cloud setup/);
 });
 
-test('CLAUDE_CLOUD_EXTRA_PROMPT is appended to the launcher prompt, in one --append-system-prompt', () => {
+test('CLOUDY_CLOUD_EXTRA_PROMPT is appended to the launcher prompt, in one --append-system-prompt', () => {
   const d = repo('https://github.com/o/r.git');
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
   chmodSync(join(dir, 'claude'), 0o755);
   writeFileSync(join(dir, 'env'), full);
-  const r = spawnSync('/bin/sh', [launcher, '-p'], { cwd: d, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLAUDE_CLOUD_CONFIG: join(dir, 'env'), CLAUDE_CLOUD_EXTRA_PROMPT: 'EXTRA-RULES-HERE' }, input: '', encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', [launcher, '-p'], { cwd: d, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_EXTRA_PROMPT: 'EXTRA-RULES-HERE' }, input: '', encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const argv = readFileSync(argvFile, 'utf8').split('\n');
   assert.equal(argv.filter((a) => a === '--append-system-prompt').length, 1);
   assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /mcp__cloud__cloud_agent[\s\S]*EXTRA-RULES-HERE/);
+});
+
+test('cloudy-cloud setup and --setup run install.sh from any folder', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-setup-'));
+  for (const n of ['git', 'npm', 'curl', 'claude']) { writeFileSync(join(dir, n), '#!/bin/sh\nexit 0\n'); chmodSync(join(dir, n), 0o755); }
+  for (const flag of ['setup', '--setup']) {
+    // --check-only is passed through to install.sh, which prints its step line and exits 0
+    const r = spawnSync('/bin/sh', [launcher, flag, '--check-only'], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /\[1\/4\] Tools/);
+  }
+});
+
+test('missing keys without a terminal: message and exit 1, no prompt', () => {
+  const r = run({ config: '' });
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stderr, /Run setup now/);
+});
+
+test('--help, -h and help print Cloudy Cloud help; --version prints the package version; claude is not started', () => {
+  for (const a of ['--help', '-h', 'help']) {
+    const r = spawnSync('/bin/sh', [launcher, a], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /Usage: cloudy-cloud/);
+    assert.match(r.stdout, /Claude Code's own options: claude --help/);
+  }
+  const v = spawnSync('/bin/sh', [launcher, '--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+  assert.equal(v.stdout.trim(), JSON.parse(readFileSync('package.json', 'utf8')).version);
 });

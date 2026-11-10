@@ -68,7 +68,7 @@ test('create passes key, metadata, archiveMs and home', async () => {
   assert.equal(sbx.home, '/data/home');
   assert.equal(calls.create.opts.apiKey, KEY);
   assert.equal(calls.create.opts.archiveMs, 8 * 60 * 60_000);
-  assert.deepEqual(calls.create.opts.metadata, { purpose: 'claude-cloud', owner: 'own1' });
+  assert.deepEqual(calls.create.opts.metadata, { purpose: 'cloudy-cloud', owner: 'own1' });
   assert.equal(calls.create.opts.timeoutMs, undefined);
   assert.ok(!JSON.stringify(Object.keys(sbx)).includes(KEY));
   assert.ok(!Object.values(sbx).some((v) => typeof v === 'string' && v.includes(KEY)));

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, access } from 'node:fs/promises';
@@ -135,13 +136,45 @@ test('start returns at once with starting, before the sandbox exists', async () 
   release();
 });
 
+test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
+  const events = [];
+  const { start, wait, msg, stop } = await setup({ events: (e) => events.push(e) });
+  const id = await start({ prompt: `use ${SECRET} please`, description: 'label' });
+  await wait([id]);
+  await msg(id, 'again');
+  await wait([id]);
+  await stop([id]);
+  const types = events.map((e) => e.type);
+  for (const t of ['agent', 'message', 'machine', 'status', 'reply']) assert.ok(types.includes(t), t);
+  assert.deepEqual(events.filter((e) => e.type === 'message').map((e) => e.text), ['use [redacted] please', 'again']);
+  assert.ok(!JSON.stringify(events).includes(SECRET));
+  assert.equal(events.find((e) => e.type === 'agent').branch, `cloudy-cloud/${id}`);
+  assert.equal(events.at(-1).status, 'stopped');
+});
+
+test('an agent description containing a secret is logged scrubbed', async () => {
+  const events = [];
+  const { start } = await setup({ events: (e) => events.push(e) });
+  await start({ description: `deploy with ${SECRET}` });
+  assert.equal(events.find((e) => e.type === 'agent').description, 'deploy with [redacted]');
+  assert.ok(!JSON.stringify(events).includes(SECRET));
+});
+
+test('the machine event records when the server deletes the machine', async () => {
+  const events = [];
+  const { start, wait } = await setup({ events: (e) => events.push(e) });
+  const id = await start();
+  await wait([id]);
+  assert.ok(events.find((e) => e.type === 'machine').deleteAt > Date.now());
+});
+
 test('wait returns the result once, then marks it reported; agent stays open', async () => {
   const { start, wait, created, open } = await setup();
   const id = await start({ prompt: 'hi' });
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
-  assert.match(first, /Pushed to origin claude-cloud\//);
+  assert.match(first, /Pushed to origin cloudy-cloud\//);
   const second = await wait([id]);
   assert.match(second, /already reported/);
   assert.doesNotMatch(second, /hello/);
@@ -254,7 +287,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  deleted at \\S+  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -284,7 +317,7 @@ test('a failed turn reports error, scrubs secrets, still pushes commits; agent w
   assert.match(r, /boom \[redacted\]/);
   assert.ok(!r.includes(SECRET));
   assert.ok(created[0].killed);
-  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'changed');
+  assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'changed');
 });
 
 test('a failed follow-up keeps the agent open (idle) and pushes changes', async () => {
@@ -308,7 +341,7 @@ test('a follow-up to a vanished sandbox fails the agent and says so', async () =
   const r = await wait([id]);
   assert.match(r, /status: failed/);
   assert.match(r, /no longer reachable/);
-  assert.match(r, new RegExp(`already pushed to origin claude-cloud/${id}`));
+  assert.match(r, new RegExp(`already pushed to origin cloudy-cloud/${id}`));
 });
 
 test('invalid model or subagent_type is rejected before any sandbox', async () => {
@@ -387,31 +420,80 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   const { start, wait, msg, created, text, remote } = await setup();
   const id = await start({ prompt: 'EDIT', model: 'haiku' });
   await wait([id]);
-  const tip1 = await remote(`git rev-parse claude-cloud/${id}`);
+  const tip1 = await remote(`git rev-parse cloudy-cloud/${id}`);
   const r = await msg(id, 'EDIT2 please');
   assert.match(text(r), /status: running/);
   const out = await wait([id]);
   assert.match(out, new RegExp(`resumed ${SID} edited2`));
-  assert.match(out, new RegExp(`Pushed to origin claude-cloud/${id} at [0-9a-f]{7}\\. Fetch with: git fetch origin claude-cloud/${id}`));
-  assert.equal(await remote(`git merge-base --is-ancestor ${tip1} claude-cloud/${id} && echo yes`), 'yes');
-  assert.equal(await remote(`git show claude-cloud/${id}:b.txt`), 'more');
+  assert.match(out, new RegExp(`Pushed to origin cloudy-cloud/${id} at [0-9a-f]{7}\\. Fetch with: git fetch origin cloudy-cloud/${id}`));
+  assert.equal(await remote(`git merge-base --is-ancestor ${tip1} cloudy-cloud/${id} && echo yes`), 'yes');
+  assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'more');
   const cmd = created[0].cmds.filter((c) => c.includes('claude -p')).pop();
   assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
 });
 
-test('first-turn command is stream-json output with the commit-and-push hint; identity and branch are set up', async () => {
+test('a small repo uploads a full bundle and sets up in the original command order', async () => {
   const { start, wait, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const c = created[0].cmds;
+  assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+  assert.match(c[0], /git fetch -q \.\.\/in\.bundle .* git remote add origin /);
+  assert.equal(c[1], 'gh auth setup-git');
+  assert.ok(!c.some((x) => /git fetch -q origin /.test(x)));
+});
+
+const bulk = (repo, name) => writeFile(join(repo, name), randomBytes(20000)).then(() => sh(repo, `git add -A && git commit -qm ${name}`));
+
+test('a bundle over the limit is thin: the machine fetches the commits GitHub has, then the bundle', async () => {
+  const { repo, bare, start, wait, created, deps, remote } = await setup();
+  await bulk(repo, 'big.bin');
+  await sh(repo, `git push -q ${bare} main && git update-ref refs/remotes/origin/main HEAD`);
+  const base = await sh(repo, 'git rev-parse HEAD');
+  await writeFile(join(repo, 'b.txt'), 'local\n');
+  await sh(repo, 'git add -A && git commit -qm local');
+  deps.bundleMax = 5000;
+  const id = await start();
+  await wait([id]);
+  const s = created[0];
+  const bundle = await readFile(join(s.dir, 'home', 'in.bundle'));
+  assert.ok(bundle.length < 5000, `thin bundle is ${bundle.length} bytes`);
+  const i = s.cmds.findIndex((c) => c.includes(`git fetch -q origin ${base}`));
+  assert.ok(i > s.cmds.indexOf('gh auth setup-git'), 'prerequisites are fetched after gh auth');
+  assert.match(s.cmds[i], /git fetch -q origin [0-9a-f]{40} && git fetch -q \.\.\/in\.bundle /);
+  assert.ok(s.cmds[0].includes('git remote add origin') && !s.cmds[0].includes('in.bundle'));
+  assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'local');
+});
+
+test('changes too large even for a thin bundle fail with a clear error', async () => {
+  const { repo, bare, start, wait, deps } = await setup();
+  await sh(repo, `git push -q ${bare} main && git update-ref refs/remotes/origin/main HEAD`);
+  await bulk(repo, 'big.bin');
+  deps.bundleMax = 5000;
+  const out = await wait([await start()]);
+  assert.match(out, /too large to upload.*Push the branch to GitHub first/s);
+});
+
+test('a repo with no origin branches and a large bundle fails with the same error', async () => {
+  const { repo, start, wait, deps } = await setup();
+  await bulk(repo, 'big.bin');
+  deps.bundleMax = 5000;
+  assert.match(await wait([await start()]), /too large to upload/);
+});
+
+test('first-turn command is stream-json output with the commit-and-push hint; identity and branch are set up', async () => {
+  const { start, wait, created, deps } = await setup();
   const id = await start();
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
   assert.match(cmd, /--output-format stream-json --verbose/);
-  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.'`));
-  assert.ok(created[0].cmds.some((c) => c.includes('git config user.name claude-cloud') && c.includes('user.email claude-cloud@localhost')));
-  assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b claude-cloud/${id}`)));
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then.'`));
+  assert.ok(created[0].cmds.some((c) => c.includes('git config user.name cloudy-cloud') && c.includes('user.email cloudy-cloud@localhost')));
+  assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b cloudy-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
-  assert.ok(created[0].cmds.includes(`git push -q -u origin claude-cloud/${id}`));
+  assert.ok(created[0].cmds.includes(`git push -q -u origin cloudy-cloud/${id}`));
 });
 
 test('origin: https accepted, ssh converted, missing or non-GitHub or malicious rejected before any sandbox', async () => {
@@ -438,8 +520,8 @@ test('agent commits reach the GitHub branch; the local repo gets no new refs', a
   const head = await sh(repo, 'git rev-parse HEAD');
   const id = await start({ prompt: 'EDIT' });
   const r = await wait([id]);
-  assert.match(r, new RegExp(`Pushed to origin claude-cloud/${id}`));
-  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'changed');
+  assert.match(r, new RegExp(`Pushed to origin cloudy-cloud/${id}`));
+  assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'changed');
   assert.equal(await refs(repo), before);
   assert.equal(await sh(repo, 'git rev-parse HEAD'), head);
   assert.equal(await sh(repo, 'git status --porcelain'), '');
@@ -450,8 +532,8 @@ test('safety push sends commits the agent made but did not push', async () => {
   const { start, wait, remote, msg } = await setup();
   const id = await start({ prompt: 'UNPUSHED' });
   const r = await wait([id]);
-  assert.match(r, new RegExp(`Pushed to origin claude-cloud/${id}`));
-  assert.equal(await remote(`git show claude-cloud/${id}:unpushed.txt`), 'unpushed');
+  assert.match(r, new RegExp(`Pushed to origin cloudy-cloud/${id}`));
+  assert.equal(await remote(`git show cloudy-cloud/${id}:unpushed.txt`), 'unpushed');
   assert.doesNotMatch(r, /Uncommitted/);
   await msg(id, 'UNPUSHED');
   await wait([id]);
@@ -463,8 +545,8 @@ test('uncommitted files are listed, not committed', async () => {
   const r = await wait([id]);
   assert.match(r, /Uncommitted changes left in the sandbox \(ask the agent to commit and push\): .*notes\.txt/);
   assert.match(r, /a\.txt/);
-  assert.equal(await remote(`git ls-tree -r --name-only claude-cloud/${id}`), 'a.txt');
-  assert.equal(await remote(`git show claude-cloud/${id}:a.txt`), 'orig');
+  assert.equal(await remote(`git ls-tree -r --name-only cloudy-cloud/${id}`), 'a.txt');
+  assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'orig');
   assert.ok(!created[0].cmds.some((c) => /git (add|commit)/.test(c)), 'the server never commits for the agent');
 });
 
@@ -481,8 +563,8 @@ test('a push failure is reported; the agent stays idle and messageable', async (
   assert.ok(open.has(id));
   await rejectPushes(false);
   assert.equal((await msg(id, 'hi')).isError, undefined);
-  assert.match(await wait([id]), new RegExp(`Pushed to origin claude-cloud/${id}`));
-  assert.equal(await remote(`git show claude-cloud/${id}:unpushed.txt`), 'unpushed');
+  assert.match(await wait([id]), new RegExp(`Pushed to origin cloudy-cloud/${id}`));
+  assert.equal(await remote(`git show cloudy-cloud/${id}:unpushed.txt`), 'unpushed');
 });
 
 test('a failed first push fails the agent with a clear, scrubbed message', async () => {
@@ -515,7 +597,7 @@ test('8 agents finishing at once each end up with only their own commits on thei
   const ids = await Promise.all(names.map((n) => start({ prompt: `OWN-${n}` })));
   const r = await wait(ids, 120);
   for (const [i, id] of ids.entries()) {
-    const files = (await remote(`git diff --name-only ${base} claude-cloud/${id}`)).split('\n');
+    const files = (await remote(`git diff --name-only ${base} cloudy-cloud/${id}`)).split('\n');
     assert.deepEqual(files, [`own-${names[i]}.txt`], `agent ${id} branch has ${files}\n${r}`);
   }
   assert.equal(await refs(repo), before);
@@ -630,14 +712,14 @@ test('the safety push retries once', async () => {
     },
   });
   const r = await wait([await start()]);
-  assert.match(r, /Pushed to origin claude-cloud\//);
+  assert.match(r, /Pushed to origin cloudy-cloud\//);
   assert.equal(pushes, 2);
   assert.equal(sleeps.length, 1);
 });
 
 // ---- model profiles ----
 const PKEY = 'pk-particle-secret-999';
-const pEnv = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-1', GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: PKEY, OPENROUTER_API_KEY: 'or-secret-777', CLAUDE_CLOUD_PROFILES: '/nonexistent/profiles.json' };
+const pEnv = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-1', GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: PKEY, OPENROUTER_API_KEY: 'or-secret-777', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
 // Gateway commands are faked (no uvx or curl here); everything else runs in the fake sandbox. health: 'ok' or a log text.
 async function profileSetup(health = 'ok', env = pEnv) {
   const github = () => currentGithub;
@@ -731,10 +813,10 @@ test('a gateway that never becomes healthy fails the agent with a scrubbed log t
 });
 
 test('a missing provider key fails cloud_agent at once, before any sandbox', async () => {
-  const { deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, CLAUDE_CLOUD_PROFILES: '/nonexistent/profiles.json' } });
+  const { deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' } });
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'glm' }, deps);
   assert.equal(r.isError, true);
-  assert.match(r.content[0].text, /PARTICLE_API_KEY.*install\.sh/);
+  assert.match(r.content[0].text, /PARTICLE_API_KEY.*cloudy-cloud setup/);
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });
@@ -752,8 +834,8 @@ test('an unknown or invalid profile is rejected', async () => {
 async function withTool(x) {
   const tool = await mkdtemp(join(tmpdir(), 'cc-tool-'));
   await sh(tool, 'git init -q -b main && git config user.name t && git config user.email t@t && mkdir bin');
-  await writeFile(join(tool, 'bin', 'claude-cloud'), '#!/bin/sh\necho "LAUNCHER $* EXTRA=$CLAUDE_CLOUD_EXTRA_PROMPT" >> ../launcher.log\nexec claude "$@"\n');
-  await chmod(join(tool, 'bin', 'claude-cloud'), 0o755);
+  await writeFile(join(tool, 'bin', 'cloudy-cloud'), '#!/bin/sh\necho "LAUNCHER $* EXTRA=$CLOUDY_CLOUD_EXTRA_PROMPT" >> ../launcher.log\nexec claude "$@"\n');
+  await chmod(join(tool, 'bin', 'cloudy-cloud'), 0o755);
   await sh(tool, 'git add -A && git commit -qm tool && git remote add origin https://github.com/test/tool.git');
   await mkdir(join(x.github, 'test', 'tool.git'));
   await sh(join(x.github, 'test', 'tool.git'), 'git init -q --bare -b main');
@@ -763,7 +845,7 @@ async function withTool(x) {
 }
 const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret' };
 
-test('a coordinator clones claude-cloud at the laptop commit, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
+test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
   const x = await setup();
   x.deps.env = { ...LONG_ENV };
   const { sha } = await withTool(x);
@@ -771,41 +853,44 @@ test('a coordinator clones claude-cloud at the laptop commit, installs it, write
   const out = await x.wait([id]);
   assert.match(out, /status: idle/);
   const s = x.created[0], home = join(s.dir, 'home');
-  assert.equal(await sh(join(home, 'claude-cloud'), 'git rev-parse HEAD'), sha);
-  assert.match(await readFile(join(home, 'claude-cloud', 'npm.log'), 'utf8'), /npm install/);
-  const env = await readFile(join(home, '.config/claude-cloud/env'), 'utf8');
-  for (const l of ['INSTABOX_API_KEY=ib-key-1', 'CLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1', 'PARTICLE_API_KEY=part-key-1', 'CLAUDE_CLOUD_DEPTH=1', 'CLAUDE_CLOUD_MAX_DEPTH=3', 'CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION=200']) assert.ok(env.includes(l), l);
+  assert.equal(await sh(join(home, 'cloudy-cloud'), 'git rev-parse HEAD'), sha);
+  assert.ok(s.writes.some((w) => w.endsWith('/cloudy-cloud.bundle')), 'tool uploaded as a bundle');
+  assert.ok(!s.cmds.some((c) => /git clone/.test(c) && /tool/.test(c)), 'tool is not cloned from GitHub');
+  assert.match(await readFile(join(home, 'cloudy-cloud', 'npm.log'), 'utf8'), /npm install/);
+  const env = await readFile(join(home, '.config/cloudy-cloud/env'), 'utf8');
+  for (const l of ['INSTABOX_API_KEY=ib-key-1', 'CLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1', 'PARTICLE_API_KEY=part-key-1', 'CLOUDY_CLOUD_DEPTH=1', 'CLOUDY_CLOUD_MAX_DEPTH=3', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200']) assert.ok(env.includes(l), l);
   assert.doesNotMatch(env, /ANTHROPIC_API_KEY/);
-  assert.equal((await sh(home, 'stat -f %Lp .config/claude-cloud/env 2>/dev/null || stat -c %a .config/claude-cloud/env')), '600');
-  assert.ok(s.writes.some((w) => w.endsWith('.config/claude-cloud/env')));
+  assert.equal((await sh(home, 'stat -f %Lp .config/cloudy-cloud/env 2>/dev/null || stat -c %a .config/cloudy-cloud/env')), '600');
+  assert.ok(s.writes.some((w) => w.endsWith('.config/cloudy-cloud/env')));
   for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);
-  assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, '1');
+  assert.equal(s.envs.CLOUDY_CLOUD_DEPTH, '1');
+  assert.ok(s.cmds.some((c) => c.includes('ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet')), 'nested coordinator gets the fleet skill');
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
   assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
-  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch claude-cloud\/.*You are a coordinator\. You can start your own cloud subagents/);
-  assert.ok(s.cmds.some((c) => c.includes('/claude-cloud/bin/claude-cloud -p')));
+  assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\. Your workers are deleted as soon as your reply ends.*call cloud_agent_wait on every worker you started/);
+  assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });
 
 test('a coordinator at max depth is refused before any sandbox; depth goes up by one', async () => {
   const x = await setup();
   await withTool(x);
-  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_DEPTH: '3' };
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_DEPTH: '3' };
   const r = await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps);
   assert.equal(r.isError, true);
   assert.match(x.text(r), /maximum depth of 3/);
   assert.equal(x.created.length, 0);
   // A worker at that depth is fine, and a coordinator one level lower gets depth 3.
   assert.ok(await x.start({ prompt: 'hi' }));
-  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_DEPTH: '2', CLAUDE_CLOUD_MAX_DEPTH: '3' };
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_DEPTH: '2', CLOUDY_CLOUD_MAX_DEPTH: '3' };
   const id = await x.start({ role: 'coordinator' });
   await x.wait([id]);
-  assert.equal(x.created.at(-1).envs.CLAUDE_CLOUD_DEPTH, '3');
+  assert.equal(x.created.at(-1).envs.CLOUDY_CLOUD_DEPTH, '3');
 });
 
 test('the per-session agent cap refuses further starts', async () => {
   const x = await setup();
-  x.deps.env = { ...LONG_ENV, CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: '2' };
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: '2' };
   assert.ok(await x.start()); assert.ok(await x.start());
   const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
   assert.equal(r.isError, true);
@@ -819,9 +904,9 @@ test('a worker is unchanged: plain claude, no install, no env file; bad role rej
   const id = await x.start({ role: 'worker' });
   await x.wait([id]);
   const s = x.created[0];
-  assert.ok(s.cmds.some((c) => / claude -p /.test(c)) && !s.cmds.some((c) => /\/claude-cloud\/bin|npm install/.test(c)));
+  assert.ok(s.cmds.some((c) => / claude -p /.test(c)) && !s.cmds.some((c) => /\/cloudy-cloud\/bin|npm install/.test(c)));
   assert.ok(!s.writes.some((w) => w.endsWith('/env')));
-  assert.equal(s.envs.CLAUDE_CLOUD_DEPTH, undefined);
+  assert.equal(s.envs.CLOUDY_CLOUD_DEPTH, undefined);
   assert.match(x.text(await runSubagent({ description: 'd', prompt: 'hi', role: 'boss' }, x.deps)), /invalid role/);
 });
 
@@ -875,4 +960,37 @@ test('a pi worker cannot be a coordinator', async () => {
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', role: 'coordinator' }, deps);
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /coordinator.*pi/);
+});
+
+test('workers get a 6 hour delete deadline by default, CLOUDY_CLOUD_WORKER_HOURS changes it, and the deadline is in the list', async () => {
+  const seen = [];
+  const x = await setup({ createSandbox: async (envs, opts) => { seen.push(opts); return fakeSandbox(); } });
+  const t0 = Date.now();
+  const id = await x.start();
+  await x.wait([id]);
+  assert.deepEqual(seen[0], { deleteAfterSeconds: 21600 });
+  const iso = new Date(x.deps.open.get(id).deleteAt).toISOString();
+  assert.ok(Math.abs(x.deps.open.get(id).deleteAt - (t0 + 21600_000)) < 60_000);
+  assert.match(await x.text(await listAgents({}, x.deps)), new RegExp(`deleted at ${iso}`));
+  x.deps.env = { ...x.deps.env, CLOUDY_CLOUD_WORKER_HOURS: '2' };
+  await x.wait([await x.start()]);
+  assert.equal(seen[1].deleteAfterSeconds, 7200);
+  x.deps.env = { ...x.deps.env, CLOUDY_CLOUD_WORKER_HOURS: '99' };
+  await x.wait([await x.start()]);
+  assert.equal(seen[2].deleteAfterSeconds, 86400);
+});
+
+test('the coordinator hint tells the deadline and the finish step, with no apostrophe', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  await withTool(x);
+  const id = await x.start({ role: 'coordinator', prompt: 'hi' });
+  await x.wait([id]);
+  const launched = await readFile(join(x.created[0].dir, 'home', 'launcher.log'), 'utf8');
+  const iso = new Date(x.deps.open.get(id).deleteAt).toISOString();
+  assert.ok(launched.includes(`Your machine is deleted by the server at ${iso}; push your work well before then.`));
+  assert.match(launched, /coordinator finish/);
+  assert.match(launched, /cloud_agent_stop/);
+  const cmd = x.created[0].cmds.find((c) => c.includes('CLOUDY_CLOUD_EXTRA_PROMPT='));
+  assert.ok(!/EXTRA_PROMPT='[^']*'[^' ]/.test(cmd) && !cmd.slice(cmd.indexOf("EXTRA_PROMPT='") + 14).split("' ")[0].includes("'"), 'no apostrophe inside the hint');
 });

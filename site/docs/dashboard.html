@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard and app previews · Cloudy Cloud docs</title>
+<meta name="description" content="Watch your cloud agents in a local web page and open apps running on their machines.">
+<!--seo-->
+<link rel="canonical" href="https://cloudycloud.tech/docs/dashboard.html">
+<link rel="alternate" type="text/markdown" href="dashboard.md">
+<meta property="og:site_name" content="Cloudy Cloud">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Dashboard and app previews · Cloudy Cloud docs">
+<meta property="og:description" content="Watch your cloud agents in a local web page and open apps running on their machines.">
+<meta property="og:url" content="https://cloudycloud.tech/docs/dashboard.html">
+<meta property="og:image" content="https://cloudycloud.tech/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Cloudy Cloud: your subagents, up in the clouds">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
+<meta name="twitter:title" content="Dashboard and app previews · Cloudy Cloud docs">
+<meta name="twitter:description" content="Watch your cloud agents in a local web page and open apps running on their machines.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Dashboard and app previews","description":"Watch your cloud agents in a local web page and open apps running on their machines.","url":"https://cloudycloud.tech/docs/dashboard.html","mainEntityOfPage":"https://cloudycloud.tech/docs/dashboard.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
+,{"@type":"ListItem","position":3,"name":"Dashboard and app previews","item":"https://cloudycloud.tech/docs/dashboard.html"}]}</script>
+<!--/seo-->
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard" aria-current="page">Dashboard and app previews</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+        <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
+        <li><a href="faq.html" data-page="faq">FAQ</a></li>
+        <li><a href="glossary.html" data-page="glossary">Glossary</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Dashboard and app previews</h1>
+<p class="lede">The dashboard is a read-only web page on your own computer that shows your cloud agents and the messages between them and your session. To look at an app a cloud agent is running, use <code>cloudy-cloud open</code>.</p>
+
+<h2 id="start">Start the dashboard</h2>
+<pre><code>cloudy-cloud dashboard</code></pre>
+<p>This prints a link and opens it in your browser. The page is served from <code>127.0.0.1</code> on port 4477, or on a free port if 4477 is taken. Press Ctrl+C in the terminal to stop it.</p>
+<table>
+<thead><tr><th>Option</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>--demo</code></td><td>Shows sample data, so you can look around before you have started any agents.</td></tr>
+<tr><td><code>--port N</code></td><td>Uses port N (0 to 65535).</td></tr>
+<tr><td><code>--no-open</code></td><td>Prints the link without opening a browser.</td></tr>
+</tbody>
+</table>
+
+<h2 id="what-it-shows">What it shows</h2>
+<p>The page has two views, switched at the top: <strong>List</strong> and <strong>Fleet</strong>.</p>
+<ul>
+<li><strong>List</strong> has the boxes in a left column and the selected box in a detail pane.</li>
+<li><strong>Fleet</strong> shows one tile per box, with its status, description, id and time since last activity. Select a tile to open it in the List view.</li>
+</ul>
+<p>Boxes are grouped as <strong>Needs you</strong>, <strong>Active</strong> and <strong>Finished</strong>.</p>
+<ul>
+<li><strong>Needs you:</strong> agents that are idle, and agents that failed today.</li>
+<li><strong>Active:</strong> agents that are queued, starting or running.</li>
+<li><strong>Finished:</strong> everything else.</li>
+</ul>
+<p>The top bar counts running, starting, idle and failed agents and those finished today. The browser tab title shows the failed and idle counts.</p>
+
+<h3 id="detail">The detail pane</h3>
+<p>Select a box to see:</p>
+<ul>
+<li><strong>Status</strong>, <strong>Model</strong> (or profile) and <strong>Started</strong>.</li>
+<li><strong>Branch</strong>: the <code>cloudy-cloud/&lt;id&gt;</code> branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.</li>
+<li><strong>Deletes</strong>: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (<code>CLOUDY_CLOUD_WORKER_HOURS</code>, at most 24), which can be earlier.</li>
+<li><strong>Open app</strong>: for a running or idle agent, the command <code>cloudy-cloud open &lt;id&gt; &lt;port&gt;</code> with a copy button. See <a href="#open">below</a>.</li>
+<li><strong>Activity</strong>: a timeline of the task you sent, follow-up messages, progress steps, and the agent's replies.</li>
+</ul>
+
+<h3 id="states">When something is wrong</h3>
+<ul>
+<li><strong>Offline:</strong> the page cannot reach the dashboard server. It keeps the last list, shows the time of the last update, and retries every 3 seconds. If it has no list yet, it shows <em>The dashboard cannot reach its server</em>. Start the server again with <code>cloudy-cloud dashboard</code> and open the new link.</li>
+<li><strong>Old link:</strong> each run makes a new link. A link from an earlier run is refused: a page that is already open shows <em>This link is from an earlier run</em>, and a request without the right token gets the text <em>This dashboard link is missing its access key, or it is from an earlier run.</em> Open the newest link in your terminal, or run <code>cloudy-cloud dashboard</code> again.</li>
+<li><strong>Live machines unavailable:</strong> a banner appears if the Instabox machine list cannot be read, for example when <code>INSTABOX_API_KEY</code> is missing or invalid. Session history still shows.</li>
+<li><strong>No boxes yet:</strong> an empty list means you have not started an agent from a <code>cloudy-cloud</code> session.</li>
+</ul>
+
+<h2 id="limits">What it cannot show</h2>
+<ul>
+<li><strong>Sessions started before the event log existed.</strong> Their agents have no history. If the machine is still running, it appears as a bare machine with no messages.</li>
+<li><strong>A cloud coordinator's messages.</strong> A cloud coordinator runs on its own machine, so its messages are not recorded on your computer. It appears as a machine, and its workers appear as machines without a session log. Nested coordinators log on their own machine too.</li>
+<li><strong>Queued agents.</strong> A queued agent is shown as <em>starting</em>.</li>
+<li><strong>Ended sessions.</strong> An agent from a session that has since ended is shown as stopped.</li>
+</ul>
+
+<h2 id="security">Security model</h2>
+<ul>
+<li><strong>Local only.</strong> The server listens on <code>127.0.0.1</code>. It answers only requests whose <code>Host</code> is <code>localhost</code> or <code>127.0.0.1</code>.</li>
+<li><strong>Per-run token.</strong> Each run makes a random token that is part of the link. A request without it gets a 401.</li>
+<li><strong>Read-only.</strong> It accepts only GET and HEAD requests. It cannot start, message or stop an agent.</li>
+<li><strong>Keys stay out of the browser.</strong> The Instabox key is used only by the server. Error text is redacted before it is sent to the page.</li>
+<li><strong>The event log is private to you.</strong> The log is <code>~/.config/cloudy-cloud/events.jsonl</code> (set <code>CLOUDY_CLOUD_EVENTS</code> to move it), in a folder with mode 700, with file mode 600. Exact secret values are removed, and key-shaped text such as <code>sk-…</code>, <code>ghp_…</code>, <code>NAME_KEY=…</code> and bearer tokens is redacted, before anything is written. Each text is cut at 20,000 characters.</li>
+</ul>
+<div class="note"><p>Prompts and replies can contain your code, and redaction only catches key-shaped text. Treat the log as private. It is never rotated; delete the file to clear the history. The dashboard reads the newest 16 MB of it.</p></div>
+
+<h2 id="open">Reach an app running on an agent's machine</h2>
+<p>If an agent starts a dev server or a web app, you can view it from your own browser. The dashboard shows the command for each running agent in its <strong>Open app</strong> row. Replace <code>&lt;port&gt;</code> with the port the app uses.</p>
+<h3 id="tunnel">Private tunnel</h3>
+<pre><code>cloudy-cloud open AGENT_ID 3000</code></pre>
+<p>This forwards <code>http://127.0.0.1:3000</code> on your computer to port 3000 on the agent's machine, until you press Ctrl-C. Use an agent id from <code>cloud_agent_list</code> (the <code>&lt;id&gt;</code> in branch <code>cloudy-cloud/&lt;id&gt;</code>), a machine name or a machine id. A coordinator's machine is named <code>coord-NAME</code>. To use a different local port, write <code>LOCAL:REMOTE</code>, for example <code>8080:3000</code>. Only you can reach the tunnel.</p>
+<h3 id="share">Share a private link</h3>
+<pre><code>cloudy-cloud open AGENT_ID 3000 --share</code></pre>
+<p>This prints a private link with a token in the URL. It never publishes the app publicly.</p>
+<div class="warn"><p>Anyone who has the link can open the app, until the machine is deleted or you remove the link. Share it only with people who should see the app, and do not paste it where others can read it.</p></div>
+<p>Remove the link with:</p>
+<pre><code>cloudy-cloud open AGENT_ID 3000 --unshare</code></pre>
+<p><code>--share</code> and <code>--unshare</code> take a single port, not <code>LOCAL:REMOTE</code>.</p>
+<h3 id="open-limits">Two limits</h3>
+<ol>
+<li><strong>Start the app in the background.</strong> A turn's foreground processes end with the turn. Ask the agent to run the app like this:
+<pre><code>nohup npm run dev &gt; /tmp/dev.log 2&gt;&amp;1 &amp;</code></pre></li>
+<li><strong>The tunnel and link stop when the machine is deleted.</strong> A worker machine is deleted after 60 idle minutes, when the session ends, or at its deadline (6 hours by default). A coordinator lives longer (24 hours by default).</li>
+</ol>
+<p>The command uses the Instabox CLI (<code>npx --yes instabox@latest</code>), so you must be signed in to Instabox. If it says you are not, run <code>cloudy-cloud setup</code>. If the agent's machine is not running, the command says so and you need to start a new agent.</p>
+<p>For running many agents, see <a href="fleets.html">Coordinators and fleets</a>.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="fleets.html"><small>Previous</small><span>Coordinators and fleets</span></a>
+<a class="next" href="troubleshooting.html"><small>Next</small><span>Troubleshooting, security and FAQ</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

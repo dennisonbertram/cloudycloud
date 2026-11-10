@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
-import { resolveProfile, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
-import { createProgress, parseStream, statusLine, totalLine, STATUS_MAX } from './progress.mjs';
+import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
+import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
+import { createProgress, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 
 const run = promisify(execFile);
@@ -17,7 +19,7 @@ const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'INSTABOX_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN'];
 const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
-const NO_ORIGIN = 'claude-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
+const NO_ORIGIN = 'cloudy-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -31,12 +33,12 @@ const INSTALL_MS = 300_000;
 const MAX_DEPTH = 3;
 const MAX_AGENTS = 200;
 const ROLES = ['worker', 'coordinator'];
-const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/claude-cloud. Pass work to subagents only through the cloud_agent tools.';
-const IDENT = ['-c', 'user.name=claude-cloud', '-c', 'user.email=claude-cloud@localhost'];
-const commitHint = (id) => `You are on branch claude-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running.`;
+const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/cloudy-cloud. Pass work to subagents only through the cloud_agent tools. No human is watching in real time. Do not stop to ask; choose the documented default and record each decision. If the reply of a subagent ends with a QUESTION: line, answer it with cloud_agent_message. Your workers are deleted as soon as your reply ends, even if they have not pushed, so never end your reply while a worker is running: call cloud_agent_wait on every worker you started, and merge or record its result first. Before you finish, stop your workers with cloud_agent_stop and push your work. If you run on a machine made by cloudy-cloud coordinator start, your last step is to run ~/cloudy-cloud/bin/cloudy-cloud coordinator finish; a nested coordinator just ends its reply and its parent stops it.';
+const IDENT = ['-c', 'user.name=cloudy-cloud', '-c', 'user.email=cloudy-cloud@localhost'];
+const commitHint = (id, deleteAt) => `You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted by the server at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
-const log = (...a) => console.error('[claude-cloud]', ...a);
+const log = (...a) => console.error('[cloudy-cloud]', ...a);
 
 // Returns the https GitHub URL for an origin URL (https or git@github.com:), or undefined.
 const githubUrl = (raw) => {
@@ -64,7 +66,7 @@ function helpers(env) {
 }
 const ctxOf = (deps) => {
   deps.tasks ??= new Map();
-  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLAUDE_CLOUD_STARTS_PER_MIN) || 25 });
+  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLOUDY_CLOUD_STARTS_PER_MIN) || 25 });
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
 };
 const isPi = (a) => a.profile?.harness === 'pi';
@@ -82,6 +84,7 @@ async function stop(a, open) {
   a.cancelQueue?.();
   if (open.get(a.id) === a) open.delete(a.id);
   a.status = 'stopped';
+  a.emit?.({ type: 'status', status: 'stopped' });
   if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
   wake(a);
   await a.sandbox?.kill().catch(() => {});
@@ -114,7 +117,7 @@ function armIdle(a, ctx) {
 // After a turn: push whatever the agent committed (never commits for it) and report what is left.
 // The command always exits 0, so a throw means the sandbox itself is unreachable.
 async function safetyPush(a, ctx) {
-  const branch = `claude-cloud/${a.id}`;
+  const branch = `cloudy-cloud/${a.id}`;
   try {
     const push = async () => (await a.sandbox.commands.run(
       `if err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
@@ -138,20 +141,22 @@ async function safetyPush(a, ctx) {
 
 // One claude run in the sandbox (first turn, or --resume), then a safety push. Output is stream-json, fed to t.progress as it arrives.
 // Returns { text, error, gone, cancelled }. a.sessionId is updated from the final result event.
+const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}`;
+
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
   } catch (e) {
-    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin claude-cloud/${a.id} survives.` };
+    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin cloudy-cloud/${a.id} survives.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
-  // A coordinator runs through the claude-cloud launcher, which passes its own --append-system-prompt. Its extra
-  // instructions go to the launcher in CLAUDE_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
+  // A coordinator runs through the cloudy-cloud launcher, which passes its own --append-system-prompt. Its extra
+  // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
-  const hint = `${commitHint(a.id)}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
-  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLAUDE_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/claude-cloud/bin/claude-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+  const hint = `${commitHint(a.id, a.deleteAt)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
@@ -159,7 +164,7 @@ async function turn(a, message, ctx, t) {
   let stdout, failure;
   try {
     stdout = (await a.sandbox.commands.run(isPi(a) ? piCmd : cmd, {
-      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => t.progress.feed(chunk),
+      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
@@ -167,11 +172,11 @@ async function turn(a, message, ctx, t) {
   t.progress.end();
   const { where, failed } = await safetyPush(a, ctx);
 
-  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
+  if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
-    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totalLine(t.progress, { cost: !a.profile })}` };
+    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}` };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -194,8 +199,11 @@ async function turn(a, message, ctx, t) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totalLine(t.progress, { cost: !a.profile })}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
 }
+
+// The machine upload limit is 10 MiB; stay under it. Over this, upload only the commits GitHub lacks.
+export const BUNDLE_MAX = 9 * 1024 * 1024;
 
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
@@ -206,16 +214,40 @@ const limitText = (e) => {
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, createSandbox } = ctx;
-  const tmp = await mkdtemp(join(tmpdir(), 'claude-cloud-'));
-  const branch = `claude-cloud/${a.id}`;
+  const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
+  const branch = `cloudy-cloud/${a.id}`;
   try {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
-    a.sha = (await git(a.root, ...IDENT, 'stash', 'create')) || (await git(a.root, 'rev-parse', 'HEAD'));
+    // Many agents starting together can collide on index.lock here; wait and retry.
+    let snap;
+    for (let i = 1; ; i++) {
+      try { snap = await git(a.root, ...IDENT, 'stash', 'create'); break; } catch (e) {
+        if (i >= 8 || !/index\.lock|could not write index/i.test(`${e?.stderr ?? ''} ${e?.message ?? ''}`)) throw e;
+        await new Promise((r) => setTimeout(r, 100 * i));
+      }
+    }
+    a.sha = snap || (await git(a.root, 'rev-parse', 'HEAD'));
     const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
     const bundle = join(tmp, 'in.bundle');
     await git(a.root, 'update-ref', ref, a.sha);
+    let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
+    let data;
+    const max = ctx.bundleMax ?? BUNDLE_MAX;
     try {
       await git(a.root, 'bundle', 'create', bundle, ref);
+      data = await readFile(bundle);
+      if (data.length > max) {
+        const tooBig = () => new Error(`The uncommitted/unpushed changes are too large to upload (${data?.length ?? 0} bytes, limit ${max}). Push the branch to GitHub first, then start the agent again.`);
+        // The bundle header lists each prerequisite commit on a line starting with "-".
+        const thin = await git(a.root, 'bundle', 'create', bundle, ref, '--not', '--remotes=origin').then(() => true, (e) => {
+          if (/empty bundle/i.test(`${e?.stderr ?? ''}`)) return false; // everything is already on GitHub
+          throw e;
+        });
+        data = thin ? await readFile(bundle) : null;
+        if (thin) prereqs = data.toString('latin1', 0, data.indexOf('\n\n')).split('\n').filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41));
+        else prereqs = [a.sha];
+        if (!prereqs.length || data?.length > max) throw tooBig();
+      }
     } finally {
       await git(a.root, 'update-ref', '-d', ref).catch(() => {});
     }
@@ -227,24 +259,40 @@ async function setup(a, ctx) {
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
     if (a.profile?.format === 'openai' && !isPi(a)) envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
-    if (a.role === 'coordinator') Object.assign(envs, { CLAUDE_CLOUD_DEPTH: String(a.depth), CLAUDE_CLOUD_MAX_DEPTH: String(a.maxDepth), CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
+    if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
-    a.sandbox = await ctx.queue.create(a, () => createSandbox(envs));
+    a.sandbox = await ctx.queue.create(a, () => {
+      const deleteAfterSeconds = workerSeconds(env);
+      a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
+      return createSandbox(envs, { deleteAfterSeconds });
+    });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
+    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);
-    await a.sandbox.files.write(`${a.home}/in.bundle`, await readFile(bundle));
-    // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
-    await a.sandbox.commands.run(
-      `git init -q repo && cd repo && git config user.name claude-cloud && git config user.email claude-cloud@localhost &&` +
-      ` git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
-      ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
-      { cwd: a.home, timeoutMs: SETUP_MS },
-    );
+    if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
-    await a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
+    const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
+    const init = `git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost`;
+    // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
+    if (!prereqs.length) {
+      await a.sandbox.commands.run(
+        `${init} && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
+        ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
+        { cwd: a.home, timeoutMs: SETUP_MS },
+      );
+      await ghAuth();
+    } else {
+      // Thin bundle: git must be logged in to GitHub before it can fetch the commits the bundle builds on.
+      await a.sandbox.commands.run(`${init} && git remote add origin '${a.origin}'`, { cwd: a.home, timeoutMs: SETUP_MS });
+      await ghAuth();
+      await a.sandbox.commands.run(
+        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${ref}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
+        repo,
+      );
+    }
     // All agents push the same new base history at once and GitHub sometimes rejects one, so retry.
     for (let n = 1; ; n++) {
       try {
@@ -252,7 +300,7 @@ async function setup(a, ctx) {
         break;
       } catch (e) {
         const said = tail(e?.stderr ?? e?.message);
-        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
+        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
         if (n === 3) throw new Error(`The first push to origin ${branch} failed after 3 attempts. Git said: ${said}`);
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
@@ -265,16 +313,19 @@ async function setup(a, ctx) {
   }
 }
 
-// Puts claude-cloud on a coordinator's machine, at the commit the laptop runs, with the keys it needs in a mode-600 env file.
+// Puts cloudy-cloud on a coordinator's machine, at the commit the laptop runs, with the keys it needs in a mode-600 env file.
 // The keys go through files.write, never through a command string.
 async function installCoordinator(a, ctx, envs) {
   const { env } = ctx, sh = (cmd, timeoutMs = SETUP_MS) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
-  await sh(`git clone -q '${a.tool.origin}' claude-cloud && git -C claude-cloud checkout -q ${a.tool.sha}`);
-  await sh('cd claude-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
+  const b = toolBundle(a.tool.root); // the laptop's exact cloudy-cloud, pushed or not
+  await a.sandbox.files.write(`${a.home}/cloudy-cloud.bundle`, b.data);
+  await sh(toolInstallCmd(b, `${a.home}/cloudy-cloud.bundle`, a.tool.origin));
+  await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
+  await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
   const names = ['INSTABOX_API_KEY', claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];
-  const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLAUDE_CLOUD_DEPTH=${a.depth}`, `CLAUDE_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
-  const dir = `${a.home}/.config/claude-cloud`;
+  const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
+  const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
   await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);
   await sh(`chmod 600 ${dir}/env`);
@@ -310,17 +361,20 @@ async function work(a, message, first, ctx, t) {
   try {
     if (first) await setup(a, ctx);
     a.status = 'running';
+    a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? `claude-cloud error: ${e?.message}` };
+    r = { error: true, text: limitText(e) ?? `cloudy-cloud error: ${e?.message}` };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
   const dead = first ? r.error : r.gone;
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
+  a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
+  a.emit?.({ type: 'status', status: a.status });
   endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
   if (dead) await a.sandbox?.kill().catch(() => {});
   armIdle(a, ctx);
@@ -414,31 +468,33 @@ export async function runSubagent(args, deps) {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
     await git(root, 'rev-parse', '--verify', 'HEAD');
   } catch {
-    return fail('claude-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
+    return fail('cloudy-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
   }
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
-  const depth = (Number(ctx.env.CLAUDE_CLOUD_DEPTH) || 0) + 1;
-  const maxDepth = Number(ctx.env.CLAUDE_CLOUD_MAX_DEPTH) || MAX_DEPTH;
-  const maxAgents = Number(ctx.env.CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION) || MAX_AGENTS;
-  if (role === 'coordinator' && depth > maxDepth) return fail(`Cannot start a coordinator: this session is already at the maximum depth of ${maxDepth} (CLAUDE_CLOUD_MAX_DEPTH). Start a worker instead.`);
+  const depth = (Number(ctx.env.CLOUDY_CLOUD_DEPTH) || 0) + 1;
+  const maxDepth = Number(ctx.env.CLOUDY_CLOUD_MAX_DEPTH) || MAX_DEPTH;
+  const maxAgents = Number(ctx.env.CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION) || MAX_AGENTS;
+  if (role === 'coordinator' && depth > maxDepth) return fail(`Cannot start a coordinator: this session is already at the maximum depth of ${maxDepth} (CLOUDY_CLOUD_MAX_DEPTH). Start a worker instead.`);
   const count = (deps.count ??= { started: 0 });
-  if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLAUDE_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
+  if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
   let tool;
   if (role === 'coordinator') {
     const toolRoot = deps.toolRoot ?? TOOL_ROOT;
     try {
-      const url = githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin'));
-      if (!url) throw new Error('origin is not a github.com URL');
-      tool = { origin: url, sha: await git(toolRoot, 'rev-parse', 'HEAD') };
+      await git(toolRoot, 'rev-parse', 'HEAD');
+      tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
     } catch (e) {
-      return fail(`A coordinator needs claude-cloud's own repo (${toolRoot}) to be a git checkout with a github.com origin, so the sandbox can clone it: ${e.message}`);
+      return fail(`A coordinator needs cloudy-cloud's own folder (${toolRoot}) to be a git checkout, so it can be sent to the sandbox: ${e.message}`);
     }
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
+  a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
+  a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}` });
+  a.emit({ type: 'message', text: prompt });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, prompt, true, ctx, t);
@@ -457,6 +513,8 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   if (a.status === 'failed') return fail(`Agent ${id} failed and cannot take messages. Call cloud_agent_wait for the error, then cloud_agent_stop.`);
   clearTimeout(a.idleTimer);
   a.status = 'running';
+  a.emit?.({ type: 'message', text: message });
+  a.emit?.({ type: 'status', status: 'running' });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, message, false, ctx, t);
@@ -500,7 +558,8 @@ export async function listAgents(_args, deps) {
   const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
+    (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
 }
 

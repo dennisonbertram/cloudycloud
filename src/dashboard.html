@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Cloudy Cloud dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page: #fafafb; --surface: #fff; --subtle: #f4f4f6; --border: #e6e6ea; --text: #17181c; --text-2: #4d505a; --text-3: #666974; --accent: #4f5ee8;
+    --s-running: #1f9d5c; --s-starting: #b7791f; --s-queued: #8b8e98; --s-idle: #3b82c4; --s-failed: #c42b33; --s-stopped: #8b8e98;
+    --t-running: #15804a; --t-starting: #8f5d10; --t-idle: #2f6fae;
+    --warn-text: #8a5a00; --warn-bg: #fdf6e3; --err-bg: #fdecee; --pop: 0 1px 2px rgba(20,20,30,.08), 0 4px 12px rgba(20,20,30,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0c0d10; --surface: #131418; --subtle: #1a1b20; --border: #24252c; --text: #ececf1; --text-2: #a0a3ad; --text-3: #858893; --accent: #8b96ff;
+      --s-running: #3ecf8e; --s-starting: #f0b54a; --s-idle: #6cb0f0; --s-failed: #ff6b72;
+      --t-running: #3ecf8e; --t-starting: #f0b54a; --t-idle: #6cb0f0;
+      --warn-text: #f0b54a; --warn-bg: #2a2310; --err-bg: #2d1517; --pop: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--page); }
+  body { background: var(--page); color: var(--text); font: 400 13px/1.5 Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .mono, code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+  [hidden] { display: none !important; }
+
+  /* status colours: .sd is the dot, .st the text */
+  .sd { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--s-stopped); }
+  .sd.queued { background: var(--s-queued); } .sd.starting { background: var(--s-starting); } .sd.running { background: var(--s-running); } .sd.idle { background: var(--s-idle); } .sd.failed { background: var(--s-failed); }
+  .sd.running { animation: ring 2.4s ease-out infinite; }
+  @keyframes ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--s-running) 45%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+  .st, .st.queued { color: var(--text-3); } .st.starting { color: var(--t-starting); } .st.running { color: var(--t-running); } .st.idle { color: var(--t-idle); } .st.failed { color: var(--s-failed); }
+
+  header { flex: none; display: flex; align-items: center; gap: 16px; min-height: 48px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1; white-space: nowrap; }
+  .brand svg { height: 16px; width: 23px; }
+  .brand b { font-weight: 600; }
+  .summary { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: 8px; font-size: 12px; color: var(--text-2); }
+  .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .stat b { font-weight: 500; color: var(--text); }
+  .stat.failed, .stat.failed b { color: var(--s-failed); }
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+  .live .sd { background: var(--s-running); }
+  .live.off .sd { background: var(--s-failed); animation: none; }
+  .live.wait .sd { background: var(--s-queued); animation: none; }
+  .tag { font-size: 11px; font-weight: 500; line-height: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-3); }
+  .toggle { display: inline-flex; padding: 2px; gap: 2px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--border); }
+  .toggle button { height: 24px; padding: 0 12px; border-radius: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); border: 1px solid transparent; }
+  .toggle button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); box-shadow: var(--pop); }
+
+  .banner { flex: none; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--err-bg); }
+  .banner::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--s-failed); }
+  .banner.warn { background: var(--warn-bg); }
+  .banner .fix { display: block; }
+  main.stale .sd, main.stale .ev.work::before { animation: none; }
+  .banner.warn::before { background: var(--s-starting); }
+  .banner code { background: var(--subtle); padding: 1px 6px; border-radius: 4px; user-select: all; }
+
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 400px 1fr; }
+  .rail { min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); }
+  .grp { position: sticky; top: 0; z-index: 1; display: flex; gap: 6px; padding: 12px 16px 6px; font-size: 12px; font-weight: 500; line-height: 1.3; color: var(--text-2); background: var(--surface); }
+  .grp span { color: var(--text-3); }
+
+  .row { position: relative; display: block; width: 100%; text-align: left; cursor: pointer; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .row:hover { background: var(--subtle); }
+  .row[aria-selected="true"] { background: var(--subtle); }
+  .row[aria-selected="true"]::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+  .l1 { display: flex; align-items: center; gap: 8px; }
+  .title { flex: 1; min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rel { flex: none; font: 400 12px/1 "JetBrains Mono", monospace; color: var(--text-3); }
+  .l2, .l3 { margin: 2px 0 0 16px; font-size: 12px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .l2 { color: var(--text-3); }
+  .l3 { color: var(--text-2); }
+  .l3 b { font-weight: 500; color: var(--text); }
+  .l2 .mono { font-size: 12px; }
+  .l2 .st { font-weight: 500; }
+  .soon { color: var(--warn-text); font-weight: 500; }
+  .tile .soon { font-size: 12px; }
+  .l3.err { color: var(--s-failed); }
+
+  .branch { display: inline-flex; align-items: center; gap: 4px; font: 400 12px/1.4 "JetBrains Mono", monospace; min-width: 0; }
+  .branch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copy { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--text-3); flex: none; }
+  .copy:hover { background: var(--subtle); color: var(--text); }
+  .copy svg { width: 14px; height: 14px; }
+
+  .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; font-size: 14px; }
+  .panel-head { flex: none; padding: 20px 32px; border-bottom: 1px solid var(--border); }
+  .crumb { font-size: 12px; color: var(--text-3); }
+  .panel-head h1 { font: 600 20px/1.3 "Inter Tight", Inter, sans-serif; letter-spacing: -.01em; margin: 4px 0 0; }
+  .props { grid-auto-flow: row dense; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin-top: 16px; }
+  .prop { min-width: 0; }
+  .prop.full { grid-column: 1 / -1; }
+  .prop.wide { grid-column: span 2; }
+  .push.failed { color: var(--s-failed); }
+  .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+  .pv { font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel-head h1:focus { outline: none; }
+  .back { display: none; margin: -4px 0 4px -12px; color: var(--accent); font-size: 13px; font-weight: 500; padding: 8px 12px; }
+  .seclabel { flex: none; padding: 16px 32px 0; font-size: 12px; font-weight: 500; color: var(--text-3); }
+  .thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 32px 32px; }
+  .tl { position: relative; max-width: 760px; display: flex; flex-direction: column; gap: 12px; padding-left: 24px; }
+  .tl::before { content: ""; position: absolute; left: 4px; top: 8px; bottom: 8px; width: 1px; background: var(--border); }
+  .ev { position: relative; }
+  .ev::before { content: ""; position: absolute; left: -24px; top: 12px; width: 9px; height: 9px; border-radius: 50%; background: var(--page); border: 1px solid var(--text-3); }
+  .ev.out::before { border-color: var(--accent); }
+  .ev.reply::before { border-color: var(--s-running); }
+  .ev.reply.err::before { border-color: var(--s-failed); }
+  .run { display: flex; flex-direction: column; }
+  .ev.prog { display: flex; align-items: center; gap: 8px; height: 26px; }
+  .ev.prog::before { left: -22px; top: 11px; width: 5px; height: 5px; background: var(--text-3); border: 0; }
+  .chip { flex: none; min-width: 56px; text-align: center; padding: 2px 6px; border-radius: 4px; background: var(--subtle); font: 400 11px/1.4 "JetBrains Mono", monospace; color: var(--text); }
+  .ptxt { flex: 1; min-width: 0; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev.prog.now::before { background: var(--accent); }
+  .ev.prog.now .ptxt { color: var(--text); }
+  .ptime, .btime { flex: none; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); }
+  .blk { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--surface); }
+  .ev.out .blk { background: var(--subtle); }
+  .ev.err .blk { border-left: 3px solid var(--s-failed); }
+  .bh { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-size: 12px; color: var(--text-2); }
+  .ev.err .bh > span { color: var(--s-failed); }
+  .bb { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ev.work { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); height: 26px; }
+  .ev.work::before { width: 7px; height: 7px; left: -23px; top: 9px; border: 0; background: var(--accent); animation: blink 1.4s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  .fleet { grid-column: 1 / -1; overflow-y: auto; padding: 8px 24px 24px; }
+  .fleet .grp { padding: 16px 0 8px; background: var(--page); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .tile { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+  .tile.failed { border-color: var(--s-failed); background: var(--err-bg); }
+  .tile.idle { border-color: var(--s-idle); }
+  .tile:hover { background: var(--subtle); }
+  .tile .top { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .tile .top .rel { margin-left: auto; }
+  .tile .d { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tile .m { font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .state h2:focus { outline: none; }
+  .state { margin: auto; max-width: 440px; text-align: center; padding: 40px 24px; font-size: 14px; color: var(--text-2); }
+  .state h2 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .state code { display: inline-block; margin-top: 12px; padding: 6px 12px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--border); color: var(--text); user-select: all; }
+  .state.full { grid-column: 1 / -1; }
+  .sk { height: 64px; border-bottom: 1px solid var(--border); background: linear-gradient(90deg, var(--surface), var(--subtle), var(--surface)); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  @media (max-width: 820px) {
+    header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; }
+    .summary { order: 5; flex-basis: 100%; margin-left: 0; }
+    .banner { padding: 6px 16px; }
+    main { grid-template-columns: 1fr; }
+    .rail { border-right: 0; }
+    main.detail .rail { display: none; }
+    main:not(.detail) .panel { display: none; }
+    .back { display: inline-block; }
+    .panel-head, .seclabel, .thread { padding-left: 16px; padding-right: 16px; }
+    .props { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .fleet { padding: 4px 16px 16px; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 26 18" fill="none" aria-hidden="true"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#5fd7ff"/></linearGradient></defs></svg>
+    <b>Cloudy Cloud</b>
+  </div>
+  <div class="summary" id="summary" aria-live="polite">Loading…</div>
+  <span class="tag" id="demo" title="Sample data from cloudy-cloud dashboard --demo" hidden>Demo</span>
+  <div class="toggle" role="group" aria-label="View">
+    <button id="v-list" aria-pressed="true">List</button>
+    <button id="v-fleet" aria-pressed="false">Fleet</button>
+  </div>
+  <div class="live wait" id="live" role="status"><span class="sd running"></span><span id="live-t">Connecting</span></div>
+</header>
+<div class="banner" id="banner" hidden role="alert"></div>
+<main id="main">
+  <section class="rail" id="rail" aria-label="Agents"></section>
+  <section class="panel" id="panel" aria-label="Agent detail"></section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const T = new URLSearchParams(location.search).get('t') || '';
+  // rail and panel are taken out of the page for full-width states, so keep references to them.
+  const kept = { rail: document.getElementById('rail'), panel: document.getElementById('panel') };
+  const $ = (id) => kept[id] || document.getElementById(id);
+  const NS = 'http://www.w3.org/2000/svg';
+  const ORDER = { idle: 0, running: 1, starting: 2, queued: 3, failed: 4, stopped: 5 };
+  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {} };
+  try { S.view = localStorage.getItem('cc-view') === 'fleet' ? 'fleet' : 'list'; } catch {}
+
+  // Build DOM without innerHTML: every string from the server goes in as text.
+  const h = (tag, props = {}, ...kids) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (v == null || v === false) continue;
+      if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v;
+      else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid);
+    return e;
+  };
+  const svg = (inner, cls, vb) => { const s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', vb); s.setAttribute('aria-hidden', 'true'); if (cls) s.setAttribute('class', cls); s.innerHTML = inner; return s; }; // inner is a constant, never server data
+  const copyIcon = () => svg('<g fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></g>', '', '0 0 16 16');
+  const okIcon = () => svg('<path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8"/>', '', '0 0 16 16');
+
+  const openCmd = (id) => 'cloudy-cloud open ' + id + ' '; // the only place the open syntax lives (copied without <port>: a pasted <port> is a zsh redirect)
+  const now = () => Date.now() + (S.skew || 0);
+  const dur = (ms) => {
+    ms = Math.max(0, ms); const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's'; const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm'; const hr = Math.floor(m / 60);
+    if (hr < 48) return hr + 'h ' + (m % 60) + 'm'; return Math.floor(hr / 24) + 'd';
+  };
+  const rel = (ms) => dur(ms).split(' ')[0]; // one unit, for the compact time column
+  // Time of day for today; weekday and date otherwise. Hover shows the full date and time.
+  const clock = (t) => { const d = new Date(t), today = new Date(now()).toDateString() === d.toDateString(); return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const timeEl = (cls, t) => h('time', { class: cls, text: clock(t), title: new Date(t).toLocaleString(), datetime: new Date(t).toISOString() });
+  const active = (b) => ['queued', 'starting', 'running'].includes(b.status);
+  const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
+  const stamp = (b) => b.lastActivity || b.startedAt;
+
+  function lastAct(b) {
+    const m = (b.messages || []).at(-1);
+    if (!m) return b.kind === 'machine' ? { text: 'no session log' } : null;
+    if (m.kind === 'progress') { const [tool, ...rest] = m.text.split(' '); return { tool, text: rest.length ? ' ' + rest.join(' ') : '' }; }
+    return { text: m.kind === 'out' ? 'you: ' + m.text : (m.error ? 'error: ' : 'reply: ') + m.text, err: !!m.error };
+  }
+  // Text for one of the live-updating spans (data-live = kind, data-t = timestamp).
+  function liveText(el) {
+    const t = +el.dataset.t, k = el.dataset.live;
+    if (k === 'age') return dur(now() - t);
+    if (k === 'ago') return dur(now() - t) + ' ago';
+    if (k === 'rel') return rel(now() - t);
+    if (k === 'del') return t - now() > 0 ? 'deletes in ' + dur(t - now()) : 'deleting now';
+    if (k === 'until') return t - now() > 0 ? 'in ' + dur(t - now()) : 'past deadline';
+    return '';
+  }
+  const live = (k, t, cls, title) => h('span', { 'data-live': k, 'data-t': t, class: cls, title, text: '' });
+  const tick = () => document.querySelectorAll('[data-live]').forEach((el) => { const v = liveText(el); if (el.textContent !== v) el.textContent = v; });
+
+  // Replace children only when the markup changes: every rewrite re-announces a live region and drops focus.
+  // Use it only for elements without event handlers (it keeps the old nodes when the markup is equal).
+  const put = (el, ...kids) => { const n = h('div', {}, kids.flat(Infinity)); if (el.innerHTML === n.innerHTML) return false; el.replaceChildren(...n.childNodes); return true; };
+
+  function copyBtn(text, what) {
+    const b = h('button', { class: 'copy', type: 'button', 'aria-label': 'Copy ' + what, title: 'Copy ' + what }, copyIcon());
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await navigator.clipboard.writeText(text); b.replaceChildren(okIcon()); setTimeout(() => b.replaceChildren(copyIcon()), 1400); } catch { b.title = 'Copy failed: select the text instead'; }
+    });
+    return b;
+  }
+
+  const dot = (st) => h('span', { class: 'sd ' + st });
+  const canExpire = (b) => b.deadline && (active(b) || b.status === 'idle');
+  const soon = (b) => canExpire(b) && b.deadline - now() < 3_600_000;
+  const soonTag = (b) => soon(b) && h('span', { class: 'soon', title: deadlineTitle(b) }, live('del', b.deadline));
+  const deadlineTitle = (b) => b.status === 'idle' ? 'The idle agent is stopped and its machine deleted at this time' : 'Time the server deletes the machine (default 6 hours after it starts; set by CLOUDY_CLOUD_WORKER_HOURS)';
+  function row(b) {
+    const a = lastAct(b), t = stamp(b);
+    // Status in words (the dot colour alone is not enough); the deadline only when it is under an hour away.
+    const parts = [];
+    if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
+    parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
+    const s = soonTag(b); if (s) parts.push(s);
+    const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
+    const el = h('div', { class: 'row', role: 'option', 'data-id': b.id,
+      'aria-label': [b.status, b.description || '(no description)', b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
+      'aria-description': a ? ((a.tool || '') + a.text).trim().slice(0, 140) : null, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
+      onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
+      h('div', { class: 'l1' }, dot(b.status), h('span', { class: 'title', text: b.description || '(no description)' }), t && live('rel', t, 'rel', 'Time since last activity')),
+      h('div', { class: 'l2' }, l2),
+      a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
+    return el;
+  }
+
+  const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
+  const needsYou = (b) => b.status === 'idle' || (b.status === 'failed' && today(b));
+  const groupsOf = (boxes) => [['Needs you', boxes.filter(needsYou)], ['Active', boxes.filter(active)], ['Finished', boxes.filter((b) => !needsYou(b) && !active(b))]].filter(([, l]) => l.length);
+  const grp = (name, n) => h('div', { class: 'grp', 'aria-hidden': 'true' }, name, h('span', { text: String(n) }));
+
+  function railView(boxes) {
+    const rail = $('rail');
+    const focusId = document.activeElement?.closest?.('[data-id]')?.dataset.id;
+    const top = rail.scrollTop;
+    const wrap = h('div', { role: 'listbox', 'aria-label': 'Agent list' });
+    wrap.addEventListener('keydown', listKeys);
+    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.map(row)));
+    rail.replaceChildren(wrap);
+    rail.scrollTop = top;
+    if (focusId) (wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]') || wrap.querySelector('.row[tabindex="0"]'))?.focus({ preventScroll: true });
+    tick();
+  }
+  function listKeys(e) {
+    const cards = [...e.currentTarget.querySelectorAll('.row')];
+    const i = cards.indexOf(document.activeElement);
+    let n = -1;
+    if (e.key === 'ArrowDown') n = Math.min(cards.length - 1, i + 1); else if (e.key === 'ArrowUp') n = Math.max(0, i - 1);
+    else if (e.key === 'Home') n = 0; else if (e.key === 'End') n = cards.length - 1;
+    if (n < 0) return;
+    e.preventDefault();
+    cards.forEach((c, j) => c.tabIndex = j === n ? 0 : -1);
+    cards[n].focus(); select(cards[n].dataset.id, false);
+  }
+
+  const prop = (name, ...val) => { const v = val.flat().filter((x) => x != null && x !== false); return v.length ? h('div', { class: 'prop' }, h('div', { class: 'pl', text: name }), h('div', { class: 'pv' }, v)) : null; };
+
+  const openable = (b) => (b.status === 'running' || b.status === 'idle') && (b.machineState == null || b.machineState === 'running');
+  const openApp = (b) => {
+    const e = prop('Open app', h('span', { class: 'mono', text: 'cloudy-cloud open ' + b.id + ' <port>' }), copyBtn(openCmd(b.id), 'open command')), v = e.querySelector('.pv');
+    e.classList.add('full'); v.classList.add('openapp');
+    v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
+    return e;
+  };
+  const wide = (e) => { e?.classList.add('wide'); return e; };
+  const pushView = (p) => p.failed
+    ? h('span', { class: 'push failed', text: 'push failed', title: 'The last turn could not push. The reply below says what survived.' })
+    : h('span', { class: 'push', title: "Last commit pushed from the agent's machine, at " + new Date(p.t).toLocaleString() }, 'pushed ', h('span', { class: 'mono', text: p.sha }));
+
+  function panelView(b) {
+    const p = $('panel');
+    if (!b) { p.replaceChildren(h('div', { class: 'state' }, h('h2', { text: 'Select a box' }), h('p', { text: 'Pick an agent on the left to read its messages.' }))); return; }
+    const old = p.querySelector('.thread');
+    const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 8 || S.sticky === b.id;
+    const keep = old ? old.scrollTop : 0;
+    const a = document.activeElement, fk = p.contains(a) && (a.getAttribute('aria-label') || a.className || a.tagName);
+    const kids = [];
+    let run = null;
+    const msgs = b.messages || [], last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress';
+    for (const m of msgs) {
+      if (m.kind === 'progress') {
+        if (!run) { run = h('div', { class: 'run', 'aria-label': 'Progress' }); kids.push(run); }
+        const [tool, ...rest] = m.text.split(' ');
+        run.append(h('div', { class: 'ev prog' + (nowRow && m === last ? ' now' : '') }, h('span', { class: 'chip', text: tool }), h('span', { class: 'ptxt', text: rest.join(' ') }), timeEl('ptime', m.t)));
+        continue;
+      }
+      run = null;
+      const out = m.kind === 'out';
+      kids.push(h('div', { class: 'ev ' + (out ? 'out' : 'reply') + (m.error ? ' err' : '') },
+        h('div', { class: 'blk' },
+          h('div', { class: 'bh' }, h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
+          h('div', { class: 'bb', text: m.text }))));
+    }
+    if (b.kind === 'agent' && active(b)) {
+      const turnT = msgs.findLast((m) => m.kind === 'out')?.t ?? b.startedAt;
+      kids.push(h('div', { class: 'ev work' }, b.status === 'queued' ? 'Queued: waiting for a free machine…' : b.status === 'starting' ? 'Starting the machine…'
+        : h('span', { title: "Time since your last message, and since the agent's last tool step" }, 'Working · ', live('age', turnT), nowRow && [' · last step ', live('ago', last.t)])));
+    }
+    if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : b.kind === 'coordinator' ? 'This coordinator runs in the cloud, so its messages are not recorded on this computer. Its workers are listed as machines without a session log.' : 'No session messages: this box is not tracked by a session log on this computer.' })));
+    const gone = b.status === 'stopped' || b.status === 'failed';
+    const head = h('div', { class: 'panel-head' },
+      h('button', { class: 'back', type: 'button', onclick: () => { if (S.from === 'fleet') setView('fleet'); else $('main').classList.remove('detail'); $('main').querySelector('[data-id="' + CSS.escape(S.sel) + '"]')?.focus(); } }, '← Agents'),
+      h('div', { class: 'crumb' }, (b.kind === 'agent' ? 'Subagent' : b.kind[0].toUpperCase() + b.kind.slice(1)) + ' · ', h('span', { class: 'mono', text: b.id })),
+      h('h1', { tabindex: '-1', text: b.description || b.id }),
+      h('div', { class: 'props' },
+        prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: b.status })),
+        prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
+        prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
+        wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
+        canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
+          : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
+            b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
+        openable(b) && openApp(b)));
+    const thread = h('div', { class: 'thread', tabindex: '0', 'aria-label': 'Message thread' }, h('div', { class: 'tl' }, kids));
+    p.replaceChildren(head, h('div', { class: 'seclabel', text: 'Activity' }), thread);
+    // A finished agent opens at its answer's first line (not its footer); a running one at the bottom.
+    const lastReply = b.messages?.at(-1)?.kind === 'reply' && [...thread.querySelectorAll('.ev.reply')].at(-1);
+    if (stick && !active(b) && lastReply) thread.scrollTop = Math.min(thread.scrollHeight - thread.clientHeight, thread.scrollTop + (lastReply.getBoundingClientRect().top - thread.getBoundingClientRect().top) - 12);
+    else thread.scrollTop = stick ? thread.scrollHeight : keep;
+    // Keep keyboard focus across the rebuild; if the element is gone (the open command), fall back to the thread.
+    if (fk) ([...p.querySelectorAll('button, .thread, h1')].find((e) => (e.getAttribute('aria-label') || e.className || e.tagName) === fk) || thread).focus({ preventScroll: true });
+    S.sticky = null; tick();
+  }
+
+  function fleetView(boxes) {
+    const g = h('div', { class: 'fleet' });
+    for (const [name, list] of groupsOf(boxes)) {
+      g.append(grp(name, list.length));
+      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); S.from = 'fleet'; select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
+        h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
+        h('span', { class: 'd', text: b.description || label(b) }),
+        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b)))));
+    }
+    return g;
+  }
+
+  // Counts for the top bar and the tab title; returns the two the title needs.
+  function summary(boxes) {
+    const c = (f) => boxes.filter(f).length;
+    const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
+    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
+    items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
+    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
+    return { failed, idle };
+  }
+
+  function banner() {
+    const b = $('banner'), d = S.data;
+    let node = null;
+    if (d && S.net === 'down') node = ['', h('span', {}, 'The dashboard server is not answering. Last update ' + clock(S.lastOk) + ', so the list below may be out of date. To restart it, run ', h('code', { text: 'cloudy-cloud dashboard' }), ' and open the new link it prints.')];
+    else if (d && S.net === 'error') node = ['', h('span', {}, 'The dashboard server hit an error (last update ' + clock(S.lastOk) + ', trying again every 3 seconds): ', S.err)];
+    else if (d && S.net === 'ok' && d.machines && !d.machines.ok) node = ['warn', h('span', {}, h('b', { text: 'Live machines unavailable. ' }), d.machines.message, d.boxes.length ? ' Session history below still works.' : '', h('span', { class: 'fix', text: 'Fix: ' + d.machines.fix }))];
+    b.hidden = !node;
+    if (node) { b.className = 'banner ' + node[0]; put(b, node[1]); }
+    const pill = { ok: ['Live', 'live'], down: ['Offline', 'live off'], auth: ['Old link', 'live off'], error: ['Error', 'live off'] }[S.net] || ['Connecting', 'live wait'];
+    $('live').className = pill[1]; put($('live-t'), pill[0]);
+  }
+
+  function render() {
+    const d = S.data, main = $('main');
+    banner();
+    $('demo').hidden = !(d && d.demo);
+    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' idle'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    setTitle();
+    main.classList.toggle('stale', !!d && S.net !== 'ok');
+    $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
+    $('v-fleet').setAttribute('aria-pressed', String(S.view === 'fleet'));
+    if (!d) { // loading, or never reached the server
+      S.sigs = {};
+      if (S.net === null) { put($('summary'), 'Loading…'); $('rail').replaceChildren(h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' })); $('panel').replaceChildren(); }
+      else {
+        put($('summary'));
+        const full = S.net === 'auth' ? [h('h2', { tabindex: '-1', text: 'This link is from an earlier run' }), h('p', { text: 'The dashboard was restarted, and each start makes a new link. Open the newest link in your terminal, or start the dashboard again:' }), h('code', { text: 'cloudy-cloud dashboard' })]
+          : S.net === 'error' ? [h('h2', { tabindex: '-1', text: 'The dashboard server hit an error' }), h('p', { text: S.err }), h('p', { text: 'Trying again every 3 seconds.' })]
+          : [h('h2', { tabindex: '-1', text: 'The dashboard cannot reach its server' }), h('p', { text: 'Start it again from a terminal and open the new link it prints.' }), h('code', { text: 'cloudy-cloud dashboard' })];
+        const had = main.contains(document.activeElement);
+        if (put(main, h('div', { class: 'state full' }, full)) && had) main.querySelector('h2').focus();
+      }
+      return;
+    }
+    const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
+    setTitle(boxes.length ? summary(boxes) : undefined);
+    if (!boxes.length) {
+      put($('summary'));
+      const had = main.contains(document.activeElement);
+      if (put(main, h('div', { class: 'state full' }, h('h2', { tabindex: '-1', text: 'No cloud boxes yet' }),
+        h('p', { text: d.machines.ok ? 'When you start a subagent from a cloudy-cloud session, it appears here with its messages.' : 'Nothing recorded in the session log yet, and live machines could not be listed (see the message above).' }),
+        h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first with sample data:' }), h('code', { text: 'cloudy-cloud dashboard --demo' }))) && had) main.querySelector('h2').focus();
+      return;
+    }
+    if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
+    const sig = (x) => JSON.stringify(x);
+    if (S.view === 'fleet') {
+      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b), soon(b)])]);
+      if (S.sigs.f !== f) {
+        S.sigs = { f };
+        const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
+        main.replaceChildren(fleetView(boxes));
+        tick(); // fill the live texts first, or they grow the tiles after the scroll is restored
+        const nf = main.querySelector('.fleet'); nf.scrollTop = top;
+        if (fid) nf.querySelector('[data-id="' + CSS.escape(fid) + '"]')?.focus({ preventScroll: true });
+      }
+      tick(); return;
+    }
+    if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
+    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    if (S.sigs.r !== r) { S.sigs.r = r; railView(boxes); }
+    const sb = boxes.find((b) => b.id === S.sel);
+    const lm = sb.messages?.at(-1);
+    const ps = sig(['p', sb.id, sb.status, sb.messages?.length, lm?.kind, lm?.text]);
+    if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
+    tick();
+  }
+
+  function select(id, open) {
+    S.sel = id; S.sigs = {}; S.sticky = id;
+    if (open) $('main').classList.add('detail');
+    // keep keyboard focus on the chosen card after the rail is rebuilt
+    render();
+    const c = $('rail').querySelector('[data-id="' + CSS.escape(id) + '"]'); if (c && !open) c.focus({ preventScroll: false });
+    if (open && matchMedia('(max-width: 820px)').matches) $('panel').querySelector('h1')?.focus();
+  }
+  function setView(v) {
+    S.view = v; S.sigs = {}; S.from = null;
+    try { localStorage.setItem('cc-view', v); } catch {}
+    $('main').classList.remove('detail');
+    render();
+  }
+  $('v-list').onclick = () => setView('list');
+  $('v-fleet').onclick = () => setView('fleet');
+
+  let timer, busy = false;
+  async function poll() {
+    if (busy) return;
+    busy = true; clearTimeout(timer);
+    try {
+      const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      if (r.status === 401) { S.net = 'auth'; S.data = null; }
+      else if (!r.ok) { S.net = 'error'; S.err = String((await r.json().catch(() => null))?.error || 'HTTP ' + r.status); }
+      else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
+    } catch { S.net = 'down'; }
+    busy = false;
+    try { render(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.net !== 'auth') poll(); });
+  render(); poll(); setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

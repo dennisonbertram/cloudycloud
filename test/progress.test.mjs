@@ -24,11 +24,11 @@ test('fixture fed in odd chunks gives the same live status line; step disappears
   p.feed(sample.slice(0, cut));
   t += 190_000;
   assert.equal(p.tools, 1);
-  assert.match(statusLine(p), /^1 tool use · [\d.]+k? tokens · 3m10s · Bash ls -la$/);
+  assert.match(statusLine(p), /^claude-haiku-5-5 · 1 tool use · [\d.]+k? tokens · 3m10s · Bash ls -la$/);
   p.feed(sample.slice(cut));
   p.end();
   assert.equal(p.tools, 2);
-  assert.equal(statusLine(p), '2 tool uses · 93.4k tokens · 3m10s');
+  assert.equal(statusLine(p), 'claude-haiku-5-5 · 2 tool uses · 93.4k tokens · 3m10s');
 });
 
 test('live token estimate counts each message once, using its largest usage', () => {
@@ -92,4 +92,54 @@ test('pi progress works on chunks split anywhere, and before the run settles', (
   p.feed(text.slice(cut + 300));
   p.end();
   assert.equal(p.final.result, 'hello from pi');
+});
+
+import { modelLine } from '../src/progress.mjs';
+import { profileHint } from '../src/profiles.mjs';
+
+test('claude stream: model from init and assistant events; the alias worker is ignored', () => {
+  const p = parseStream([
+    { type: 'system', subtype: 'init', model: 'worker' },
+    { type: 'assistant', message: { id: 'm1', model: 'worker', content: [] } },
+  ].map((e) => JSON.stringify(e)).join('\n'));
+  assert.equal(p.model, '');
+  p.event({ type: 'assistant', message: { id: 'm2', model: 'z-ai/glm-5.3-flash', content: [] } });
+  p.event({ type: 'assistant', message: { id: 'm3', model: 'worker', content: [] } });
+  assert.equal(p.model, 'z-ai/glm-5.3-flash');
+  assert.equal(parseStream(sample).model, 'claude-haiku-5-5');
+});
+
+test('pi stream: model comes from responseModel only; the alias is ignored', () => {
+  const end = (m) => JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [], provider: 'worker', model: 'z-ai/glm-5.3-flash', ...m } });
+  assert.equal(parsePiStream(end({})).model, '');
+  assert.equal(parsePiStream(end({ responseModel: 'worker' })).model, '');
+  assert.equal(parsePiStream(end({ responseModel: 'glm-5.3-flash' })).model, 'glm-5.3-flash');
+});
+
+test('modelLine: confirmed, mismatch, not confirmed, plain claude', () => {
+  const req = { model: 'z-ai/glm-5.3-flash', host: 'api.particle.ai', name: 'glm' };
+  const at = (model) => modelLine({ model }, req);
+  assert.equal(at('z-ai/glm-5.3-flash'), 'Model: z-ai/glm-5.3-flash via api.particle.ai (profile glm)');
+  assert.equal(at('glm-5.3-flash'), 'Model: glm-5.3-flash via api.particle.ai (profile glm)');
+  assert.match(at('gpt-x'), /^WARNING Model: asked for z-ai\/glm-5.3-flash, provider reported gpt-x via/);
+  assert.equal(at(''), 'Model: z-ai/glm-5.3-flash requested via api.particle.ai (profile glm); not confirmed by the provider');
+  assert.equal(modelLine({ model: 'claude-haiku-5-5' }), 'Model: claude-haiku-5-5');
+});
+
+test('status line starts with the short model name', () => {
+  const p = createProgress();
+  p.setModel('z-ai/glm-5.3-flash');
+  assert.match(statusLine(p), /^glm-5\.3-flash · 0 tool uses · /);
+});
+
+test('profile hint names model, host and profile, and is safe inside single quotes', () => {
+  const h = profileHint({ name: 'glm', model: 'z-ai/glm-5.3-flash', baseUrl: 'https://api.particle.ai/v1' });
+  assert.match(h, /^You are running model z-ai\/glm-5\.3-flash through api\.particle\.ai \(profile glm\)\. .*alias worker/);
+  assert.ok(!h.includes("'"));
+});
+
+test('modelLine: a pi reply with no responseModel says pi saw no different model', () => {
+  const req = { model: 'particle-ai/particle-1', host: 'api.particle.ai', name: 'pi-particle' };
+  assert.equal(modelLine({ model: '', answered: true }, req), 'Model: particle-ai/particle-1 via api.particle.ai (profile pi-particle); pi saw no different model from the provider');
+  assert.match(modelLine({ model: '' }, req), /not confirmed by the provider/);
 });

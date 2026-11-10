@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://cloudycloud.tech/sitemap.xml
