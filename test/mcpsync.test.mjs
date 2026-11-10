@@ -50,8 +50,8 @@ test('rejects bad names', () => {
 });
 
 test('rejects other commands', () => {
-  assert.equal(reason('s', { command: '/Users/me/bin/x' }), 'the command is /Users/me/bin/x; only npx and uvx servers can run on a cloud machine');
-  assert.match(reason('s', { command: 'node', args: [] }), /the command is node; only npx and uvx/);
+  assert.equal(reason('s', { command: '/Users/me/bin/x' }), 'the command is not npx or uvx; only npx and uvx servers can run on a cloud machine');
+  assert.match(reason('s', { command: 'node', args: [] }), /the command is not npx or uvx/);
   assert.match(reason('s', {}), /only npx and uvx/);
 });
 
@@ -63,7 +63,7 @@ test('rejects unsafe args', () => {
 test('rejects headersHelper, oauth and unsupported types', () => {
   assert.match(reason('s', { type: 'http', url: 'https://a.com', headersHelper: 'x' }), /uses headersHelper, a local script the machine does not have/);
   assert.match(reason('s', { type: 'http', url: 'https://a.com', oauth: {} }), /uses OAuth sign-in, which a headless subagent cannot complete/);
-  for (const t of ['ws', 'sdk', 'weird']) assert.equal(reason('s', { type: t, url: 'https://a.com' }), `type ${t} is not supported on a cloud machine`);
+  for (const t of ['ws', 'sdk', 'weird']) assert.equal(reason('s', { type: t, url: 'https://a.com' }), 'this server type is not supported on a cloud machine');
 });
 
 test('rejects http and private hosts', () => {
@@ -93,7 +93,7 @@ test('rejects a secret in the url query, an argument, or a map on the wrong serv
   assert.match(reason('s', { type: 'http', url: 'https://mcp.exa.ai/mcp?exaApiKey=abcdefgh1234' }), /url carries a secret/);
   assert.match(reason('s', { type: 'http', url: 'https://a.com/mcp?x=ghp_abcdefghijklmnop' }), /url carries a secret/);
   ok({ type: 'http', url: 'https://a.com/mcp?region=eu' });
-  assert.match(reason('s', { command: 'npx', args: ['x', '--api-key=sk-abcdefghijkl'] }), /argument carries a secret/);
+  assert.match(reason('s', { command: 'npx', args: ['x', '--api-key=sk-abcdefghijkl'] }), /argument \d+ carries a secret/);
   // env on an http entry and headers on a stdio entry are still copied to the machine, so they are checked too
   assert.match(reason('s', { type: 'http', url: 'https://a.com', env: { X_TOKEN: 'literal' } }), /contains a secret value/);
   assert.match(reason('s', { command: 'npx', headers: { Authorization: 'Bearer abcdefghijklmnop' } }), /contains a secret value/);
@@ -108,10 +108,10 @@ test('isLiteralSecret is the one rule the CLI shares', () => {
 });
 
 test('rejects references that are not MCP_*_TOKEN', () => {
-  assert.equal(reason('s', { command: 'npx', env: { A: '${HOME}' } }), 'references ${HOME}; cloud machines only expand MCP_<NAME>_TOKEN secrets');
-  assert.match(reason('s', { type: 'http', url: 'https://a.com', headers: { 'X-A': '${MCP_x_TOKEN}' } }), /references \$\{MCP_x_TOKEN\}/);
-  assert.match(reason('s', { command: 'npx', args: ['${FOO}'] }), /references \$\{FOO\}/);
-  assert.match(reason('s', { type: 'http', url: 'https://a.com/${FOO}' }), /references \$\{FOO\}/);
+  assert.equal(reason('s', { command: 'npx', env: { A: '${HOME}' } }), 'references a variable; cloud machines only expand MCP_<NAME>_TOKEN secrets');
+  assert.match(reason('s', { type: 'http', url: 'https://a.com', headers: { 'X-A': '${MCP_x_TOKEN}' } }), /references a variable/);
+  assert.match(reason('s', { command: 'npx', args: ['${FOO}'] }), /references a variable/);
+  assert.match(reason('s', { type: 'http', url: 'https://a.com/${FOO}' }), /references a variable/);
 });
 
 test('SECRET_REF matches only the exact form', () => {
@@ -149,4 +149,29 @@ test('mcpConfigText round-trips and never contains a redactable value', () => {
   assert.deepEqual(JSON.parse(text), { mcpServers: r.servers });
   assert.ok(!text.includes('ghp_'));
   assert.equal(redact(text), text);
+});
+
+test('only the fields of the entry type are kept: an http entry drops args, a stdio entry drops url', () => {
+  const r = ok({ type: 'http', url: 'https://a.com/mcp', args: ['ghp_abcdefghijklmnopqrst'], command: 'node', extra: 'ghp_abcdefghijklmnopqrst' });
+  assert.deepEqual(r.entry, { type: 'http', url: 'https://a.com/mcp' });
+  const s = ok({ command: 'npx', args: ['-y', 'srv'], url: 'https://x:y@a.com/ghp_abcdefghijklmnopqrst', headers: { A: 'b' }, other: ['ghp_abcdefghijklmnopqrst'] });
+  assert.deepEqual(s.entry, { command: 'npx', args: ['-y', 'srv'] });
+});
+
+test('credential-looking arguments and URL userinfo are secrets', () => {
+  assert.match(reason('s', { command: 'npx', args: ['server', '--password=hunter2'] }), /argument 2 carries a secret value/);
+  assert.match(reason('s', { command: 'npx', args: ['server', '--api-key', 'abc12345'] }), /argument 3 carries a secret value/);
+  assert.match(reason('s', { type: 'http', url: 'https://alice:secretpass@example.com/mcp' }), /url carries a secret value/);
+  assert.match(reason('s', { type: 'http', url: 'https://tokenonly@example.com/mcp' }), /url carries a secret value/);
+  ok({ command: 'npx', args: ['server', '--token=${MCP_S_TOKEN}', '--port=8080'] });
+  assert.equal(isLiteralSecret(undefined, 'https://alice:pw@example.com/'), true);
+});
+
+test('rejection reasons never repeat a value from the entry', () => {
+  const t = 'ghp_abcdefghijklmnopqrst';
+  for (const entry of [
+    { command: 'npx', args: [`/tmp/${t}`] }, { command: 'npx', args: [`--password=${t}x`] }, { command: `${t}x` },
+    { type: `${t}x` }, { type: 'http', url: `https://a.com/${t}?${t}` }, { type: 'http', url: `http://${t}.localhost/x` },
+    { command: 'npx', env: { A: `\${${t}}` } }, { command: 'npx', env: { A: 'hunter2hunter2', [`${t}_TOKEN`]: 'x' } },
+  ]) assert.ok(!reason('s', entry).includes(t.slice(0, 12)) && !JSON.stringify(reason('s', entry)).includes('hunter2'), JSON.stringify(entry));
 });

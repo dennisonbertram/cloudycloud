@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 import { redact } from './events.mjs';
-import { checkServer, isLiteralSecret, mcpConfigText, mcpFile } from './mcpsync.mjs';
+import { checkServer, cleanEntry, isLiteralSecret, mcpConfigText, mcpFile, secretArgs } from './mcpsync.mjs';
 
 const REF_RE = /\$\{(MCP_[A-Z0-9_]+_TOKEN)\}/g;
 const ALLOW = 'cloudyCloudAllowLiteral'; // set only by --allow-literal; read by run-subagent
@@ -18,8 +18,12 @@ const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } ca
 // The loader's rule, so what is masked and rewritten here is exactly what the loader would reject.
 const isSecret = (key, value, isHeader) => typeof value === 'string' && isLiteralSecret(key, value, isHeader);
 const mask = (v) => { const m = /^Bearer /.exec(v)?.[0] ?? ''; const t = v.slice(m.length); const pre = /^[A-Za-z]{2,5}_/.exec(t)?.[0] ?? ''; return t.length < 16 ? `${m}…` : `${m}${pre}…${t.slice(-4)}`; };
-// Shown before validation, so a url query or an argument holding a key must not be printed as is.
-const showUrl = (u) => (u.includes('?') ? `${u.split('?')[0]}?…` : u);
+// Shown before validation, so only scheme and host are printed: a key can sit in the path, query or userinfo.
+const showUrl = (u) => { try { const x = new URL(u); return redact(`${x.protocol}//${x.hostname}/…`); } catch { return '…'; } };
+// Shell-quote a value for the commands printed for copy and paste (plain words stay unquoted).
+export const shq = (v) => (/^[\w@%+=:,./-]+$/.test(v) ? v : `'${String(v).replace(/'/g, "'\\''")}'`);
+// Arguments, with the ones holding a credential hidden.
+const showArgs = (args) => { const hide = secretArgs(args); return args.map((a, i) => (hide.includes(i) ? '…' : a)); };
 const refsIn = (e) => [...new Set(Object.values({ ...e.env, ...e.headers }).flatMap((v) => [...String(v).matchAll(REF_RE)].map((m) => m[1])))];
 const hostOf = (e) => { try { return new URL(e.url).hostname; } catch { return e.url ?? ''; } };
 const target = (e) => (e.type === 'http' || e.type === 'sse' ? hostOf(e) : `${e.command} ${(e.args || []).find((a) => !String(a).startsWith('-')) ?? ''}`.trim());
@@ -49,7 +53,7 @@ async function add(name, ctx, allowLiteral = false) {
   out(`Found ${name} in ${tilde(src.file, env)} (${src.scope} scope):`);
   const rows = [['type', e.type || 'stdio']];
   if (e.url) rows.push(['url', showUrl(String(e.url))]);
-  if (e.command) rows.push(['command', redact([e.command, ...(e.args || [])].join(' '))]);
+  if (e.command) rows.push(['command', redact([e.command, ...showArgs((e.args || []).map(String))].join(' '))]);
   const base = `MCP_${name.toUpperCase().replace(/-/g, '_')}`;
   let n = 0;
   const refs = [];
@@ -83,7 +87,10 @@ async function add(name, ctx, allowLiteral = false) {
 
   let hosts = [];
   if (refs.length && !literal) {
-    if (e.url) hosts = [hostOf(e)];
+    if (e.url) {
+      hosts = [hostOf(e)];
+      if (!HOST_RE.test(hosts[0])) { err('Not added: the url host is not a plain hostname.'); return 1; }
+    }
     else {
       if (!ctx.isTTY) { err('Not added: a secret without a host list would be sent to any host the subagent reaches.'); err('Run this in a terminal.'); return 1; }
       const answer = await ctx.ask('Which HTTPS hosts does this server send the token to? (comma-separated, exact hostnames, required) ');
@@ -94,7 +101,7 @@ async function add(name, ctx, allowLiteral = false) {
     }
   }
   const check = checkServer(name, e);
-  if (literal && check.ok) check.entry = { ...orig, [ALLOW]: true }, check.secrets = [];
+  if (literal && check.ok) check.entry = { ...cleanEntry(orig), [ALLOW]: true }, check.secrets = [];
   if (!check.ok) { err(`Not added: ${check.reason}`); return 1; }
 
   const file = mcpFile(env);
@@ -114,10 +121,10 @@ async function add(name, ctx, allowLiteral = false) {
   const uniq = literal ? [] : [...new Set(refs)];
   if (literal) out(`${name} will carry its real token on cloud machines because you allowed it. Remove it with: cloudy-cloud mcp rm ${name}`);
   if (uniq.length) {
-    const h = hosts.map((x) => `--host ${x}`).join(' ');
+    const h = hosts.map((x) => `--host ${shq(x)}`).join(' ');
     out('This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.');
-    out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}; Instabox adds the real value to requests to ${hosts.join(', ')} only.`);
-    for (const r of uniq) out(`  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${r} ${h}`);
+    out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}; Instabox adds the real value to requests to ${redact(hosts.join(', '))} only.`);
+    for (const r of uniq) out(`  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${shq(r)} ${h}`);
   }
   out(`Added ${name} to ${tilde(file, env)}. Every cloud subagent you start from now on gets it.`);
   return 0;
@@ -129,7 +136,7 @@ function ls(ctx) {
   if (!names.length) { ctx.out('No MCP servers are shared with cloud subagents. Add one with: cloudy-cloud mcp add <name>'); return 0; }
   for (const n of names) {
     const e = doc.mcpServers[n], r = refsIn(e);
-    ctx.out(`${n}  ${e.type || 'stdio'}  ${target(e)}${r.length ? `  needs ${r.join(', ')}` : ''}`);
+    ctx.out(`${n}  ${e.type || 'stdio'}  ${redact(target(e))}${r.length ? `  needs ${r.join(', ')}` : ''}`);
   }
   return 0;
 }

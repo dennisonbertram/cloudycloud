@@ -28,7 +28,7 @@ test('add: user-scope http server with a Bearer header is stored as a reference'
   assert.equal(r.out, [
     'Found notion in ~/.claude.json (user scope):',
     '  type     http',
-    '  url      https://mcp.notion.com/mcp',
+    '  url      https://mcp.notion.com/…',
     '  headers  Authorization: Bearer ntn_…9f3a',
     'This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.',
     'It is written as ${MCP_NOTION_TOKEN}; Instabox adds the real value to requests to mcp.notion.com only.',
@@ -94,7 +94,7 @@ test('add: rejections from the core check print the reason and write nothing', a
   const { home, env } = setup({ mcpServers: { bad: { command: '/usr/local/bin/x' }, oa: { type: 'http', url: 'https://o.example.com', oauth: {} } } });
   const a = await run(['add', 'bad'], env, home);
   assert.equal(a.code, 1);
-  assert.equal(a.err, 'Not added: the command is /usr/local/bin/x; only npx and uvx servers can run on a cloud machine');
+  assert.equal(a.err, 'Not added: the command is not npx or uvx; only npx and uvx servers can run on a cloud machine');
   const b = await run(['add', 'oa'], env, home);
   assert.equal(b.err, 'Not added: uses OAuth sign-in, which a headless subagent cannot complete');
   assert.ok(!existsSync(env.CLOUDY_CLOUD_MCP));
@@ -150,7 +150,7 @@ test('add: a key in the url or in an argument is never printed and not added', a
   noLeak(home, env, u);
   const a = await run(['add', 'a'], env, home);
   assert.equal(a.code, 1);
-  assert.match(a.err, /^Not added: an argument carries a secret value/);
+  assert.match(a.err, /^Not added: argument 3 carries a secret value/);
   noLeak(home, env, a);
 });
 
@@ -203,4 +203,37 @@ test('add --allow-literal on a server that already uses only references asks not
   assert.doesNotMatch(r.out, /WARNING/);
   assert.equal(JSON.parse(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8')).mcpServers.notion.cloudyCloudAllowLiteral, undefined);
   assert.match(r.out, /secrets set MCP_NOTION_TOKEN --host mcp\.notion\.com/);
+});
+
+test('add: a url host with shell characters is refused, so no command with it is printed', async () => {
+  const { home, env } = setup({ mcpServers: { x: { type: 'http', url: 'https://example.com;id/mcp', headers: { Authorization: `Bearer ${TOKEN}` } } } });
+  const r = await run(['add', 'x'], env, home);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /not a plain hostname/);
+  assert.ok(!r.out.includes('secrets set'), r.out);
+});
+
+test('add: every printed value is shell-quoted', async () => {
+  const { home, env } = setup({ mcpServers: { x: { command: 'npx', args: ['srv'], env: { X_TOKEN: TOKEN } } } });
+  const r = await run(['add', 'x'], env, home, { ask: async () => 'a.example.com' });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /secrets set MCP_X_TOKEN --host a\.example\.com$/m);
+  const { shq } = await import('../src/mcp-cli.mjs');
+  assert.equal(shq('a.com'), 'a.com');
+  assert.equal(shq('a;id'), "'a;id'");
+  assert.equal(shq("it's"), "'it'\\''s'");
+});
+
+test('add: the preview never prints a secret in a url path, a userinfo or an argument', async () => {
+  const t = 'ghp_abcdefghijklmnopqrstu';
+  const { home, env } = setup({ mcpServers: {
+    u: { type: 'http', url: `https://alice:secretpass@example.com/${t}/mcp?k=1` },
+    a: { command: 'npx', args: ['srv', '--password=hunter2', `/tmp/${t}`] },
+  } });
+  for (const n of ['u', 'a']) {
+    const r = await run(['add', n], env, home);
+    assert.equal(r.code, 1);
+    for (const bad of [t, 'secretpass', 'alice', 'hunter2']) assert.ok(!(r.out + r.err).includes(bad), `${n}: ${bad}\n${r.out}\n${r.err}`);
+  }
+  assert.match((await run(['add', 'u'], env, home)).out, /url {6}https:\/\/example\.com\/…/);
 });
