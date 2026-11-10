@@ -8,7 +8,7 @@ import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
-import { fakeSandbox, setGithub, getGithub, SID } from './fake-provider.mjs';
+import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
@@ -31,7 +31,7 @@ async function setup(over = {}) {
   const created = [];
   const createSandbox = over.createSandbox ?? (async (envs) => { const s = await fakeSandbox(github); s.envs = envs; created.push(s); return s; });
   const open = new Map();
-  const deps = { createSandbox, open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
+  const deps = { createSandbox, provider: createFakeProvider(), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -276,7 +276,7 @@ test('invalid model or subagent_type is rejected before any sandbox', async () =
 
 test('non-git directory returns a clear error', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cc-nogit-'));
-  const r = await runSubagent({ prompt: 'hi', description: 'd' }, { createSandbox: async () => {}, open: new Map(), cwd: dir, env: {} });
+  const r = await runSubagent({ prompt: 'hi', description: 'd' }, { createSandbox: async () => {}, provider: createFakeProvider(), open: new Map(), cwd: dir, env: {} });
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /git init/);
 });
@@ -325,7 +325,7 @@ test('stop during a running turn kills the sandbox and the turn does not resurre
 
 test('wait and stop accept a single id as a string or as agent_id', async () => {
   const { stopAgents, waitAgents } = await import('../src/run-subagent.mjs');
-  const deps = { createSandbox: async () => { throw new Error('unused'); }, open: new Map() };
+  const deps = { createSandbox: async () => { throw new Error('unused'); }, provider: createFakeProvider(), open: new Map() };
   for (const args of [{ agent_ids: 'x1' }, { agent_id: 'x1' }]) {
     const r = await stopAgents(args, deps);
     assert.notEqual(r.isError, true, JSON.stringify(r));
@@ -1086,4 +1086,25 @@ test('consent does not reach the workers of a coordinator: the file a coordinato
   const worker = loadMcp({ CLOUDY_CLOUD_MCP: join(home, '.config/cloudy-cloud/mcp.json') });
   assert.deepEqual(Object.keys(worker.servers), []);
   assert.equal(worker.skipped[0].name, 'yes');
+});
+
+test('the core creates machines through provider.create, with names only in envs', async () => {
+  const provider = createFakeProvider();
+  const x = await setup({ createSandbox: undefined, provider, owner: 'o1' });
+  const id = await x.start();
+  assert.match(await x.wait([id]), /status: idle/);
+  assert.equal(provider.log.create.length, 1);
+  const { envs, ...rest } = provider.log.create[0];
+  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 21600, secrets: [] });
+  assert.deepEqual(Object.keys(envs), ['ANTHROPIC_API_KEY']);
+});
+
+test('a provider without proxy secrets is refused before any machine starts', async () => {
+  const provider = createFakeProvider();
+  provider.caps.hasProxySecrets = false;
+  const x = await setup({ createSandbox: undefined, provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.');
+  assert.equal(provider.log.create.length, 0);
 });

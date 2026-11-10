@@ -6,7 +6,6 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText } from './mcpsync.mjs';
@@ -18,7 +17,13 @@ import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'INSTABOX_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN'];
+const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+
+// Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
+export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
+  const h = Number(env.CLOUDY_CLOUD_WORKER_HOURS);
+  return Math.max(60, Math.round((h > 0 ? Math.min(h, maxTtlSeconds / 3600) : 6) * 3600));
+};
 const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = 'cloudy-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
@@ -61,17 +66,17 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
-function helpers(env, literals) {
-  const secrets = [...SECRETS, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
+function helpers(env, literals, keyName) {
+  const secrets = [...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
   const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
 }
 const ctxOf = (deps) => {
   deps.tasks ??= new Map();
-  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLOUDY_CLOUD_STARTS_PER_MIN) || 25 });
+  deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLOUDY_CLOUD_STARTS_PER_MIN) || deps.provider?.caps.startsPerMin || 25 });
   deps.literals ??= new Set();
-  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals) };
+  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName) };
 };
 const hasMcp = (a) => !isPi(a) && Object.keys(a.mcp?.servers ?? {}).length > 0;
 const isPi = (a) => a.profile?.harness === 'pi';
@@ -252,8 +257,8 @@ async function turn(a, message, ctx, t) {
   return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
 }
 
-// The machine upload limit is 10 MiB; stay under it. Over this, upload only the commits GitHub lacks.
-export const BUNDLE_MAX = 9 * 1024 * 1024;
+// Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
+const BUNDLE_MARGIN = 1024 * 1024;
 
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
@@ -263,7 +268,8 @@ const limitText = (e) => {
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
-  const { env, createSandbox } = ctx;
+  const { env, provider } = ctx;
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [] }));
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
@@ -283,7 +289,7 @@ async function setup(a, ctx) {
     await git(a.root, 'update-ref', ref, a.sha);
     let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
     let data;
-    const max = ctx.bundleMax ?? BUNDLE_MAX;
+    const max = ctx.bundleMax ?? provider.caps.uploadMaxBytes - BUNDLE_MARGIN;
     try {
       await git(a.root, 'bundle', 'create', bundle, ref);
       data = await readFile(bundle);
@@ -313,7 +319,7 @@ async function setup(a, ctx) {
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => {
-      const deleteAfterSeconds = workerSeconds(env);
+      const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
       a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
       return createSandbox(envs, { deleteAfterSeconds, ...(hasMcp(a) && a.mcp.secrets.length && { secrets: a.mcp.secrets }) });
     });
@@ -384,7 +390,8 @@ async function installCoordinator(a, ctx, envs) {
   await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
   await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
-  const names = ['INSTABOX_API_KEY', claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== 'INSTABOX_API_KEY' && k !== 'ANTHROPIC_API_KEY')];
+  const keyName = ctx.provider.keyName;
+  const names = [keyName, claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== keyName && k !== 'ANTHROPIC_API_KEY')];
   const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -509,6 +516,7 @@ export async function cancelTask(taskId, deps) {
 export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps);
   const { fail, ok } = ctx;
+  if (!ctx.provider.caps.hasProxySecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.`);
   const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker' } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
