@@ -71,7 +71,7 @@ export function buildServer(deps) {
   // Each tool call gets a copy of deps, so anything shared between calls must exist before the copy is made.
   deps.tasks ??= new Map();
   deps.queue ??= startQueue(deps.env);
-  const server = new Server({ name: 'cloud', version: '0.1.1' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
+  const server = new Server({ name: 'cloud', version: '0.1.2' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {
     const h = handlers[req.params.name];
