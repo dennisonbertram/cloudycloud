@@ -29,7 +29,15 @@ export function createProgress(now = Date.now) {
   // The model the harness reports. "worker" is the local gateway alias, so it says nothing about what ran.
   p.setModel = (m) => { if (typeof m === 'string' && m.trim() && m !== LOCAL_ALIAS) p.model = m.trim(); };
   p.event = (j) => {
-    if (j?.type === 'system' && j.subtype === 'init') p.setModel(j.model);
+    if (j?.type === 'system' && j.subtype === 'init') {
+      p.setModel(j.model);
+      // Names and statuses only; any other field of a server entry is dropped.
+      if (Array.isArray(j.mcp_servers) && j.mcp_servers.length) {
+        const errors = {};
+        for (const [k, v] of Object.entries(j.mcp_server_errors ?? {})) errors[k] = String(v);
+        p.mcp = { servers: j.mcp_servers.filter((x) => typeof x?.name === 'string').map((x) => ({ name: x.name, status: String(x.status ?? '') })), errors };
+      }
+    }
     if (j?.type === 'assistant' && j.message) {
       p.setModel(j.message.model);
       const u = j.message.usage;
@@ -117,4 +125,13 @@ export function modelLine(p, req) {
   if (!p.model) return `Model: ${req.model} requested${via}; not confirmed by the provider`;
   if (sameModel(p.model, req.model)) return `Model: ${p.model}${via}`;
   return `WARNING Model: asked for ${req.model}, provider reported ${p.model}${via}`;
+}
+
+// "MCP servers: notion, context7 (failed: linear)", or '' when the init event listed no servers.
+export function mcpLine(p) {
+  const servers = p.mcp?.servers;
+  if (!servers?.length) return '';
+  const ok = servers.filter((s) => s.status === 'connected').map((s) => s.name);
+  const bad = servers.filter((s) => s.status !== 'connected').map((s) => s.name);
+  return `MCP servers: ${ok.length ? ok.join(', ') : 'none connected'}${bad.length ? ` (failed: ${bad.join(', ')})` : ''}`;
 }
