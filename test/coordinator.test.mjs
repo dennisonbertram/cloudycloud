@@ -5,11 +5,39 @@ import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
+import { safeText } from '../src/terminal.mjs';
+import { redact } from '../src/events.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
 const PROV = 'sk-or-PROVIDERKEY0123';
 const applied = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
+
+test('coordinator help is local, with a guide for each command', async () => {
+  for (const args of [['--help'], ['-h'], ...['image', 'start', 'attach', 'ls', 'stop', 'finish'].map((cmd) => [cmd, '--help'])]) {
+    const output = [];
+    await main(args, { env: {}, out: (s) => output.push(s), get sdk() { throw new Error('must not load SDK'); } });
+    assert.match(output.join('\n'), /Usage: cloudy-cloud coordinator/);
+    assert.doesNotMatch(output.join('\n'), /\x1b|claude-cloud/);
+  }
+});
+
+test('invalid arguments are rejected before keys or the SDK are used', async () => {
+  for (const args of [
+    ['start'], ['start', 'Bad'], ['start', 'boss', '--repo'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--branch'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--repo', 'https://github.com/o/s'],
+    ['start', 'boss', '--repo', 'https://github.com/o/r', '--typo', 'x'],
+    ['ls', '--all'], ['image', '--save', '--save'], ['stop'], ['stop', 'a', 'b'],
+    ['attach', 'Bad'], ['finish', '--nope'], ['constructor'], ['--help', 'extra'],
+  ]) {
+    await assert.rejects(main(args, { env: {}, get sdk() { throw new Error('SDK touched'); } }), (e) => {
+      assert.match(e.message, /cloudy-cloud coordinator/);
+      assert.doesNotMatch(e.message, /INSTABOX_API_KEY|SDK touched/);
+      return true;
+    }, args.join(' '));
+  }
+});
 
 function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
@@ -155,6 +183,60 @@ test('attach prints the ssh command', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', metadata: { role: 'coordinator', name: 'a' } }] });
   await main(['attach', 'a'], f.deps);
   assert.equal(f.log.out[0], 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude');
+});
+
+test('terminal control characters and key-shaped text are removed from displayed values', () => {
+  assert.equal(safeText('a\x1b[2Jb\tc\r'), 'ab c');
+  assert.equal(safeText('a\u202eb\u2066c'), 'abc');
+  assert.equal(redact('HTTP 401 ibk_FAKEKEY123 sk-ant-test123'), 'HTTP 401 [redacted] [redacted]');
+});
+
+test('the command line never prints a key-shaped value from an error', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-coord-redact-'));
+  const r = spawnSync(process.execPath, [resolve('src/coordinator.mjs'), 'start', 'boss', '--repo', 'https://github.com/o/r', '--task-file', '/nonexistent/GH_TOKEN=supersecret99'],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home, INSTABOX_API_KEY: IBK } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ENOENT/);
+  assert.doesNotMatch(r.stderr, /supersecret99/);
+});
+
+test('ls strips control characters from names and stacks records in a narrow terminal', async () => {
+  const m = { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: '2026-01-02T03:04:05Z', metadata: { role: 'coordinator', name: 'a\x1b[2J\nforged' } };
+  const f = fixture({ machines: [m] });
+  await main(['ls'], f.deps);
+  assert.match(f.log.out[1], /^a forged\trunning\t/);
+  assert.doesNotMatch(f.log.out.join(''), /\x1b/);
+  f.log.out.length = 0;
+  f.deps.ui = makeUi({ tty: true, env: { TERM: 'xterm' }, cols: 40 });
+  await main(['ls'], f.deps);
+  assert.match(f.log.out.join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /a forged \[running\]\n {4}Machine: coord-a\n {4}Created: 2026-01-02T03:04:05\.000Z/);
+});
+
+test('empty list on a terminal points to image or start; piped output stays "No coordinators."', async () => {
+  for (const snapshot of ['', 'sn_1']) {
+    const f = fixture({ snapshot });
+    f.deps.ui = makeUi({ tty: true, env: { TERM: 'xterm' }, cols: 80 });
+    await main(['ls'], f.deps);
+    const text = f.log.out.join('\n');
+    assert.match(text, /No coordinators yet/);
+    assert.ok(text.includes(snapshot ? 'coordinator start NAME' : 'coordinator image'));
+    f.log.out.length = 0;
+    f.deps.ui = makeUi({ tty: false });
+    await main(['ls'], f.deps);
+    assert.deepEqual(f.log.out, ['No coordinators.']);
+  }
+});
+
+test('progress goes only to an interactive stderr and never contains keys', async () => {
+  for (const isTTY of [true, false]) {
+    const f = fixture();
+    const progress = [];
+    f.deps.stderr = { isTTY, write: (x) => progress.push(x) };
+    await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+    assert.equal(progress.length, isTTY ? 4 : 0);
+    if (isTTY) assert.match(progress.join(''), /Creating[\s\S]*Connecting[\s\S]*Cloning[\s\S]*Starting/);
+    for (const key of [IBK, TOK, PROV]) assert.ok(!progress.join('').includes(key));
+  }
 });
 
 test('launcher: coordinator goes to the script; plain cloudy-cloud still starts claude', () => {

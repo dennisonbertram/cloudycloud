@@ -50,7 +50,7 @@ Usage: cloudy-cloud [command]
   setup [--check-only]   check your tools and save your keys
   dashboard              open a read-only web page about your cloud machines
   open <agent> <port>    reach an app running on a cloud machine
-  coordinator            manage cloud coordinators
+  coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
 
