@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
-import { loadMcp, checkServer, mcpFile, mcpConfigText } from './mcpsync.mjs';
+import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
@@ -60,16 +60,18 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
-function helpers(env) {
+// `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
+function helpers(env, literals) {
   const secrets = [...SECRETS, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
-  const scrub = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
+  const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
 }
 const ctxOf = (deps) => {
   deps.tasks ??= new Map();
   deps.queue ??= createStartQueue({ perMin: Number(deps.env?.CLOUDY_CLOUD_STARTS_PER_MIN) || 25 });
-  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env) };
+  deps.literals ??= new Set();
+  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals) };
 };
 const hasMcp = (a) => !isPi(a) && Object.keys(a.mcp?.servers ?? {}).length > 0;
 const isPi = (a) => a.profile?.harness === 'pi';
@@ -81,7 +83,7 @@ const ALLOW = 'cloudyCloudAllowLiteral';
 const MCP_REF = /\$\{(MCP_[A-Z0-9_]+_TOKEN)\}/g;
 function agentMcp(env) {
   const { servers, skipped, secrets } = loadMcp(env); // throws "Could not read <file>: ..."
-  const out = { servers: { ...servers }, skipped: [], secrets: new Set(secrets), literal: [] };
+  const out = { servers: { ...servers }, skipped: [], secrets: new Set(secrets), literal: [], values: new Set() };
   let raw;
   for (const x of skipped) {
     // Only a literal env or header value is consentable; secrets in a url or an argument have other reasons.
@@ -90,13 +92,16 @@ function agentMcp(env) {
     const e = raw[x.name];
     // Re-check with the literal env/header values swapped for a reference: any other problem still rejects the server.
     const mask = (m) => m && Object.fromEntries(Object.keys(m).map((k) => [k, '${MCP_X_TOKEN}']));
-    const sane = e?.[ALLOW] === true && checkServer(x.name, { ...e, [ALLOW]: undefined, ...(e.env && { env: mask(e.env) }), ...(e.headers && { headers: mask(e.headers) }) }).ok;
+    const clean = e && typeof e === 'object' ? cleanEntry(e) : {}; // also drops the consent flag and any field the type does not use
+    const sane = e?.[ALLOW] === true && checkServer(x.name, { ...clean, ...(clean.env && { env: mask(clean.env) }), ...(clean.headers && { headers: mask(clean.headers) }) }).ok;
     if (!sane) { out.skipped.push(x); continue; }
-    out.servers[x.name] = e;
+    out.servers[x.name] = clean;
     out.literal.push(x.name);
-    for (const m of JSON.stringify(e).matchAll(MCP_REF)) out.secrets.add(m[1]);
+    for (const m of JSON.stringify(clean).matchAll(MCP_REF)) out.secrets.add(m[1]);
+    // Every literal value is scrubbed from replies, events and the dashboard (exact match, so an opaque token is caught too).
+    for (const [field, header] of [['env', false], ['headers', true]])
+      for (const [k, v] of Object.entries(clean[field] ?? {})) if (isLiteralSecret(k, v, header)) [v, v.replace(/^Bearer /, '')].filter((t) => t.length >= 6).forEach((t) => out.values.add(t));
   }
-  for (const [n, e] of Object.entries(out.servers)) { const { [ALLOW]: _, ...rest } = e; out.servers[n] = rest; }
   out.secrets = [...out.secrets].sort();
   return out;
 }
@@ -354,7 +359,11 @@ async function setup(a, ctx) {
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (hasMcp(a)) { // references only, except servers the user allowed to carry a real value
       const dir = `${a.home}/.config/cloudy-cloud`;
-      await a.sandbox.commands.run(`mkdir -p ${dir}`, { cwd: a.home, timeoutMs: SETUP_MS });
+      // The file may hold a real token. files.write of the SDK sends it to a temp file beside the target and renames it,
+      // with the default umask, so the file could briefly be mode 644. So the folder is made mode 700 first (nobody else
+      // can enter it, whatever the file mode) and an empty mode-600 file exists before the write; the chmod after is a
+      // second guard. The token travels in the write body, never on a command line.
+      await a.sandbox.commands.run(`umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && : > ${dir}/mcp.json`, { cwd: a.home, timeoutMs: SETUP_MS });
       await a.sandbox.files.write(`${dir}/mcp.json`, mcpConfigText(a.mcp.servers));
       await a.sandbox.commands.run(`chmod 600 ${dir}/mcp.json`, { cwd: a.home, timeoutMs: SETUP_MS });
     }
@@ -544,7 +553,7 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
-  try { a.mcp = agentMcp(ctx.env); } catch (e) { a.mcpError = e.message; }
+  try { a.mcp = agentMcp(ctx.env); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });

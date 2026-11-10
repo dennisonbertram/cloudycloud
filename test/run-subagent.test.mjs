@@ -37,6 +37,7 @@ case "$p" in
   BADSID*) printf '{"type":"result","is_error":false,"result":"x","session_id":"x; rm -rf /"}\\n' ;;
   RAW*) echo "not json" ;;
   LEAK*) reply "leak $LEAK1 $LEAK2" ;;
+  ECHO*) reply "$p" ;;
   FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
   *) reply "\${resumed}hello" ;;
 esac
@@ -69,11 +70,12 @@ async function fakeSandbox(github = currentGithub) {
     dir,
     killed: false,
     files: {
-      write: (p, d) => { sbx.writes.push(p); return writeFile(map(p), d); },
+      write: (p, d) => { sbx.writes.push(p); sbx.writeAt[p] = sbx.cmds.length; return writeFile(map(p), d); },
       read: (p) => readFile(map(p)),
     },
     cmds: [],
     writes: [],
+    writeAt: {},
     commands: {
       async run(cmd, { cwd, timeoutMs, onStdout } = {}) {
         assert.ok(timeoutMs > 0, 'timeoutMs must be set');
@@ -1120,4 +1122,48 @@ test('consent never delivers a secret in a url or an argument', async () => {
   const r = await wait([await start({})]);
   assert.match(r, /MCP servers skipped: u \(url carries a secret value[^\n]*; g \(an argument carries a secret value/);
   assert.ok(!JSON.stringify(sandboxes[0].written).includes(k));
+});
+
+const OPAQUE = 'OpaqueCredentialExample938412';
+const OPAQUE_SERVER = { type: 'http', url: 'https://l.example.com/mcp', headers: { 'X-Api-Key': OPAQUE }, cloudyCloudAllowLiteral: true };
+
+test('a consented literal token echoed by the agent is scrubbed from the reply, the events and follow-up turns', async () => {
+  const events = [];
+  const { start, wait, deps } = await mcpSetup({ yes: OPAQUE_SERVER }, { events: (e) => events.push(e) });
+  const id = (await start({ prompt: `ECHO ${OPAQUE}` })).content[0].text.match(/agent_id: (\S+)/)[1];
+  const r = await wait([id]);
+  assert.ok(!r.includes(OPAQUE), r);
+  const r2 = await (async () => { await messageAgent({ agent_id: id, message: `ECHO again ${OPAQUE}` }, deps); return wait([id]); })();
+  assert.ok(!r2.includes(OPAQUE), r2);
+  assert.ok(!JSON.stringify(events).includes(OPAQUE), 'events never hold the token');
+});
+
+test('the mcp.json with a real token is created inside a mode-700 folder with umask 077 before any byte is written', async () => {
+  const { start, wait, sandboxes } = await mcpSetup({ yes: OPAQUE_SERVER });
+  await wait([await start({})]);
+  const sbx = sandboxes[0];
+  const dir = '/home/user/.config/cloudy-cloud';
+  const i = sbx.cmds.findIndex((c) => /umask 077/.test(c) && c.includes(`mkdir -p ${dir}`) && c.includes(`chmod 700 ${dir}`) && c.includes(`: > ${dir}/mcp.json`));
+  assert.ok(i >= 0, sbx.cmds.join('\n'));
+  assert.ok(sbx.writeAt[`${dir}/mcp.json`] > i, 'the file is written after the private folder and empty file exist');
+  assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${dir}/mcp.json`)));
+  assert.ok(!sbx.cmds.some((c) => c.includes(OPAQUE)), 'the token is never on a command line');
+});
+
+test('consent does not reach the workers of a coordinator: the file a coordinator hands down has no consent flag and the loader rejects the server', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cc-mcp-'));
+  const file = join(dir, 'mcp.json');
+  await writeFile(file, JSON.stringify({ mcpServers: { yes: OPAQUE_SERVER } }));
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_MCP: file };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const home = join(x.created[0].dir, 'home');
+  const handed = JSON.parse(await readFile(join(home, '.config/cloudy-cloud/mcp.json'), 'utf8'));
+  assert.equal(handed.mcpServers.yes.headers['X-Api-Key'], OPAQUE, 'the coordinator itself has the server');
+  assert.equal(handed.mcpServers.yes.cloudyCloudAllowLiteral, undefined);
+  const { loadMcp } = await import('../src/mcpsync.mjs');
+  const worker = loadMcp({ CLOUDY_CLOUD_MCP: join(home, '.config/cloudy-cloud/mcp.json') });
+  assert.deepEqual(Object.keys(worker.servers), []);
+  assert.equal(worker.skipped[0].name, 'yes');
 });
