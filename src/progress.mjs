@@ -32,11 +32,11 @@ export function createProgress(now = Date.now) {
     if (j?.type === 'system' && j.subtype === 'init') {
       p.setModel(j.model);
       // Names and statuses only; any other field of a server entry is dropped.
-      if (Array.isArray(j.mcp_servers) && j.mcp_servers.length) {
-        const errors = {};
-        for (const [k, v] of Object.entries(j.mcp_server_errors ?? {})) errors[k] = String(v);
-        p.mcp = { servers: j.mcp_servers.filter((x) => typeof x?.name === 'string').map((x) => ({ name: x.name, status: String(x.status ?? '') })), errors };
-      }
+      // mcp_server_errors also names entries Claude Code skipped, which are not in mcp_servers.
+      const errors = {};
+      for (const [k, v] of Object.entries(j.mcp_server_errors ?? {})) errors[k] = String(v);
+      const servers = Array.isArray(j.mcp_servers) ? j.mcp_servers.filter((x) => typeof x?.name === 'string').map((x) => ({ name: x.name, status: String(x.status ?? '') })) : [];
+      if (servers.length || Object.keys(errors).length) p.mcp = { servers, errors };
     }
     if (j?.type === 'assistant' && j.message) {
       p.setModel(j.message.model);
@@ -127,11 +127,11 @@ export function modelLine(p, req) {
   return `WARNING Model: asked for ${req.model}, provider reported ${p.model}${via}`;
 }
 
-// "MCP servers: notion, context7 (failed: linear)", or '' when the init event listed no servers.
+// "MCP servers: notion, context7 (failed: linear)", or '' when the init event listed no servers or errors.
 export function mcpLine(p) {
-  const servers = p.mcp?.servers;
-  if (!servers?.length) return '';
+  if (!p.mcp) return '';
+  const { servers, errors } = p.mcp;
   const ok = servers.filter((s) => s.status === 'connected').map((s) => s.name);
-  const bad = servers.filter((s) => s.status !== 'connected').map((s) => s.name);
+  const bad = [...new Set([...servers.filter((s) => s.status !== 'connected').map((s) => s.name), ...Object.keys(errors)])];
   return `MCP servers: ${ok.length ? ok.join(', ') : 'none connected'}${bad.length ? ` (failed: ${bad.join(', ')})` : ''}`;
 }
