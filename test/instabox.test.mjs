@@ -278,3 +278,21 @@ test('transient errors past the overall deadline end in the timeout path and kil
   await assert.rejects(sbx.commands.run('x', { timeoutMs: 700_000 }), /command timed out after 700000 ms/);
   assert.equal(calls.killedJob, true);
 });
+
+test('MCP secrets go in the same PATCH as GH_TOKEN', async () => {
+  const { sdk } = fakeSdk();
+  const { f, calls: http } = fakeFetch();
+  await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, f, timing)({}, { secrets: ['MCP_X_TOKEN'] });
+  assert.equal(http[0].body, '{"secrets":["GH_TOKEN","MCP_X_TOKEN"]}');
+  assert.equal(http.filter((c) => c.method === 'PATCH').length, 1);
+});
+
+test('a 4xx that names a missing MCP secret says how to create it', async () => {
+  const f = async (url, init) => init.method === 'PATCH' ? new Response(JSON.stringify({ error: { code: 'not_found', message: 'secret MCP_X_TOKEN not found' } }), { status: 404 }) : Response.json({});
+  const { sdk } = fakeSdk();
+  await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, f, timing)({}, { secrets: ['MCP_X_TOKEN'] }),
+    (e) => /Instabox secret MCP_X_TOKEN could not be attached/.test(e.message) && /secrets set MCP_X_TOKEN --host/.test(e.message));
+  const g = async (url, init) => init.method === 'PATCH' ? new Response('nope', { status: 400 }) : Response.json({});
+  await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, fakeSdk().sdk, g, timing)({}, { secrets: ['MCP_X_TOKEN'] }),
+    (e) => /GH_TOKEN Instabox secret/.test(e.message) && /MCP_X_TOKEN/.test(e.message));
+});

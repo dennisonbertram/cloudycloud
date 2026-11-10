@@ -994,3 +994,87 @@ test('the coordinator hint tells the deadline and the finish step, with no apost
   const cmd = x.created[0].cmds.find((c) => c.includes('CLOUDY_CLOUD_EXTRA_PROMPT='));
   assert.ok(!/EXTRA_PROMPT='[^']*'[^' ]/.test(cmd) && !cmd.slice(cmd.indexOf("EXTRA_PROMPT='") + 14).split("' ")[0].includes("'"), 'no apostrophe inside the hint');
 });
+
+// ---- MCP server delivery (#12) ----
+async function mcpSetup(servers, over = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'cc-mcp-'));
+  const file = join(dir, 'mcp.json');
+  await writeFile(file, typeof servers === 'string' ? servers : JSON.stringify({ mcpServers: servers }));
+  const opts = [];
+  const s = await profileSetup('ok', { ...pEnv, CLOUDY_CLOUD_MCP: file });
+  if (over.events) s.deps.events = over.events;
+  const inner = s.deps.createSandbox;
+  s.deps.createSandbox = (envs, o) => { opts.push(o); return inner(envs, o); };
+  return { ...s, opts, file };
+}
+const X = { x: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ${MCP_X_TOKEN}' } } };
+const claudeCmd = (sbx) => sbx.cmds.find((c) => /claude -p|cloudy-cloud\/bin\/cloudy-cloud -p/.test(c));
+
+test('a plain worker without mcp.json runs the exact command it always did and writes no mcp file', async () => {
+  const { start, wait, sandboxes, opts } = await mcpSetup('{"mcpServers":{}}');
+  await wait([await start({})]);
+  const sbx = sandboxes[0];
+  assert.equal(claudeCmd(sbx).replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
+    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt \'HINT\' < /home/user/prompt.txt');
+  assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
+  assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
+});
+
+test('a worker with an mcp.json server gets the file, the flags, the secret, the footer and the event', async () => {
+  const { start, wait, sandboxes, opts } = await mcpSetup(X);
+  const id = await start({});
+  const r = await wait([id]);
+  const sbx = sandboxes[0], home = '/home/user';
+  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.equal(sbx.written[`${home}/.config/cloudy-cloud/mcp.json`], JSON.stringify({ mcpServers: X }, null, 2));
+  assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/.config/cloudy-cloud/mcp.json`)));
+  assert.match(claudeCmd(sbx), /--verbose --mcp-config \/home\/user\/\.config\/cloudy-cloud\/mcp\.json --strict-mcp-config /);
+  assert.match(r, /MCP servers: x/);
+  assert.ok(!JSON.stringify(sbx.envs).includes('MCP_'), 'no MCP value in the sandbox env');
+});
+
+test('the agent event lists the MCP server names only', async () => {
+  const events = [];
+  const { start, wait } = await mcpSetup(X, { events: (e) => events.push(e) });
+  await wait([await start({})]);
+  assert.deepEqual(events.find((e) => e.type === 'agent').mcp, ['x']);
+});
+
+test('a rejected server is named with its reason in the footer and not delivered', async () => {
+  const { start, wait, sandboxes } = await mcpSetup({ ...X, bad: { type: 'http', url: 'http://localhost:1/mcp' } });
+  const r = await wait([await start({})]);
+  assert.match(r, /MCP servers skipped: bad \(url points at localhost/);
+  assert.ok(!JSON.stringify(sandboxes[0].written).includes('localhost'));
+});
+
+test('a pi worker gets no MCP servers and the footer says so', async () => {
+  const { start, wait, sandboxes, opts } = await mcpSetup(X);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /MCP servers: none \(pi workers do not get MCP servers yet\)/);
+  assert.ok(!sandboxes[0].writes.some((p) => p.endsWith('mcp.json')));
+  assert.equal(opts[0].secrets, undefined);
+});
+
+test('invalid mcp.json fails the first turn with the file name', async () => {
+  const { start, wait, file } = await mcpSetup('{nope');
+  const r = await wait([await start({})]);
+  assert.match(r, new RegExp(`Could not read ${file.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}`));
+});
+
+test('a server with literal values is delivered only when the user consented, and then the footer says so', async () => {
+  const lit = { type: 'http', url: 'https://l.example.com/mcp', headers: { Authorization: 'Bearer abc123verysecret' } };
+  const { start, wait, sandboxes, opts } = await mcpSetup({ no: lit, yes: { ...lit, cloudyCloudAllowLiteral: true } });
+  const r = await wait([await start({})]);
+  const file = JSON.parse(sandboxes[0].written['/home/user/.config/cloudy-cloud/mcp.json']);
+  assert.deepEqual(Object.keys(file.mcpServers), ['yes']);
+  assert.equal(file.mcpServers.yes.cloudyCloudAllowLiteral, undefined);
+  assert.equal(file.mcpServers.yes.headers.Authorization, 'Bearer abc123verysecret');
+  assert.match(r, /MCP servers skipped: no \(contains a secret value/);
+  assert.match(r, /real token on the machine[^\n]*yes/);
+  assert.equal(opts[0].secrets, undefined);
+});
+
+test('MCP secret names can never be copied into coordinator key files', async () => {
+  const { PROVIDER_KEY } = await import('../src/config.mjs');
+  assert.ok(!PROVIDER_KEY.test('MCP_X_TOKEN'));
+});
