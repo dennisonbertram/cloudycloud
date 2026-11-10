@@ -103,6 +103,7 @@
 <p>Select a box to see:</p>
 <ul>
 <li><strong>Status</strong>, <strong>Model</strong> (or profile) and <strong>Started</strong>.</li>
+<li><strong>MCP</strong>: the names of the MCP servers the subagent has, when it has any.</li>
 <li><strong>Branch</strong>: the <code>cloudy-cloud/&lt;id&gt;</code> branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.</li>
 <li><strong>Deletes</strong>: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (<code>CLOUDY_CLOUD_WORKER_HOURS</code>, at most 24), which can be earlier.</li>
 <li><strong>Open app</strong>: for a running or idle agent, the command <code>cloudy-cloud open &lt;id&gt; &lt;port&gt;</code> with a copy button. See <a href="#open">below</a>.</li>

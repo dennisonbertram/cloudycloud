@@ -194,3 +194,10 @@ test('foldAgents uses the real delete time as the deadline, else 6 hours', () =>
   const [b] = foldAgents(ev('b1'), { alive: () => true });
   assert.equal(b.deadline, 1000 + 6 * 3600_000);
 });
+
+test('foldAgents copies the agent event\'s mcp names; absent stays undefined; demo has an agent with mcp', () => {
+  const ev = (mcp) => [{ type: 'agent', id: 'm1', t: 1, description: 'd', role: 'worker', branch: 'b', ...(mcp && { mcp }) }];
+  assert.deepEqual(foldAgents(ev(['a', 'b']), { alive: () => true })[0].mcp, ['a', 'b']);
+  assert.equal(foldAgents(ev(), { alive: () => true })[0].mcp, undefined);
+  assert.ok(demoState().boxes.some((b) => b.mcp?.length));
+});
