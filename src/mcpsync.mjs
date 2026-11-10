@@ -19,7 +19,18 @@ function privateHost(host) {
   return h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || h === '::1' || PRIVATE_V4.test(h);
 }
 
-// One value: returns { reason } or { secrets }. `key` is the env var or header name; `header` enables the Bearer rule.
+// The one "is this a literal secret" rule; mcp-cli.mjs uses it to decide what to mask and rewrite.
+// `key` is the env var or header name (undefined for args and url parts); `header` enables the Authorization/Bearer rule.
+export function isLiteralSecret(key, value, header = false) {
+  const plain = value.replace(REFS, '');
+  if (redact(plain) !== plain) return true;
+  if (key === undefined) return false;
+  const bare = header ? value.replace(/^Bearer /, '') : value;
+  const sensitive = SENSITIVE.test(key) || (header && (/^authorization$/i.test(key) || bare !== value));
+  return sensitive && !SECRET_REF.test(bare);
+}
+
+// One value: returns { reason } or { secrets }.
 function checkValue(value, key, header) {
   const secrets = [];
   for (const ref of value.match(REFS) ?? []) {
@@ -27,10 +38,7 @@ function checkValue(value, key, header) {
     if (!m) return { reason: `references ${ref}; cloud machines only expand MCP_<NAME>_TOKEN secrets` };
     secrets.push(m[1]);
   }
-  if (key === undefined) return { secrets };
-  const bare = header ? value.replace(/^Bearer /, '') : value;
-  const sensitive = SENSITIVE.test(key) || (header && (/^authorization$/i.test(key) || bare !== value));
-  if ((sensitive && !SECRET_REF.test(bare)) || redact(value.replace(REFS, '')) !== value.replace(REFS, '')) return { reason: LITERAL };
+  if (key !== undefined && isLiteralSecret(key, value, header)) return { reason: LITERAL };
   return { secrets };
 }
 
@@ -56,7 +64,9 @@ export function checkServer(name, entry) {
     if (privateHost(u.hostname)) return no('url points at localhost, which does not exist on the machine');
     const bad = take(entry.url);
     if (bad) return no(bad);
-    if (entry.headers !== undefined) { if (!strMap(entry.headers)) return no('headers must be an object of strings'); maps.push([entry.headers, true]); }
+    // Instabox only swaps secrets into request headers, so a key in the url would sit on the machine as plain text.
+    if (isLiteralSecret(undefined, entry.url) || [...u.searchParams].some(([k, v]) => isLiteralSecret(k, v)))
+      return no('url carries a secret value; send it in a header instead, which cloudy-cloud mcp add stores as an Instabox secret');
   } else if (type === 'stdio') {
     if (entry.command !== 'npx' && entry.command !== 'uvx') return no(`the command is ${entry.command}; only npx and uvx servers can run on a cloud machine`);
     const args = entry.args ?? [];
@@ -65,10 +75,12 @@ export function checkServer(name, entry) {
       if (a.startsWith('/') || a.includes('~') || a.split(/[/\\]/).includes('..')) return no(`arg ${a} is a local path, which does not exist on the machine`);
       const bad = take(a);
       if (bad) return no(bad);
-      if (redact(a.replace(REFS, '')) !== a.replace(REFS, '')) return no(LITERAL);
+      if (isLiteralSecret(undefined, a)) return no('an argument carries a secret value; pass it in env instead, which cloudy-cloud mcp add stores as an Instabox secret');
     }
-    if (entry.env !== undefined) { if (!strMap(entry.env)) return no('env must be an object of strings'); maps.push([entry.env, false]); }
   } else return no(`type ${type} is not supported on a cloud machine`);
+  // Checked for every type: whatever is in the entry is copied to the machine.
+  if (entry.headers !== undefined) { if (!strMap(entry.headers)) return no('headers must be an object of strings'); maps.push([entry.headers, true]); }
+  if (entry.env !== undefined) { if (!strMap(entry.env)) return no('env must be an object of strings'); maps.push([entry.env, false]); }
   for (const [map, header] of maps) {
     for (const [k, v] of Object.entries(map)) {
       const bad = take(v, k, header);
