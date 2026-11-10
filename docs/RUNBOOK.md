@@ -61,6 +61,28 @@ cloudy-cloud
 
 Setup happens only in `install.sh`. If a key is missing, `cloudy-cloud` prints `cloudy-cloud is not set up yet (...). Run: cloudy-cloud setup`. In a terminal it also asks `Run setup now? [Y/n]` and continues into the session after setup; without a terminal it exits 1.
 
+### 2.5 MCP servers for subagents (optional)
+
+By default a subagent has no MCP servers. To give it some, copy them from your Claude Code settings, one at a time:
+
+1. Run `cloudy-cloud mcp add <name>`. It looks for `<name>` in your Claude Code local scope, the repo's `.mcp.json`, then your user scope (`~/.claude.json`), shows what it found, and saves the server to `~/.config/cloudy-cloud/mcp.json` (mode 600). Change the path with `CLOUDY_CLOUD_MCP`.
+2. If the server sends a token, the command prints a line like this. Run it once, with the real token in `$TOKEN`:
+
+   ```sh
+   printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com
+   ```
+
+   You must be signed in with `npx --yes instabox@latest login`. The Instabox API key in your cloudy-cloud config fails here with `missing_scope: workspace:admin`. Always keep `--host`: without it, Instabox would add the token to a request to any host.
+3. Start subagents as usual. The reply ends with `MCP servers: notion`, or `MCP servers: notion, context7 (failed: linear)` when a server did not connect. `cloud_agent_list` and the dashboard also show the names.
+
+Other commands: `cloudy-cloud mcp ls` lists what is saved and which secrets it needs, and `cloudy-cloud mcp rm <name>` removes a server (the Instabox secret stays; remove it with `npx --yes instabox@latest secrets rm MCP_<NAME>_TOKEN`). The file is read every time a subagent starts, so no restart is needed.
+
+**What is accepted.** Remote `http` or `sse` servers with an `https` URL on a public host, and stdio servers whose command is exactly `npx` or `uvx` with no absolute path, `~` or `..` in the arguments. Anything else is refused with `Not added: <reason>`: other commands, OAuth sign-in, `headersHelper`, localhost and private addresses, plain `http`, and secret values in a URL or an argument. `pi` workers get no MCP servers and say so in the reply.
+
+**What reaches the machine.** The checked servers are written to `~/.config/cloudy-cloud/mcp.json` on the machine (mode 600) and Claude starts with `--mcp-config` for that file and `--strict-mcp-config`. A repo's own `.mcp.json` is therefore not loaded there once you have added a server. Tokens are written as `${MCP_<NAME>_TOKEN}` references. Instabox replaces the placeholder only in HTTPS request headers sent to the hosts you named. Coordinators get the same file.
+
+**Real token on the machine.** `cloudy-cloud mcp add <name> --allow-literal` keeps the real `env` or header value in `mcp.json` and copies it to the machine of each subagent you start (a coordinator's own session gets it, its workers do not), after a warning and a `[y/N]` question in a terminal. Permission checks are off on the machine, so a prompt injection could leak that token. Use a token you can revoke. The reply then adds `MCP servers with a real token on the machine (you allowed it): <name>`.
+
 ## 3. Check that it works
 
 In the `cloudy-cloud` session, type:
@@ -133,6 +155,7 @@ git show FETCH_HEAD:proof.txt
 | You changed a key but the session still uses the old one | `cloudy-cloud` reads keys once at start. Restart it. |
 | `cloudy-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
 | `The first push to origin cloudy-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `cloudy-cloud setup` and replace the GitHub token, and check the token's repository list. |
+| `The Instabox secret MCP_<NAME>_TOKEN could not be attached` | The MCP token secret does not exist. Create it with `printf %s "$TOKEN" \| npx --yes instabox@latest secrets set MCP_<NAME>_TOKEN --host <host>`, signed in with `instabox login` (section 2.5). |
 | `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `cloudy-cloud setup` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
 | `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `cloudy-cloud setup` and replace the Claude token, and restart `cloudy-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
 | A subagent stays `queued` | Your Instabox plan's machine limit (`quota_exceeded`) is full, or starts are waiting for the pace limit. Paused machines count too. It retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you don't need, delete leftover machines (section 5), or upgrade the plan. |
@@ -159,6 +182,7 @@ git show FETCH_HEAD:proof.txt
    - **Instabox key and Claude token:** these stay in `~/.config/cloudy-cloud/env` and the MCP server. They never appear in process arguments.
    - **Claude token on the machine:** only the Claude token is placed on each machine.
    - **GitHub token:** it stays in Instabox. The machine sees only a placeholder, which Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
+   - **MCP tokens:** for servers added with `cloudy-cloud mcp add`, each token is an Instabox secret named `MCP_<NAME>_TOKEN`, attached in the same call as `GH_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host given with `--host`. With `--allow-literal` the real value is on the machine instead (not on a coordinator's workers).
 
 ## 8. Cloud coordinators
 

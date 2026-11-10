@@ -79,6 +79,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
     a.lastActivity = e.t;
     if (e.type === 'agent') {
       Object.assign(a, { description: e.description, profile: e.profile, role: e.role, model: e.model, branch: e.branch, startedAt: e.t });
+      a.mcp = Array.isArray(e.mcp) ? e.mcp.filter((n) => typeof n === 'string') : undefined; // names only
     } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {
       a.status = e.status;

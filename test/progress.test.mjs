@@ -2,7 +2,7 @@ import { parsePiStream, createPiProgress } from '../src/progress-pi.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createProgress, parseStream, statusLine, totalLine, fmtTokens, fmtElapsed } from '../src/progress.mjs';
+import { createProgress, parseStream, statusLine, totalLine, fmtTokens, fmtElapsed, mcpLine } from '../src/progress.mjs';
 
 // Real `claude -p --model haiku --output-format stream-json --verbose` output (assistant, user and result events only).
 const sample = readFileSync(new URL('./fixtures/stream-json-sample.jsonl', import.meta.url), 'utf8');
@@ -142,4 +142,29 @@ test('modelLine: a pi reply with no responseModel says pi saw no different model
   const req = { model: 'particle-ai/particle-1', host: 'api.particle.ai', name: 'pi-particle' };
   assert.equal(modelLine({ model: '', answered: true }, req), 'Model: particle-ai/particle-1 via api.particle.ai (profile pi-particle); pi saw no different model from the provider');
   assert.match(modelLine({ model: '' }, req), /not confirmed by the provider/);
+});
+
+test('init event: progress.mcp keeps server names, status and error messages; mcpLine renders them', () => {
+  const init = { type: 'system', subtype: 'init', model: 'claude-haiku-5-5', mcp_servers: [{ name: 'notion', status: 'connected' }, { name: 'context7', status: 'connected' }, { name: 'linear', status: 'failed' }], mcp_server_errors: { linear: 'connection refused' } };
+  const p = parseStream(JSON.stringify(init));
+  assert.deepEqual(p.mcp, { servers: init.mcp_servers, errors: { linear: 'connection refused' } });
+  assert.equal(mcpLine(p), 'MCP servers: notion, context7 (failed: linear)');
+  const none = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'notion', status: 'failed' }] }));
+  assert.equal(mcpLine(none), 'MCP servers: none connected (failed: notion)');
+  assert.equal(mcpLine(parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'a', status: 'connected' }] }))), 'MCP servers: a');
+});
+
+test('no init event or no mcp fields: mcp stays undefined and mcpLine is empty', () => {
+  const p = parseStream(sample);
+  assert.equal(p.mcp, undefined);
+  assert.equal(mcpLine(p), '');
+  assert.equal(parseStream(JSON.stringify({ type: 'system', subtype: 'init', model: 'x' })).mcp, undefined);
+  assert.equal(mcpLine(parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [] }))), '');
+});
+
+test('servers listed only in mcp_server_errors (skipped by Claude Code) count as failed', () => {
+  const only = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [], mcp_server_errors: { linear: 'invalid config' } }));
+  assert.equal(mcpLine(only), 'MCP servers: none connected (failed: linear)');
+  const mixed = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'notion', status: 'connected' }], mcp_server_errors: { linear: 'invalid config' } }));
+  assert.equal(mcpLine(mixed), 'MCP servers: notion (failed: linear)');
 });

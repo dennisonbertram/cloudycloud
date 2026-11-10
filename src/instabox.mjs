@@ -17,8 +17,9 @@ function isTransientWaitError(e) {
 const API = 'https://api.instabox.sh/v1/machines';
 const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4.';
 
-// Attach the org's GH_TOKEN secret (a proxy placeholder) and wait until Instabox has applied it.
-export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, timeoutMs = 60_000 } = {}) {
+// Attach the org's GH_TOKEN secret (a proxy placeholder) plus any MCP_<NAME>_TOKEN secrets in one PATCH (the selection is
+// replaced, so all names go together), and wait until Instabox has applied them.
+export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 2000, timeoutMs = 60_000 } = {}) {
   const url = `${API}/${encodeURIComponent(id)}/secrets`;
   const call = async (method, body) => {
     const res = await fetchFn(url, {
@@ -30,11 +31,14 @@ export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, ti
       try { j = JSON.parse(t); } catch { /* not JSON */ }
       const e = j.error && typeof j.error === 'object' ? j.error : j;
       const detail = e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200);
-      throw new Error(`${SECRET_HELP} (${method} returned HTTP ${res.status}, ${detail})`);
+      const missing = names.find((n) => `${t}`.includes(n));
+      const help = missing ? `The Instabox secret ${missing} could not be attached. Create it with: printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${missing} --host <host>`
+        : names.length ? `${SECRET_HELP} Secrets tried: GH_TOKEN, ${names.join(', ')}.` : SECRET_HELP;
+      throw new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`);
     }
     return res;
   };
-  await call('PATCH', JSON.stringify({ secrets: ['GH_TOKEN'] }));
+  await call('PATCH', JSON.stringify({ secrets: ['GH_TOKEN', ...names] }));
   const applied = (x) => x?.appliedRevision >= x?.revision;
   for (const deadline = Date.now() + timeoutMs; ; await new Promise((r) => setTimeout(r, pollMs))) {
     const d = await (await call('GET')).json().catch(() => ({}));
@@ -42,6 +46,8 @@ export async function attachGithubToken(id, apiKey, fetchFn, { pollMs = 2000, ti
     if (Date.now() >= deadline) throw new Error(`${SECRET_HELP} (not applied within ${timeoutMs / 1000} s)`);
   }
 }
+
+export const attachGithubToken = (id, apiKey, fetchFn, opts) => attachSecrets(id, apiKey, fetchFn, [], opts);
 
 // The SDK (0.6.0) has no deleteAfterSeconds option, but Instabox accepts it in the create request. Instabox then deletes the
 // machine at that time in any state, even if every cloudy-cloud process has died. Pass this as the SDK's `fetch` option: it
@@ -78,7 +84,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       }
     }
   };
-  return async (envs, { deleteAfterSeconds = workerSeconds(env) } = {}) => {
+  return async (envs, { deleteAfterSeconds = workerSeconds(env), secrets = [] } = {}) => {
     if (!env.INSTABOX_API_KEY) throw new Error('INSTABOX_API_KEY is not set.');
     const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
     const sbx = await Sandbox.create('agent-browser', {
@@ -86,7 +92,7 @@ export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, 
       fetch: withDeleteAfter(deleteAfterSeconds, fetchFn),
     });
     try {
-      await attachGithubToken(sbx.sandboxId, env.INSTABOX_API_KEY, fetchFn, timing);
+      await attachSecrets(sbx.sandboxId, env.INSTABOX_API_KEY, fetchFn, secrets, timing);
     } catch (e) {
       await sbx.kill().catch(() => {});
       throw e;

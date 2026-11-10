@@ -16,10 +16,10 @@ DEFINITION = ('Cloudy Cloud is open-source software (MIT license, install with n
               'every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.')
 GH = 'https://github.com/dennisonbertram/cloudycloud'
 NPM = 'https://www.npmjs.com/package/cloudycloud'
-DOC_SLUGS = ['index', 'how-it-works', 'models', 'reference', 'fleets', 'dashboard', 'troubleshooting',
+DOC_SLUGS = ['index', 'how-it-works', 'models', 'reference', 'fleets', 'dashboard', 'mcp', 'troubleshooting',
              'what-is-cloudy-cloud', 'faq', 'glossary']
 # llms.txt sections: heading -> slugs ('home' is the homepage)
-SECTIONS = [('Docs', ['index', 'what-is-cloudy-cloud', 'how-it-works', 'models', 'fleets', 'dashboard']),
+SECTIONS = [('Docs', ['index', 'what-is-cloudy-cloud', 'how-it-works', 'models', 'fleets', 'dashboard', 'mcp']),
             ('Reference', ['reference', 'faq', 'glossary', 'troubleshooting']),
             ('Optional', ['home'])]
 
