@@ -5,7 +5,6 @@ import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
-import { makeUi } from '../src/ui.mjs';
 import { safeText, redact } from '../src/terminal.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
