@@ -80,7 +80,7 @@ function normalize(e) {
 }
 
 const defaultSpawn = (argv, { inherit, env } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...(env && { [KEY_NAME]: env }) } });
+  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } });
   let stdout = '', stderr = '';
   p.stdout?.on('data', (d) => (stdout += d));
   p.stderr?.on('data', (d) => (stderr += d));
@@ -188,7 +188,7 @@ export function createProvider(env, deps = {}) {
     }
   }
 
-  async function deleteMachine(id, retries = 2) {
+  async function deleteMachine(id, { retries = 2, log } = {}) {
     let last;
     for (let attempt = 0; attempt <= retries; attempt++) {
       const r = await fetchFn(`${API}/${encodeURIComponent(id)}`, {
@@ -196,11 +196,12 @@ export function createProvider(env, deps = {}) {
       }).catch((e) => { last = e; return null; });
       if (r?.ok || r?.status === 404) return;
       if (r) last = Object.assign(new Error(`Delete of ${id} failed: HTTP ${r.status}`), { status: r.status });
+      log?.(`delete ${id} failed: ${r ? `HTTP ${r.status}` : 'network error'}`);
     }
     throw normalize(last ?? new Error(`Delete of ${id} failed`));
   }
 
-  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env: env[KEY_NAME] });
+  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
 
   return {
     name: 'instabox',
@@ -219,9 +220,10 @@ export function createProvider(env, deps = {}) {
       const { Sandbox } = await loadSdk();
       let sbx;
       try {
+        const lifetime = neverSuspend ? { autoSuspendMs: 0 } : { archiveMs: ARCHIVE_MS };
+        // Key order is part of the recorded request (golden files): named machines are the coordinator's, the rest are workers or images.
         sbx = await Sandbox.create(image, {
-          apiKey: key, envs, ...(name && { name }), metadata: labels,
-          ...(neverSuspend ? { autoSuspendMs: 0 } : { archiveMs: ARCHIVE_MS }),
+          ...(name ? { apiKey: key, name, ...(envs && { envs }), ...lifetime, metadata: labels } : { apiKey: key, envs, metadata: labels, ...lifetime }),
           fetch: withDeleteAfter(ttlSeconds, fetchFn),
         });
       } catch (e) { throw normalize(e); }
@@ -231,7 +233,7 @@ export function createProvider(env, deps = {}) {
         await sbx.kill().catch(() => {});
         throw e;
       }
-      return wrap(sbx, name ?? (neverSuspend ? (await sbx.getInfo()).name : undefined));
+      return wrap(sbx, neverSuspend ? (await sbx.getInfo()).name : name);
     },
 
     async connect(id) {
@@ -250,15 +252,25 @@ export function createProvider(env, deps = {}) {
       return { id: snap.id, status: snap.status };
     },
 
-    async list(labels = {}) {
-      const rows = (await rawList(labels)).filter((m) => Object.entries(labels).every(([k, v]) => m.metadata?.[k] === v));
-      return rows.map((m) => ({
-        id: m.id, name: m.name, labels: m.metadata ?? {}, state: m.state, status: STATUS[m.state] ?? 'failed',
-        startedAt: +new Date(m.createdAt), archiveAt: m.archiveAt ? +new Date(m.archiveAt) : undefined, deleteAt: m.deleteAt,
-      }));
+    // Raw fetch by default so the reaper never loads the SDK; { sdk: true } lists through Sandbox.list instead.
+    async list(labels = {}, { sdk } = {}) {
+      const row = (m) => ({
+        id: m.id ?? m.sandboxId, name: m.name, labels: m.metadata ?? {}, state: m.state, status: STATUS[m.state] ?? 'failed',
+        startedAt: +new Date(m.createdAt ?? m.startedAt), archiveAt: m.archiveAt ? +new Date(m.archiveAt) : undefined, deleteAt: m.deleteAt ?? m.machine?.deleteAt,
+      });
+      if (sdk) {
+        const { Sandbox } = await loadSdk();
+        try { return (await Sandbox.list({ apiKey: apiKey(), metadata: labels })).map(row); } catch (e) { throw normalize(e); }
+      }
+      return (await rawList(labels)).filter((m) => Object.entries(labels).every(([k, v]) => m.metadata?.[k] === v)).map(row);
     },
 
-    delete: (id) => deleteMachine(id),
+    // opts: { sdk } uses Sandbox.kill (waits for the delete, false on 404); { retries = 2, log } apply to the raw path.
+    async delete(id, { sdk, ...opts } = {}) {
+      if (!sdk) return deleteMachine(id, opts);
+      const { Sandbox } = await loadSdk();
+      try { await Sandbox.kill(id, { apiKey: apiKey() }); } catch (e) { throw normalize(e); }
+    },
 
     async forwardPort(id, localRemote) { return (await spawn([...INSTABOX_CLI, 'port-forward', id, localRemote], { inherit: true })).code; },
     async publishPort(id, port) {

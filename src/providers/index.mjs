@@ -35,8 +35,8 @@
  * @property {Caps} caps
  * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean }) => Promise<Sandbox>} create
  * @property {(id: string) => Promise<Sandbox>} connect
- * @property {(labels?: Record<string, string>) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, deleteAt?: number }>>} list
- * @property {(id: string) => Promise<void>} delete   a 404 counts as deleted
+ * @property {(labels?: Record<string, string>, opts?: { sdk?: boolean }) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, archiveAt?: number, deleteAt?: string }>>} list
+ * @property {(id: string, opts?: { sdk?: boolean, retries?: number, log?: (line: string) => void }) => Promise<void>} delete   a 404 counts as deleted
  * @property {(sandbox: Sandbox, o: { name: string, description?: string }) => Promise<{ id: string, status: string }>} snapshot
  * @property {(id: string) => Promise<{ id: string, status: string }>} getSnapshot
  * @property {(id: string, localRemote: string) => Promise<number>} forwardPort   resolves the exit code

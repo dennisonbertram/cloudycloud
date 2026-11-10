@@ -115,7 +115,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
       const id = `fake-${++n}`, name = opts.name ?? `sbx-${n}`;
       const sbx = wrap(await fakeSandbox(), id, name);
       sbx.envs = opts.envs;
-      machines.set(id, { id, name, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: Date.now() + opts.ttlSeconds * 1000 });
+      machines.set(id, { id, name, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
       sandboxes.set(id, sbx);
       const kill = sbx.kill;
       sbx.kill = async () => { await kill(); machines.delete(id); };

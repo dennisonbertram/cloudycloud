@@ -9,7 +9,7 @@ const done = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2,
 const timing = { pollMs: 5, timeoutMs: 100 };
 
 function fakeSdk() {
-  const calls = { create: [], snapshot: [], connect: [] };
+  const calls = { create: [], snapshot: [], connect: [], list: [], kill: [] };
   const box = () => ({
     sandboxId: 'm-1', kill: async () => true, getInfo: async () => ({ name: 'machine-x' }),
     files: { write: async () => {}, read: async () => new Uint8Array() },
@@ -20,6 +20,8 @@ function fakeSdk() {
     create: async (image, opts) => { calls.create.push({ image, opts }); return box(); },
     connect: async (id, opts) => { calls.connect.push({ id, opts }); return box(); },
     getSnapshot: async (id) => ({ id, status: 'ready' }),
+    list: async (opts) => { calls.list.push(opts); return [{ sandboxId: 'm1', name: 'box', state: 'running', startedAt: '2026-01-02T03:04:05Z', archiveAt: '2026-01-03T03:04:05Z', metadata: { role: 'coordinator' }, machine: { deleteAt: '2026-01-04T00:00:00Z' } }]; },
+    kill: async (id, opts) => { calls.kill.push({ id, opts }); return !String(id).startsWith('gone'); },
   } } };
 }
 function fakeFetch(handler = () => new Response('{}')) {
@@ -52,7 +54,8 @@ test('coordinator-style create: name, neverSuspend (no archiveMs), name from get
   const { sdk, calls } = fakeSdk();
   const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing });
   const s1 = await p.create({ image: 'snap', labels: { purpose: 'cloudy-cloud', role: 'coordinator' }, name: 'coord-a', ttlSeconds: 60, neverSuspend: true });
-  assert.equal(s1.name, 'coord-a');
+  assert.equal(s1.name, 'machine-x'); // the server's name, as the coordinator used
+  assert.deepEqual(Object.keys(calls.create[0].opts), ['apiKey', 'name', 'autoSuspendMs', 'metadata', 'fetch']);
   assert.equal(calls.create[0].opts.autoSuspendMs, 0);
   assert.equal(calls.create[0].opts.archiveMs, undefined);
   const s2 = await p.create({ image: 'tpl', labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 60, neverSuspend: true });
@@ -108,4 +111,39 @@ test('missing key gives code no_key; localMachineName; snapshot and ports', asyn
   assert.equal(await p.forwardPort('m', '3000:80'), 0);
   assert.equal(spawned[1][1].inherit, true);
   assert.ok(!spawned[1][0].includes(KEY));
+});
+
+test('list and delete with { sdk: true } use the SDK with today\'s arguments; the default stays raw fetch', async () => {
+  const { sdk, calls } = fakeSdk();
+  const fx = fakeFetch();
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fx.f });
+  const rows = await p.list({ role: 'coordinator', name: 'a' }, { sdk: true });
+  assert.deepEqual(calls.list, [{ apiKey: KEY, metadata: { role: 'coordinator', name: 'a' } }]);
+  assert.deepEqual(rows, [{ id: 'm1', name: 'box', labels: { role: 'coordinator' }, state: 'running', status: 'running',
+    startedAt: +new Date('2026-01-02T03:04:05Z'), archiveAt: +new Date('2026-01-03T03:04:05Z'), deleteAt: '2026-01-04T00:00:00Z' }]);
+  await p.delete('m1', { sdk: true });
+  await p.delete('gone-1', { sdk: true }); // Sandbox.kill returns false on 404: still deleted
+  assert.deepEqual(calls.kill, [{ id: 'm1', opts: { apiKey: KEY } }, { id: 'gone-1', opts: { apiKey: KEY } }]);
+  assert.equal(fx.calls.length, 0);
+  assert.equal(calls.list.length, 1);
+  await assert.rejects(createProvider({}, { sdk }).list({}, { sdk: true }), (e) => e.code === 'no_key');
+});
+
+test('delete retries and log: reaper style 3 attempts with a log line each, finish style 1 attempt', async () => {
+  const bad = fakeFetch(() => new Response('', { status: 500 }));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: bad.f });
+  const lines = [];
+  await assert.rejects(p.delete('x', { retries: 2, log: (l) => lines.push(l) }), (e) => e.status === 500);
+  assert.equal(bad.calls.length, 3);
+  assert.deepEqual(lines, Array(3).fill('delete x failed: HTTP 500'));
+  await assert.rejects(p.delete('y', { retries: 0 }), (e) => e.status === 500);
+  assert.equal(bad.calls.length, 4);
+});
+
+test('the injected spawn gets the whole env object', async () => {
+  const seen = [];
+  const env = { INSTABOX_API_KEY: KEY, OTHER: '1' };
+  const p = createProvider(env, { spawn: async (argv, o) => { seen.push(o.env); return { code: 0, stdout: '', stderr: '' }; } });
+  await p.unpublishPort('m', '3000');
+  assert.equal(seen[0], env);
 });
