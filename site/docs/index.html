@@ -60,6 +60,7 @@
         <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -128,7 +129,7 @@ cloudy-cloud</code></pre>
 <p><code>starting machine…</code> means the machine is not up yet. When the subagent finishes, its result reaches Claude automatically. In the VS Code extension, the desktop app, or a one-shot <code>claude -p</code> run, Claude calls <code>cloud_agent_wait</code> instead.</p>
 <p>The answer should name a hostname starting with <code>instabox-sbx-</code> and end with <code>Pushed to origin cloudy-cloud/&lt;id&gt; at &lt;sha&gt;</code>.</p>
 <p>The subagent stays open for follow-up messages until it is stopped. It is stopped after 60 idle minutes, and all subagents are stopped when the session ends.</p>
-<div class="note"><p>Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files, your local MCP servers or your settings.</p></div>
+<div class="note"><p>Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files or your settings. They have MCP servers only if you copy them with <code>cloudy-cloud mcp add</code>; see <a href="mcp.html">MCP servers for subagents</a>.</p></div>
 
 <h2 id="get-the-work-back">Get the work back</h2>
 <p>Nothing is copied into your local repo automatically. Each subagent pushes to its own branch, <code>cloudy-cloud/&lt;id&gt;</code>. Fetch it:</p>

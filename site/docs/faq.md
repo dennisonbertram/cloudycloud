@@ -22,7 +22,11 @@ An account with a cloud sandbox provider (Instabox is supported today), a Claude
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings. Add a new file with `git add` if the subagent needs it.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
+
+### Can subagents use my MCP servers?
+
+Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remote `https` servers on public hosts and `npx` or `uvx` servers work. OAuth sign-in, localhost, local paths and secrets in URLs or arguments do not, and `pi` workers get none. Tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ### What happens to the machines?
 

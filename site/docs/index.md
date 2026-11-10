@@ -102,7 +102,7 @@ The answer should name a hostname starting with `instabox-sbx-` and end with `Pu
 
 The subagent stays open for follow-up messages until it is stopped. It is stopped after 60 idle minutes, and all subagents are stopped when the session ends.
 
-> Note: Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files, your local MCP servers or your settings.
+> Note: Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files or your settings. They have MCP servers only if you copy them with `cloudy-cloud mcp add`; see [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ## Get the work back
 

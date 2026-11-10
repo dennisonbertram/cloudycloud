@@ -96,6 +96,15 @@ This is expected. `cloudy-cloud` turns off Claude Code's built-in `Agent` and `W
 
 See [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.html) for the full dashboard guide.
 
+### MCP server problems
+
+- `The Instabox secret MCP_..._TOKEN could not be attached`: the secret does not exist. Create it with `printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NAME_TOKEN --host HOST`. Creating a secret needs your `instabox login` session, not the API key.
+- `MCP servers skipped: NAME (REASON)` at the end of a reply: the entry in `mcp.json` did not pass the checks. Fix it in Claude Code and run `cloudy-cloud mcp add NAME` again.
+- `MCP servers: ... (failed: NAME)`: the server was sent but did not connect on the machine. Check the token, the host in `--host` and the server's address.
+- `Could not read FILE: ...`: `mcp.json` is not valid JSON. Fix or delete the file.
+
+See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html) for what a cloud machine can and cannot run.
+
 ## Security
 
 ### What runs where
@@ -107,6 +116,7 @@ Your Claude Code session and the `cloudy-cloud` tool server run on your machine.
 - **Claude token:** placed on each machine. It can only make model requests.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
+- **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 - **Provider keys** (for example Particle): these sit on the worker machines that use them. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.

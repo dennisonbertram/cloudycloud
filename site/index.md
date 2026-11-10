@@ -145,7 +145,7 @@ An account with a cloud sandbox provider (Instabox is supported today), a Claude
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files, your local MCP servers, or your personal Claude settings.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
 
 ### What happens to the machines?
 

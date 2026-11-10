@@ -146,6 +146,7 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - "Commit early and often, and push to your `cloudy-cloud/<id>` branch before you finish. Work that is not pushed is lost."
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
+- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and none for `pi` profiles). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
 
 Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 

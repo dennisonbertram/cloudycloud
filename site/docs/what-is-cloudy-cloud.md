@@ -17,7 +17,7 @@ In a `cloudy-cloud` session, the built-in `Agent` and `Workflow` tools are turne
 Subagents that run on your laptop share its CPU, memory and battery with you, so their builds and tests can slow your session down. With Cloudy Cloud you still start and steer everything from your laptop, but each subagent runs on its own machine in the cloud.
 
 - **Where it runs:** on a cloud machine, one per subagent.
-- **What it sees:** files tracked by git in your repo, including uncommitted edits. It cannot see untracked files, your local MCP servers or your personal Claude settings.
+- **What it sees:** files tracked by git in your repo, including uncommitted edits. It cannot see untracked files or your personal Claude settings. It has your MCP servers only if you copy them with `cloudy-cloud mcp add`.
 - **What you get back:** a git branch per subagent, `cloudy-cloud/<id>`, pushed to your GitHub repo, plus a reply with the branch, commit and token totals.
 - **How long it lives:** a subagent stops after 60 idle minutes or when your session ends. Its machine is deleted at a fixed deadline, 6 hours by default and 24 at most. Only work pushed to GitHub is kept.
 
