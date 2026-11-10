@@ -11,7 +11,8 @@ import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { attachGithubToken, withDeleteAfter } from './instabox.mjs';
 import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
-import { safeText, redact } from './terminal.mjs';
+import { safeText } from './terminal.mjs';
+import { redact } from './events.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';

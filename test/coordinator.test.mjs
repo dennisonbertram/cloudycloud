@@ -5,7 +5,8 @@ import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
-import { safeText, redact } from '../src/terminal.mjs';
+import { safeText } from '../src/terminal.mjs';
+import { redact } from '../src/events.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
@@ -186,7 +187,17 @@ test('attach prints the ssh command', async () => {
 
 test('terminal control characters and key-shaped text are removed from displayed values', () => {
   assert.equal(safeText('a\x1b[2Jb\tc\r'), 'ab c');
+  assert.equal(safeText('a\u202eb\u2066c'), 'abc');
   assert.equal(redact('HTTP 401 ibk_FAKEKEY123 sk-ant-test123'), 'HTTP 401 [redacted] [redacted]');
+});
+
+test('the command line never prints a key-shaped value from an error', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-coord-redact-'));
+  const r = spawnSync(process.execPath, [resolve('src/coordinator.mjs'), 'start', 'boss', '--repo', 'https://github.com/o/r', '--task-file', '/nonexistent/GH_TOKEN=supersecret99'],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home, INSTABOX_API_KEY: IBK } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ENOENT/);
+  assert.doesNotMatch(r.stderr, /supersecret99/);
 });
 
 test('ls strips control characters from names and stacks records in a narrow terminal', async () => {
