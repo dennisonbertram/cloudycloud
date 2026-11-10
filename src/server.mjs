@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { loadProvider } from './providers/index.mjs';
@@ -7,7 +6,7 @@ import { dirname } from 'node:path';
 import { loadEnv, ownerFile } from './config.mjs';
 import { killAll } from './run-subagent.mjs';
 import { buildServer } from './mcp.mjs';
-import { reaperSpawn } from './reaper.mjs';
+import { startReaper } from './reaper.mjs';
 import { createEventLog } from './events.mjs';
 
 const owner = randomUUID().slice(0, 12);
@@ -19,8 +18,7 @@ try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(own
 
 // The reaper is the guarantee that machines are deleted. The handlers below only try to be quick about it.
 if (env[provider.keyName] && !process.env.NODE_ENV?.includes('test')) {
-  const { command, args, options } = reaperSpawn(process.pid, owner, env[provider.keyName]);
-  spawn(command, args, options).on('error', () => {}).unref();
+  startReaper(process.pid, owner, env, provider);
 }
 
 // kill() waits for the delete to finish, which can take seconds, so give it at most 1.5 s before exiting.

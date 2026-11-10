@@ -59,8 +59,10 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
     async connect(id) { return sandbox(id, 'img-1'); },
     async getSnapshot(id) { return { id, status: 'ready' }; },
     async kill(id) { log.killed.push(id); return true; },
+    // ls, attach, stop and the image/start duplicate checks list through the SDK ({ sdk: true }).
+    async list(o) { return machines.filter((m) => Object.entries(o.metadata).every(([k, v]) => m.metadata?.[k] === v)); },
   } };
-  // The adapter lists and deletes machines over raw HTTP; `machines` uses the old SDK row shape and is served as API rows.
+  // `coordinator finish` lists and deletes over raw HTTP; `machines` uses the SDK row shape and is served as API rows.
   const fetchFn = async (url, init = {}) => {
     log.fetches.push({ url, ...init });
     if (init.method === 'DELETE') { log.killed.push(decodeURIComponent(String(url).split('/').pop())); return new Response('{}'); }

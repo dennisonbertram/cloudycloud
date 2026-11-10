@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { watch, reaperSpawn } from '../src/reaper.mjs';
+import { watch, reaperSpawn, startReaper } from '../src/reaper.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const KEY = 'sk-secret-key';
@@ -62,4 +62,41 @@ test('the reaper process exits 1 with no key, without touching the network', () 
   const env = { PATH: process.env.PATH };
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), '1', OWNER], { env, timeout: 5000 });
   assert.equal(r.status, 1);
+});
+
+test('the reaper logs each failed delete attempt (3 attempts) through the adapter', async () => {
+  const { createProvider } = await import('../src/providers/instabox.mjs');
+  const { reap } = await import('../src/reaper.mjs');
+  const fetchFn = async (url, init = {}) => (init.method === 'DELETE' ? new Response('', { status: 500 }) : Response.json({ machines: [{ id: 'm1', metadata: { owner: OWNER } }] }));
+  const logs = [];
+  const n = await reap({ owner: OWNER, provider: createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn }), log: (l) => logs.push(l) });
+  assert.equal(n, 0);
+  assert.deepEqual(logs, Array(3).fill('delete m1 failed: HTTP 500'));
+});
+
+test('startReaper passes the provider and its key to the spawned reaper (the call server.mjs makes)', () => {
+  const calls = [];
+  const child = { on() { return this; }, unref() { calls.push('unref'); } };
+  const provider = createFakeProvider();
+  startReaper(42, OWNER, { FAKE_API_KEY: KEY }, provider, (cmd, args, options) => { calls.push({ cmd, args, options }); return child; });
+  assert.equal(calls[0].options.env.FAKE_API_KEY, KEY);
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDER, 'fake');
+  assert.deepEqual(calls[0].args.slice(1), ['42', OWNER]);
+  assert.equal(calls[1], 'unref');
+});
+
+test('the reaper never loads the SDK: reap through the real adapter, and exit 1 on an empty env', () => {
+  const hook = fileURLToPath(new URL('./fixtures/block-sdk.mjs', import.meta.url));
+  const reaper = fileURLToPath(new URL('../src/reaper.mjs', import.meta.url));
+  const adapter = fileURLToPath(new URL('../src/providers/instabox.mjs', import.meta.url));
+  const empty = spawnSync(process.execPath, ['--import', hook, reaper, '1', OWNER], { env: { PATH: process.env.PATH }, timeout: 5000, encoding: 'utf8' });
+  assert.equal(empty.status, 1);
+  assert.ok(!empty.stderr.includes('SDK_LOADED'), empty.stderr);
+  const code = `
+    import { reap } from ${JSON.stringify(reaper)};
+    import { createProvider } from ${JSON.stringify(adapter)};
+    const fetchFn = async (url, init = {}) => (init.method === 'DELETE' ? new Response('') : Response.json({ machines: [{ id: 'm1', metadata: { owner: '${OWNER}' } }] }));
+    console.log(await reap({ owner: '${OWNER}', provider: createProvider({ INSTABOX_API_KEY: 'k' }, { fetchFn }) }));`;
+  const full = spawnSync(process.execPath, ['--import', hook, '--input-type=module', '-e', code], { env: { PATH: process.env.PATH }, timeout: 5000, encoding: 'utf8' });
+  assert.equal(full.stdout.trim(), '1', full.stderr);
 });

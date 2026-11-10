@@ -61,7 +61,7 @@ async function context(deps) {
 }
 
 const find = async (provider, role, name) =>
-  (await provider.list({ role, ...(name && { name }) })).filter((m) => m.labels?.role === role && (!name || m.labels?.name === name));
+  (await provider.list({ role, ...(name && { name }) }, { sdk: true })).filter((m) => m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
 // Marks Claude Code's first-run screens as done in ~/.claude.json and trusts ~/repo. Keys found live on a coordinator.
@@ -227,7 +227,7 @@ async function stop(c, args) {
   const [m] = await find(c.provider, 'coordinator', name);
   if (!m) fail(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`);
   c.progress('Deleting the coordinator machine...');
-  await c.provider.delete(m.id);
+  await c.provider.delete(m.id, { sdk: true });
   if (c.ui.on) return c.out([c.ui.ok(`Deleted coordinator ${name}`, `machine ${m.name}`), c.ui.hint('Its workers go with its cleanup, or at their own deadline (6 hours by default).'),
     c.ui.hint(`Check with: ${c.provider.text.listMachines}`)].join('\n'));
   c.out(`Deleted coordinator ${name} (machine ${m.name}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
@@ -272,7 +272,8 @@ async function finish(c, args, deps) {
     if (problems.length) fail(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`);
     verified.push('working tree clean', `pushed: ${branches.join(', ')}`, 'no running workers');
   }
-  await c.provider.delete(me.id);
+  // One attempt; list and delete here use the raw API, as finish always has (ls, attach, stop use the SDK).
+  await c.provider.delete(me.id, { retries: 0 }).catch((e) => { throw e.status ? new Error(`Delete failed: HTTP ${e.status}`) : e; });
   if (c.ui.on) return c.out([...verified.map((v) => c.ui.ok(v)), c.ui.ok(`Deleted this machine (${me.name})`)].join('\n'));
   c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${me.name}).`);
 }

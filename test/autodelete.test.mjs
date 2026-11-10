@@ -70,9 +70,10 @@ test('coordinator start: default 24 h deadline, --max-hours applied, over 24 ref
 });
 
 test('ls shows the delete time', async () => {
-  const log = { out: [] };
-  const fetchFn = async () => Response.json({ machines: [{ id: 'm1', name: 'coord-boss', state: 'running', createdAt: '2026-01-02T03:04:05Z', metadata: { role: 'coordinator', name: 'boss' }, deleteAt: '2026-01-03T03:04:05Z' }] });
-  await main(['ls'], { fetchFn, env: { INSTABOX_API_KEY: KEY }, out: (s) => log.out.push(s) });
+  const { log, sdk } = fx();
+  sdk.Sandbox.list = async () => [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'),
+    metadata: { role: 'coordinator', name: 'boss' }, machine: { deleteAt: '2026-01-03T03:04:05Z' } }];
+  await main(['ls'], { sdk, env: { INSTABOX_API_KEY: KEY }, out: (s) => log.out.push(s) });
   assert.match(log.out.join('\n'), /2026-01-03T03:04:05/);
 });
 
