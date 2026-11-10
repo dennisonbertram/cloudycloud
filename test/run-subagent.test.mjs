@@ -1,3 +1,4 @@
+import { mcpConfigText } from '../src/mcpsync.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -1049,12 +1050,37 @@ test('a rejected server is named with its reason in the footer and not delivered
   assert.ok(!JSON.stringify(sandboxes[0].written).includes('localhost'));
 });
 
-test('a pi worker gets no MCP servers and the footer says so', async () => {
-  const { start, wait, sandboxes, opts } = await mcpSetup(X);
+test('a pi worker gets its mcp.json in the agent dir, the secrets, and the footer; SSE is skipped', async () => {
+  const servers = { ...X, s: { type: 'sse', url: 'https://s.example.com/sse' }, npxone: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'] } };
+  const ev = [];
+  const { start, wait, sandboxes, opts } = await mcpSetup(servers, { events: (e) => ev.push(e) });
   const r = await wait([await start({ profile: 'pi-glm' })]);
-  assert.match(r, /MCP servers: none \(pi workers do not get MCP servers yet\)/);
+  const sbx = sandboxes[0], home = '/home/user';
+  assert.equal(sbx.written[`${home}/pi-agent/mcp.json`], mcpConfigText({ x: servers.x, npxone: servers.npxone }));
+  assert.ok(sbx.cmds.some((c) => c.includes('umask 077') && c.includes(`: > ${home}/pi-agent/mcp.json`)));
+  assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/pi-agent/mcp.json`)));
+  assert.ok(!sbx.writes.some((p) => p.includes('.config/cloudy-cloud/mcp.json')));
+  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.match(r, /MCP servers: x, npxone/);
+  assert.match(r, /MCP servers skipped: s \(pi does not support the SSE transport\)/);
+  assert.deepEqual(ev.find((e) => e.type === 'agent').mcp, ['x', 'npxone']);
+  assert.ok(!(await piLog(sbx)).includes('mcp'), 'the pi command is unchanged');
+});
+
+test('a pi worker without an mcp.json has no MCP write and no MCP footer line', async () => {
+  const { start, wait, sandboxes, opts, file } = await mcpSetup('{}');
+  await rm(file);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
   assert.ok(!sandboxes[0].writes.some((p) => p.endsWith('mcp.json')));
+  assert.ok(!/MCP/.test(r));
   assert.equal(opts[0].secrets, undefined);
+});
+
+test('a Claude worker still gets an SSE server', async () => {
+  const sse = { s: { type: 'sse', url: 'https://s.example.com/sse' } };
+  const { start, wait, sandboxes } = await mcpSetup(sse);
+  await wait([await start({})]);
+  assert.deepEqual(JSON.parse(sandboxes[0].written['/home/user/.config/cloudy-cloud/mcp.json']).mcpServers, sse);
 });
 
 test('invalid mcp.json fails the first turn with the file name', async () => {

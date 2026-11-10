@@ -143,3 +143,13 @@ export function loadMcp(env = process.env) {
 }
 
 export const mcpConfigText = (servers) => JSON.stringify({ mcpServers: servers }, null, 2);
+
+// The servers a harness can use: pi has no SSE transport, so those entries move to skipped. Claude gets the input as is.
+export function forHarness(mcp, harness) {
+  if (harness !== 'pi') return mcp;
+  const servers = {}, skipped = [...mcp.skipped];
+  for (const [name, e] of Object.entries(mcp.servers)) {
+    if (e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' }); else servers[name] = e;
+  }
+  return { ...mcp, servers, skipped };
+}
