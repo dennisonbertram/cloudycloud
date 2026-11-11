@@ -83,13 +83,19 @@ test('ompModels names the key variable and never holds a value; ompConfig turns 
   const p = resolveProfile('omp-glm', undefined, env).ok;
   const y = ompModels(p);
   assert.match(y, /apiKey: PARTICLE_API_KEY\n/);
-  assert.match(y, /- id: z-ai\/glm-5\.3-flash/);
+  assert.match(y, /- id: "z-ai\/glm-5\.3-flash"/);
   assert.match(y, /baseUrl: https:\/\/api\.particle\.ai\/v1/);
   assert.doesNotMatch(y, /k1/);
   const c = ompConfig();
   assert.match(c, /disabledProviders: \[claude, claude-plugins, codex, gemini, cursor, windsurf, vscode, opencode, agent-plugins, mcp-json\]/);
   assert.match(c, /mcp:\n  enableProjectConfig: false/);
   assert.equal(OMP_VERSION, '18.18.7');
+});
+
+test('ompModels quotes the model id so YAML keeps it a string', () => {
+  const y = ompModels({ baseUrl: 'https://h.example.com/v1', keyName: 'X_API_KEY', model: '1.5' });
+  assert.match(y, /- id: "1\.5"\n/);
+  assert.match(ompModels({ baseUrl: 'https://h.example.com/v1', keyName: 'X_API_KEY', model: 'm:' }), /- id: "m:"\n/);
 });
 
 test('ompCommand has the verified flags and no key', () => {

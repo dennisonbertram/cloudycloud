@@ -84,7 +84,8 @@ export const PI_PROVIDER = 'worker';
 export const piModels = (p) => JSON.stringify({ providers: { [PI_PROVIDER]: { baseUrl: p.baseUrl, api: 'openai-completions', apiKey: `$${p.keyName}`, models: [{ id: p.model }] } } }, null, 2);
 
 // omp harness (can1357/oh-my-pi), verified by the spike on #36. models.yml `apiKey` is first read as an environment variable NAME,
-// so the file holds the name and never the key. Built by hand: MODEL, URL_OK and PROVIDER_KEY already limit the characters.
+// so the file holds the name and never the key. Built by hand: MODEL, URL_OK and PROVIDER_KEY already limit the characters;
+// the model id is double-quoted (JSON is valid YAML) so an id like 1.5 or m: stays a string.
 export const OMP_VERSION = '18.18.7';
 export const OMP_PROVIDER = 'worker';
 export const ompModels = (p) => `providers:
@@ -93,7 +94,7 @@ export const ompModels = (p) => `providers:
     api: openai-completions
     apiKey: ${p.keyName}
     models:
-      - id: ${p.model}
+      - id: ${JSON.stringify(p.model)}
 `;
 // Only the servers in $PI_CODING_AGENT_DIR/mcp.json load: no project MCP config and no imports from other tools.
 export const ompConfig = () => `disabledProviders: [claude, claude-plugins, codex, gemini, cursor, windsurf, vscode, opencode, agent-plugins, mcp-json]

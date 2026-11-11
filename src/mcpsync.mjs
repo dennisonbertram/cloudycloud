@@ -151,5 +151,7 @@ export function forHarness(mcp, harness) {
   for (const [name, e] of Object.entries(mcp.servers)) {
     if (e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' }); else servers[name] = e;
   }
-  return { ...mcp, servers, skipped };
+  // A skipped server's proxy secret is not attached to the machine and its name is not reported as delivered.
+  const text = JSON.stringify(servers);
+  return { ...mcp, servers, skipped, secrets: mcp.secrets?.filter((s) => text.includes(`\${${s}}`)), literal: mcp.literal?.filter((n) => n in servers) };
 }

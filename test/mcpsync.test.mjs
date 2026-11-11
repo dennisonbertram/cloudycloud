@@ -192,3 +192,10 @@ test('forHarness moves sse servers to skipped for pi and leaves claude alone', (
   assert.equal(forHarness(mcp, 'claude'), mcp);
   assert.equal(forHarness(mcp, undefined), mcp);
 });
+
+test('forHarness for pi drops the proxy secret and the allowed-literal name of a skipped sse server', () => {
+  const mcp = { servers: { a: { type: 'sse', url: 'https://a.example.com/s', headers: { Authorization: 'Bearer ${MCP_A_TOKEN}' } }, b: { type: 'http', url: 'https://b.example.com', headers: { X: '${MCP_B_TOKEN}' } }, c: { type: 'sse', url: 'https://c.example.com/s', headers: { X: 'lit-value-123' } } }, skipped: [], secrets: ['MCP_A_TOKEN', 'MCP_B_TOKEN'], literal: ['c'], values: new Set(['lit-value-123']) };
+  const pi = forHarness(mcp, 'pi');
+  assert.deepEqual(pi.secrets, ['MCP_B_TOKEN']);
+  assert.deepEqual(pi.literal, []);
+});
