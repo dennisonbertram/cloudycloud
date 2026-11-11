@@ -1105,6 +1105,26 @@ test('a provider without proxy secrets is refused before any machine starts', as
   const x = await setup({ createSandbox: undefined, provider });
   const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
   assert.equal(r.isError, true);
-  assert.equal(r.content[0].text, 'Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.');
+  assert.match(r.content[0].text, /^Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets\. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question\./);
   assert.equal(provider.log.create.length, 0);
+});
+
+test('a provider without proxy secrets but with consent runs, and every reply says where the token is', async () => {
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  provider.text.hostLabel = 'box1';
+  const x = await setup({ provider });
+  const r = await x.wait([await x.start({})]);
+  assert.match(r, /\nGitHub token: on your machine box1 \(you allowed it\)/);
+});
+
+test('with proxy secrets the reply has no token line', async () => {
+  const x = await setup();
+  assert.ok(!(await x.wait([await x.start({})])).includes('GitHub token:'));
+});
+
+test('a token value in a sandbox error is scrubbed from the reply', async () => {
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const x = await setup({ provider });
+  const r = await x.wait([await x.start({ prompt: 'FAIL ghp_secret' })]);
+  assert.ok(!r.includes('ghp_secret'));
 });

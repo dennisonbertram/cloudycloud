@@ -42,7 +42,7 @@ const MAX_AGENTS = 200;
 const ROLES = ['worker', 'coordinator'];
 const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/cloudy-cloud. Pass work to subagents only through the cloud_agent tools. No human is watching in real time. Do not stop to ask; choose the documented default and record each decision. If the reply of a subagent ends with a QUESTION: line, answer it with cloud_agent_message. Your workers are deleted as soon as your reply ends, even if they have not pushed, so never end your reply while a worker is running: call cloud_agent_wait on every worker you started, and merge or record its result first. Before you finish, stop your workers with cloud_agent_stop and push your work. If you run on a machine made by cloudy-cloud coordinator start, your last step is to run ~/cloudy-cloud/bin/cloudy-cloud coordinator finish; a nested coordinator just ends its reply and its parent stops it.';
 const IDENT = ['-c', 'user.name=cloudy-cloud', '-c', 'user.email=cloudy-cloud@localhost'];
-const commitHint = (id, deleteAt) => `You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted by the server at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}`;
+const commitHint = (id, deleteAt, serverTtl = true) => `You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted ${serverTtl ? 'by the server ' : ''}at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
 const log = (...a) => console.error('[cloudy-cloud]', ...a);
@@ -196,7 +196,9 @@ function mcpFooter(a, t) {
   return `\n${lines.join('\n')}`;
 }
 
-const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${mcpFooter(a, t)}`;
+// Self-hosted: the user allowed the GitHub token on their own machine, so every reply says where it is.
+const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: on your machine ${a.tokenOnBox} (you allowed it)` : '';
+const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${tokenLine(a)}${mcpFooter(a, t)}`;
 
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
@@ -210,7 +212,7 @@ async function turn(a, message, ctx, t) {
   // A coordinator runs through the cloudy-cloud launcher, which passes its own --append-system-prompt. Its extra
   // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
-  const hint = `${commitHint(a.id, a.deleteAt)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const hint = `${commitHint(a.id, a.deleteAt, a.serverTtl)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
   const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose', hasMcp(a) && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
@@ -516,7 +518,8 @@ export async function cancelTask(taskId, deps) {
 export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps);
   const { fail, ok } = ctx;
-  if (!ctx.provider.caps.hasProxySecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.`);
+  const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
+  if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
   const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker' } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
@@ -559,7 +562,8 @@ export async function runSubagent(args, deps) {
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
+  const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+    serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = agentMcp(ctx.env); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
