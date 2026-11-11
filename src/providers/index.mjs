@@ -49,6 +49,7 @@
 // Adapters are imported lazily, so a missing or heavy adapter costs nothing until it is chosen.
 const REGISTRY = {
   instabox: () => import('./instabox.mjs'),
+  'self-hosted': () => import('./self-hosted.mjs'),
 };
 
 /**
