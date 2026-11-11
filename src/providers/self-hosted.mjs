@@ -74,6 +74,7 @@ export function createProvider(env = process.env, deps = {}) {
         },
       },
       kill: () => api.delete(id),
+      loadName: async () => id, // the container name; `docker exec` and text.ssh need it, not the label name
     };
   }
 

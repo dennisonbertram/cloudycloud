@@ -198,6 +198,8 @@ test('connect: unknown id is not_found; known id works', async () => {
   const { provider } = make();
   const s = await mk(provider);
   assert.equal((await provider.connect(s.id)).id, s.id);
+  assert.equal(await (await provider.connect(s.id, { retry: false })).loadName(), s.id, 'docker exec needs the container name');
+  assert.equal(await (await mk(provider, { name: 'coord-x', retry: false })).loadName?.().then((n) => n.startsWith('cc-')), true);
   await assert.rejects(provider.connect('cc-nope'), (e) => e.code === 'not_found');
 });
 
