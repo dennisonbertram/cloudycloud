@@ -1,0 +1,485 @@
+{
+  "image": {
+    "args": [
+      "image"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator-image"
+        }
+      },
+      {
+        "http": "POST",
+        "url": "https://api.instabox.sh/v1/machines",
+        "body": "{\"name\":\"x\",\"deleteAfterSeconds\":7200}"
+      },
+      {
+        "sdk": "Sandbox.create",
+        "template": "agent-browser",
+        "opts": {
+          "apiKey": "<API_KEY>",
+          "metadata": {
+            "purpose": "cloudy-cloud",
+            "role": "coordinator-image"
+          },
+          "autoSuspendMs": 0
+        }
+      },
+      {
+        "http": "PATCH",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>",
+          "Content-Type": "application/json"
+        },
+        "body": "{\"secrets\":[\"GH_TOKEN\"]}"
+      },
+      {
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "printf %s \"$HOME\"",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "gh auth setup-git",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "git config --global user.name 'Gold Tester (coordinator)' && git config --global user.email 'gold@example.com'",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/cloudy-cloud.bundle"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf cloudy-cloud && git init -q cloudy-cloud && cd cloudy-cloud && git fetch -q /data/home/cloudy-cloud.bundle refs/cc-keep/tool-<RAND> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/gold/tool.git' && npm install --no-audit --no-fund",
+        "cwd": "/data/home",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
+      }
+    ],
+    "out": [
+      "Image machine sbx-abc is ready and cloudy-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. npx --yes instabox@latest ssh sbx-abc\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: cloudy-cloud coordinator image --save"
+    ]
+  },
+  "image --save": {
+    "args": [
+      "image",
+      "--save"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator-image"
+        }
+      },
+      {
+        "sdk": "Sandbox.connect",
+        "id": "m_img",
+        "apiKey": "<API_KEY>"
+      },
+      {
+        "sdk": "createSnapshot",
+        "name": "cloudy-cloud-coordinator-<STAMP>",
+        "description": "cloudy-cloud coordinator image"
+      },
+      {
+        "sdk": "Sandbox.getSnapshot",
+        "id": "sn_new",
+        "apiKey": "<API_KEY>"
+      },
+      {
+        "sdk": "sandbox.kill",
+        "id": "m_img"
+      }
+    ],
+    "out": [
+      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
+    ]
+  },
+  "start": {
+    "args": [
+      "start",
+      "boss",
+      "--repo",
+      "https://github.com/o/r",
+      "--branch",
+      "main",
+      "--task",
+      "do it",
+      "--max-hours",
+      "3"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
+        }
+      },
+      {
+        "http": "POST",
+        "url": "https://api.instabox.sh/v1/machines",
+        "body": "{\"name\":\"x\",\"deleteAfterSeconds\":10800}"
+      },
+      {
+        "sdk": "Sandbox.create",
+        "template": "sn_1",
+        "opts": {
+          "apiKey": "<API_KEY>",
+          "name": "coord-boss",
+          "autoSuspendMs": 0,
+          "metadata": {
+            "purpose": "cloudy-cloud",
+            "role": "coordinator",
+            "name": "boss"
+          }
+        }
+      },
+      {
+        "http": "PATCH",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>",
+          "Content-Type": "application/json"
+        },
+        "body": "{\"secrets\":[\"GH_TOKEN\"]}"
+      },
+      {
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "printf %s \"$HOME\"",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "gh auth setup-git",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "git config --global user.name 'Gold Tester (coordinator)' && git config --global user.email 'gold@example.com'",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/cloudy-cloud.bundle"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf cloudy-cloud && git init -q cloudy-cloud && cd cloudy-cloud && git fetch -q /data/home/cloudy-cloud.bundle refs/cc-keep/tool-<RAND> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/gold/tool.git' && npm install --no-audit --no-fund",
+        "cwd": "/data/home",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "mkdir -p '/data/home/.config/cloudy-cloud' && chmod 700 '/data/home/.config/cloudy-cloud'"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.config/cloudy-cloud/env",
+        "envNames": [
+          "INSTABOX_API_KEY",
+          "CLAUDE_CODE_OAUTH_TOKEN"
+        ]
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "chmod 600 '/data/home/.config/cloudy-cloud/env'"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf ~/repo && git clone -q -b 'main' 'https://github.com/o/r' ~/repo",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});'"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/SKILL.md"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/brief-template.md"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/handoff.md"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/task.md",
+        "text": "Your machine is deleted by the server at <TIME>; push your work well before then.\n\ndo it"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
+      }
+    ],
+    "out": [
+      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\".\n  - Terminal: cloudy-cloud coordinator attach boss\n    (runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude)\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop boss"
+    ]
+  },
+  "start --json": {
+    "args": [
+      "start",
+      "boss",
+      "--repo",
+      "https://github.com/o/r",
+      "--json"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
+        }
+      },
+      {
+        "http": "POST",
+        "url": "https://api.instabox.sh/v1/machines",
+        "body": "{\"name\":\"x\",\"deleteAfterSeconds\":86400}"
+      },
+      {
+        "sdk": "Sandbox.create",
+        "template": "sn_1",
+        "opts": {
+          "apiKey": "<API_KEY>",
+          "name": "coord-boss",
+          "autoSuspendMs": 0,
+          "metadata": {
+            "purpose": "cloudy-cloud",
+            "role": "coordinator",
+            "name": "boss"
+          }
+        }
+      },
+      {
+        "http": "PATCH",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>",
+          "Content-Type": "application/json"
+        },
+        "body": "{\"secrets\":[\"GH_TOKEN\"]}"
+      },
+      {
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "printf %s \"$HOME\"",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "gh auth setup-git",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "git config --global user.name 'Gold Tester (coordinator)' && git config --global user.email 'gold@example.com'",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/cloudy-cloud.bundle"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf cloudy-cloud && git init -q cloudy-cloud && cd cloudy-cloud && git fetch -q /data/home/cloudy-cloud.bundle refs/cc-keep/tool-<RAND> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/gold/tool.git' && npm install --no-audit --no-fund",
+        "cwd": "/data/home",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "mkdir -p '/data/home/.config/cloudy-cloud' && chmod 700 '/data/home/.config/cloudy-cloud'"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.config/cloudy-cloud/env",
+        "envNames": [
+          "INSTABOX_API_KEY",
+          "CLAUDE_CODE_OAUTH_TOKEN"
+        ]
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "chmod 600 '/data/home/.config/cloudy-cloud/env'"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf ~/repo && git clone -q 'https://github.com/o/r' ~/repo",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});'"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/SKILL.md"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/brief-template.md"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/.claude/skills/cloud-fleet/handoff.md"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
+      }
+    ],
+    "out": [
+      "{\"name\":\"boss\",\"machine\":\"coord-boss\",\"remoteControlName\":\"boss\",\"attach\":\"npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude\"}"
+    ]
+  },
+  "ls": {
+    "args": [
+      "ls"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator"
+        }
+      }
+    ],
+    "out": [
+      "NAME\tSTATE\tCREATED\tMACHINE\tDELETES",
+      "boss\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss\tnever"
+    ]
+  },
+  "attach": {
+    "args": [
+      "attach",
+      "boss"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
+        }
+      }
+    ],
+    "out": [
+      "npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude"
+    ]
+  },
+  "stop": {
+    "args": [
+      "stop",
+      "boss"
+    ],
+    "calls": [
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
+        }
+      },
+      {
+        "sdk": "Sandbox.kill",
+        "id": "m1",
+        "apiKey": "<API_KEY>"
+      }
+    ],
+    "out": [
+      "Deleted coordinator boss (machine coord-boss). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud"
+    ]
+  },
+  "finish --force": {
+    "args": [
+      "finish",
+      "--force"
+    ],
+    "calls": [
+      {
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines?metadata=role%3Acoordinator",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "http": "DELETE",
+        "url": "https://api.instabox.sh/v1/machines/m1",
+        "headers": {
+          "X-API-Key": "<API_KEY>",
+          "Idempotency-Key": "<UUID>",
+          "X-Confirm-Delete": "m1"
+        }
+      }
+    ],
+    "out": [
+      "Verified: machine coord-boss (m1), coordinator boss; --force: skipped the git and worker checks.\nDeleted this machine (coord-boss)."
+    ]
+  }
+}

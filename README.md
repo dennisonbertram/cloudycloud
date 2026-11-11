@@ -116,6 +116,10 @@ Only work a subagent has pushed to GitHub survives if its machine is lost. A sin
 
 Many subagents at once are paced for Instabox's limits. A subagent waiting for a machine shows the status `queued`. Your plan's machine limit still caps how many run at the same time. More in [How it works](https://cloudycloud.tech/docs/how-it-works.html).
 
+## Providers
+
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`. It defaults to `instabox`, the only supported value today. A provider must keep the GitHub token behind proxy secrets, enforce a server-side machine delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`. `install.sh` currently sets up Instabox only. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+
 ## Dashboard
 
 ```sh

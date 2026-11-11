@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { mcpConfigText } from '../src/mcpsync.mjs';
 import { ompModels, ompConfig } from '../src/profiles.mjs';
 import { test } from 'node:test';
@@ -9,107 +10,12 @@ import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
+import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
 const SECRET = 'sk-test-secret-123';
-
-// Fake `claude`: behaviour chosen by the first word of the prompt on stdin. Prints stream-json like `claude -p --output-format stream-json --verbose`.
-const SID = '11111111-2222-3333-4444-555555555555';
-const FAKE_CLAUDE = `#!/bin/sh
-p=$(cat)
-echo "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS $BASH_DEFAULT_TIMEOUT_MS $BASH_MAX_TIMEOUT_MS" >> ../envlog.txt
-sid=${SID}
-resumed=""
-[ "$1" = "-p" ] && [ "$2" = "--resume" ] && resumed="resumed $3 "
-reply() {
-  printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":5}}}\\n'
-  printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"%s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":7}}\\n' "$sid" "$1"
-}
-commit() { git add -A; git -c user.name=x -c user.email=x@x commit -qm "$1"; }
-case "$p" in
-  OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; commit "own $n"; git push -q origin HEAD; reply "own $n" ;;
-  UNPUSHED*) echo unpushed > unpushed.txt; commit unpushed; reply "\${resumed}committed only" ;;
-  DIRTY*) echo newfile > notes.txt; echo dirty >> a.txt; reply "dirty" ;;
-  EDIT2*) echo more > b.txt; commit two; git push -q origin HEAD; reply "\${resumed}edited2" ;;
-  EDIT*) echo changed > a.txt; commit edit; git push -q origin HEAD; reply "edited" ;;
-  SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
-  SLOW*) sleep 0.5; reply "slow done" ;;
-  BADSID*) printf '{"type":"result","is_error":false,"result":"x","session_id":"x; rm -rf /"}\\n' ;;
-  RAW*) echo "not json" ;;
-  LEAK*) reply "leak $LEAK1 $LEAK2" ;;
-  ECHO*) reply "$p" ;;
-  FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
-  *) reply "\${resumed}hello" ;;
-esac
-`;
-
-// Fake `pi`: logs its arguments and prompt, then prints the synthetic fixture (FAKE_PI_FIXTURE, or the error one for prompts starting PIERR).
-const FIXTURES = new URL('./fixtures/', import.meta.url).pathname;
-const FAKE_PI = `#!/bin/sh
-p=$(cat)
-echo "ARGS $* DIR=$PI_CODING_AGENT_DIR PROMPT=$p" >> ../pi.log
-case "$p" in PIERR*) cat ${FIXTURES}pi-json-error.jsonl ;; *) cat ${FIXTURES}pi-json-sample.jsonl ;; esac
-`;
-
-// Fake `omp` (installed by the fake installer below, like the real one): logs argv, agent dir and prompt; the error fixture exits 1.
-const FAKE_OMP = `#!/bin/sh
-p=$(cat)
-echo "ARGS $* DIR=$PI_CODING_AGENT_DIR PROMPT=$p" >> ../omp.log
-case "$p" in OMPERR*) cat ${FIXTURES}omp-json-error.jsonl; exit 1 ;; *) cat ${FIXTURES}omp-json-sample.jsonl ;; esac
-`;
-
-let currentGithub; // the bare repo of the test being set up (tests in a file run one at a time)
-async function fakeSandbox(github = currentGithub) {
-  const dir = await mkdtemp(join(tmpdir(), 'fake-sbx-'));
-  const bin = join(dir, 'bin');
-  await mkdir(bin);
-  await mkdir(join(dir, 'home'));
-  await writeFile(join(bin, 'claude'), FAKE_CLAUDE);
-  await chmod(join(bin, 'claude'), 0o755);
-  await writeFile(join(bin, 'pi'), FAKE_PI);
-  await chmod(join(bin, 'pi'), 0o755);
-  await writeFile(join(bin, 'omp-real'), FAKE_OMP);
-  await chmod(join(bin, 'omp-real'), 0o755);
-  // fake curl prints an installer script that puts omp in ~/.local/bin (cwd is the home) and logs its arguments
-  await writeFile(join(bin, 'curl'), `#!/bin/sh\necho 'echo "install $*" >> install.log; mkdir -p .local/bin && cp ${bin}/omp-real .local/bin/omp'\n`);
-  await chmod(join(bin, 'curl'), 0o755);
-  await writeFile(join(bin, 'npm'), '#!/bin/sh\necho "npm $*" >> npm.log\n');
-  await chmod(join(bin, 'npm'), 0o755);
-  await writeFile(join(bin, 'gh'), '#!/bin/sh\nexit 0\n'); // fake gh: no-op
-  await chmod(join(bin, 'gh'), 0o755);
-  const map = (s) => s.replaceAll('/home/user', join(dir, 'home'));
-  const sbx = {
-    dir,
-    killed: false,
-    files: {
-      write: (p, d) => { sbx.writes.push(p); sbx.writeAt[p] = sbx.cmds.length; return writeFile(map(p), d); },
-      read: (p) => readFile(map(p)),
-    },
-    cmds: [],
-    writes: [],
-    writeAt: {},
-    commands: {
-      async run(cmd, { cwd, timeoutMs, onStdout } = {}) {
-        assert.ok(timeoutMs > 0, 'timeoutMs must be set');
-        sbx.cmds.push(cmd);
-        try {
-          const r = await exec('sh', ['-c', map(cmd)], {
-            cwd: map(cwd),
-            env: { ...process.env, ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
-          });
-          await onStdout?.(r.stdout);
-          return { stdout: r.stdout, stderr: r.stderr, exitCode: 0 };
-        } catch (e) {
-          throw Object.assign(new Error('exit'), { exitCode: e.code, stdout: e.stdout, stderr: e.stderr });
-        }
-      },
-    },
-    kill: async () => { sbx.killed = true; },
-  };
-  return sbx;
-}
 
 const ORIGIN = 'https://github.com/test/repo.git';
 async function setup(over = {}) {
@@ -123,11 +29,11 @@ async function setup(over = {}) {
   const bare = join(github, 'test', 'repo.git');
   await mkdir(join(github, 'test'));
   await sh(github, `git init -q --bare -b main ${bare}`);
-  currentGithub = github;
+  setGithub(github);
   const created = [];
   const createSandbox = over.createSandbox ?? (async (envs) => { const s = await fakeSandbox(github); s.envs = envs; created.push(s); return s; });
   const open = new Map();
-  const deps = { createSandbox, open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
+  const deps = { createSandbox, provider: createFakeProvider(), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -372,7 +278,7 @@ test('invalid model or subagent_type is rejected before any sandbox', async () =
 
 test('non-git directory returns a clear error', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cc-nogit-'));
-  const r = await runSubagent({ prompt: 'hi', description: 'd' }, { createSandbox: async () => {}, open: new Map(), cwd: dir, env: {} });
+  const r = await runSubagent({ prompt: 'hi', description: 'd' }, { createSandbox: async () => {}, provider: createFakeProvider(), open: new Map(), cwd: dir, env: {} });
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /git init/);
 });
@@ -421,7 +327,7 @@ test('stop during a running turn kills the sandbox and the turn does not resurre
 
 test('wait and stop accept a single id as a string or as agent_id', async () => {
   const { stopAgents, waitAgents } = await import('../src/run-subagent.mjs');
-  const deps = { createSandbox: async () => { throw new Error('unused'); }, open: new Map() };
+  const deps = { createSandbox: async () => { throw new Error('unused'); }, provider: createFakeProvider(), open: new Map() };
   for (const args of [{ agent_ids: 'x1' }, { agent_id: 'x1' }]) {
     const r = await stopAgents(args, deps);
     assert.notEqual(r.isError, true, JSON.stringify(r));
@@ -738,7 +644,7 @@ const PKEY = 'pk-particle-secret-999';
 const pEnv = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-1', GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: PKEY, OPENROUTER_API_KEY: 'or-secret-777', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
 // Gateway commands are faked (no uvx or curl here); everything else runs in the fake sandbox. health: 'ok' or a log text.
 async function profileSetup(health = 'ok', env = pEnv) {
-  const github = () => currentGithub;
+  const github = () => getGithub();
   const s = await setup({
     env,
     createSandbox: async (envs) => {
@@ -1275,4 +1181,25 @@ test('consent does not reach the workers of a coordinator: the file a coordinato
   const worker = loadMcp({ CLOUDY_CLOUD_MCP: join(home, '.config/cloudy-cloud/mcp.json') });
   assert.deepEqual(Object.keys(worker.servers), []);
   assert.equal(worker.skipped[0].name, 'yes');
+});
+
+test('the core creates machines through provider.create, with names only in envs', async () => {
+  const provider = createFakeProvider();
+  const x = await setup({ createSandbox: undefined, provider, owner: 'o1' });
+  const id = await x.start();
+  assert.match(await x.wait([id]), /status: idle/);
+  assert.equal(provider.log.create.length, 1);
+  const { envs, ...rest } = provider.log.create[0];
+  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 21600, secrets: [] });
+  assert.deepEqual(Object.keys(envs), ['ANTHROPIC_API_KEY']);
+});
+
+test('a provider without proxy secrets is refused before any machine starts', async () => {
+  const provider = createFakeProvider();
+  provider.caps.hasProxySecrets = false;
+  const x = await setup({ createSandbox: undefined, provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.');
+  assert.equal(provider.log.create.length, 0);
 });
