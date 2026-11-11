@@ -100,3 +100,18 @@ test('the reaper never loads the SDK: reap through the real adapter, and exit 1 
   const full = spawnSync(process.execPath, ['--import', hook, '--input-type=module', '-e', code], { env: { PATH: process.env.PATH }, timeout: 5000, encoding: 'utf8' });
   assert.equal(full.stdout.trim(), '1', full.stderr);
 });
+
+test('the reaper deletes the machines of page 1 when page 2 of the list fails, and logs the error', async () => {
+  const { reap } = await import('../src/reaper.mjs');
+  const { createProvider } = await import('../src/providers/instabox.mjs');
+  const deleted = [], logs = [];
+  const fetchFn = async (url, init = {}) => {
+    if (init.method === 'DELETE') { deleted.push(String(url).split('/').pop()); return new Response('{}'); }
+    if (String(url).includes('cursor=c2')) return new Response('no', { status: 500 });
+    return Response.json({ machines: [{ id: 'm1', metadata: { owner: OWNER }, state: 'running' }], nextCursor: 'c2' });
+  };
+  const n = await reap({ owner: OWNER, provider: createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn }), log: (l) => logs.push(l) });
+  assert.equal(n, 1);
+  assert.deepEqual(deleted, ['m1']);
+  assert.match(logs.join('\n'), /list failed.*HTTP 500/);
+});

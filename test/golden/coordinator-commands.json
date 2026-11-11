@@ -73,6 +73,10 @@
         "cmd": "rm -rf cloudy-cloud && git init -q cloudy-cloud && cd cloudy-cloud && git fetch -q /data/home/cloudy-cloud.bundle refs/cc-keep/tool-<RAND> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/gold/tool.git' && npm install --no-audit --no-fund",
         "cwd": "/data/home",
         "timeoutMs": 600000
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
       }
     ],
     "out": [
@@ -248,6 +252,10 @@
       {
         "sdk": "commands.run",
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
       }
     ],
     "out": [
@@ -376,6 +384,10 @@
       {
         "sdk": "commands.run",
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+      },
+      {
+        "sdk": "getInfo",
+        "id": "m_new"
       }
     ],
     "out": [

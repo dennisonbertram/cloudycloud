@@ -24,6 +24,7 @@
  * @property {{ run(cmd: string, opts?: { cwd?: string, timeoutMs?: number, signal?: AbortSignal, onStdout?: (chunk: string) => any }): Promise<{ stdout: string, stderr: string, exitCode: number }> }} commands
  *   a failed command rejects with { exitCode, stdout, stderr }
  * @property {() => Promise<any>} kill
+ * @property {() => Promise<string|undefined>} [loadName]   fetches the machine name the server gave (coordinators)
  */
 
 /**
@@ -33,9 +34,9 @@
  * @property {string} name
  * @property {string} keyName            environment variable that holds the API key
  * @property {Caps} caps
- * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean }) => Promise<Sandbox>} create
- * @property {(id: string) => Promise<Sandbox>} connect
- * @property {(labels?: Record<string, string>, opts?: { sdk?: boolean }) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, archiveAt?: number, deleteAt?: string }>>} list
+ * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean, retry?: boolean }) => Promise<Sandbox>} create
+ * @property {(id: string, o?: { retry?: boolean }) => Promise<Sandbox>} connect
+ * @property {(labels?: Record<string, string>, opts?: { sdk?: boolean, onError?: (e: Error) => void }) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, archiveAt?: number, deleteAt?: string }>>} list
  * @property {(id: string, opts?: { sdk?: boolean, retries?: number, log?: (line: string) => void }) => Promise<void>} delete   a 404 counts as deleted
  * @property {(sandbox: Sandbox, o: { name: string, description?: string }) => Promise<{ id: string, status: string }>} snapshot
  * @property {(id: string) => Promise<{ id: string, status: string }>} getSnapshot

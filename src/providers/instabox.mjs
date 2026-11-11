@@ -106,24 +106,28 @@ export function createProvider(env, deps = {}) {
     return env[KEY_NAME];
   };
   const loadSdk = async () => deps.sdk ?? (await import('@insforge/instabox-sdk'));
-  const call = async (fn) => {
+  // tries = 1 for coordinator sandboxes ({ retry: false }): a single attempt, as before the adapter.
+  const callWith = (tries) => async (fn) => {
     for (let n = 1; ; n++) {
       try {
         return await limiter.run(fn);
       } catch (e) {
-        if (e?.status !== 429 || n >= MAX_429_TRIES) throw normalize(e);
+        if (e?.status !== 429 || n >= tries) throw normalize(e);
         await sleep(Math.min(1000 * 2 ** (n - 1), 10_000));
       }
     }
   };
 
-  const wrap = (sbx, name) => {
+  const wrap = (sbx, name, { retry = true, nameFromInfo = false } = {}) => {
+    const call = callWith(retry ? MAX_429_TRIES : 1);
     const sandbox = {
       id: sbx.sandboxId,
       ...(name !== undefined && { name }),
       home: '/data/home',
       files: { write: (...a) => call(() => sbx.files.write(...a)), read: (...a) => call(() => sbx.files.read(...a)) },
       kill: () => sbx.kill(),
+      // The server's machine name, fetched on demand (the coordinator asks after setup, as it did before the adapter).
+      loadName: async () => (nameFromInfo ? (sandbox.name = (await sbx.getInfo()).name) : sandbox.name),
       commands: {
         // opts.onStdout receives output as it is written. opts.signal stops the command (a background job is killed).
         async run(cmd, { timeoutMs: ms, onStdout, signal, ...opts } = {}) {
@@ -175,13 +179,18 @@ export function createProvider(env, deps = {}) {
     return sandbox;
   };
 
-  async function rawList(labels = {}) {
+  // onError: a failing page after the first returns the rows collected so far and reports the error instead of throwing.
+  async function rawList(labels = {}, onError) {
     const meta = Object.entries(labels).map(([k, v]) => `metadata=${encodeURIComponent(`${k}:${v}`)}`).join('&');
     const rows = [];
     for (let cursor; ;) {
       const url = `${API}${meta || cursor ? '?' : ''}${[meta, cursor && `cursor=${encodeURIComponent(cursor)}`].filter(Boolean).join('&')}`;
       const res = await fetchFn(url, { headers: { 'X-API-Key': apiKey() } });
-      if (!res.ok) throw normalize(Object.assign(new Error(`Could not list machines: HTTP ${res.status}`), { status: res.status }));
+      if (!res.ok) {
+        const err = normalize(Object.assign(new Error(`Could not list machines: HTTP ${res.status}`), { status: res.status }));
+        if (onError && cursor) { onError(err); return rows; }
+        throw err;
+      }
       const page = await res.json();
       rows.push(...(page.machines ?? []));
       if (!(cursor = page.nextCursor)) return rows;
@@ -215,7 +224,7 @@ export function createProvider(env, deps = {}) {
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
-    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false } = {}) {
+    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true } = {}) {
       const key = apiKey();
       const { Sandbox } = await loadSdk();
       let sbx;
@@ -233,12 +242,12 @@ export function createProvider(env, deps = {}) {
         await sbx.kill().catch(() => {});
         throw e;
       }
-      return wrap(sbx, neverSuspend ? (await sbx.getInfo()).name : name);
+      return wrap(sbx, name, { retry, nameFromInfo: neverSuspend });
     },
 
-    async connect(id) {
+    async connect(id, { retry = true } = {}) {
       const { Sandbox } = await loadSdk();
-      try { return wrap(await Sandbox.connect(id, { apiKey: apiKey() })); } catch (e) { throw normalize(e); }
+      try { return wrap(await Sandbox.connect(id, { apiKey: apiKey() }), undefined, { retry }); } catch (e) { throw normalize(e); }
     },
 
     async snapshot(sandbox, { name, description } = {}) {
@@ -253,7 +262,7 @@ export function createProvider(env, deps = {}) {
     },
 
     // Raw fetch by default so the reaper never loads the SDK; { sdk: true } lists through Sandbox.list instead.
-    async list(labels = {}, { sdk } = {}) {
+    async list(labels = {}, { sdk, onError } = {}) {
       const row = (m) => ({
         id: m.id ?? m.sandboxId, name: m.name, labels: m.metadata ?? {}, state: m.state, status: STATUS[m.state] ?? 'failed',
         startedAt: +new Date(m.createdAt ?? m.startedAt), archiveAt: m.archiveAt ? +new Date(m.archiveAt) : undefined, deleteAt: m.deleteAt ?? m.machine?.deleteAt,
@@ -262,7 +271,7 @@ export function createProvider(env, deps = {}) {
         const { Sandbox } = await loadSdk();
         try { return (await Sandbox.list({ apiKey: apiKey(), metadata: labels })).map(row); } catch (e) { throw normalize(e); }
       }
-      return (await rawList(labels)).filter((m) => Object.entries(labels).every(([k, v]) => m.metadata?.[k] === v)).map(row);
+      return (await rawList(labels, onError)).filter((m) => Object.entries(labels).every(([k, v]) => m.metadata?.[k] === v)).map(row);
     },
 
     // opts: { sdk } uses Sandbox.kill (waits for the delete, false on 404); { retries = 2, log } apply to the raw path.

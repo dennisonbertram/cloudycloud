@@ -35,7 +35,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gold-coord-'));
   const sandbox = (id, name) => ({
     sandboxId: id,
-    getInfo: async () => ({ name }),
+    getInfo: async () => { calls.push({ sdk: 'getInfo', id }); return { name }; },
     files: { write: async (p, d) => { calls.push({ sdk: 'files.write', path: p, ...(/\/env$/.test(p) ? { envNames: envNames(d) } : /task\.md$/.test(p) ? { text: String(d) } : {}) }); } },
     commands: { run: async (cmd, o = {}) => { calls.push({ sdk: 'commands.run', cmd, cwd: o.cwd, timeoutMs: o.timeoutMs }); return { stdout: '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { calls.push({ sdk: 'createSnapshot', ...o }); return { id: 'sn_new', status: 'pending' }; },

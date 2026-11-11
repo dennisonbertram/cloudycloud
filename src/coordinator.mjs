@@ -87,17 +87,20 @@ async function installTool(sbx, root) {
   return home;
 }
 
+// The machine's name as the server reports it (the adapter fetches it on demand).
+const nameOf = async (sbx) => (await sbx.loadName?.()) ?? sbx.name;
+
 async function image(c, args) {
   const existing = await find(c.provider, 'coordinator-image');
   if (!args.includes('--save')) {
     if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: cloudy-cloud coordinator image --save`);
     c.progress('Creating the image machine...');
-    const sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true });
+    const sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
     try {
       c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
       await installTool(sbx, c.root);
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
-    const info = { name: sbx.name };
+    const info = { name: await nameOf(sbx) };
     if (c.ui.on) return c.out([c.ui.ok(`Image machine ${info.name} is ready`, 'cloudy-cloud is installed on it'), '',
       c.ui.block('Now sign in to Claude on it', [['1', c.ssh(info.name, '')], ['2', 'In that shell run: claude auth login'], ['3', 'Finish the browser sign-in, then leave the shell']]), '',
       c.ui.hint('A setup-token cannot open Remote Control sessions, so this sign-in is needed.'), c.ui.hint('Then run: cloudy-cloud coordinator image --save')].join('\n'));
@@ -107,7 +110,7 @@ async function image(c, args) {
   }
   const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
   if (!img) fail('No image machine found. Run: cloudy-cloud coordinator image');
-  const sbx = await c.provider.connect(img.id);
+  const sbx = await c.provider.connect(img.id, { retry: false });
   c.progress('Saving the image snapshot...');
   let snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
   for (let n = 0; snap.status === 'pending'; n++) {
@@ -153,7 +156,7 @@ async function start(c, args) {
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
   c.progress('Creating the coordinator machine...');
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true });
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root);
@@ -175,7 +178,7 @@ async function start(c, args) {
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${prompt}`)}`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
-  const machine = sbx.name;
+  const machine = await nameOf(sbx);
   if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude') }));
   if (c.ui.on) {
     const u = c.ui;
