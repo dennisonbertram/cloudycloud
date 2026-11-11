@@ -819,7 +819,33 @@ summary_row() {
   esac
 }
 
+# choose_provider [NAME]: sets PROVIDER to instabox or self-hosted, asking unless NAME is given.
+choose_provider() {
+  local a
+  case ${1:-} in
+    instabox|self-hosted) PROVIDER=$1; return 0 ;;
+    "") ;;
+    *) bad "Unknown provider \"$1\"" "use --provider instabox or --provider self-hosted" >&2; exit 1 ;;
+  esac
+  drain_tty
+  ask "Where should subagents run?" "1  Instabox cloud (default)" "2  your own machine over SSH (a Mac or Linux box you control)"
+  ask_line "Type 1 or 2 (Enter for 1):"
+  IFS= read -r a </dev/tty || a=""
+  case $a in 2) PROVIDER=self-hosted ;; *) PROVIDER=instabox ;; esac
+}
+
+# setup_self_hosted ROOT: the self-hosted questions live in src/self-hosted-setup.mjs.
+setup_self_hosted() {
+  if node "$1/src/self-hosted-setup.mjs" setup; then STATUS_SH="OK ($(get_saved CLOUDY_CLOUD_SSH_HOST), $(get_saved CLOUDY_CLOUD_SELF_HOSTED_SLOTS) at once)"
+  else bad "Self-hosted setup did not finish. Run $(rerun_cmd) again." >&2; exit 1; fi
+}
+
 main() {
+  local provider_arg=""
+  if [ "${1:-}" = --provider ]; then
+    [ $# -ge 2 ] || { bad "--provider needs instabox or self-hosted" >&2; exit 1; }
+    provider_arg=$2; shift 2
+  fi
   if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
     echo "install.sh asks for keys, so run it in a terminal: ./install.sh"; exit 1
   fi
@@ -849,19 +875,27 @@ main() {
   LOCAL_ACCOUNT=$(claude_account)
   [ -z "$LOCAL_ACCOUNT" ] || ok "Your local Claude" "$LOCAL_ACCOUNT"
 
+  choose_provider "$provider_arg"
   warn_shell_env INSTABOX_API_KEY
   warn_shell_env CLAUDE_CODE_OAUTH_TOKEN
-  step 2 "Instabox key"
-  setup_instabox
-  [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
+  if [ "$PROVIDER" = self-hosted ]; then
+    step 2 "Your own machine"
+    setup_self_hosted "$root"
+  else
+    [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" != self-hosted ] || write_env CLOUDY_CLOUD_PROVIDER instabox
+    step 2 "Instabox key"
+    setup_instabox
+    [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
+  fi
   step 3 "Claude token"
   setup_claude
-  step 4 "GitHub token, optional keys and coordinators"
-  setup_github
+  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token, optional keys and coordinators"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
   setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
-  if from_npm "$root"; then
+  if [ "$PROVIDER" = self-hosted ]; then
+    :
+  elif from_npm "$root"; then
     STATUS_COORD="needs a git clone"
     hint "Cloud coordinators ship cloudy-cloud from a git checkout, so set them up from a clone: ./install.sh"
   else
@@ -871,10 +905,15 @@ main() {
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
   box_open Summary
-  summary_row "Instabox key" "$STATUS_INSTABOX"
-  summary_row "Claude token" "$STATUS_CLAUDE"
-  summary_row "GitHub token" "$STATUS_GH"
-  summary_row "Coordinators" "$STATUS_COORD"
+  if [ "$PROVIDER" = self-hosted ]; then
+    summary_row "Your machine" "$STATUS_SH"
+    summary_row "Claude token" "$STATUS_CLAUDE"
+  else
+    summary_row "Instabox key" "$STATUS_INSTABOX"
+    summary_row "Claude token" "$STATUS_CLAUDE"
+    summary_row "GitHub token" "$STATUS_GH"
+    summary_row "Coordinators" "$STATUS_COORD"
+  fi
   box_close
   echo
   if from_npm "$root"; then
