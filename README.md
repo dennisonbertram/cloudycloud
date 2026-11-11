@@ -133,7 +133,8 @@ Setup asks for the SSH address (`user@host`), an optional SSH key, how many suba
 
 - **A Mac needs** Remote Login turned on, an SSH key, Docker Desktop or OrbStack running, and sleep turned off.
 - **The GitHub token** must be stored in each worker container while it runs. Setup asks for your consent once. Workers do not start without it.
-- **Not supported yet:** coordinators, and `cloudy-cloud open --share`.
+- **Coordinators:** `cloudy-cloud coordinator image` signs in once on a container and saves it with `docker commit --pause=true` as the image `cloudy-cloud-coordinator:<name>`. The image keeps the Claude login but not `/run/secrets`, which is a tmpfs, so no token is saved. `coordinator start` creates a container from that image. Coordinators on the self-hosted provider are implemented and covered by unit tests, but they have not been run live on a real Mac Studio yet.
+- **Not supported:** `cloudy-cloud open --share`.
 
 Details are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-your-own-machine) and [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
 

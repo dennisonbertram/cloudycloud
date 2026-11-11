@@ -308,7 +308,7 @@ What containers do after a reboot of the machine is not checked; doctor lists le
 ### Limits
 
 - One machine per setup.
-- Coordinators are not supported: the adapter reports `hasSnapshots: false`, so `cloudy-cloud coordinator image` and `start` stop with "Provider self-hosted has no snapshots, which coordinators need." Snapshots through `docker commit` (issue #35) are not on this branch.
+- Coordinators use Docker images instead of Instabox snapshots (`hasSnapshots` is true). `cloudy-cloud coordinator image` creates the image container; you sign in with `claude auth login` as in 8.1. `coordinator image --save` then runs `docker commit --pause=true` on that container, which makes the image `cloudy-cloud-coordinator:<name>` on the machine, saves that name as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT`, and removes the image container. The image keeps the Claude login in the home folder. It never contains `/run/secrets`, because that folder is a tmpfs mount and `docker commit` skips it, so the GitHub token and other keys are not saved. `coordinator start NAME` creates a container from the image and gives it its keys at start. The adapter can list and remove these images (`docker image ls --filter 'reference=cloudy-cloud-coordinator:*'`, `docker rmi cloudy-cloud-coordinator:<name>` on the machine), but `cloudy-cloud` has no command for it yet. Not yet proven live: this has been covered by unit tests only, not run on a real Mac Studio.
 - `cloudy-cloud open <agent> <port>` works through an SSH bridge. `--share` is refused.
 - Docker is the path to use. Podman is accepted; rootless Podman may ignore CPU and memory limits.
 - The container can reach whatever the machine can reach on your network.

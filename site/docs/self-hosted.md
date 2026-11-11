@@ -93,7 +93,7 @@ Doctor prints these with your real values. What happens to containers when the m
 ## Limits
 
 - **One machine.** Setup saves one SSH address.
-- **No coordinators yet.** The provider has no snapshots, so `cloudy-cloud coordinator image` and `start` stop with "Provider self-hosted has no snapshots, which coordinators need." Workers work.
+- **Coordinators use Docker images.** `cloudy-cloud coordinator image --save` runs `docker commit --pause=true` on your signed-in image container and saves it as `cloudy-cloud-coordinator:<name>` on the machine. The image keeps your Claude login but never `/run/secrets` (a tmpfs), so no token is saved. `coordinator start` creates a container from it. You list and remove images with `docker image ls` and `docker rmi` on the machine; `cloudy-cloud` has no command for that. This has not been run live on a real Mac Studio yet.
 - **No published links.** `open --share` is refused.
 - **Docker and rootless Podman.** Docker is the supported route. Podman is accepted but its limits may not apply when rootless.
 - **Setup asks for no Instabox key.** It still asks for your Claude token and optional model provider keys.

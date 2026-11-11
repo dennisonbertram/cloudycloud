@@ -145,7 +145,7 @@ ssh user@host /path/to/docker rm -f cc-&lt;id&gt;</code></pre>
 <h2 id="limits">Limits</h2>
 <ul>
 <li><strong>One machine.</strong> Setup saves one SSH address.</li>
-<li><strong>No coordinators yet.</strong> The provider has no snapshots, so <code>cloudy-cloud coordinator image</code> and <code>start</code> stop with "Provider self-hosted has no snapshots, which coordinators need." Workers work.</li>
+<li><strong>Coordinators use Docker images.</strong> <code>cloudy-cloud coordinator image --save</code> runs <code>docker commit --pause=true</code> on your signed-in image container and saves it as <code>cloudy-cloud-coordinator:&lt;name&gt;</code> on the machine. The image keeps your Claude login but never <code>/run/secrets</code> (a tmpfs), so no token is saved. <code>coordinator start</code> creates a container from it. You list and remove images with <code>docker image ls</code> and <code>docker rmi</code> on the machine; <code>cloudy-cloud</code> has no command for that. This has not been run live on a real Mac Studio yet.</li>
 <li><strong>No published links.</strong> <code>open --share</code> is refused.</li>
 <li><strong>Docker and rootless Podman.</strong> Docker is the supported route. Podman is accepted but its limits may not apply when rootless.</li>
 <li><strong>Setup asks for no Instabox key.</strong> It still asks for your Claude token and optional model provider keys.</li>

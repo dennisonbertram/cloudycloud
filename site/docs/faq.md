@@ -54,7 +54,7 @@ Claude by default, or open models such as GLM and DeepSeek through Particle.ai o
 
 ### Can I use my own computer?
 
-Yes. Run `cloudy-cloud setup --provider self-hosted` to send subagents to a Mac or Linux machine you own, reached over SSH (for example through Tailscale). Each subagent runs in its own Docker container there. You must allow the GitHub token on that machine, and coordinators are not supported on it yet. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
+Yes. Run `cloudy-cloud setup --provider self-hosted` to send subagents to a Mac or Linux machine you own, reached over SSH (for example through Tailscale). Each subagent runs in its own Docker container there. You must allow the GitHub token on that machine. Coordinators work through Docker images but have not been run live yet. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
 
 ### Can work continue with my laptop closed?
 

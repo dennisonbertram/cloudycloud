@@ -24,7 +24,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Cleanup | `src/reaper.mjs` | A separate process that deletes a session's machines when the session ends, even after a hard kill. |
 | Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, and `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway). |
 | Progress | `src/progress.mjs`, `src/progress-pi.mjs` | Streams tool uses, tokens, elapsed time and the current step from Claude Code or `pi`. |
-| Self-hosted provider (your own machine over SSH) | `src/providers/self-hosted.mjs`, `src/providers/ssh.mjs`, `src/self-hosted-setup.mjs`: one Docker container per subagent, `setup --provider self-hosted`, `doctor`, slots, consented GitHub token, `open` through an SSH bridge. Covered by unit tests and an opt-in local test against a throwaway sshd container. Docs: [RUNBOOK section 9](RUNBOOK.md#9-your-own-machine). **Not yet proven live:** the first live check on a Mac Studio over Tailscale is still to do. Coordinators are not supported (`hasSnapshots` is false on this branch). |
+| Self-hosted provider (your own machine over SSH) | `src/providers/self-hosted.mjs`, `src/providers/ssh.mjs`, `src/self-hosted-setup.mjs`: one Docker container per subagent, `setup --provider self-hosted`, `doctor`, slots, consented GitHub token, `open` through an SSH bridge. Covered by unit tests and an opt-in local test against a throwaway sshd container. Docs: [RUNBOOK section 9](RUNBOOK.md#9-your-own-machine). **Not yet proven live:** the first live check on a Mac Studio over Tailscale is still to do. Coordinators use `docker commit --pause=true` images named `cloudy-cloud-coordinator:<name>` (issue #35); they are covered by unit tests only and not proven live on a Mac Studio. |
 | Cloud coordinators | `src/coordinator.mjs` | `coordinator image` (sign in once, then snapshot), `start`, `attach`, `ls` and `stop`. They are long-lived, never pause and run Remote Control. |
 | Fleet skill | `skills/cloud-fleet/SKILL.md` | Teaches Claude flat fan-out, trunk merging into `fleet/<topic>`, waves, model choice per level, briefs and safety. |
 
@@ -60,7 +60,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 
 ## Open items
 
-- **Self-hosted live check:** run setup, one worker that pushes, a follow-up, `open`, stop, and a killed-session cleanup on the real Mac Studio, then move the row above to "Proven live". Coordinators on self-hosted need snapshots (issue #35).
+- **Self-hosted live check:** run setup, one worker that pushes, a follow-up, `open`, stop, and a killed-session cleanup on the real Mac Studio, then move the row above to "Proven live". Also try a coordinator (`coordinator image`, `--save`, `start`) there.
 - **agent-drive access for workers:** not built. It needs a `delegate` credential and a dedicated drive.
 - **Particle key:** it sits on worker machines; moving it into an Instabox proxy secret needs the user to run `npx instabox@latest secrets set PARTICLE_API_KEY --host api.particle.ai`.
 - **The `pi` harness:** fixtures were synthetic, but the live run passed. There's no per-command time limit setting for `pi`.
