@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, statSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { slotsFor } from '../src/self-hosted-setup.mjs';
+import { loadEnv } from '../src/config.mjs';
 
 const script = resolve('src/self-hosted-setup.mjs');
 const version = JSON.parse(readFileSync(resolve('package.json'), 'utf8')).version;
@@ -68,7 +69,7 @@ function rig(table, { env = '', files = {} } = {}) {
   const calls = () => readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   return { run, calls, cfg, dir };
 }
-const SAVED = `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_CONTAINER_RUNTIME=/usr/local/bin/docker\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\nCLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes\nGH_TOKEN=${FAKE_TOKEN}\n`;
+const SAVED = `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_CONTAINER_RUNTIME=docker\nCLOUDY_CLOUD_CONTAINER_BIN=/usr/local/bin/docker\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\nCLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes\nGH_TOKEN=${FAKE_TOKEN}\n`;
 const lines = (file) => readFileSync(file, 'utf8').trim().split('\n').sort();
 
 test('slots: min(cpus/2, GiB/4), at least 1', () => {
@@ -207,8 +208,11 @@ test('setup on a Mac: prompts, checks, builds the image, saves settings at mode 
   assert.match(r.out, /stored inside each worker container/);
   assert.ok(!r.text.includes(FAKE_TOKEN), 'token echoed');
   assert.deepEqual(lines(g.cfg), [
-    `CLOUDY_CLOUD_CONTAINER_RUNTIME=/usr/local/bin/docker`,
+    'CLOUDY_CLOUD_CONTAINER_BIN=/usr/local/bin/docker',
+    'CLOUDY_CLOUD_CONTAINER_RUNTIME=docker',
     'CLOUDY_CLOUD_PROVIDER=self-hosted',
+    'CLOUDY_CLOUD_SELF_HOSTED_CPUS=2', // 10 CPUs in the Docker VM / 4 slots
+    'CLOUDY_CLOUD_SELF_HOSTED_MEMORY=3276m', // 80% of the VM's 16 GiB / 4 slots
     'CLOUDY_CLOUD_SELF_HOSTED_SLOTS=4',
     'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes',
     'CLOUDY_CLOUD_SSH_HOST=me@mac-studio',
@@ -216,6 +220,9 @@ test('setup on a Mac: prompts, checks, builds the image, saves settings at mode 
     `GH_TOKEN=${FAKE_TOKEN}`,
   ].sort());
   assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
+  // every saved name survives loadEnv (KEYS), so the adapter reads what setup wrote
+  const loaded = loadEnv({ CLOUDY_CLOUD_CONFIG: g.cfg });
+  for (const l of lines(g.cfg)) assert.equal(`${l.split('=')[0]}=${loaded[l.split('=')[0]]}`, l);
   assert.deepEqual(require_ls(join(g.dir, 'cfg')), ['env']); // no temp file left
   const calls = g.calls();
   const build = calls.find((c) => /build/.test(c.cmd));
@@ -236,7 +243,8 @@ test('setup: finds docker in a known path when the login shell does not know it,
   }));
   const r = g.run(['setup'], `me@mac-studio\n\n\nn\n`);
   assert.equal(r.code, 0, r.text);
-  assert.match(lines(g.cfg).join('\n'), /CLOUDY_CLOUD_CONTAINER_RUNTIME=\/Users\/me\/\.orbstack\/bin\/docker/);
+  assert.match(lines(g.cfg).join('\n'), /CLOUDY_CLOUD_CONTAINER_BIN=\/Users\/me\/\.orbstack\/bin\/docker\nCLOUDY_CLOUD_CONTAINER_RUNTIME=docker\n/);
+  assert.match(lines(g.cfg).join('\n'), /CLOUDY_CLOUD_SELF_HOSTED_CPUS=4\nCLOUDY_CLOUD_SELF_HOSTED_MEMORY=3276m\n/);
   assert.match(r.out, /How many subagents may run at once\? \[2\]/); // min(8/2, 8 GiB/4)
   assert.ok(g.calls().some((c) => c.cmd.includes('.orbstack/bin/docker')));
 });

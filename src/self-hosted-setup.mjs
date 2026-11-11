@@ -25,6 +25,16 @@ const tail = (text, n = 6) => String(text || '').split('\n').map((l) => l.trimEn
 // Suggested number of subagents at once: half the CPUs, or one per 4 GiB of memory, whichever is lower; at least 1.
 export const slotsFor = (ncpu, memBytes) => Math.max(1, Math.min(Math.floor(ncpu / 2), Math.floor(memBytes / (4 * GIB))));
 
+// What the adapter (providers/self-hosted.mjs) reads: runtime name, absolute CLI path, and per-container limits that split
+// the box (or the container VM on a Mac) between the slots. --cpus is a cap, so at least 1; memory keeps 20% for the host.
+export const containerSettings = ({ kind, bin, ncpu, mem }, slots) => ({
+  CLOUDY_CLOUD_CONTAINER_RUNTIME: kind === 'podman' ? 'podman' : 'docker',
+  CLOUDY_CLOUD_CONTAINER_BIN: bin,
+  CLOUDY_CLOUD_SELF_HOSTED_SLOTS: String(slots),
+  CLOUDY_CLOUD_SELF_HOSTED_CPUS: String(Math.max(1, Math.floor(ncpu / slots))),
+  CLOUDY_CLOUD_SELF_HOSTED_MEMORY: `${Math.max(512, Math.floor((mem * 0.8) / slots / 2 ** 20))}m`,
+});
+
 // ---- output ----
 function makeUi(out = process.stdout) {
   const color = out.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb';
@@ -108,7 +118,7 @@ async function checkBox({ ssh, ui, env }) {
   }
 
   const saved = env.CLOUDY_CLOUD_CONTAINER_RUNTIME;
-  let bin = saved?.startsWith('/') ? saved : '';
+  let bin = env.CLOUDY_CLOUD_CONTAINER_BIN?.startsWith('/') ? env.CLOUDY_CLOUD_CONTAINER_BIN : '';
   if (!bin) for (const n of saved === 'podman' ? ['podman'] : ['docker', 'podman']) if ((bin = await findBin(ssh, n))) break;
   if (!bin) {
     ui.say('fail', `Container runtime: no docker found on ${host}`, mac
@@ -185,7 +195,7 @@ export async function runDoctor({ env = loadEnv(), out = process.stdout } = {}) 
 
   const before = ui.fails;
   const missing = [];
-  if (!env.CLOUDY_CLOUD_CONTAINER_RUNTIME) missing.push(['CLOUDY_CLOUD_CONTAINER_RUNTIME is not set, so the container CLI is looked up by name and may not be found']);
+  if (!env.CLOUDY_CLOUD_CONTAINER_BIN) missing.push(['CLOUDY_CLOUD_CONTAINER_BIN is not set, so the container CLI is looked up by name and may not be found']);
   if (!env.CLOUDY_CLOUD_SELF_HOSTED_SLOTS) missing.push(['CLOUDY_CLOUD_SELF_HOSTED_SLOTS is not set, so the default number of subagents is used']);
   if (env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX !== 'yes') missing.push(['GitHub token is not allowed on the machine, so workers cannot push to GitHub']);
   for (const [m] of missing) ui.say('warn', `Settings: ${m}`, SETUP_CMD);
@@ -256,7 +266,7 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     ui.text(`    so the token would be stored inside each worker container on ${host} (in memory only, removed with the container).`);
     ui.text('    Say yes only if you own and trust that machine.');
     const allow = /^y/i.test(await inp.line(`  > Allow the GitHub token on ${host}? [y/N]: `));
-    const set = { CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: host, CLOUDY_CLOUD_CONTAINER_RUNTIME: f.bin, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: String(slots) };
+    const set = { CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: host, ...containerSettings(f, slots) };
     const del = [];
     if (key) set.CLOUDY_CLOUD_SSH_KEY = key; else del.push('CLOUDY_CLOUD_SSH_KEY');
     if (env.CLOUDY_CLOUD_SSH_PORT) set.CLOUDY_CLOUD_SSH_PORT = env.CLOUDY_CLOUD_SSH_PORT;
