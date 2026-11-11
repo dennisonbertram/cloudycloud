@@ -3,6 +3,7 @@
 // (provider.keyName) and CLOUDY_CLOUD_PROVIDER picks the provider, as in the server. It never loads a provider SDK.
 import { spawn as nodeSpawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { loadEnv } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 
 const MAX_LIFETIME_MS = 24 * 60 * 60_000;
@@ -49,7 +50,9 @@ export async function watch({ pid, owner, provider, alive = isAlive, log, pollMs
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [pid, owner] = process.argv.slice(2);
-  const provider = await loadProvider(process.env).catch(() => null);
-  if (!provider || !process.env[provider.keyName] || !(Number(pid) > 0) || !owner) process.exit(1);
+  // The saved settings file too: self-hosted needs CLOUDY_CLOUD_CONTAINER_BIN, _SSH_KEY and _SSH_PORT from it.
+  const env = loadEnv(process.env);
+  const provider = await loadProvider(env).catch(() => null);
+  if (!provider || !env[provider.keyName] || !(Number(pid) > 0) || !owner) process.exit(1);
   watch({ pid: Number(pid), owner, provider }).finally(() => process.exit(0));
 }
