@@ -40,7 +40,7 @@ test('argv has the multiplexing options, host, key and port; command round-trips
     const { bin, args } = h.calls[0];
     assert.equal(bin, 'ssh');
     const joined = args.join(' ');
-    for (const o of ['BatchMode=yes', 'ControlMaster=auto', 'ControlPersist=10m', 'ServerAliveInterval=15']) assert.ok(joined.includes(`-o ${o}`), o);
+    for (const o of ['BatchMode=yes', 'ConnectTimeout=15', 'ControlMaster=auto', 'ControlPersist=10m', 'ServerAliveInterval=15']) assert.ok(joined.includes(`-o ${o}`), o);
     assert.match(joined, /-o ControlPath=\S+\/cc-%C/);
     assert.ok(args.includes('me@box'));
     assert.equal(args[args.indexOf('-i') + 1], '/home/me/.ssh/id');
@@ -94,11 +94,16 @@ test('other non-zero exit rejects with exitCode, stdout, stderr', async () => {
   } finally { h.cleanup(); }
 });
 
-test('timeoutMs wraps the command in timeout and exit 124 is a timeout error', async () => {
-  const h = harness((c) => exit(c, 124));
+test('timeoutMs is enforced on this side (macOS has no `timeout`): the ssh process is killed and the call rejects', async () => {
+  const h = harness(() => {}); // never exits on its own
   try {
-    await assert.rejects(h.make().run('sleep 99', { timeoutMs: 2500 }), (e) => e.code === 'timeout' && /timed out after 3 s/.test(e.message));
-    assert.match(h.calls[0].args.at(-1), /^timeout 3 sh -c /);
+    const t0 = Date.now();
+    await assert.rejects(h.make().run('sleep 99', { timeoutMs: 50 }), (e) => e.code === 'timeout' && /timed out after 1 s/.test(e.message));
+    assert.ok(Date.now() - t0 < 1000);
+    assert.match(h.calls[0].args.at(-1), /^sh -c /, 'no remote timeout command');
+    const h2 = harness((c) => exit(c, 124)); // a remote exit 124 is just an exit code now
+    await assert.rejects(h2.make().run('x', { timeoutMs: 5000 }), (e) => e.exitCode === 124 && e.code === undefined);
+    h2.cleanup();
   } finally { h.cleanup(); }
 });
 
