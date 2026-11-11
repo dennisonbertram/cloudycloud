@@ -36,6 +36,7 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cc-sh-'));
   roots.push(root);
   const table = new Map();
+  const images = new Map(); // committed coordinator images: ref -> { labels, from, message }
   const log = []; // every decoded remote command, as argv
   const sshCalls = [];
   const local = (s) => s.replaceAll('/run/secrets', `${root}/run/secrets`).replaceAll('/home/worker', `${root}/home/worker`);
@@ -54,7 +55,19 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
       return done(0, `${table.get(name).Id}\n`);
     }
     if (cmd === 'ps') return done(0, [...table.values()].filter((c) => 'cloudy-cloud.purpose' in c.Config.Labels).map((c) => c.Id.slice(0, 12)).join('\n') + '\n');
-    if (cmd === 'image') return done(0, `${imageVersion}\n`);
+    if (cmd === 'image') {
+      const ref = rest.at(-1);
+      if (rest[0] === 'ls') return done(0, [...images.keys()].join('\n') + '\n');
+      if (ref.startsWith('cloudy-cloud-coordinator:')) return images.has(ref) ? done(0, `sha256:${ref}\n`) : done(1, '', `Error response from daemon: No such image: ${ref}`);
+      return done(0, `${imageVersion}\n`);
+    }
+    if (cmd === 'commit') {
+      const c = find(rest.at(-2));
+      if (!c) return done(1, '', `Error response from daemon: No such container: ${rest.at(-2)}`);
+      images.set(rest.at(-1), { from: c.Name.slice(1), message: opt('-m'), change: opt('--change') });
+      return done(0, `sha256:${rest.at(-1)}\n`);
+    }
+    if (cmd === 'rmi') return images.delete(rest.at(-1)) ? done(0, `Untagged: ${rest.at(-1)}\n`) : done(1, '', `Error response from daemon: No such image: ${rest.at(-1)}`);
     if (cmd === 'inspect') {
       const fmt = rest.includes('--format') ? opt('--format') : null;
       const names = rest.filter((a, i) => !a.startsWith('--') && rest[i - 1] !== '--format');
@@ -112,7 +125,7 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
     });
     return child;
   };
-  return { spawn, table, log, root, sshCalls };
+  return { spawn, table, images, log, root, sshCalls };
 }
 
 const ENV = { CLOUDY_CLOUD_SSH_HOST: 'me@box', CLOUDY_CLOUD_CONTAINER_BIN: BIN, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '5' };
@@ -133,6 +146,12 @@ test('golden: exact docker commands for create, run, write, list and delete; no 
   await s.commands.run("echo hi; echo \"$FOO\" $GH_TOKEN | wc -c", { cwd: '/home/worker/app', timeoutMs: 5000 });
   await s.files.write('/home/worker/dir/a.txt', 'hello');
   await provider.list({ owner: 'o1' });
+  const snap = await provider.snapshot(s, { name: 'coord-1', description: 'cloudy-cloud coordinator image' });
+  await provider.getSnapshot(snap.id);
+  const c = await mk(provider, { image: snap.id, name: 'coord' });
+  await provider.listSnapshots();
+  await provider.deleteSnapshot(snap.id);
+  await c.kill();
   await s.kill();
   const strip = (argv) => argv.map((a) => a.replace(/cc-[0-9a-f]{12}/g, 'cc-ID').replace(/[0-9a-f]{16}(?=;| )/g, 'MARKER')
     .replace(/(deleteAt|startedAt)=\S+/g, '$1=ISO').replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, 'ISO').replace(/^[0-9a-f]{12}$/, 'ID'));
@@ -225,7 +244,7 @@ test('secrets without consent throw no_key naming the secret; nothing is started
   assert.equal(box.table.size, 0);
 });
 
-test('list maps fields; snapshots and publish are refused', async () => {
+test('list maps fields; publish is refused', async () => {
   const { box, provider } = make();
   const s = await mk(provider, { name: 'w1' });
   const [row] = await provider.list({ owner: 'o1' });
@@ -234,7 +253,6 @@ test('list maps fields; snapshots and publish are refused', async () => {
   assert.equal(row.status, 'running');
   assert.equal(row.labels.purpose, 'cloudy-cloud');
   assert.ok(row.startedAt > 0 && row.deleteAt);
-  await assert.rejects(provider.snapshot(s, { name: 'n' }), (e) => e.code === 'not_found' && /no snapshots yet/.test(e.message));
   await assert.rejects(provider.publishPort(s.id, '3000'), /does not publish links/);
   assert.equal(await provider.unpublishPort(s.id, '3000'), 1);
   assert.equal(provider.localMachineName('cc-abc'), 'cc-abc');
@@ -277,4 +295,33 @@ test('loadProvider finds self-hosted; text names the fix', async () => {
   assert.match(p.text.noKeyFix, /cloudy-cloud setup/);
   assert.match(p.text.apiFix, /cloudy-cloud doctor/);
   assert.equal(p.text.ssh('cc-1', ''), 'ssh -t u@h docker exec -it cc-1 bash');
+});
+
+test('coordinator snapshots: commit, inspect, create from the image without the worker label check, list, delete', async () => {
+  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' }, { imageVersion: '0.0.1' }); // worker image is stale
+  assert.equal(provider.caps.hasSnapshots, true);
+  box.table.set('cc-src', { Id: 'a'.repeat(64), Name: '/cc-src', Config: { Labels: {} }, State: { Status: 'running' } });
+  const src = await provider.connect('cc-src');
+  const snap = await provider.snapshot(src, { name: 'coord-1', description: 'd' });
+  assert.deepEqual(snap, { id: 'cloudy-cloud-coordinator:coord-1', status: 'ready' });
+  assert.deepEqual(await provider.getSnapshot(snap.id), { id: snap.id, status: 'ready' });
+  const commit = box.log.find((a) => a[1] === 'commit');
+  assert.deepEqual(commit.slice(1, 5), ['commit', '--pause=true', '-m', 'd']);
+  assert.equal(commit.at(-2), 'cc-src');
+  assert.ok(!commit.join(' ').includes('/run/secrets'), 'the commit never names the secrets dir');
+  assert.ok(!commit.join(' ').includes('ghp_SECRETVALUE'));
+  // the stale worker image would fail the label check, but a coordinator image is used as is
+  const c = await provider.create({ image: snap.id, envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator' }, ttlSeconds: 60, neverSuspend: true });
+  const run = box.log.find((a) => a[1] === 'run');
+  assert.equal(run[run.indexOf('--user') + 2], snap.id);
+  assert.ok(run.includes('--tmpfs'), 'a fresh /run/secrets tmpfs is mounted on the new container');
+  assert.ok(!box.log.some((a) => a[1] === 'image' && a.includes('{{index .Config.Labels "cloudy-cloud.image"}}')), 'worker label check skipped');
+  await c.kill();
+  assert.deepEqual((await provider.listSnapshots()).map((i) => i.id), [snap.id]);
+  await provider.deleteSnapshot(snap.id);
+  assert.deepEqual(await provider.listSnapshots(), []);
+  await assert.rejects(provider.getSnapshot(snap.id), (e) => e.code === 'not_found');
+  await assert.rejects(provider.create({ image: snap.id, envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'not_found');
+  await assert.rejects(provider.snapshot(src, { name: 'bad name; rm -rf /' }), /invalid snapshot name/);
+  await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.1.2'), /only deletes coordinator images/);
 });

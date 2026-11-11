@@ -8,18 +8,21 @@
 // timeoutMs is enforced here by killing the local ssh (a stock Mac has no `timeout` command), so the caller must end
 // the remote side itself if it matters. ConnectTimeout makes an unreachable host fail in seconds, not minutes.
 // Only the key PATH goes in argv. The remote command is base64 so its text never needs quoting or shows in argv.
-import { spawn as nodeSpawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 // Unix socket paths are limited to ~104 bytes and macOS tmpdir() is long, so keep the private dir short.
-// ponytail: the dir is never removed (the ssh master outlives us for ControlPersist); it holds only sockets.
+// close() (also run once at process exit) stops the ssh master and removes the dir, so no /tmp/cc-ssh-* dir is left behind.
 const privateDir = () => mkdtempSync(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'cc-ssh-'), { mode: 0o700 });
 
-export function createSsh(env = process.env, { spawn = nodeSpawn } = {}) {
+const open = new Set();
+process.on('exit', () => { for (const close of [...open]) close(); });
+
+export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = nodeSpawnSync } = {}) {
   const host = env.CLOUDY_CLOUD_SSH_HOST;
   if (!host) throw fail('no_key', 'Set CLOUDY_CLOUD_SSH_HOST (user@host) or run cloudy-cloud setup');
   if (!/^[A-Za-z0-9_][A-Za-z0-9._@:%-]*$/.test(host)) throw new Error(`invalid CLOUDY_CLOUD_SSH_HOST "${host}"`);
@@ -64,5 +67,15 @@ export function createSsh(env = process.env, { spawn = nodeSpawn } = {}) {
     child.stdin.end(stdin);
   });
 
-  return { dir, argvFor, run: (cmd, opts) => limiter.run(() => once(cmd, opts)) };
+  // Stop the ssh master (only if one started: its socket is in the dir) and remove the private dir. Safe to call twice.
+  const close = () => {
+    open.delete(close);
+    try {
+      if (readdirSync(dir).length) spawnSync('ssh', ['-o', `ControlPath=${dir}/cc-%C`, '-O', 'exit', ...(env.CLOUDY_CLOUD_SSH_PORT ? ['-p', String(env.CLOUDY_CLOUD_SSH_PORT)] : []), host], { stdio: 'ignore' });
+    } catch { /* dir already gone */ }
+    rmSync(dir, { recursive: true, force: true });
+  };
+  open.add(close);
+
+  return { dir, argvFor, close, run: (cmd, opts) => limiter.run(() => once(cmd, opts)) };
 }

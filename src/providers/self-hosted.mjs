@@ -11,8 +11,9 @@ import { createSsh } from './ssh.mjs';
 const PREFIX = 'cloudy-cloud.';
 const HOME = '/home/worker';
 const SECRETS = '/run/secrets/env';
+const COORD = 'cloudy-cloud-coordinator:'; // coordinator images made by snapshot(); a commit never includes the /run/secrets tmpfs
 const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
-const GONE = /No such (container|object)/i;
+const GONE = /No such (container|object|image)/i;
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -84,11 +85,11 @@ export function createProvider(env = process.env, deps = {}) {
     name: 'self-hosted',
     keyName: 'CLOUDY_CLOUD_SSH_HOST',
     caps: {
-      hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: false, hasPortForward: true,
+      hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [] }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from }) {
       getSsh();
       const vars = { ...envs };
       // The user allowed the GitHub token on this machine (setup): deliver it like Instabox attaches its GH_TOKEN secret.
@@ -100,9 +101,15 @@ export function createProvider(env = process.env, deps = {}) {
       for (const n of Object.keys(vars)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
       const running = (await docker(['ps', '--filter', `label=${PREFIX}purpose`, '--format', '{{.ID}}'])).stdout.split('\n').filter(Boolean).length;
       if (running >= slots) throw fail('quota_exceeded', `All ${slots} self-hosted slots on ${host} are in use. Stop an agent or raise CLOUDY_CLOUD_SELF_HOSTED_SLOTS.`);
-      const have = await docker(['image', 'inspect', '--format', '{{index .Config.Labels "cloudy-cloud.image"}}', image])
-        .then((r) => r.stdout.trim(), (e) => { if (e.exitCode !== undefined) return 'missing'; throw e; });
-      if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
+      let img = image;
+      if (from?.startsWith(COORD)) { // a coordinator snapshot: used as is, it carries its own version
+        await api.getSnapshot(from);
+        img = from;
+      } else {
+        const have = await docker(['image', 'inspect', '--format', '{{index .Config.Labels "cloudy-cloud.image"}}', image])
+          .then((r) => r.stdout.trim(), (e) => { if (e.exitCode !== undefined) return 'missing'; throw e; });
+        if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
+      }
 
       const id = `cc-${randomBytes(6).toString('hex')}`;
       const ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
@@ -113,7 +120,7 @@ export function createProvider(env = process.env, deps = {}) {
         return ['--label', `${PREFIX}${k}=${v}`];
       });
       await docker(['run', '-d', '--rm', '--name', id, '--hostname', id, ...label, '--cpus', cpus, '--memory', memory, '--pids-limit', '2048',
-        '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', '--user', 'worker', image, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
+        '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
       const sb = sandbox(id, name ?? id);
       try {
         await writeEnv(sb, vars);
@@ -156,8 +163,30 @@ export function createProvider(env = process.env, deps = {}) {
       }
     },
 
-    async snapshot() { throw fail('not_found', 'The self-hosted provider has no snapshots yet'); },
-    async getSnapshot() { throw fail('not_found', 'The self-hosted provider has no snapshots yet'); },
+    // Coordinator image: `docker commit` of the sandbox. It keeps the Claude login under /home/worker/.claude; /run/secrets is a
+    // tmpfs mount, so the env file (and any token in it) is not part of the image. The container is paused for a consistent copy.
+    async snapshot(sb, { name, description = 'cloudy-cloud coordinator image' } = {}) {
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(String(name))) throw new Error(`invalid snapshot name "${name}"`);
+      const id = COORD + name;
+      await docker(['commit', '--pause=true', '-m', description, '--change', `LABEL ${PREFIX}snapshot=${name}`, sb.id, id]);
+      return { id, status: 'ready' };
+    },
+    async getSnapshot(id) {
+      if (!String(id).startsWith(COORD)) throw fail('not_found', `No self-hosted snapshot ${id}`);
+      await docker(['image', 'inspect', '--format', '{{.Id}}', id]).catch((e) => {
+        throw GONE.test(`${e.stderr ?? ''}${e.message}`) ? fail('not_found', `No self-hosted snapshot ${id} on ${host}`) : e;
+      });
+      return { id, status: 'ready' };
+    },
+    async listSnapshots() {
+      const out = (await docker(['image', 'ls', '--filter', `reference=${COORD}*`, '--format', '{{.Repository}}:{{.Tag}}'])).stdout;
+      return out.split('\n').filter(Boolean).map((id) => ({ id, status: 'ready' }));
+    },
+    async deleteSnapshot(id) {
+      if (!String(id).startsWith(COORD)) throw new Error('deleteSnapshot only deletes coordinator images');
+      await docker(['rmi', id]).catch((e) => { if (!GONE.test(`${e.stderr ?? ''}${e.message}`)) throw e; });
+    },
+    close: () => ssh?.close(),
 
     // Each local connection runs a tiny node TCP bridge inside the container over ssh stdio. Unlike `ssh -L` to the
     // container IP, this works with Docker Desktop on a Mac, whose container network is not routable from the host.

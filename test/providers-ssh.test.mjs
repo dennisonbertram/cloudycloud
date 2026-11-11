@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { rmSync, statSync } from 'node:fs';
+import { rmSync, statSync, writeFileSync } from 'node:fs';
 import { createSsh } from '../src/providers/ssh.mjs';
 
 const ENV = { CLOUDY_CLOUD_SSH_HOST: 'me@box', CLOUDY_CLOUD_SSH_KEY: '/home/me/.ssh/id', CLOUDY_CLOUD_SSH_PORT: '2222' };
@@ -133,4 +133,21 @@ test('spawn failure is transient; at most 8 sessions run at once', async () => {
     await Promise.all(Array.from({ length: 20 }, () => ssh.run('true')));
     assert.equal(peak, 8);
   } finally { h.cleanup(); }
+});
+
+test('close removes the private dir; it stops the ssh master only when a socket exists; twice is safe', () => {
+  const calls = [];
+  const spawnSync = (bin, args) => calls.push({ bin, args });
+  const a = createSsh(ENV, { spawnSync });
+  a.close();
+  assert.equal(calls.length, 0, 'no master was started, so nothing to stop');
+  assert.throws(() => statSync(a.dir), /ENOENT/);
+  const b = createSsh(ENV, { spawnSync });
+  writeFileSync(`${b.dir}/cc-sock`, '');
+  b.close();
+  b.close();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].bin, 'ssh');
+  assert.deepEqual(calls[0].args, ['-o', `ControlPath=${b.dir}/cc-%C`, '-O', 'exit', '-p', '2222', 'me@box']);
+  assert.throws(() => statSync(b.dir), /ENOENT/);
 });

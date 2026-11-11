@@ -3,8 +3,7 @@
 //   node src/self-hosted-setup.mjs doctor   checks the saved machine and prints ok / warn / fail lines, each with a fix
 // Everything on the machine goes through src/providers/ssh.mjs. Secrets are read with hidden input and written to the env
 // file only; they never appear in a command, an argument or the output.
-import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -69,11 +68,6 @@ const probe = async (ssh, cmd, ms = 30000) => {
   try { return { ok: true, ...(await ssh.run(cmd, { signal: AbortSignal.timeout(ms) })) }; } catch (e) { return { ok: false, err: e, stdout: e.stdout || '', stderr: e.stderr || '' }; }
 };
 const errText = (r) => tail(r.err?.name === 'AbortError' || r.err?.name === 'TimeoutError' ? 'no answer in time' : (r.stderr || r.err?.message || '').replace(/^cannot reach \S+ over ssh: /, ''), 3);
-function closeSsh(ssh, env) {
-  const e = sshEnv(env);
-  spawnSync('ssh', ['-o', `ControlPath=${ssh.dir}/cc-%C`, '-O', 'exit', ...(e.CLOUDY_CLOUD_SSH_PORT ? ['-p', e.CLOUDY_CLOUD_SSH_PORT] : []), e.CLOUDY_CLOUD_SSH_HOST], { stdio: 'ignore' });
-  rmSync(ssh.dir, { recursive: true, force: true });
-}
 
 // Absolute path of a CLI on the machine. A non-interactive SSH command on macOS lacks /opt/homebrew/bin and /usr/local/bin,
 // so ask a login shell first, then the usual install places.
@@ -191,7 +185,7 @@ export async function runDoctor({ env = loadEnv(), out = process.stdout } = {}) 
         else ui.say('ok', `Containers: ${name} started ${age}${deadline ? `, ends ${deadline}` : ''}`);
       }
     }
-  } finally { closeSsh(ssh, env); }
+  } finally { ssh.close(); }
 
   const before = ui.fails;
   const missing = [];
@@ -225,7 +219,7 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
   const ui = makeUi(out);
   const inp = makeInput(input, out);
   const file = envFile(env);
-  let ssh, target;
+  let ssh;
   try {
     ui.text('  ? SSH address of your machine (user@host)');
     ui.text('    Use the Tailscale name or 100.x address, for example me@mac-studio.');
@@ -237,7 +231,7 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     ui.text('    A Mac with Remote Login needs a key. Press Enter to use your default keys or Tailscale SSH.');
     const keyIn = await inp.line(`  > Path to your SSH key${env.CLOUDY_CLOUD_SSH_KEY ? ` [${env.CLOUDY_CLOUD_SSH_KEY}]` : ''}: `);
     const key = keyIn || env.CLOUDY_CLOUD_SSH_KEY || '';
-    const e = target = { ...env, CLOUDY_CLOUD_SSH_HOST: host, CLOUDY_CLOUD_SSH_KEY: key };
+    const e = { ...env, CLOUDY_CLOUD_SSH_HOST: host, CLOUDY_CLOUD_SSH_KEY: key };
     try { ssh = createSsh(sshEnv(e)); } catch (err) { ui.say('fail', `SSH: "${host}" does not look like an SSH address (${err.message})`, 'Use user@host, for example me@mac-studio.'); return 1; }
 
     const f = await checkBox({ ssh, ui, env: e });
@@ -284,7 +278,7 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     ui.say('ok', `Saved the self-hosted settings to ${file}`);
     ui.text(`    ${slots} subagent${slots === 1 ? '' : 's'} at once on ${host}. Check the machine any time with: cloudy-cloud doctor`);
     return 0;
-  } finally { inp.close(); if (ssh) closeSsh(ssh, target); }
+  } finally { inp.close(); if (ssh) ssh.close(); }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

@@ -6,7 +6,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,6 +45,8 @@ after(() => {
   if (!ON) return;
   const ids = spawnSync('docker', ['ps', '-aq', '--filter', `label=cloudy-cloud.owner=${OWNER}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
   if (ids.length) spawnSync('docker', ['rm', '-f', ...ids]);
+  const imgs = spawnSync('docker', ['images', '-q', '--filter', `label=cloudy-cloud.owner=${OWNER}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  if (imgs.length) spawnSync('docker', ['rmi', '-f', ...imgs]); // only coordinator snapshots this run committed (they carry this run's owner label)
   if (box) spawnSync('docker', ['rm', '-f', box]);
   spawnSync('docker', ['rmi', '-f', BOX_IMAGE]);
   if (!hadWorkerImage) spawnSync('docker', ['rmi', '-f', WORKER_IMAGE]);
@@ -99,6 +101,35 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
       assert.equal(await (await fetch(`http://127.0.0.1:${local}/`)).text(), 'hi-from-worker');
     } finally { ac.abort(); }
     assert.equal(await done, 0);
+  });
+
+  await t.test('coordinator snapshot round trip: login files are kept, the env file and token are not', async () => {
+    await s.files.write('/home/worker/.claude/login-marker', 'signed-in');
+    const snap = await p.snapshot(s, { name: `it-${OWNER}`, description: 'integration test' });
+    assert.deepEqual(snap, { id: `cloudy-cloud-coordinator:it-${OWNER}`, status: 'ready' });
+    assert.equal((await p.getSnapshot(snap.id)).status, 'ready');
+    assert.deepEqual((await p.listSnapshots()).filter((i) => i.id === snap.id).length, 1);
+    // the committed image: no env file, nothing in /run/secrets, no token anywhere in its metadata
+    const peek = (cmd) => docker('run', '--rm', '--entrypoint', 'sh', snap.id, '-c', cmd);
+    assert.equal(peek('test -e /run/secrets/env && echo present || echo absent'), 'absent');
+    assert.equal(peek('ls -A /run/secrets 2>/dev/null | wc -l').trim(), '0');
+    assert.ok(!docker('image', 'inspect', snap.id).includes(TOKEN));
+    assert.equal(peek('cat /home/worker/.claude/login-marker'), 'signed-in');
+    // start from it: the login is there, and the new container got its own fresh env file
+    const c = await p.create({ image: snap.id, envs: { BAR: 'b' }, labels: { purpose: 'cloudy-cloud', owner: OWNER, role: 'coordinator' }, ttlSeconds: 600, neverSuspend: true });
+    assert.equal((await c.commands.run('cat .claude/login-marker; printf " %s" "$BAR"')).stdout, 'signed-in b');
+    await p.delete(c.id);
+    await p.deleteSnapshot(snap.id);
+    await assert.rejects(p.getSnapshot(snap.id), (e) => e.code === 'not_found');
+  });
+
+  await t.test('close stops the ssh master and removes the private /tmp/cc-ssh-* dir', async () => {
+    const q = createProvider(loadEnv(env));
+    await q.list({ owner: OWNER }); // opens the ssh connection
+    const dirs = () => new Set(readdirSync('/tmp').filter((n) => n.startsWith('cc-ssh-')));
+    const before = dirs();
+    q.close();
+    assert.ok(dirs().size < before.size || before.size === 0, 'close removed a cc-ssh dir');
   });
 
   await t.test('delete removes it; a short TTL removes a container on its own', async () => {
