@@ -29,7 +29,7 @@ export const isAlive = (pid) => {
 // Deletes the machines owned by `owner`. Returns the number deleted. provider.delete retries and treats 404 as deleted.
 export async function reap({ owner, provider, log = () => {} }) {
   let machines;
-  try { machines = await provider.list({ owner }); } catch (e) { log(`list failed: ${e.message}`); return 0; }
+  try { machines = await provider.list({ owner }, { onError: (e) => log(`list failed: ${e.message}`) }); } catch (e) { log(`list failed: ${e.message}`); return 0; }
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;

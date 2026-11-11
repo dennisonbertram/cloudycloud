@@ -50,16 +50,53 @@ test('provider.create sends the same SDK call and secrets PATCH as createInstabo
   assert.ok(!JSON.stringify(fa.calls).includes('ghp_'));
 });
 
-test('coordinator-style create: name, neverSuspend (no archiveMs), name from getInfo', async () => {
+test('coordinator-style create: name, neverSuspend (no archiveMs), name from getInfo only when loadName is called', async () => {
   const { sdk, calls } = fakeSdk();
   const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing });
   const s1 = await p.create({ image: 'snap', labels: { purpose: 'cloudy-cloud', role: 'coordinator' }, name: 'coord-a', ttlSeconds: 60, neverSuspend: true });
-  assert.equal(s1.name, 'machine-x'); // the server's name, as the coordinator used
+  assert.equal(s1.name, 'coord-a'); // getInfo is not called inside create; the coordinator asks later, as before
+  assert.equal(await s1.loadName(), 'machine-x'); // the server's name, as the coordinator used
+  assert.equal(s1.name, 'machine-x');
   assert.deepEqual(Object.keys(calls.create[0].opts), ['apiKey', 'name', 'autoSuspendMs', 'metadata', 'fetch']);
   assert.equal(calls.create[0].opts.autoSuspendMs, 0);
   assert.equal(calls.create[0].opts.archiveMs, undefined);
   const s2 = await p.create({ image: 'tpl', labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 60, neverSuspend: true });
-  assert.equal(s2.name, 'machine-x');
+  assert.equal(await s2.loadName(), 'machine-x');
+});
+
+test('retry:false (coordinators): a persistent 429 on a command is one attempt and no backoff; workers still retry', async () => {
+  for (const [opts, tries] of [[{ retry: false }, 1], [{}, 8]]) {
+    let runs = 0;
+    const sleeps = [];
+    const { sdk } = fakeSdk();
+    const create = sdk.Sandbox.create;
+    sdk.Sandbox.create = async (...a) => { const b = await create(...a); b.commands.run = async () => { runs++; throw Object.assign(new Error('slow down'), { status: 429 }); }; return b; };
+    const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing, sleep: async (ms) => { sleeps.push(ms); } });
+    const sbx = await p.create({ image: 'snap', labels: {}, ttlSeconds: 60, ...opts });
+    await assert.rejects(sbx.commands.run('x'), (e) => e.code === 'rate_limited');
+    assert.equal(runs, tries);
+    assert.equal(sleeps.length, tries - 1);
+  }
+});
+
+test('connect with retry:false makes one attempt on a 429', async () => {
+  let runs = 0;
+  const { sdk } = fakeSdk();
+  sdk.Sandbox.connect = async () => ({ sandboxId: 'm-1', commands: { run: async () => { runs++; throw Object.assign(new Error('x'), { status: 429 }); } } });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, sleep: async () => { throw new Error('slept'); } });
+  await assert.rejects((await p.connect('m-1', { retry: false })).commands.run('x'), { code: 'rate_limited' });
+  assert.equal(runs, 1);
+});
+
+test('list with onError returns the rows of earlier pages when a later page fails; without it, it throws', async () => {
+  const row = { id: 'm1', metadata: { owner: 'o' }, state: 'running', createdAt: '2026-01-01T00:00:00Z' };
+  const { f } = fakeFetch((url) => (url.includes('cursor=c2') ? new Response('no', { status: 500 }) : Response.json({ machines: [row], nextCursor: 'c2' })));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: f });
+  const errs = [];
+  const rows = await p.list({ owner: 'o' }, { onError: (e) => errs.push(e.message) });
+  assert.deepEqual(rows.map((r) => r.id), ['m1']);
+  assert.match(errs[0], /HTTP 500/);
+  await assert.rejects(p.list({ owner: 'o' }), /HTTP 500/);
 });
 
 test('caps follow the environment', () => {

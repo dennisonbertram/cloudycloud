@@ -309,7 +309,7 @@ test('start asks the provider for a never-suspending machine from the snapshot w
   };
   const out = [];
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, root: resolve('.'), out: (x) => out.push(x) });
-  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 86400, neverSuspend: true }]);
+  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   assert.match(out.join('\n'), /fake ssh coord-boss -- tmux attach -t claude/);
 });
 
