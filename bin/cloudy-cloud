@@ -20,6 +20,12 @@ if [ "${1:-}" = open ]; then
   exec node "$root/src/open.mjs" "$@"
 fi
 
+# `cloudy-cloud doctor` checks the self-hosted machine (the active provider only).
+if [ "${1:-}" = doctor ]; then
+  shift
+  exec node "$root/src/self-hosted-setup.mjs" doctor "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
@@ -47,7 +53,8 @@ Cloudy Cloud: Claude Code with every subagent on its own cloud machine.
 Usage: cloudy-cloud [command]
 
   (no command)           start a Claude Code session
-  setup [--check-only]   check your tools and save your keys
+  setup [--check-only]   check your tools and save your keys (--provider instabox|self-hosted)
+  doctor                 check your own machine when subagents run there
   dashboard              open a read-only web page about your cloud machines
   open <agent> <port>    reach an app running on a cloud machine
   coordinator            manage cloud coordinators (coordinator --help for details)
