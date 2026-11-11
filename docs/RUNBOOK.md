@@ -29,13 +29,17 @@ Run it in a terminal; it asks for keys, so it will not run from a pipe. It check
 | --- | --- |
 | **Instabox API key** (`ibk_…`) | Create it at https://dashboard.instabox.sh/dashboard/api-keys. The script checks it with Instabox before saving. |
 | **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
-| **GitHub token** | Create a fine-grained token (section 2.2). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
+| **GitHub token** | Create a fine-grained token (section 2.3). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
 The first two are saved to `~/.config/cloudy-cloud/env`, which only your user account can read. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. After the first install, run `cloudy-cloud setup` at any time (it runs `install.sh` from the folder `cloudy-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
 
 `cloudy-cloud` runs from the folder you ran `install.sh` in, on whatever branch is checked out there. The final message of `install.sh` shows the folder and branch.
 
-### 2.2 The GitHub token
+### 2.2 Providers
+
+Set `CLOUDY_CLOUD_PROVIDER` to choose the sandbox provider. It defaults to `instabox`, the only supported value today. A provider must keep the GitHub token behind proxy secrets, enforce a server-side delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`. `install.sh` sets up Instabox only. See the [sandbox provider research](research/sandbox-providers.md) for other options.
+
+### 2.3 The GitHub token
 
 Subagents push their work to GitHub. Instabox stores the token and adds it only to requests to GitHub, so a subagent's machine sees a placeholder, never the token.
 
@@ -45,7 +49,7 @@ Subagents push their work to GitHub. Instabox stores the token and adds it only 
 - **Expiration:** your choice. Shorter limits the damage if it leaks.
 - `install.sh` runs `npx --yes instabox@latest login` if you are not signed in, then `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, and the Instabox tool asks for the token. The name must be exactly `GH_TOKEN`.
 
-### 2.3 Protect your main branch
+### 2.4 Protect your main branch
 
 In the repo on GitHub, open *Settings → Rules → Rulesets* and add a branch ruleset that blocks direct pushes to your main branch. Subagents run with permission checks off, and the token can push to any branch it reaches.
 

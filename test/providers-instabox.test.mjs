@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProvider } from '../src/providers/instabox.mjs';
-import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
 const KEY = 'ib-secret-key';
 const done = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };

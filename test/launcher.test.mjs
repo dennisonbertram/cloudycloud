@@ -11,7 +11,7 @@ const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd }) {
+function run({ config, cwd, provider }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
@@ -19,7 +19,7 @@ function run({ config, cwd }) {
   chmodSync(stub, 0o755);
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
-  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg };
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }) };
   const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
   return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
@@ -56,6 +56,13 @@ test('keys present: claude starts with expected flags and no secret in argv', ()
   assert.doesNotMatch(r.stderr, /warning/);
   for (const flag of ['--mcp-config', '--settings', '--append-system-prompt']) assert.ok(r.argv.includes(flag + '\n'), flag);
   assert.ok(!r.argv.includes(IBK) && !r.argv.includes(TOK));
+});
+
+test('CLOUDY_CLOUD_PROVIDER is passed through Claude Code env expansion', () => {
+  const r = run({ config: full, cwd: repo('https://github.com/test/repo.git'), provider: 'instabox' });
+  assert.equal(r.status, 0, r.stderr);
+  const config = r.argv.slice(r.argv.indexOf('--mcp-config\n') + '--mcp-config\n'.length).split('\n')[0];
+  assert.equal(JSON.parse(config).mcpServers.cloud.env.CLOUDY_CLOUD_PROVIDER, '${CLOUDY_CLOUD_PROVIDER:-}');
 });
 
 test('not a git repo: warns on stderr and still starts', () => {

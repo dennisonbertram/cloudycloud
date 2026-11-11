@@ -3,7 +3,7 @@ import './tmp-cleanup.mjs';
 // delete and ports. Must not change in the provider refactor. (Worker and coordinator goldens are in their own files.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 import { createProvider } from '../src/providers/instabox.mjs';
 import { reap } from '../src/reaper.mjs';
 import { listMachines } from '../src/dashboard.mjs';
