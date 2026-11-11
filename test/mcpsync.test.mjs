@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF, isLiteralSecret } from '../src/mcpsync.mjs';
+import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF, isLiteralSecret, forHarness } from '../src/mcpsync.mjs';
 import { redact } from '../src/events.mjs';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'mcp-'));
@@ -180,4 +180,14 @@ test('a url host that is not a plain hostname is rejected by the loader too', ()
   const r = checkServer('inj', { type: 'http', url: 'https://example.com;id/mcp' });
   assert.equal(r.ok, false);
   assert.match(r.reason, /plain hostname/);
+});
+
+test('forHarness moves sse servers to skipped for pi and leaves claude alone', () => {
+  const mcp = { servers: { a: { type: 'sse', url: 'https://a.example.com/s' }, b: { type: 'http', url: 'https://b.example.com' } }, skipped: [{ name: 'z', reason: 'r' }], secrets: ['MCP_B_TOKEN'] };
+  const pi = forHarness(mcp, 'pi');
+  assert.deepEqual(Object.keys(pi.servers), ['b']);
+  assert.deepEqual(pi.skipped, [{ name: 'z', reason: 'r' }, { name: 'a', reason: 'pi does not support the SSE transport' }]);
+  assert.equal(Object.keys(mcp.servers).length, 2, 'input is not mutated');
+  assert.equal(forHarness(mcp, 'claude'), mcp);
+  assert.equal(forHarness(mcp, undefined), mcp);
 });

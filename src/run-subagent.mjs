@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { workerSeconds } from './instabox.mjs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
-import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText } from './mcpsync.mjs';
+import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
@@ -73,7 +73,7 @@ const ctxOf = (deps) => {
   deps.literals ??= new Set();
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals) };
 };
-const hasMcp = (a) => !isPi(a) && Object.keys(a.mcp?.servers ?? {}).length > 0;
+const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
 const isPi = (a) => a.profile?.harness === 'pi';
 
 // Consent path: a server whose token cannot go through an Instabox proxy secret is delivered only when its entry in
@@ -182,12 +182,9 @@ function mcpFooter(a, t) {
   if (!m || (!Object.keys(m.servers).length && !m.skipped.length)) return '';
   const names = Object.keys(m.servers);
   const lines = [];
-  if (isPi(a)) lines.push('MCP servers: none (pi workers do not get MCP servers yet)');
-  else {
-    if (names.length) lines.push(mcpLine(t.progress) || `MCP servers: ${names.join(', ')}`);
-    if (m.literal.length) lines.push(`MCP servers with a real token on the machine (you allowed it): ${m.literal.join(', ')}`);
-    if (m.skipped.length) lines.push(`MCP servers skipped: ${m.skipped.map((x) => `${x.name} (${x.reason})`).join('; ')}`);
-  }
+  if (names.length) lines.push(mcpLine(t.progress) || `MCP servers: ${names.join(', ')}`);
+  if (m.literal.length) lines.push(`MCP servers with a real token on the machine (you allowed it): ${m.literal.join(', ')}`);
+  if (m.skipped.length) lines.push(`MCP servers skipped: ${m.skipped.map((x) => `${x.name} (${x.reason})`).join('; ')}`);
   return `\n${lines.join('\n')}`;
 }
 
@@ -206,7 +203,7 @@ async function turn(a, message, ctx, t) {
   // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
   const hint = `${commitHint(a.id, a.deleteAt)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
-  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose', hasMcp(a) && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose', hasMcp(a) && !isPi(a) && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
@@ -358,7 +355,8 @@ async function setup(a, ctx) {
     }
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (hasMcp(a)) { // references only, except servers the user allowed to carry a real value
-      const dir = `${a.home}/.config/cloudy-cloud`;
+      // pi reads mcp.json from its agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
+      const dir = isPi(a) ? `${a.home}/pi-agent` : `${a.home}/.config/cloudy-cloud`;
       // The file may hold a real token. files.write of the SDK sends it to a temp file beside the target and renames it,
       // with the default umask, so the file could briefly be mode 644. So the folder is made mode 700 first (nobody else
       // can enter it, whatever the file mode) and an empty mode-600 file exists before the write; the chmod after is a
@@ -553,7 +551,7 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
-  try { a.mcp = agentMcp(ctx.env); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
+  try { a.mcp = forHarness(agentMcp(ctx.env), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });
