@@ -1,12 +1,14 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
-import { buildState, createHandler, listen, liveState } from '../src/dashboard.mjs';
+import { buildState, createHandler, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState } from '../src/dashboard-demo.mjs';
+import { createFakeProvider } from './fake-provider.mjs';
 
 const TOKEN = 'tok-123';
 const get = (port, path, host = `127.0.0.1:${port}`, method = 'GET') => new Promise((resolve, reject) => {
@@ -107,7 +109,7 @@ test('buildState joins machines to agents and lists the rest', () => {
     { type: 'agent', id: 'a1', t: 1, pid: 1, branch: 'cloudy-cloud/a1' }, { type: 'machine', id: 'a1', t: 2, machine: 'm1' }, { type: 'status', id: 'a1', t: 3, status: 'running' },
     { type: 'agent', id: 'a2', t: 4, pid: 1 }, { type: 'machine', id: 'a2', t: 5, machine: 'm-gone' }, { type: 'status', id: 'a2', t: 6, status: 'running' },
   ];
-  const machines = [{ id: 'm1', name: 'swift-otter', state: 'running', startedAt: 1 }, { id: 'm9', name: 'fleet', role: 'coordinator', state: 'running', startedAt: 7 }];
+  const machines = [{ id: 'm1', name: 'swift-otter', state: 'running', status: 'running', startedAt: 1 }, { id: 'm9', name: 'fleet', role: 'coordinator', state: 'running', status: 'running', startedAt: 7 }];
   const s = buildState({ events, machines, alive: () => true });
   const by = Object.fromEntries(s.boxes.map((b) => [b.id, b]));
   assert.equal(by.a1.status, 'running');
@@ -200,4 +202,31 @@ test('foldAgents copies the agent event\'s mcp names; absent stays undefined; de
   assert.deepEqual(foldAgents(ev(['a', 'b']), { alive: () => true })[0].mcp, ['a', 'b']);
   assert.equal(foldAgents(ev(), { alive: () => true })[0].mcp, undefined);
   assert.ok(demoState().boxes.some((b) => b.mcp?.length));
+});
+
+test('listMachines maps the provider list, status included, and needs the key', async () => {
+  const provider = createFakeProvider();
+  provider.machines.set('m1', { id: 'm1', name: 'box', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 });
+  provider.machines.set('m2', { id: 'm2', name: 'other', labels: { purpose: 'else' }, state: 'running', status: 'running', startedAt: 6 });
+  const rows = await listMachines({ FAKE_API_KEY: 'k' }, provider);
+  assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
+  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
+  await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
+});
+
+test('/api/state for fixed events and machines is unchanged', () => {
+  const events = [
+    { type: 'agent', id: 'a1', t: 1, pid: 1, branch: 'cloudy-cloud/a1' }, { type: 'machine', id: 'a1', t: 2, machine: 'm1' }, { type: 'status', id: 'a1', t: 3, status: 'running' },
+  ];
+  const machines = [
+    { id: 'm1', name: 'swift-otter', state: 'running', status: 'running', startedAt: 1 },
+    { id: 'm2', name: 'fleet', role: 'coordinator', state: 'creating', status: 'starting', startedAt: 7, archiveAt: 99 },
+    { id: 'm3', name: 'old', state: 'deleting', status: 'stopped', startedAt: 8 },
+  ];
+  const s = buildState({ events, machines, now: 1000, alive: () => true });
+  assert.deepEqual(s.boxes.map((b) => [b.id, b.kind, b.status, b.machineState, b.deadline]), [
+    ['a1', 'agent', 'running', 'running', 21600001], ['fleet', 'coordinator', 'starting', 'creating', 99], ['old', 'machine', 'stopped', 'deleting', undefined],
+  ]);
+  const err = buildState({ events, machineError: { code: 'no_key', message: 'x' }, now: 1000, alive: () => true, provider: createFakeProvider() }).machines;
+  assert.deepEqual(err, { ok: false, code: 'no_key', message: 'x', fix: 'Set FAKE_API_KEY.' });
 });

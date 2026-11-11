@@ -1,6 +1,8 @@
 # Cloudy Cloud: what is built, and what has been proven
 
-As of 2026-11-06. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
+As of 2026-11-10. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
+
+Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_PROVIDER` (default `instabox`, the only supported value today). Providers must provide proxy secrets for the GitHub token, server-side delete deadlines, snapshots for coordinators, and port forwarding for `open`. `install.sh` sets up Instabox only. See [sandbox provider research](research/sandbox-providers.md).
 
 ## What it is
 
@@ -17,7 +19,7 @@ As of 2026-11-06. **"Proven live"** means it was run against real Instabox machi
 | Launcher | `bin/cloudy-cloud` | Starts Claude Code with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `cloudy-cloud setup` and offers to run it. It warns about folders that aren't repos or have no GitHub origin. |
 | Cloud tools (MCP server) | `src/server.mjs`, `src/mcp.mjs` | `cloud_agent`, `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list` and `cloud_agent_stop`. On terminal sessions they run as **MCP tasks**: footer count, live progress in `/tasks`, stop with `x`, automatic completion. |
 | Agent lifecycle | `src/run-subagent.mjs` | Snapshot upload, branch setup, push retries, the after-each-task safety push, follow-ups through `--resume`, a 60-minute idle stop, depth and per-session limits. |
-| Instabox layer | `src/instabox.mjs`, `src/limits.mjs` | Machine creation and the `GH_TOKEN` proxy secret. Paced starts (25 a minute) with retries on `rate_limited` and `quota_exceeded`. One global limit of 24 Instabox calls. Sliced job waits that survive brief request errors. |
+| Instabox provider | `src/providers/instabox.mjs`, `src/limits.mjs` | Machine creation and the `GH_TOKEN` proxy secret. Paced starts (25 a minute) with retries on `rate_limited` and `quota_exceeded`. One global limit of 24 Instabox calls. Sliced job waits that survive brief request errors. |
 | MCP server sync | `src/mcpsync.mjs`, `src/mcp-cli.mjs` | `cloudy-cloud mcp add\|ls\|rm`: copies chosen servers from Claude Code settings to `~/.config/cloudy-cloud/mcp.json` (remote `https` and `npx`/`uvx` only), rewrites secrets to `${MCP_<NAME>_TOKEN}` Instabox secrets, validates again at agent start, writes the file to the machine and passes `--mcp-config --strict-mcp-config`. Footer line, `cloud_agent_list` and dashboard MCP row show the names. `--allow-literal` is the confirmed exception that copies the real token. Covered by unit tests; not yet proven live end to end with a real MCP server (see issue #9 for the proxy-secret spike). |
 | Cleanup | `src/reaper.mjs` | A separate process that deletes a session's machines when the session ends, even after a hard kill. |
 | Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, and `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway). |

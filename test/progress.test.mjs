@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { parsePiStream, createPiProgress } from '../src/progress-pi.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

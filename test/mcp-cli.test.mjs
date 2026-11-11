@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';

@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -5,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
-import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
 const KEY = 'ibk_KEY';
 const applied = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };

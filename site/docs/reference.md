@@ -273,6 +273,7 @@ Environment variables win over values in the config file. An empty value counts 
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLOUDY_CLOUD_CONFIG` | `~/.config/cloudy-cloud/env` | Path of the config file. |
+| `CLOUDY_CLOUD_PROVIDER` | `instabox` | Sandbox provider. Instabox is the only supported value today. |
 | `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. |
 | `CLOUDY_CLOUD_MCP` | `~/.config/cloudy-cloud/mcp.json` | Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent. |
 | `CLOUDY_CLOUD_EVENTS` | `~/.config/cloudy-cloud/events.jsonl` | Path of the event log that the dashboard reads. Set it in the environment before you start `cloudy-cloud` and the dashboard. |
