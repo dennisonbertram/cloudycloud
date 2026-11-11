@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveProfile, loadProfiles, gatewayConfig } from '../src/profiles.mjs';
+import { resolveProfile, loadProfiles, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
 import { loadEnv } from '../src/config.mjs';
 
 const none = join(tmpdir(), 'no-such-profiles.json');
@@ -66,4 +66,34 @@ test('pi built-ins use the pi harness; others default to claude', () => {
   const e = { ...env, CLOUDY_CLOUD_PROFILES: f };
   assert.equal(resolveProfile('mine', undefined, e).ok.harness, 'pi');
   assert.match(resolveProfile('bad', undefined, e).error, /harness/);
+});
+
+test('omp built-ins and profiles.json use the omp harness; other harness names are rejected', () => {
+  const p = resolveProfile('omp-glm', undefined, env).ok;
+  assert.deepEqual([p.harness, p.format, p.model, p.keyName], ['omp', 'openai', 'z-ai/glm-5.3-flash', 'PARTICLE_API_KEY']);
+  assert.equal(resolveProfile('omp-deepseek', undefined, env).ok.harness, 'omp');
+  assert.equal(resolveProfile('omp-particle', undefined, env).ok.model, 'particle-ai/particle-1');
+  const mk = (h) => ({ ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: h, format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
+  assert.equal(resolveProfile('mine', undefined, mk('omp')).ok.harness, 'omp');
+  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi" or "omp"/);
+});
+
+test('ompModels names the key variable and never holds a value; ompConfig turns off imports and project MCP', () => {
+  const p = resolveProfile('omp-glm', undefined, env).ok;
+  const y = ompModels(p);
+  assert.match(y, /apiKey: PARTICLE_API_KEY\n/);
+  assert.match(y, /- id: z-ai\/glm-5\.3-flash/);
+  assert.match(y, /baseUrl: https:\/\/api\.particle\.ai\/v1/);
+  assert.doesNotMatch(y, /k1/);
+  const c = ompConfig();
+  assert.match(c, /disabledProviders: \[claude, claude-plugins, codex, gemini, cursor, windsurf, vscode, opencode, agent-plugins, mcp-json\]/);
+  assert.match(c, /mcp:\n  enableProjectConfig: false/);
+  assert.equal(OMP_VERSION, '18.18.7');
+});
+
+test('ompCommand has the verified flags and no key', () => {
+  const p = resolveProfile('omp-glm', undefined, env).ok;
+  const c = ompCommand(p, { home: '/home/u', sessionId: 'abc', hint: 'hi' });
+  assert.equal(c, "PI_CODING_AGENT_DIR=/home/u/omp-agent PATH=/home/u/.local/bin:$PATH omp -p --mode json --model worker/z-ai/glm-5.3-flash --session abc --append-system-prompt 'hi' < /home/u/prompt.txt");
+  assert.doesNotMatch(ompCommand(p, { home: '/h', hint: 'x' }), /--session|k1/);
 });
