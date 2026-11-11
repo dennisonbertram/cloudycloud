@@ -444,13 +444,22 @@ To run a subagent on a non-Claude model, pass the `profile` argument of `cloud_a
 | `pi-glm` | Particle.ai | `z-ai/glm-5.3-flash` | `PARTICLE_API_KEY` | Runs the pi coding agent, not Claude Code. |
 | `pi-deepseek` | Particle.ai | `deepseek-ai/deepseek-v41-flash-1017` | `PARTICLE_API_KEY` | Runs the pi coding agent. |
 | `pi-particle` | Particle.ai | `particle-ai/particle-1` | `PARTICLE_API_KEY` | Runs the pi coding agent. |
+| `omp-glm` | Particle.ai | `z-ai/glm-5.3-flash` | `PARTICLE_API_KEY` | Runs the oh-my-pi (`omp`) coding agent, not Claude Code. |
+| `omp-deepseek` | Particle.ai | `deepseek-ai/deepseek-v41-flash-1017` | `PARTICLE_API_KEY` | Runs the oh-my-pi coding agent. |
+| `omp-particle` | Particle.ai | `particle-ai/particle-1` | `PARTICLE_API_KEY` | Runs the oh-my-pi coding agent. |
 | `openrouter` | OpenRouter | None built in. You pass one. | `OPENROUTER_API_KEY` | See OpenRouter. |
 
 A profile worker receives only its own provider key. It never receives your Claude credential. If the key for a profile is missing, `cloud_agent` fails at once and names the key.
 
 ### The pi profiles
 
-The `pi-*` profiles run the [pi coding agent](https://pi.dev) in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get no MCP servers from `cloudy-cloud mcp add`.
+The `pi-*` profiles run the [pi coding agent](https://pi.dev) in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get the MCP servers from `cloudy-cloud mcp add`, except `sse` servers, because pi has no SSE transport. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+
+### The omp profiles
+
+The `omp-*` profiles run [oh-my-pi](https://github.com/can1357/oh-my-pi) (the `omp` command) in the worker instead of Claude Code. oh-my-pi is a fork of pi rewritten as a coding-first agent. It adds LSP support, persistent Python and Bun kernels, subagents and many providers. The profiles use the same three Particle.ai models as the pi profiles, and none of your Claude allowance.
+
+Each omp worker installs the pinned oh-my-pi release v18.18.7 with the official installer, which checks the binary's SHA-256. The binary is about 243 MB and is downloaded on every omp worker, so an omp worker starts slower than a pi or Claude worker. Install time: TBD (measured in the live check). An omp profile is for workers only, because coordinators always run Claude Code. Results from omp workers have no cost line. A follow-up resumes the same omp session. omp workers get the servers from `cloudy-cloud mcp add`, including `sse` servers.
 
 ## OpenRouter
 
@@ -479,7 +488,7 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 }
 ```
 
-`format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness": "pi"` runs the pi agent. Replace `MODEL-ID` with a model id from your provider.
+`format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness"` is `"claude"` (the default), `"pi"` or `"omp"`. `"pi"` runs the pi agent and `"omp"` runs oh-my-pi. Replace `MODEL-ID` with a model id from your provider.
 
 ## Adding or changing keys later
 
@@ -702,7 +711,7 @@ Starts a Claude subagent in a remote sandbox on the committed and tracked files 
 | `prompt` | string | yes | none | The full task for the subagent. |
 | `description` | string | yes | none | A short label for the task. |
 | `model` | string | no | the Claude default | A Claude model name, such as `haiku`. For a non-Claude model, use `profile` instead. It may contain only letters, digits and `. _ : -`. When `profile` is also set, `/` is allowed too. |
-| `profile` | string | no | Claude | Runs the worker on another model. Built in: `glm`, `deepseek`, `particle`, `pi-glm`, `pi-deepseek`, `pi-particle` and `openrouter`. You can add names in `profiles.json`. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `profile` | string | no | Claude | Runs the worker on another model. Built in: `glm`, `deepseek`, `particle`, `pi-glm`, `pi-deepseek`, `pi-particle`, `omp-glm`, `omp-deepseek`, `omp-particle` and `openrouter`. You can add names in `profiles.json`. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
 | `role` | string, `worker` or `coordinator` | no | `worker` | A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3). A coordinator cannot use a `pi-` profile. |
 | `subagent_type` | string | no | none | The name of an agent to run, passed to Claude Code as `--agent`. It may contain only letters, digits and `. _ : -`. |
 
@@ -1139,7 +1148,7 @@ Everything else is refused with a reason on the line `Not added: REASON`, and `m
 
 The same checks run again every time a subagent starts, on whatever is in `mcp.json`.
 
-> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no MCP servers for the `pi` profiles (`pi-glm`, `pi-deepseek`, `pi-particle`). A `pi` worker gets none.
+> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no `sse` servers for the `pi` profiles (pi has no SSE transport).
 
 ## Tokens and secrets
 
@@ -1180,6 +1189,7 @@ The command prints this warning, then asks `Copy the real NAME token onto cloud 
 
 - `~/.config/cloudy-cloud/mcp.json` on your computer, in Claude Code's own format: `{"mcpServers": {...}}`. `mcp add` writes it with mode 600 in a folder with mode 700. Set `CLOUDY_CLOUD_MCP` to use another path. If the file does not exist, the feature is off and nothing changes. If it is not valid JSON, `cloud_agent` fails with `Could not read FILE: ...` and the parse error.
 - On each cloud machine, the checked servers are written to `~/.config/cloudy-cloud/mcp.json` (mode 600), and Claude is started with `--mcp-config` for that file and `--strict-mcp-config`. This happens only for Claude subagents and only when at least one server passed the checks.
+- On a `pi` or `omp` worker the file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` instead (mode 600, folder mode 700). The servers and the `MCP_<NAME>_TOKEN` Instabox secrets are the same. `pi` has no SSE transport, so `sse` servers are skipped for `pi` workers and the reply says `MCP servers skipped: NAME (pi does not support the SSE transport)`. `omp` accepts `sse`. `omp` is also set to ignore MCP servers from other tools and from the repo's own config, so only these servers load.
 - Because of `--strict-mcp-config`, a repo's own `.mcp.json` is not loaded on the machine once you have a server in the list. Without the list, nothing changes from before.
 - Coordinators get the same list. The list holds references, not secret values, so it adds no secret to a coordinator machine.
 
@@ -1188,7 +1198,7 @@ The command prints this warning, then asks `Copy the real NAME token onto cloud 
 - **The reply footer** ends with a line such as `MCP servers: notion, context7 (failed: linear)`. It lists the servers that connected and, in brackets, the ones that did not. If none connected it says `MCP servers: none connected`.
 - If you allowed a real token, another line says `MCP servers with a real token on the machine (you allowed it): NAME`.
 - Entries that did not pass the checks appear as `MCP servers skipped: NAME (REASON)`.
-- For a `pi` worker the line is `MCP servers: none (pi workers do not get MCP servers yet)`.
+- For a `pi` or `omp` worker the line is `MCP servers: a, b`, the names of the servers that were delivered to the machine. Unlike Claude's start-up report, it does not confirm that a server connected.
 - **`cloud_agent_list`** shows a line `mcp notion, context7` under each subagent that has servers.
 - **The dashboard** shows an MCP row in the agent's details with the server names. It never shows entries or tokens.
 
@@ -1481,7 +1491,7 @@ Files tracked by git in your repo, including uncommitted edits. It can't see unt
 
 ### Can subagents use my MCP servers?
 
-Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remote `https` servers on public hosts and `npx` or `uvx` servers work. OAuth sign-in, localhost, local paths and secrets in URLs or arguments do not, and `pi` workers get none. Tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remote `https` servers on public hosts and `npx` or `uvx` servers work. OAuth sign-in, localhost, local paths and secrets in URLs or arguments do not, and `pi` workers skip `sse` servers. Tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ### What happens to the machines?
 
