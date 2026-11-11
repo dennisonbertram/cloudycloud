@@ -62,6 +62,7 @@
         <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
         <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
         <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
+        <li><a href="self-hosted.html" data-page="self-hosted">Run on your own machine</a></li>
         <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
         <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
         <li><a href="faq.html" data-page="faq">FAQ</a></li>
@@ -98,16 +99,21 @@ cloudy-cloud --version</code></pre>
 <p><code>--help</code> (also <code>-h</code> or <code>help</code>, when it is the only argument) prints Cloudy Cloud's own commands, then points to <code>claude --help</code> for Claude Code's options. <code>--version</code> prints the Cloudy Cloud version. With any other arguments, everything goes to Claude Code, for example <code>cloudy-cloud -p "&lt;prompt&gt;" --allowedTools "Bash(git fetch *)"</code>; see <a href="./#no-interactive-ui">Run without the interactive UI</a>.</p>
 
 <h3 id="cli-setup">cloudy-cloud setup</h3>
-<pre><code>cloudy-cloud setup [--check-only]</code></pre>
+<pre><code>cloudy-cloud setup [--check-only] [--provider instabox|self-hosted]</code></pre>
 <p>Runs the bundled <code>install.sh</code>, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same, and <code>npx -y cloudycloud setup</code> runs it without installing anything first (<code>-y</code> skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the <code>cloudy-cloud</code> command (<code>npm install -g cloudycloud</code>, or a link when you run it from a git clone), copies the Cloudy Cloud skills into <code>~/.claude/skills</code>, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. If an older <code>cloudy-cloud</code> global command blocks the install, setup offers to replace it (<code>npm rm -g cloudy-cloud</code>, then <code>npm install -g cloudycloud</code>). Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
 <table>
 <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
 <tbody>
+<tr><td><code>--provider instabox|self-hosted</code></td><td>Choose where subagents run without being asked. <code>self-hosted</code> asks for your machine instead of an Instabox key. See <a href="self-hosted.html">Run on your own machine</a>.</td></tr>
 <tr><td><code>--check-only</code></td><td>Check that <code>git</code>, Node.js, <code>npm</code>, <code>curl</code> and <code>claude</code> are installed, then exit. Does not need a terminal and changes nothing.</td></tr>
 </tbody>
 </table>
 <p>Example:</p>
 <pre><code>cloudy-cloud setup --check-only</code></pre>
+
+<h3 id="cli-doctor">cloudy-cloud doctor</h3>
+<pre><code>cloudy-cloud doctor</code></pre>
+<p>Checks the machine that subagents run on when <code>CLOUDY_CLOUD_PROVIDER</code> is <code>self-hosted</code>: SSH, sleep settings on a Mac, the container runtime, disk, the worker image, slots, leftover containers and saved settings. Prints <code>ok</code>, <code>warn</code> or <code>fail</code> per check with a fix, and exits 1 if any check fails. With another provider it prints a one-line note. See <a href="self-hosted.html#doctor">Run on your own machine</a>.</p>
 
 <h3 id="cli-dashboard">cloudy-cloud dashboard</h3>
 <pre><code>cloudy-cloud dashboard [--demo] [--port N] [--no-open]</code></pre>
@@ -272,6 +278,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tbody>
 <tr><td><code>INSTABOX_API_KEY</code></td><td>none</td><td>Your Instabox API key. Read from the environment or the config file.</td></tr>
 <tr><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>none</td><td>The long-lived token from <code>claude setup-token</code>. Cloud agents use it to sign in to Claude.</td></tr>
+<tr><td><code>GH_TOKEN</code></td><td>none</td><td>Your GitHub token. On a self-hosted machine it is read from the config file and placed in each worker container if you allowed that. See <a href="self-hosted.html#github-token">Run on your own machine</a>.</td></tr>
 <tr><td><code>ANTHROPIC_API_KEY</code></td><td>none</td><td>An Anthropic API key, used by cloud agents when there is no Claude token. It is billed separately.</td></tr>
 <tr><td><code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, and any other name ending in <code>_API_KEY</code></td><td>none</td><td>Provider keys for model profiles. A profile's <code>keyName</code> must name one of these. A worker that uses a profile receives that profile's key.</td></tr>
 </tbody>
@@ -283,7 +290,16 @@ cloudy-cloud mcp rm NAME</code></pre>
 <thead><tr><th>Variable</th><th>Default</th><th>Meaning</th></tr></thead>
 <tbody>
 <tr><td><code>CLOUDY_CLOUD_CONFIG</code></td><td><code>~/.config/cloudy-cloud/env</code></td><td>Path of the config file.</td></tr>
-<tr><td><code>CLOUDY_CLOUD_PROVIDER</code></td><td><code>instabox</code></td><td>Sandbox provider. Instabox is the only supported value today.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROVIDER</code></td><td><code>instabox</code></td><td>Sandbox provider: <code>instabox</code> or <code>self-hosted</code>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SSH_HOST</code></td><td>none</td><td>Self-hosted: the SSH address of your machine, <code>user@host</code>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SSH_KEY</code></td><td>none</td><td>Self-hosted: path to the SSH key. Optional.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SSH_PORT</code></td><td>the SSH default</td><td>Self-hosted: the SSH port, when it is not the default.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_CONTAINER_RUNTIME</code></td><td><code>docker</code></td><td>Self-hosted: <code>docker</code> or <code>podman</code>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_CONTAINER_BIN</code></td><td>none</td><td>Self-hosted: absolute path of the <code>docker</code> or <code>podman</code> program on the machine. Setup finds and saves it.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_SLOTS</code></td><td>2 if unset; setup suggests half the CPUs or one per 4 GB of memory, whichever is lower</td><td>Self-hosted: how many subagents run at once.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_CPUS</code></td><td>2 if unset</td><td>Self-hosted: CPU limit per container. Setup saves a value.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_MEMORY</code></td><td>4g if unset</td><td>Self-hosted: memory limit per container. Setup saves a value.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX</code></td><td>unset</td><td>Self-hosted: <code>yes</code> means you allowed the GitHub token inside worker containers on your machine. Without it, workers do not start.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_PROFILES</code></td><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Path of the file that adds or overrides model profiles.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MCP</code></td><td><code>~/.config/cloudy-cloud/mcp.json</code></td><td>Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_EVENTS</code></td><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>Path of the event log that the dashboard reads. Set it in the environment before you start <code>cloudy-cloud</code> and the dashboard.</td></tr>

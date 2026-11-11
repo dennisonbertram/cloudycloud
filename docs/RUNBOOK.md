@@ -245,3 +245,75 @@ The coordinator ends its job with `~/cloudy-cloud/bin/cloudy-cloud coordinator f
 - no machine owned by this coordinator's `cloudy-cloud` server is still running (stop workers with `cloud_agent_stop` first; the server records its owner id in `~/.config/cloudy-cloud/owner`).
 
 `--force` skips the git and worker checks, not the machine check.
+
+## 9. Your own machine
+
+Subagents can run on a computer you own instead of Instabox. Each one gets a Docker container on that machine, reached over SSH. This section describes what the code does. The first live run on a Mac Studio is still to come (see [STATUS.md](STATUS.md)).
+
+### Prerequisites
+
+On a Mac:
+
+- Turn on **Remote Login** (System Settings > General > Sharing). Put your public key in `~/.ssh/authorized_keys` on the Mac. Cloudy Cloud runs `ssh` with `BatchMode=yes`, so it cannot answer a password prompt. Test with `ssh user@host true`.
+- Install **Tailscale** on the Mac and on your computer, and use the Mac's Tailscale name or `100.x` address. Tailscale's own SSH server runs on Linux only, so on a Mac use Remote Login with a key.
+- Install **OrbStack or Docker Desktop** and open it once so the engine runs. Setup saves the absolute path of `docker` (`CLOUDY_CLOUD_CONTAINER_BIN`), because non-interactive SSH on a Mac has no `/opt/homebrew/bin` on its `PATH`.
+- Stop the Mac from sleeping, or every subagent on it stops. In System Settings > Battery (or Energy) turn on "Prevent automatic sleeping when the display is off", or run `sudo pmset -a sleep 0`. Doctor warns when `pmset -g` shows a sleep time.
+
+On Linux: install Docker (or Podman). Use an SSH key, or Tailscale SSH (`sudo tailscale up --ssh`) and no key.
+
+Keep about 20 GB of disk free. Setup and doctor warn below that.
+
+### Run setup
+
+```sh
+cloudy-cloud setup --provider self-hosted
+```
+
+Without `--provider`, `install.sh` asks "Where should subagents run?"; type 2. Setup asks for:
+
+1. The SSH address, `user@host`.
+2. The path to your SSH key (optional; Enter uses your default keys or Tailscale SSH).
+3. How many subagents may run at once. The suggestion is half the CPUs or one per 4 GB of memory, whichever is lower, at least 1. On a Mac it uses the lower of the Mac's and the container VM's CPU and memory.
+4. Whether to allow the GitHub token on the machine (default no), then the token itself, typed without echo.
+
+It checks SSH, sleep (Mac), the container runtime and disk, builds `cloudy-cloud-worker:<version>` on the machine, and writes `CLOUDY_CLOUD_PROVIDER`, `CLOUDY_CLOUD_SSH_HOST`, `CLOUDY_CLOUD_SSH_KEY`, `CLOUDY_CLOUD_CONTAINER_RUNTIME`, `CLOUDY_CLOUD_CONTAINER_BIN`, the slot, CPU and memory settings, and the token settings to `~/.config/cloudy-cloud/env`. Run it again after updating Cloudy Cloud: the image version must match, or the next subagent fails with "Run: cloudy-cloud setup". The step that asks for a GitHub token on Instabox is skipped; setup still asks for the Claude token and optional model keys.
+
+### Doctor
+
+```sh
+cloudy-cloud doctor
+```
+
+Prints `ok`, `warn` or `fail` lines, each problem with a `fix:` line, and exits 1 on any fail. It checks SSH (and warns if the answer took over 5 seconds, which can mean Tailscale check mode wants you to sign in again; give the machine an `accept` rule or a longer `checkPeriod`), sleep on a Mac, the container runtime and its path, free disk, the worker image and its version, whether your slot count exceeds the suggestion, running Cloudy Cloud containers (stale ones past their deadline get a removal command), and the saved settings. With another provider it only says so.
+
+### The GitHub token
+
+Instabox keeps the token off its machines behind a proxy. Your own machine has no such proxy, so the token must be inside the worker. Setup asks once. If you say yes, it saves `GH_TOKEN` and `CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes` in the env file (mode 600). For each worker the token goes over SSH stdin into `/run/secrets/env`, a memory-only file (mode 600) in the container, never into a command line, label or `docker inspect`, and it is removed with the container. Each `cloud_agent` reply says `GitHub token: on your machine <host> (you allowed it)`. If you say no, workers refuse to start. A subagent can read the token while it runs and push to any branch it reaches, so use a fine-grained token for the repos you choose and protect your main branch.
+
+### Slots and sizing
+
+`CLOUDY_CLOUD_SELF_HOSTED_SLOTS` is how many containers may run at once. Another start waits as `queued`. Each container gets `CLOUDY_CLOUD_SELF_HOSTED_CPUS` (whole CPUs, at least 1) and `CLOUDY_CLOUD_SELF_HOSTED_MEMORY` (80% of memory divided by the slots), plus a limit of 2048 processes. On a Mac the container VM's own limit (Docker Desktop or OrbStack settings) applies; if you change it, run setup again.
+
+### Cleanup
+
+Each container's main process is `timeout <seconds> sleep infinity` and it runs with `--rm`, so it ends at its deadline (at most 24 hours) with no help from your computer. The reaper also deletes a session's containers when the session ends. By hand:
+
+```sh
+ssh user@host /absolute/path/to/docker ps -a --filter label=cloudy-cloud.purpose
+ssh user@host /absolute/path/to/docker rm -f cc-<id>
+```
+
+What containers do after a reboot of the machine is not checked; doctor lists leftovers.
+
+### Limits
+
+- One machine per setup.
+- Coordinators are not supported: the adapter reports `hasSnapshots: false`, so `cloudy-cloud coordinator image` and `start` stop with "Provider self-hosted has no snapshots, which coordinators need." Snapshots through `docker commit` (issue #35) are not on this branch.
+- `cloudy-cloud open <agent> <port>` works through an SSH bridge. `--share` is refused.
+- Docker is the path to use. Podman is accepted; rootless Podman may ignore CPU and memory limits.
+- The container can reach whatever the machine can reach on your network.
+
+### Docker Desktop: image build fails over SSH
+
+Docker Desktop can keep registry logins in the macOS keychain (`credsStore` in `~/.docker/config.json`). A build started over SSH cannot unlock it, and pulling `node:22-bookworm-slim` can fail with a credentials error. Either run `docker pull node:22-bookworm-slim` in a Terminal on the Mac and run setup again, or use OrbStack. This is a known Docker Desktop behavior and is not yet checked on the Mac Studio.
+
