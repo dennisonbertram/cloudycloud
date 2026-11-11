@@ -617,6 +617,15 @@ test('an auth failure on the first push gives the GH_TOKEN hint', async () => {
   assert.match(r, /GH_TOKEN.*RUNBOOK\.md, step 2\.4/s);
 });
 
+test('without proxy secrets an auth failure on the first push gives the provider\'s token help, not the Instabox one', async () => {
+  const f = flakyFirstPush(9, 'remote: Permission to test/repo.git denied. fatal: 403');
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const { start, wait } = await setup({ ...f, provider });
+  const r = await wait([await start()]);
+  assert.match(r, /first push to origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
+  assert.ok(!r.includes('step 2.4'));
+});
+
 test('the safety push retries once', async () => {
   const sleeps = [];
   let pushes = 0;

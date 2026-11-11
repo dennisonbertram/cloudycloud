@@ -8,6 +8,8 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { createServer, connect } from 'node:net';
+import { once } from 'node:events';
 import { contractSuite } from './provider-contract.mjs';
 import { golden } from './golden-util.mjs';
 import { createProvider } from '../src/providers/self-hosted.mjs';
@@ -68,6 +70,15 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
       table.delete(c.Name.slice(1));
       return done(0, `${rest.at(-1)}\n`);
     }
+    if (cmd === 'exec' && rest.includes('node')) { // the port-forward bridge: runs locally, stdio piped through
+      const ni = rest.indexOf('node');
+      if (!find(rest[ni - 1])) return done(1, '', `Error response from daemon: No such container: ${rest[ni - 1]}`);
+      const p = realSpawn(process.execPath, rest.slice(ni + 1));
+      p.stdout.on('data', (d) => child.stdout.write(d));
+      p.on('close', (code) => child.emit('close', code, null));
+      p.stdin.end(stdin);
+      return;
+    }
     if (cmd === 'exec') {
       const i = rest.indexOf('sh');
       const inner = rest[i + 2];
@@ -90,7 +101,6 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
   const spawn = (bin, args) => {
     const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill() {} });
     sshCalls.push({ bin, args });
-    if (args.includes('-N')) { setImmediate(() => child.emit('close', 0, null)); return child; } // port forward: exits at once
     const chunks = [];
     child.stdin.on('data', (d) => chunks.push(Buffer.from(d)));
     child.stdin.on('end', () => {
@@ -119,7 +129,7 @@ const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose
 test('golden: exact docker commands for create, run, write, list and delete; no secret in any argv or label', async () => {
   const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' });
   assert.equal(provider.caps.hasConsentedSecrets, true);
-  const s = await mk(provider, { envs: { FOO: 'env-value-123' }, secrets: ['GH_TOKEN'], name: 'w1' });
+  const s = await mk(provider, { envs: { FOO: 'env-value-123' }, name: 'w1' }); // the core never names GH_TOKEN; the adapter adds it
   await s.commands.run("echo hi; echo \"$FOO\" $GH_TOKEN | wc -c", { cwd: '/home/worker/app', timeoutMs: 5000 });
   await s.files.write('/home/worker/dir/a.txt', 'hello');
   await provider.list({ owner: 'o1' });
@@ -191,6 +201,21 @@ test('connect: unknown id is not_found; known id works', async () => {
   await assert.rejects(provider.connect('cc-nope'), (e) => e.code === 'not_found');
 });
 
+test('GH_TOKEN goes in the env file only with consent; consent without a saved token is refused before anything starts', async () => {
+  const { box, provider } = make({ GH_TOKEN: 'ghp_NOCONSENT' });
+  await mk(provider);
+  assert.ok(!readFileSync(join(box.root, 'run/secrets/env'), 'utf8').includes('ghp_NOCONSENT'));
+  const { box: b2, provider: p2 } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' });
+  await assert.rejects(mk(p2), (e) => e.code === 'no_key' && e.message.includes('GH_TOKEN') && e.message.includes('cloudy-cloud setup'));
+  assert.equal(b2.table.size, 0);
+});
+
+test('hostLabel names the machine without the user@ part, which the core scrubs as the key value', () => {
+  const { provider } = make();
+  assert.equal(provider.text.hostLabel, 'box');
+  assert.match(provider.text.githubTokenHelp, /cloudy-cloud setup --provider self-hosted.*GitHub token/);
+});
+
 test('secrets without consent throw no_key naming the secret; nothing is started', async () => {
   const { box, provider } = make({ GH_TOKEN: 'x' });
   assert.equal(provider.caps.hasConsentedSecrets, false);
@@ -198,7 +223,7 @@ test('secrets without consent throw no_key naming the secret; nothing is started
   assert.equal(box.table.size, 0);
 });
 
-test('list maps fields; forwardPort runs ssh -L to the container ip; snapshots and publish are refused', async () => {
+test('list maps fields; snapshots and publish are refused', async () => {
   const { box, provider } = make();
   const s = await mk(provider, { name: 'w1' });
   const [row] = await provider.list({ owner: 'o1' });
@@ -207,14 +232,34 @@ test('list maps fields; forwardPort runs ssh -L to the container ip; snapshots a
   assert.equal(row.status, 'running');
   assert.equal(row.labels.purpose, 'cloudy-cloud');
   assert.ok(row.startedAt > 0 && row.deleteAt);
-  assert.equal(await provider.forwardPort(s.id, '3000:4000'), 0);
-  const fwd = box.sshCalls.at(-1).args;
-  assert.ok(fwd.includes('127.0.0.1:3000:172.17.0.2:4000') && fwd.includes('-N') && fwd.at(-1) === 'me@box');
   await assert.rejects(provider.snapshot(s, { name: 'n' }), (e) => e.code === 'not_found' && /no snapshots yet/.test(e.message));
   await assert.rejects(provider.publishPort(s.id, '3000'), /does not publish links/);
   assert.equal(await provider.unpublishPort(s.id, '3000'), 1);
   assert.equal(provider.localMachineName('cc-abc'), 'cc-abc');
   assert.equal(provider.localMachineName('laptop'), '');
+});
+
+test('forwardPort bridges each local connection through docker exec (no container IP, so Docker Desktop works)', async () => {
+  const { box, provider } = make();
+  const s = await mk(provider);
+  const echo = createServer((c) => c.pipe(c)).listen(0, '127.0.0.1');
+  await once(echo, 'listening');
+  const local = await new Promise((r) => { const t = createServer().listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => r(p)); }); });
+  const ac = new AbortController();
+  const done = provider.forwardPort(s.id, `${local}:${echo.address().port}`, { signal: ac.signal });
+  try {
+    await new Promise((r) => setTimeout(r, 100));
+    const c = connect(local, '127.0.0.1');
+    c.end('ping');
+    let got = '';
+    for await (const d of c) got += d;
+    assert.equal(got, 'ping');
+    const fwd = box.log.at(-1);
+    assert.deepEqual(fwd.slice(0, 4), [BIN, 'exec', '-i', s.id]);
+    assert.equal(fwd[4], 'node');
+  } finally { ac.abort(); echo.close(); }
+  assert.equal(await done, 0);
+  await assert.rejects(provider.forwardPort('cc-nope', '1:2'), (e) => e.code === 'not_found');
 });
 
 test('podman swaps the binary only; unknown runtime throws', async () => {

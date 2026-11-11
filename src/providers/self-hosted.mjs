@@ -5,6 +5,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { createSsh } from './ssh.mjs';
 
 const PREFIX = 'cloudy-cloud.';
@@ -89,7 +90,9 @@ export function createProvider(env = process.env, deps = {}) {
     async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [] }) {
       getSsh();
       const vars = { ...envs };
-      for (const n of secrets) {
+      // The user allowed the GitHub token on this machine (setup): deliver it like Instabox attaches its GH_TOKEN secret.
+      // It goes only into the tmpfs env file through stdin, never argv, labels or `docker inspect`.
+      for (const n of consented ? ['GH_TOKEN', ...secrets] : secrets) {
         if (!consented || env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on ${host}. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }
@@ -155,16 +158,30 @@ export function createProvider(env = process.env, deps = {}) {
     async snapshot() { throw fail('not_found', 'The self-hosted provider has no snapshots yet'); },
     async getSnapshot() { throw fail('not_found', 'The self-hosted provider has no snapshots yet'); },
 
-    async forwardPort(id, localRemote) {
-      const ip = (await docker(['inspect', '--format', '{{.NetworkSettings.IPAddress}}', id])).stdout.trim();
-      if (!ip) throw fail('not_found', `${id} has no container IP. Check it with: cloudy-cloud doctor`);
+    // Each local connection runs a tiny node TCP bridge inside the container over ssh stdio. Unlike `ssh -L` to the
+    // container IP, this works with Docker Desktop on a Mac, whose container network is not routable from the host.
+    // ponytail: one ssh session per connection on the shared master (MaxSessions 10); fine for a browser on a dev server.
+    async forwardPort(id, localRemote, { signal } = {}) {
       const [local, remote = local] = String(localRemote).split(':');
-      getSsh();
-      const args = ['-N', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', ...sshOpts(), '-L', `127.0.0.1:${local}:${ip}:${remote}`, host];
+      if (!/^\d+$/.test(local) || !/^\d+$/.test(remote)) throw new Error(`port must be a number or local:remote, not "${localRemote}"`);
+      await api.connect(id);
+      const bridge = `const s=require('net').connect(${remote},'127.0.0.1');process.stdin.pipe(s).pipe(process.stdout);s.on('error',(e)=>{console.error(e.message);process.exit(1)})`;
+      const argv = getSsh().argvFor([bin, 'exec', '-i', id, 'node', '-e', bridge].map(q).join(' '));
       return new Promise((resolve, reject) => {
-        const child = spawn('ssh', args, { stdio: 'inherit' });
-        child.on('error', reject);
-        child.on('close', (code) => resolve(code ?? 1));
+        const server = createServer({ allowHalfOpen: true }, (sock) => { // a client may send its request, then half-close
+          const child = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'ignore'] });
+          sock.pipe(child.stdin);
+          child.stdout.pipe(sock);
+          const end = () => { sock.destroy(); child.kill(); };
+          sock.on('error', end);
+          sock.on('close', end);
+          child.stdin.on('error', end);
+          child.on('error', end);
+          child.on('close', () => sock.end());
+        });
+        server.on('error', reject);
+        server.listen(Number(local), '127.0.0.1');
+        signal?.addEventListener('abort', () => server.close(() => resolve(0)), { once: true });
       });
     },
     async publishPort() { throw new Error('self-hosted does not publish links'); },
@@ -177,8 +194,8 @@ export function createProvider(env = process.env, deps = {}) {
       listMachines: `ssh${sshOpts().map((o) => ` ${o}`).join('')} ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} ps --filter label=${PREFIX}purpose`,
       noKeyFix: 'Set CLOUDY_CLOUD_SSH_HOST=user@host in ~/.config/cloudy-cloud/env or run: cloudy-cloud setup',
       apiFix: `Check that ${host ?? 'the host'} is reachable: cloudy-cloud doctor`,
-      // ponytail: placeholder wording until #32 settles the consent text.
-      githubTokenHelp: 'Self-hosted needs your consent to put secrets on your own machine. Run: cloudy-cloud setup',
+      hostLabel: String(host ?? '').split('@').pop(), // the full user@host is the key value, which the core scrubs
+      githubTokenHelp: 'Allow the GitHub token on your machine and save one with write access: run cloudy-cloud setup --provider self-hosted and answer yes to the GitHub token question.',
     },
   };
   function sshOpts() {
