@@ -92,10 +92,11 @@ export function createProvider(env = process.env, deps = {}) {
     async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from }) {
       getSsh();
       const vars = { ...envs };
-      // The user allowed the GitHub token on this machine (setup): deliver it like Instabox attaches its GH_TOKEN secret.
-      // It goes only into the tmpfs env file through stdin, never argv, labels or `docker inspect`.
-      for (const n of consented ? ['GH_TOKEN', ...secrets] : secrets) {
-        if (!consented || env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on ${host}. ${api.text.githubTokenHelp}`);
+      // The GitHub token consent (setup) covers GH_TOKEN only; it goes in like Instabox's GH_TOKEN secret. Any other secret is
+      // an MCP token the core asked for after the user allowed that server (--allow-literal); it comes from this machine's env.
+      // Values go only into the tmpfs env file through stdin, never argv, labels or `docker inspect`.
+      for (const n of [...(consented ? ['GH_TOKEN'] : []), ...secrets]) {
+        if ((n === 'GH_TOKEN' && !consented) || env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on ${host}. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }
       for (const n of Object.keys(vars)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);

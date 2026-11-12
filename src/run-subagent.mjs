@@ -86,7 +86,7 @@ const isPi = (a) => a.profile?.harness === 'pi';
 // machine, in a mode-600 file). Off by default. The flag is not sent to the machine.
 const ALLOW = 'cloudyCloudAllowLiteral';
 const MCP_REF = /\$\{(MCP_[A-Z0-9_]+_TOKEN)\}/g;
-function agentMcp(env) {
+function agentMcp(env, proxy = true) {
   const { servers, skipped, secrets } = loadMcp(env); // throws "Could not read <file>: ..."
   const out = { servers: { ...servers }, skipped: [], secrets: new Set(secrets), literal: [], values: new Set() };
   let raw;
@@ -106,6 +106,23 @@ function agentMcp(env) {
     // Every literal value is scrubbed from replies, events and the dashboard (exact match, so an opaque token is caught too).
     for (const [field, header] of [['env', false], ['headers', true]])
       for (const [k, v] of Object.entries(clean[field] ?? {})) if (isLiteralSecret(k, v, header)) [v, v.replace(/^Bearer /, '')].filter((t) => t.length >= 6).forEach((t) => out.values.add(t));
+  }
+  if (!proxy) {
+    // No proxy secrets: a ${MCP_X_TOKEN} reference would be filled with the real value from this machine's environment.
+    // That needs the same consent as a literal token; the GitHub token consent covers GH_TOKEN only.
+    const refs = (e) => [...JSON.stringify(e).matchAll(MCP_REF)].map((m) => m[1]);
+    raw ??= Object.keys(out.servers).some((n) => refs(out.servers[n]).length) ? JSON.parse(readFileSync(mcpFile(env), 'utf8')).mcpServers : {};
+    out.secrets = new Set();
+    for (const [name, e] of Object.entries(out.servers)) {
+      if (!refs(e).length) continue;
+      if (!out.literal.includes(name) && raw[name]?.[ALLOW] !== true) {
+        delete out.servers[name];
+        out.skipped.push({ name, reason: `its token would be copied from your environment to this machine; allow it with: cloudy-cloud mcp add ${name} --allow-literal` });
+      } else {
+        if (!out.literal.includes(name)) out.literal.push(name);
+        refs(e).forEach((n) => { out.secrets.add(n); if (env[n]?.length >= 6) out.values.add(env[n]); });
+      }
+    }
   }
   out.secrets = [...out.secrets].sort();
   return out;
@@ -566,7 +583,7 @@ export async function runSubagent(args, deps) {
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
-  try { a.mcp = agentMcp(ctx.env); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
+  try { a.mcp = agentMcp(ctx.env, hasProxySecrets); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });

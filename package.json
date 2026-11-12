@@ -33,6 +33,7 @@
     "src/",
     "install.sh",
     "skills/",
+    "docker/worker.Dockerfile",
     "README.md",
     "LICENSE"
   ],

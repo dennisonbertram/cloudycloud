@@ -624,3 +624,10 @@ test('pty: --provider self-hosted skips the question', () => {
   assert.ok(!/Where should subagents run/.test(r.text));
   assert.ok(existsSync(spy.log));
 });
+
+test('npm package includes the file self-hosted setup reads (#41)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' }));
+  const files = out[0].files.map((f) => f.path);
+  for (const f of ['docker/worker.Dockerfile', 'src/self-hosted-setup.mjs', 'bin/cloudy-cloud', 'install.sh']) assert.ok(files.includes(f), `${f} missing from the npm package`);
+});
