@@ -230,6 +230,8 @@ export function createProvider(env = process.env, deps = {}) {
       noKeyFix: 'Set CLOUDY_CLOUD_SSH_HOST=user@host in ~/.config/cloudy-cloud/env or run: cloudy-cloud setup',
       apiFix: `Check that ${host ?? 'the host'} is reachable: cloudy-cloud doctor`,
       hostLabel: String(host ?? '').split('@').pop(), // the full user@host is the key value, which the core scrubs
+      // A coordinator's own cloudy-cloud would need the SSH key to this host, and that key file is not on the coordinator's container.
+      coordinatorRefusal: `Coordinators are not supported on the self-hosted provider yet: a coordinator's workers would start on ${host ?? 'your machine'}, and the SSH key to it is not on the coordinator container (cloudy-cloud never copies it). Start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox to use coordinators.`,
       githubTokenHelp: 'Allow the GitHub token on your machine and save one with write access: run cloudy-cloud setup --provider self-hosted and answer yes to the GitHub token question.',
     },
   };

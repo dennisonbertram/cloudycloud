@@ -552,6 +552,7 @@ export async function runSubagent(args, deps) {
     if (r.error) return fail(r.error);
     profile = r.ok;
   }
+  if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && profile?.harness === 'pi') return fail('A coordinator cannot use a pi profile, because coordinators run Claude Code. Use a pi profile for workers only.');
   let root;
   try {

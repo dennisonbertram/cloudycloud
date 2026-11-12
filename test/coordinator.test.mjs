@@ -377,3 +377,12 @@ test('stop and image on a terminal use status lines; piped output has no escapes
   assert.ok(!ANSI.test(h.log.out.join('\n')));
   assert.match(h.log.out.join('\n'), /^Image machine sbx-abc is ready and cloudy-cloud is installed on it\./); // install.sh reads this line
 });
+
+test('a provider that cannot give a coordinator its keys refuses image and start, before creating anything (#41)', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' });
+  provider.text.coordinatorRefusal = 'Coordinators are not supported on fake yet.';
+  for (const args of [['image'], ['start', 'boss', '--repo', 'https://github.com/o/r']]) {
+    await assert.rejects(main(args, { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, out: () => {} }), /^Error: Coordinators are not supported on fake yet\.$/);
+  }
+  assert.equal(provider.log.create.length, 0);
+});

@@ -313,6 +313,7 @@ export async function main(argv, deps = {}) {
   validateArgs(cmd, args);
   const c = await context(deps);
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) fail(`Provider ${c.provider.name} has no snapshots, which coordinators need.`);
+  if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) fail(c.provider.text.coordinatorRefusal);
   try { return await commands[cmd](c, args); } catch (e) {
     if (e?.code === 'no_key') fail(`${e.message} Run: cloudy-cloud setup`);
     throw e;

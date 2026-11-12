@@ -37,7 +37,12 @@ The first two are saved to `~/.config/cloudy-cloud/env`, which only your user ac
 
 ### 2.2 Providers
 
-Set `CLOUDY_CLOUD_PROVIDER` to choose the sandbox provider. It defaults to `instabox`, the only supported value today. A provider must keep the GitHub token behind proxy secrets, enforce a server-side delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`. `install.sh` sets up Instabox only. See the [sandbox provider research](research/sandbox-providers.md) for other options.
+Set `CLOUDY_CLOUD_PROVIDER` to choose the sandbox provider: `instabox` (the default) or `self-hosted` (Docker or Podman containers on a machine you own, reached over SSH). `cloudy-cloud setup --provider instabox|self-hosted` saves the choice and the settings that provider needs. A provider must enforce a server-side delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`.
+
+- **Instabox** keeps the GitHub token behind proxy secrets, so a machine only sees a placeholder. It needs `INSTABOX_API_KEY`.
+- **Self-hosted** has no proxy secrets. You consent once, during setup, to storing the GitHub token on your own machine (`CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes`); it lives only in memory (a tmpfs file) while an agent runs. That consent covers `GH_TOKEN` only. An MCP server whose token is a `${MCP_X_TOKEN}` reference or a literal value is delivered only if its entry in `mcp.json` has `"cloudyCloudAllowLiteral": true` (or you added it with `cloudy-cloud mcp add NAME --allow-literal`); otherwise it is skipped and the reply says why. It needs `CLOUDY_CLOUD_SSH_HOST`, not an Instabox key. Coordinators are not supported yet, because the SSH key to your machine is not copied onto a coordinator container; use `cloud_agent` workers from your own session. Run `cloudy-cloud doctor` to check the machine.
+
+See the [sandbox provider research](research/sandbox-providers.md) for other options.
 
 ### 2.3 The GitHub token
 

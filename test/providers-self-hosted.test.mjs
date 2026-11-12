@@ -342,3 +342,8 @@ test('two concurrent creates with one free slot: one starts, the other gets quot
   assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'quota_exceeded');
   assert.equal(box.table.size, 1);
 });
+
+test('the self-hosted provider refuses coordinators with a next step (no SSH key on the coordinator container)', () => {
+  const { provider } = make();
+  assert.match(provider.text.coordinatorRefusal, /not supported on the self-hosted provider.*cloud_agent.*CLOUDY_CLOUD_PROVIDER=instabox/);
+});

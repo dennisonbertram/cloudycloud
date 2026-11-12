@@ -1153,3 +1153,13 @@ test('without proxy secrets an MCP ${MCP_X_TOKEN} server needs --allow-literal; 
   assert.match(r, /MCP servers skipped: x \(.*--allow-literal/);
   assert.ok(!r.includes('ytoken-consented-1') && !r.includes('xtoken-not-consented'));
 });
+
+test('a coordinator is refused before any machine starts when the provider says it cannot host one (#41)', async () => {
+  const provider = createFakeProvider();
+  provider.text.coordinatorRefusal = 'Coordinators are not supported on fake yet.';
+  const x = await setup({ createSandbox: undefined, provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /not supported on fake yet/);
+  assert.equal(provider.log.create.length, 0);
+});
