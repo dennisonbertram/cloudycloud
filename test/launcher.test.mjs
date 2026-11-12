@@ -178,3 +178,17 @@ test('mcp add <name> --allow-literal goes to src/mcp-cli.mjs with the flag', () 
   assert.match(argv[0], /src\/mcp-cli\.mjs$/);
   assert.deepEqual(argv.slice(1), ['add', 'notion', '--allow-literal']);
 });
+
+test('self-hosted provider needs the SSH host, not the Instabox key (#41)', () => {
+  const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+  const ok = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=me@box\n${claude}`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.started, true);
+  const noHost = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nINSTABOX_API_KEY=${IBK}\n${claude}` });
+  assert.equal(noHost.status, 1);
+  assert.match(noHost.stderr, /CLOUDY_CLOUD_SSH_HOST/);
+  assert.equal(noHost.started, false);
+  // Instabox stays the default when the saved provider is instabox or absent.
+  const ib = run({ config: `CLOUDY_CLOUD_PROVIDER=instabox\nCLOUDY_CLOUD_SSH_HOST=me@box\n${claude}` });
+  assert.match(ib.stderr, /Instabox API key/);
+});

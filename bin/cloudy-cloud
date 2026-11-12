@@ -92,12 +92,21 @@ hint() { printf '  %s%s %s%s\n' "$c_dim" "$m_hint" "$1" "$c_x" >&2; }
 config=${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}
 find_missing() {
   missing=
+  # The provider comes from the environment or the saved file; Instabox is the default.
+  provider=$(printenv CLOUDY_CLOUD_PROVIDER)
+  [ -n "$provider" ] || provider=$(sed -n 's/^CLOUDY_CLOUD_PROVIDER=//p' "$config" 2>/dev/null | tail -n 1)
+  if [ "$provider" = self-hosted ]; then
+    # The machine's SSH address counts from the environment or the file.
+    if [ -z "$(printenv CLOUDY_CLOUD_SSH_HOST)" ] && ! grep -q '^CLOUDY_CLOUD_SSH_HOST=.' "$config" 2>/dev/null; then
+      missing='self-hosted machine (CLOUDY_CLOUD_SSH_HOST)'
+    fi
   # The Instabox key counts from the environment or the file.
-  if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
+  elif [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
     missing='Instabox API key'
+  fi
   # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
   # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
-  elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
+  if [ -z "$missing" ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
     missing='Claude token'
   fi
 }
