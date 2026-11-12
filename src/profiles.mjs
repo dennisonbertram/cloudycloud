@@ -6,6 +6,7 @@ import { PROVIDER_KEY } from './config.mjs';
 const PARTICLE = 'https://api.particle.ai/v1';
 // Workers on the pi harness talk to the OpenAI-format provider directly, with no LiteLLM gateway.
 const pi = (model) => ({ harness: 'pi', format: 'openai', baseUrl: PARTICLE, model, keyName: 'PARTICLE_API_KEY' });
+const omp = (model) => ({ ...pi(model), harness: 'omp' });
 const BUILTIN = {
   glm: { format: 'openai', baseUrl: PARTICLE, model: 'z-ai/glm-5.3-flash', keyName: 'PARTICLE_API_KEY' },
   deepseek: { format: 'openai', baseUrl: PARTICLE, model: 'deepseek-ai/deepseek-v41-flash-1017', keyName: 'PARTICLE_API_KEY' },
@@ -13,6 +14,9 @@ const BUILTIN = {
   'pi-glm': pi('z-ai/glm-5.3-flash'),
   'pi-deepseek': pi('deepseek-ai/deepseek-v41-flash-1017'),
   'pi-particle': pi('particle-ai/particle-1'),
+  'omp-glm': omp('z-ai/glm-5.3-flash'),
+  'omp-deepseek': omp('deepseek-ai/deepseek-v41-flash-1017'),
+  'omp-particle': omp('particle-ai/particle-1'),
   openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', keyName: 'OPENROUTER_API_KEY' }, // model: per call or in profiles.json
 };
 export const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -40,8 +44,9 @@ export function resolveProfile(name, model, env = process.env) {
   if (!p || typeof p !== 'object') return { error: `unknown profile "${name}". Known profiles: ${Object.keys(profiles).join(', ')}` };
   const m = model ?? p.model;
   const harness = p.harness ?? 'claude';
-  if (!['claude', 'pi'].includes(harness)) return { error: `profile ${name}: harness must be "claude" or "pi"` };
+  if (!['claude', 'pi', 'omp'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi" or "omp"` };
   if (!['anthropic', 'openai'].includes(p.format)) return { error: `profile ${name}: format must be "anthropic" or "openai"` };
+  if (harness === 'omp' && p.format !== 'openai') return { error: `profile ${name}: the omp harness only supports format "openai" (omp models are written as openai-completions)` };
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
@@ -78,6 +83,28 @@ export function claudeEnv(p) {
 export const PI_VERSION = '1.5.0';
 export const PI_PROVIDER = 'worker';
 export const piModels = (p) => JSON.stringify({ providers: { [PI_PROVIDER]: { baseUrl: p.baseUrl, api: 'openai-completions', apiKey: `$${p.keyName}`, models: [{ id: p.model }] } } }, null, 2);
+
+// omp harness (can1357/oh-my-pi), verified by the spike on #36. models.yml `apiKey` is first read as an environment variable NAME,
+// so the file holds the name and never the key. Built by hand: MODEL, URL_OK and PROVIDER_KEY already limit the characters;
+// the model id is double-quoted (JSON is valid YAML) so an id like 1.5 or m: stays a string.
+export const OMP_VERSION = '18.18.7';
+export const OMP_PROVIDER = 'worker';
+export const ompModels = (p) => `providers:
+  ${OMP_PROVIDER}:
+    baseUrl: ${p.baseUrl}
+    api: openai-completions
+    apiKey: ${p.keyName}
+    models:
+      - id: ${JSON.stringify(p.model)}
+`;
+// Also written as overlay.yml and passed with --config: that layer loads after global and project settings, so a repository's
+// .omp/config.yml cannot re-enable imports or empty disabledProviders.
+// Only the servers in $PI_CODING_AGENT_DIR/mcp.json load: no project MCP config and no imports from other tools.
+export const ompConfig = () => `disabledProviders: [claude, claude-plugins, codex, gemini, cursor, windsurf, vscode, opencode, agent-plugins, mcp-json]
+mcp:
+  enableProjectConfig: false
+`;
+export const ompCommand = (p, { home, sessionId, hint }) => `PI_CODING_AGENT_DIR=${home}/omp-agent PATH=${home}/.local/bin:$PATH omp -p --mode json --config ${home}/omp-agent/overlay.yml --model ${OMP_PROVIDER}/${p.model} ${sessionId ? `--session ${sessionId} ` : ''}--append-system-prompt '${hint}' < ${home}/prompt.txt`;
 
 export const profileHost = (p) => new URL(p.baseUrl).host;
 // Added to a profile worker's instructions. No apostrophes: it sits inside single quotes in a shell command.

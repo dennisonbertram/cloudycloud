@@ -72,7 +72,7 @@ Everything else is refused with a reason on the line `Not added: REASON`, and `m
 
 The same checks run again every time a subagent starts, on whatever is in `mcp.json`.
 
-> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no MCP servers for the `pi` profiles (`pi-glm`, `pi-deepseek`, `pi-particle`). A `pi` worker gets none.
+> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no `sse` servers for the `pi` profiles (pi has no SSE transport).
 
 ## Tokens and secrets
 
@@ -113,6 +113,7 @@ The command prints this warning, then asks `Copy the real NAME token onto cloud 
 
 - `~/.config/cloudy-cloud/mcp.json` on your computer, in Claude Code's own format: `{"mcpServers": {...}}`. `mcp add` writes it with mode 600 in a folder with mode 700. Set `CLOUDY_CLOUD_MCP` to use another path. If the file does not exist, the feature is off and nothing changes. If it is not valid JSON, `cloud_agent` fails with `Could not read FILE: ...` and the parse error.
 - On each cloud machine, the checked servers are written to `~/.config/cloudy-cloud/mcp.json` (mode 600), and Claude is started with `--mcp-config` for that file and `--strict-mcp-config`. This happens only for Claude subagents and only when at least one server passed the checks.
+- On a `pi` or `omp` worker the file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` instead (mode 600, folder mode 700). The servers and the `MCP_<NAME>_TOKEN` Instabox secrets are the same. `pi` has no SSE transport, so `sse` servers are skipped for `pi` workers and the reply says `MCP servers skipped: NAME (pi does not support the SSE transport)`. `omp` accepts `sse`. `omp` is also set to ignore MCP servers from other tools and from the repo's own config, so only these servers load.
 - Because of `--strict-mcp-config`, a repo's own `.mcp.json` is not loaded on the machine once you have a server in the list. Without the list, nothing changes from before.
 - Coordinators get the same list. The list holds references, not secret values, so it adds no secret to a coordinator machine.
 
@@ -121,7 +122,7 @@ The command prints this warning, then asks `Copy the real NAME token onto cloud 
 - **The reply footer** ends with a line such as `MCP servers: notion, context7 (failed: linear)`. It lists the servers that connected and, in brackets, the ones that did not. If none connected it says `MCP servers: none connected`.
 - If you allowed a real token, another line says `MCP servers with a real token on the machine (you allowed it): NAME`.
 - Entries that did not pass the checks appear as `MCP servers skipped: NAME (REASON)`.
-- For a `pi` worker the line is `MCP servers: none (pi workers do not get MCP servers yet)`.
+- For a `pi` or `omp` worker the line is `MCP servers: a, b`, the names of the servers that were delivered to the machine. Unlike Claude's start-up report, it does not confirm that a server connected.
 - **`cloud_agent_list`** shows a line `mcp notion, context7` under each subagent that has servers.
 - **The dashboard** shows an MCP row in the agent's details with the server names. It never shows entries or tokens.
 

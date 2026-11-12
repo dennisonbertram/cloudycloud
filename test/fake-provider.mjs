@@ -46,6 +46,13 @@ echo "ARGS $* DIR=$PI_CODING_AGENT_DIR PROMPT=$p" >> ../pi.log
 case "$p" in PIERR*) cat ${FIXTURES}pi-json-error.jsonl ;; *) cat ${FIXTURES}pi-json-sample.jsonl ;; esac
 `;
 
+// Fake `omp` (installed by the fake installer below, like the real one): logs argv, agent dir and prompt; the error fixture exits 1.
+const FAKE_OMP = `#!/bin/sh
+p=$(cat)
+echo "ARGS $* DIR=$PI_CODING_AGENT_DIR PROMPT=$p" >> ../omp.log
+case "$p" in OMPERR*) cat ${FIXTURES}omp-json-error.jsonl; exit 1 ;; *) cat ${FIXTURES}omp-json-sample.jsonl ;; esac
+`;
+
 let currentGithub; // the bare repo of the test being set up (tests in a file run one at a time)
 export const setGithub = (g) => { currentGithub = g; };
 export const getGithub = () => currentGithub;
@@ -58,6 +65,11 @@ export async function fakeSandbox(github = currentGithub) {
   await chmod(join(bin, 'claude'), 0o755);
   await writeFile(join(bin, 'pi'), FAKE_PI);
   await chmod(join(bin, 'pi'), 0o755);
+  await writeFile(join(bin, 'omp-real'), FAKE_OMP);
+  await chmod(join(bin, 'omp-real'), 0o755);
+  // fake curl prints an installer script that puts omp in ~/.local/bin (cwd is the home) and logs its arguments
+  await writeFile(join(bin, 'curl'), `#!/bin/sh\necho 'echo "install $*" >> install.log; mkdir -p .local/bin && cp ${bin}/omp-real .local/bin/omp'\n`);
+  await chmod(join(bin, 'curl'), 0o755);
   await writeFile(join(bin, 'npm'), '#!/bin/sh\necho "npm $*" >> npm.log\n');
   await chmod(join(bin, 'npm'), 0o755);
   await writeFile(join(bin, 'gh'), '#!/bin/sh\nexit 0\n'); // fake gh: no-op

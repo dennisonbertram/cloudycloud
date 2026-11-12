@@ -133,7 +133,7 @@ Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start 
 </tbody>
 </table>
 <p>The same checks run again every time a subagent starts, on whatever is in <code>mcp.json</code>.</p>
-<div class="warn"><p>These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no MCP servers for the <code>pi</code> profiles (<code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code>). A <code>pi</code> worker gets none.</p></div>
+<div class="warn"><p>These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no <code>sse</code> servers for the <code>pi</code> profiles (pi has no SSE transport).</p></div>
 
 <h2 id="secrets">Tokens and secrets</h2>
 <p>The token is never written to <code>mcp.json</code>. <code>mcp add</code> replaces each secret value in <code>env</code> or <code>headers</code> with <code>${MCP_&lt;NAME&gt;_TOKEN}</code>. <code>NAME</code> is the server name in capitals with <code>-</code> changed to <code>_</code>, so <code>notion</code> becomes <code>MCP_NOTION_TOKEN</code>. A second secret on the same server is <code>MCP_&lt;NAME&gt;_2_TOKEN</code>, and so on. A header is treated as secret when it is <code>Authorization</code>, its value starts with <code>Bearer</code>, its name ends in <code>KEY</code>, <code>TOKEN</code>, <code>SECRET</code> or <code>PASSWORD</code>, or the value looks like a known key format. The same name rule applies to <code>env</code> values.</p>
@@ -160,6 +160,7 @@ Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start 
 <ul>
 <li><code>~/.config/cloudy-cloud/mcp.json</code> on your computer, in Claude Code's own format: <code>{"mcpServers": {...}}</code>. <code>mcp add</code> writes it with mode 600 in a folder with mode 700. Set <code>CLOUDY_CLOUD_MCP</code> to use another path. If the file does not exist, the feature is off and nothing changes. If it is not valid JSON, <code>cloud_agent</code> fails with <code>Could not read FILE: ...</code> and the parse error.</li>
 <li>On each cloud machine, the checked servers are written to <code>~/.config/cloudy-cloud/mcp.json</code> (mode 600), and Claude is started with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>. This happens only for Claude subagents and only when at least one server passed the checks.</li>
+<li>On a <code>pi</code> or <code>omp</code> worker the file goes to <code>~/pi-agent/mcp.json</code> or <code>~/omp-agent/mcp.json</code> instead (mode 600, folder mode 700). The servers and the <code>MCP_&lt;NAME&gt;_TOKEN</code> Instabox secrets are the same. <code>pi</code> has no SSE transport, so <code>sse</code> servers are skipped for <code>pi</code> workers and the reply says <code>MCP servers skipped: NAME (pi does not support the SSE transport)</code>. <code>omp</code> accepts <code>sse</code>. <code>omp</code> is also set to ignore MCP servers from other tools and from the repo's own config, so only these servers load.</li>
 <li>Because of <code>--strict-mcp-config</code>, a repo's own <code>.mcp.json</code> is not loaded on the machine once you have a server in the list. Without the list, nothing changes from before.</li>
 <li>Coordinators get the same list. The list holds references, not secret values, so it adds no secret to a coordinator machine.</li>
 </ul>
@@ -169,7 +170,7 @@ Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start 
 <li><strong>The reply footer</strong> ends with a line such as <code>MCP servers: notion, context7 (failed: linear)</code>. It lists the servers that connected and, in brackets, the ones that did not. If none connected it says <code>MCP servers: none connected</code>.</li>
 <li>If you allowed a real token, another line says <code>MCP servers with a real token on the machine (you allowed it): NAME</code>.</li>
 <li>Entries that did not pass the checks appear as <code>MCP servers skipped: NAME (REASON)</code>.</li>
-<li>For a <code>pi</code> worker the line is <code>MCP servers: none (pi workers do not get MCP servers yet)</code>.</li>
+<li>For a <code>pi</code> or <code>omp</code> worker the line is <code>MCP servers: a, b</code>, the names of the servers that were delivered to the machine. Unlike Claude's start-up report, it does not confirm that a server connected.</li>
 <li><strong><code>cloud_agent_list</code></strong> shows a line <code>mcp notion, context7</code> under each subagent that has servers.</li>
 <li><strong>The dashboard</strong> shows an MCP row in the agent's details with the server names. It never shows entries or tokens.</li>
 </ul>

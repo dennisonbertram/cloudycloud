@@ -1,4 +1,5 @@
 import './tmp-cleanup.mjs';
+import { parseOmpStream } from '../src/progress-omp.mjs';
 import { parsePiStream, createPiProgress } from '../src/progress-pi.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -168,4 +169,19 @@ test('servers listed only in mcp_server_errors (skipped by Claude Code) count as
   assert.equal(mcpLine(only), 'MCP servers: none connected (failed: linear)');
   const mixed = parseStream(JSON.stringify({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'notion', status: 'connected' }], mcp_server_errors: { linear: 'invalid config' } }));
   assert.equal(mcpLine(mixed), 'MCP servers: notion (failed: linear)');
+});
+
+test('omp fixtures: tools, tokens, model and final text; the 401 fixture is an error', () => {
+  const omp = (f) => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
+  const p = parseOmpStream(omp('omp-json-sample.jsonl'));
+  assert.deepEqual(p.totals(), { tools: 1, in: 300, out: 30 });
+  // message.model only echoes the requested id (live: Particle answered glm5.3flash to pi, omp still said z-ai/glm-5.3-flash),
+  // so the footer must not present it as the provider's confirmation.
+  assert.ok(!p.model);
+  assert.match(modelLine(p, { model: 'fake-1', host: 'h', name: 'omp-x' }), /^Model: fake-1 requested via h \(profile omp-x\); not confirmed by the provider$/);
+  assert.equal(p.final.is_error, false);
+  assert.equal(p.final.result, 'hello from fake');
+  const e = parseOmpStream(omp('omp-json-error.jsonl'));
+  assert.equal(e.final.is_error, true);
+  assert.match(e.final.result, /401 invalid api key/);
 });
