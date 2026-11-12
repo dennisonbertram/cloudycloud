@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
-import { PROVIDER_KEY } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileKeyNames, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
@@ -393,7 +393,8 @@ async function installCoordinator(a, ctx, envs) {
   await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
   const keyName = ctx.provider.keyName;
-  const names = [keyName, claudeKey, ...profileKeyNames(env).filter((k) => k !== keyName && k !== 'ANTHROPIC_API_KEY')];
+  // The coordinator's machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and needs its key.
+  const names = [...new Set([keyName, DEFAULT_PROVIDER_KEY, claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY')])];
   const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
