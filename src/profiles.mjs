@@ -46,6 +46,7 @@ export function resolveProfile(name, model, env = process.env) {
   const harness = p.harness ?? 'claude';
   if (!['claude', 'pi', 'omp'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi" or "omp"` };
   if (!['anthropic', 'openai'].includes(p.format)) return { error: `profile ${name}: format must be "anthropic" or "openai"` };
+  if (harness === 'omp' && p.format !== 'openai') return { error: `profile ${name}: the omp harness only supports format "openai" (omp models are written as openai-completions)` };
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
@@ -96,12 +97,14 @@ export const ompModels = (p) => `providers:
     models:
       - id: ${JSON.stringify(p.model)}
 `;
+// Also written as overlay.yml and passed with --config: that layer loads after global and project settings, so a repository's
+// .omp/config.yml cannot re-enable imports or empty disabledProviders.
 // Only the servers in $PI_CODING_AGENT_DIR/mcp.json load: no project MCP config and no imports from other tools.
 export const ompConfig = () => `disabledProviders: [claude, claude-plugins, codex, gemini, cursor, windsurf, vscode, opencode, agent-plugins, mcp-json]
 mcp:
   enableProjectConfig: false
 `;
-export const ompCommand = (p, { home, sessionId, hint }) => `PI_CODING_AGENT_DIR=${home}/omp-agent PATH=${home}/.local/bin:$PATH omp -p --mode json --model ${OMP_PROVIDER}/${p.model} ${sessionId ? `--session ${sessionId} ` : ''}--append-system-prompt '${hint}' < ${home}/prompt.txt`;
+export const ompCommand = (p, { home, sessionId, hint }) => `PI_CODING_AGENT_DIR=${home}/omp-agent PATH=${home}/.local/bin:$PATH omp -p --mode json --config ${home}/omp-agent/overlay.yml --model ${OMP_PROVIDER}/${p.model} ${sessionId ? `--session ${sessionId} ` : ''}--append-system-prompt '${hint}' < ${home}/prompt.txt`;
 
 export const profileHost = (p) => new URL(p.baseUrl).host;
 // Added to a profile worker's instructions. No apostrophes: it sits inside single quotes in a shell command.

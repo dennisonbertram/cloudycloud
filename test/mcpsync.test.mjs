@@ -199,3 +199,14 @@ test('forHarness for pi drops the proxy secret and the allowed-literal name of a
   assert.deepEqual(pi.secrets, ['MCP_B_TOKEN']);
   assert.deepEqual(pi.literal, []);
 });
+
+test('forHarness for omp skips values omp would run or resolve as a variable name, and keeps our references', () => {
+  const ok = { type: 'http', url: 'https://ok.example.com', headers: { Authorization: 'Bearer ${MCP_OK_TOKEN}', 'X-Key': '${MCP_OK_TOKEN}', 'X-Flag': 'true-ish value' } };
+  const mcp = { servers: { ok, name: { type: 'http', url: 'https://a.example.com', headers: { 'X-Credential': 'PARTICLE_API_KEY' } }, cmd: { type: 'http', url: 'https://b.example.com', headers: { A: '!cat /etc/passwd' } }, env: { type: 'stdio', command: 'npx', args: ['x'], env: { T: 'OPENROUTER_API_KEY' } } }, skipped: [], secrets: ['MCP_OK_TOKEN'] };
+  const r = forHarness(mcp, 'omp');
+  assert.deepEqual(Object.keys(r.servers), ['ok']);
+  assert.deepEqual(r.skipped.map((x) => x.name).sort(), ['cmd', 'env', 'name']);
+  assert.match(r.skipped[0].reason, /MCP_<NAME>_TOKEN/);
+  assert.deepEqual(r.secrets, ['MCP_OK_TOKEN']);
+  assert.equal(Object.keys(forHarness(mcp, 'claude').servers).length, 4);
+});

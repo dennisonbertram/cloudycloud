@@ -901,10 +901,11 @@ test('an omp profile installs pinned omp, writes key-free models.yml and config.
   assert.equal(sbx.written[`${home}/omp-agent/models.yml`], ompModels({ baseUrl: 'https://api.particle.ai/v1', keyName: 'PARTICLE_API_KEY', model: 'z-ai/glm-5.3-flash' }));
   assert.match(sbx.written[`${home}/omp-agent/models.yml`], /apiKey: PARTICLE_API_KEY\n/);
   assert.equal(sbx.written[`${home}/omp-agent/config.yml`], ompConfig());
+  assert.equal(sbx.written[`${home}/omp-agent/overlay.yml`], ompConfig());
   assert.ok(!JSON.stringify(sbx.written).includes(PKEY) && !all.includes(PKEY));
   assert.deepEqual(Object.keys(sbx.envs), ['PARTICLE_API_KEY']);
   const log = await ompLog(sbx);
-  assert.match(log, /ARGS -p --mode json --model worker\/z-ai\/glm-5\.3-flash --append-system-prompt .*git push.*foreground/);
+  assert.match(log, /ARGS -p --mode json --config \S+omp-agent\/overlay\.yml --model worker\/z-ai\/glm-5\.3-flash --append-system-prompt .*git push.*foreground/);
   assert.match(log, /DIR=\S+omp-agent PROMPT=do the thing/);
   assert.ok(!log.includes('--session') && !log.includes(PKEY));
   assert.match(text(await listAgents({}, deps)), /profile omp-glm/);

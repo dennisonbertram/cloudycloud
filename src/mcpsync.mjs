@@ -144,12 +144,21 @@ export function loadMcp(env = process.env) {
 
 export const mcpConfigText = (servers) => JSON.stringify({ mcpServers: servers }, null, 2);
 
-// The servers a harness can use: pi has no SSE transport, so those entries move to skipped. Claude gets the input as is.
+// OMP resolves every env/header value before use: `!cmd` runs a shell command and a value that is a whole environment variable
+// name is replaced by that variable's value (docs/mcp-config.md, "Pre-connect env/header resolution"). There is no escape, and
+// the worker's environment holds the provider key, so such a value is not delivered. `${MCP_X_TOKEN}` and `Bearer ...` are literal to OMP.
+const OMP_SPECIAL = /^\s*!|^[A-Za-z_][A-Za-z0-9_]*$/;
+const ompUnsafe = (e) => [...Object.values(e.headers ?? {}), ...Object.values(e.env ?? {})].some((v) => OMP_SPECIAL.test(v));
+
+// The servers a harness can use: pi has no SSE transport, and omp cannot take values it would resolve itself, so those entries
+// move to skipped. Claude gets the input as is.
 export function forHarness(mcp, harness) {
-  if (harness !== 'pi') return mcp;
+  if (harness !== 'pi' && harness !== 'omp') return mcp;
   const servers = {}, skipped = [...mcp.skipped];
   for (const [name, e] of Object.entries(mcp.servers)) {
-    if (e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' }); else servers[name] = e;
+    if (harness === 'pi' && e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' });
+    else if (harness === 'omp' && ompUnsafe(e)) skipped.push({ name, reason: 'a header or env value starts with ! or is a bare variable name, which omp would run or replace with the worker\'s own variable; put the value in a ${MCP_<NAME>_TOKEN} reference with cloudy-cloud mcp add, or prefix the value with text such as "Bearer "' });
+    else servers[name] = e;
   }
   // A skipped server's proxy secret is not attached to the machine and its name is not reported as delivered.
   const text = JSON.stringify(servers);

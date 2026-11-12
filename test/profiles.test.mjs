@@ -101,6 +101,12 @@ test('ompModels quotes the model id so YAML keeps it a string', () => {
 test('ompCommand has the verified flags and no key', () => {
   const p = resolveProfile('omp-glm', undefined, env).ok;
   const c = ompCommand(p, { home: '/home/u', sessionId: 'abc', hint: 'hi' });
-  assert.equal(c, "PI_CODING_AGENT_DIR=/home/u/omp-agent PATH=/home/u/.local/bin:$PATH omp -p --mode json --model worker/z-ai/glm-5.3-flash --session abc --append-system-prompt 'hi' < /home/u/prompt.txt");
+  assert.equal(c, "PI_CODING_AGENT_DIR=/home/u/omp-agent PATH=/home/u/.local/bin:$PATH omp -p --mode json --config /home/u/omp-agent/overlay.yml --model worker/z-ai/glm-5.3-flash --session abc --append-system-prompt 'hi' < /home/u/prompt.txt");
+  assert.match(ompConfig(), /disabledProviders: \[.*mcp-json\]\nmcp:\n  enableProjectConfig: false/); // the overlay file holds the restrictions
   assert.doesNotMatch(ompCommand(p, { home: '/h', hint: 'x' }), /--session|k1/);
+});
+
+test('omp rejects format anthropic, since ompModels only writes openai-completions', () => {
+  const r = resolveProfile('mine', undefined, { ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: 'omp', format: 'anthropic', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
+  assert.match(r.error, /omp harness only supports format "openai"/);
 });

@@ -422,6 +422,7 @@ async function setupOmp(a, ctx) {
     .catch((e) => { throw new Error(`Could not install omp in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
   await a.sandbox.files.write(`${a.home}/omp-agent/models.yml`, ompModels(a.profile));
   await a.sandbox.files.write(`${a.home}/omp-agent/config.yml`, ompConfig());
+  await a.sandbox.files.write(`${a.home}/omp-agent/overlay.yml`, ompConfig());
 }
 
 // Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
