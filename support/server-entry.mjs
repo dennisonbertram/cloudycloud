@@ -3,6 +3,7 @@
 // ECHO (the reply is the whole prompt).
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { buildServer } from '../src/mcp.mjs';
+import { createFakeProvider } from '../test/fake-provider.mjs';
 
 const SID = '11111111-2222-3333-4444-555555555555';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -38,4 +39,4 @@ const createSandbox = async () => {
 
 // Only these settings of the test process reach the server under test.
 const env = Object.fromEntries(['CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MCP'].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
-serveStdio(() => buildServer({ createSandbox, env, open: new Map(), tasks: new Map(), cancelWaitMs: 3000 }));
+serveStdio(() => buildServer({ createSandbox, provider: createFakeProvider(), env, open: new Map(), tasks: new Map(), cancelWaitMs: 3000 }));

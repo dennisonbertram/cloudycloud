@@ -1,0 +1,177 @@
+{
+  "create": {
+    "sandbox": {
+      "id": "m-123",
+      "home": "/data/home"
+    },
+    "calls": [
+      {
+        "http": "POST",
+        "url": "https://api.instabox.sh/v1/machines",
+        "body": "{\"name\":\"x\",\"deleteAfterSeconds\":3600}"
+      },
+      {
+        "http": "POST",
+        "url": "https://api.instabox.sh/v1/machines/m1/exec",
+        "body": "{}"
+      },
+      {
+        "sdk": "Sandbox.create",
+        "template": "agent-browser",
+        "opts": {
+          "apiKey": "<API_KEY>",
+          "envs": {
+            "ANTHROPIC_API_KEY": "x"
+          },
+          "metadata": {
+            "purpose": "cloudy-cloud",
+            "owner": "owner1"
+          },
+          "archiveMs": 28800000
+        }
+      },
+      {
+        "http": "PATCH",
+        "url": "https://api.instabox.sh/v1/machines/m-123/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>",
+          "Content-Type": "application/json"
+        },
+        "body": "{\"secrets\":[\"GH_TOKEN\",\"MCP_X_TOKEN\"]}"
+      },
+      {
+        "http": "GET",
+        "url": "https://api.instabox.sh/v1/machines/m-123/secrets",
+        "headers": {
+          "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "files.write",
+        "args": [
+          "/data/home/a.txt",
+          "hello"
+        ]
+      },
+      {
+        "sdk": "files.read",
+        "args": [
+          "/data/home/a.txt"
+        ]
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "echo fg",
+        "opts": {
+          "cwd": "/data/home",
+          "timeoutMs": 600000
+        }
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "echo bg",
+        "opts": {
+          "cwd": "/data/home",
+          "background": true
+        }
+      },
+      {
+        "sdk": "job.wait",
+        "opts": {
+          "timeoutMs": 20000,
+          "onStdout": "<fn>"
+        }
+      },
+      {
+        "sdk": "kill"
+      }
+    ]
+  },
+  "reaper": [
+    {
+      "http": "GET",
+      "url": "https://api.instabox.sh/v1/machines?metadata=owner%3Ao1",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    },
+    {
+      "http": "DELETE",
+      "url": "https://api.instabox.sh/v1/machines/m1",
+      "headers": {
+        "X-API-Key": "<API_KEY>",
+        "Idempotency-Key": "<UUID>",
+        "X-Confirm-Delete": "m1"
+      }
+    }
+  ],
+  "dashboardList": {
+    "calls": [
+      {
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "purpose": "cloudy-cloud"
+        }
+      }
+    ],
+    "rows": [
+      {
+        "id": "m1",
+        "name": "box",
+        "role": "coordinator",
+        "owner": "o1",
+        "state": "running",
+        "startedAt": 1767323045000,
+        "archiveAt": 1767409445000
+      }
+    ]
+  },
+  "ports": [
+    {
+      "argv": [
+        "npx",
+        "--yes",
+        "instabox@latest",
+        "port-forward",
+        "mach-aaa",
+        "8080:3000"
+      ],
+      "inherit": true,
+      "envNames": [
+        "INSTABOX_API_KEY"
+      ]
+    },
+    {
+      "argv": [
+        "npx",
+        "--yes",
+        "instabox@latest",
+        "port",
+        "publish",
+        "mach-aaa",
+        "3000",
+        "--private",
+        "--json"
+      ],
+      "inherit": false,
+      "envNames": [
+        "INSTABOX_API_KEY"
+      ]
+    },
+    {
+      "argv": [
+        "npx",
+        "--yes",
+        "instabox@latest",
+        "port",
+        "unpublish",
+        "mach-aaa",
+        "3000"
+      ],
+      "inherit": false,
+      "envNames": [
+        "INSTABOX_API_KEY"
+      ]
+    }
+  ]
+}

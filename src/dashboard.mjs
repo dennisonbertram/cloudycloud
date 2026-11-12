@@ -1,6 +1,6 @@
 // `cloudy-cloud dashboard [--demo] [--port N] [--no-open]`: a read-only web page on 127.0.0.1 that shows the cloud
 // boxes (agents and coordinators) and the messages between your session and them.
-// Data: the local event log (see events.mjs) plus the live Instabox machine list. Keys stay on the server side.
+// Data: the local event log (see events.mjs) plus the live machine list from the provider. Keys stay on the server side.
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -8,32 +8,28 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from './config.mjs';
+import { loadProvider } from './providers/index.mjs';
 import { eventsFile, foldAgents, readEvents, redact } from './events.mjs';
 import { demoState } from './dashboard-demo.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_PORT = 4477;
 const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'";
-const MACHINE_STATE = { creating: 'starting', starting: 'starting', running: 'running', resuming: 'starting', stopping: 'stopped', stopped: 'stopped', suspending: 'stopped', suspended: 'stopped', deleting: 'stopped', deleted: 'stopped', error: 'failed' };
+const GENERIC_FIX = 'Check CLOUDY_CLOUD_PROVIDER and your internet connection, then your provider API key in ~/.config/cloudy-cloud/env.';
 
-// Live machines the tool labelled (metadata purpose=cloudy-cloud). Throws with a `code` the page can explain.
-export async function listMachines(env, sdk) {
-  if (!env.INSTABOX_API_KEY) throw Object.assign(new Error('INSTABOX_API_KEY is not set.'), { code: 'no_key' });
-  const { Sandbox } = sdk ?? (await import('@insforge/instabox-sdk'));
-  return (await Sandbox.list({ apiKey: env.INSTABOX_API_KEY, metadata: { purpose: 'cloudy-cloud' } })).map((m) => ({
-    id: m.sandboxId, name: m.name, role: m.metadata?.role, owner: m.metadata?.owner, state: m.state,
-    startedAt: +new Date(m.startedAt), archiveAt: m.archiveAt ? +new Date(m.archiveAt) : undefined,
+// Live machines the tool labelled (label purpose=cloudy-cloud). Throws with a `code` the page can explain.
+export async function listMachines(env, provider) {
+  provider ??= await loadProvider(env);
+  if (!env[provider.keyName]) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  return (await provider.list({ purpose: 'cloudy-cloud' }, { sdk: true })).map((m) => ({
+    id: m.id, name: m.name, role: m.labels?.role, owner: m.labels?.owner, state: m.state, status: m.status,
+    startedAt: m.startedAt, archiveAt: m.archiveAt,
   }));
 }
 
-const FIXES = {
-  no_key: 'Add your Instabox key: run cloudy-cloud setup (or npx cloudycloud setup), or put INSTABOX_API_KEY=... in ~/.config/cloudy-cloud/env.',
-  api: 'Check your internet connection and that INSTABOX_API_KEY in ~/.config/cloudy-cloud/env is still valid (create a new one at instabox.sh if not).',
-};
-
 // One list of boxes: every agent from the event log, with its live machine, plus live machines no agent explains
 // (coordinators, and agents from sessions that never wrote an event log).
-export function buildState({ events, machines, machineError, now = Date.now(), alive }) {
+export function buildState({ events, machines, machineError, now = Date.now(), alive, provider }) {
   const agents = foldAgents(events, { alive, now });
   const live = new Map((machines ?? []).map((m) => [m.id, m]));
   const used = new Set();
@@ -46,10 +42,10 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
   });
   for (const m of machines ?? []) {
     if (used.has(m.id)) continue;
-    const status = MACHINE_STATE[m.state] ?? 'stopped';
+    const status = m.status ?? 'stopped';
     boxes.push({ kind: m.role === 'coordinator' ? 'coordinator' : 'machine', id: m.name || m.id, machine: m.id, role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt, description: m.role === 'coordinator' ? 'Cloud coordinator' : 'Machine without a session log', messages: [] });
   }
-  const error = machineError && { code: machineError.code ?? 'api', message: redact(machineError.message), fix: FIXES[machineError.code] ?? FIXES.api };
+  const error = machineError && { code: machineError.code ?? 'api', message: redact(machineError.message), fix: (machineError.code === 'no_key' ? provider?.text.noKeyFix : provider?.text.apiFix) ?? GENERIC_FIX };
   return { now, hasLog: events.length > 0, machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
 }
 
@@ -80,14 +76,17 @@ export function createHandler({ token, getState, html }) {
   };
 }
 
-// Live state with a short cache so several open tabs do not each call the Instabox API.
-export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500 } = {}) {
+// Live state with a short cache so several open tabs do not each call the provider API.
+export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider } = {}) {
   let cached, at = 0;
   return async () => {
     if (cached && Date.now() - at < cacheMs) return cached;
     let machines, machineError;
-    try { machines = await list(env); } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split(env.INSTABOX_API_KEY || '\0').join('[redacted]') }; }
-    cached = buildState({ events: readEvents(file), machines, machineError });
+    try {
+      provider ??= await loadProvider(env);
+      machines = await list(env, provider);
+    } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
+    cached = buildState({ events: readEvents(file), machines, machineError, provider });
     at = Date.now();
     return cached;
   };

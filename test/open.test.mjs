@@ -1,11 +1,13 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseArgs, resolveTarget, run } from '../src/open.mjs';
+import { createFakeProvider } from './fake-provider.mjs';
 
 const machines = [
-  { id: 'mach-aaa', name: 'box-aaa', state: 'running' },
-  { id: 'mach-bbb', name: 'box-bbb', state: 'stopped' },
-  { id: 'mach-ccc', name: 'my-coord', role: 'coordinator', state: 'running' },
+  { id: 'mach-aaa', name: 'box-aaa', state: 'running', status: 'running' },
+  { id: 'mach-bbb', name: 'box-bbb', state: 'stopped', status: 'stopped' },
+  { id: 'mach-ccc', name: 'my-coord', role: 'coordinator', state: 'running', status: 'running' },
 ];
 const events = [
   { t: 1, id: '7c1e90ab', type: 'agent', description: 'a' },
@@ -13,11 +15,11 @@ const events = [
   { t: 3, id: 'dead0001', type: 'agent', description: 'b' },
   { t: 4, id: 'dead0001', type: 'machine', machine: 'mach-bbb' },
 ];
-const deps = (calls = [], over = {}) => {
-  const out = [], err = [];
-  return { calls, out, err, d: {
-    list: async () => machines, events: () => events, alive: () => true,
-    spawn: async (argv, o) => { calls.push([argv, o]); return { code: 0, stdout: '{"url":"https://x.example/?_token=t"}' }; },
+const deps = (over = {}, providerCaps = {}) => {
+  const out = [], err = [], provider = createFakeProvider();
+  Object.assign(provider.caps, providerCaps);
+  return { out, err, provider, d: {
+    provider, env: {}, list: async () => machines, events: () => events, alive: () => true,
     out: (s) => out.push(s), err: (s) => err.push(s), ...over,
   } };
 };
@@ -43,32 +45,42 @@ test('resolveTarget maps agent id and coordinator name; errors are plain', () =>
   assert.throws(() => resolveTarget('nope', ctx), /Unknown id "nope".*7c1e90ab/s);
 });
 
-test('default opens a private tunnel with an exact argv', async () => {
-  const { calls, out, d } = deps([], { env: { INSTABOX_API_KEY: 'ibk_saved' } });
+test('default forwards a private tunnel through the provider', async () => {
+  const { provider, out, d } = deps();
   assert.equal(await run(['7c1e90ab', '8080:3000'], d), 0);
   assert.equal(out[0], 'Forwarding http://127.0.0.1:8080 to port 3000 on mach-aaa. Press Ctrl-C to stop.');
-  assert.deepEqual(calls[0], [['npx', '--yes', 'instabox@latest', 'port-forward', 'mach-aaa', '8080:3000'], { inherit: true, env: { INSTABOX_API_KEY: 'ibk_saved' } }]);
-  assert.ok(calls.every(([, o]) => o.env.INSTABOX_API_KEY === 'ibk_saved'));
+  assert.deepEqual(provider.log.ports, [{ op: 'forward', id: 'mach-aaa', localRemote: '8080:3000' }]);
 });
 
-test('--share publishes privately and --unshare unpublishes', async () => {
+test('--share publishes through the provider and --unshare unpublishes', async () => {
   const s = deps();
   assert.equal(await run(['7c1e90ab', '3000', '--share'], s.d), 0);
-  assert.deepEqual(s.calls[0][0], ['npx', '--yes', 'instabox@latest', 'port', 'publish', 'mach-aaa', '3000', '--private', '--json']);
-  assert.ok(s.out.join('\n').includes('https://x.example/?_token=t'));
+  assert.deepEqual(s.provider.log.ports, [{ op: 'publish', id: 'mach-aaa', port: '3000' }]);
+  assert.equal(s.out[0], 'https://fake.example/mach-aaa/3000');
   assert.match(s.out.join('\n'), /Anyone with this link can open the app until the machine is deleted or you run: cloudy-cloud open 7c1e90ab 3000 --unshare/);
-  assert.ok(!s.calls[0][0].includes('--public'));
   const u = deps();
-  await run(['7c1e90ab', '3000', '--unshare'], u.d);
-  assert.deepEqual(u.calls[0][0], ['npx', '--yes', 'instabox@latest', 'port', 'unpublish', 'mach-aaa', '3000']);
+  assert.equal(await run(['7c1e90ab', '3000', '--unshare'], u.d), 0);
+  assert.deepEqual(u.provider.log.ports, [{ op: 'unpublish', id: 'mach-aaa', port: '3000' }]);
+});
+
+test('a provider without ports fails with one line naming it; a publish failure is explained', async () => {
+  const a = deps({}, { hasPublish: false, hasPortForward: false });
+  for (const args of [['7c1e90ab', '3000', '--share'], ['7c1e90ab', '3000']]) assert.equal(await run(args, a.d), 1);
+  assert.equal(a.err.length, 2);
+  assert.match(a.err[0], /Fake does not support/);
+  assert.deepEqual(a.provider.log.ports, []);
+  const b = deps();
+  b.provider.publishPort = async () => { throw new Error('boom'); };
+  assert.equal(await run(['7c1e90ab', '3000', '--share'], b.d), 1);
+  assert.match(b.err.join(''), /Publishing failed: boom\nIf Fake is not signed in, run: cloudy-cloud setup/);
 });
 
 test('errors spawn nothing and return 1', async () => {
   const a = deps();
   assert.equal(await run(['nope', '3000'], a.d), 1);
-  assert.equal(a.calls.length, 0);
+  assert.deepEqual(a.provider.log.ports, []);
   assert.match(a.err.join(''), /7c1e90ab/);
-  const b = deps([], { list: async () => { throw Object.assign(new Error('INSTABOX_API_KEY is not set.'), { code: 'no_key' }); } });
+  const b = deps({ list: async () => { throw Object.assign(new Error('INSTABOX_API_KEY is not set.'), { code: 'no_key' }); } });
   assert.equal(await run(['x', '3000'], b.d), 1);
   assert.match(b.err.join(''), /cloudy-cloud setup/);
 });

@@ -1,6 +1,8 @@
+import './tmp-cleanup.mjs';
 import { test } from 'node:test';
+import { createFakeProvider } from './fake-provider.mjs';
 import assert from 'node:assert/strict';
-import { createInstaboxSandbox } from '../src/instabox.mjs';
+import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 import { createLimiter } from '../src/limits.mjs';
 import { createProgress } from '../src/progress.mjs';
 import { runSubagent, waitAgents } from '../src/run-subagent.mjs';
@@ -179,7 +181,7 @@ test('run-subagent honours sandbox.home and scrubs the Instabox key', async () =
     kill: async () => {},
   };
   const deps = {
-    createSandbox: async (envs) => { seenEnvs = envs; return sbx; }, open: new Map(),
+    createSandbox: async (envs) => { seenEnvs = envs; return sbx; }, provider: { ...createFakeProvider(), keyName: 'INSTABOX_API_KEY' }, open: new Map(),
     env: { INSTABOX_API_KEY: KEY, ANTHROPIC_API_KEY: 'api-key-xyz' }, cwd: githubRepo(),
   };
   const started = await runSubagent({ description: 'd', prompt: 'p' }, deps);

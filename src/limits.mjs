@@ -5,7 +5,7 @@ export const MAX_START_TRIES = 5; // rate_limited retries per agent
 export const QUOTA_RETRY_MS = 60_000;
 export const QUOTA_GIVE_UP_MS = 30 * MINUTE;
 
-// Global cap on concurrent Instabox command/file calls. FIFO. run(fn) holds one slot while fn runs.
+// Global cap on concurrent provider command/file calls. FIFO. run(fn) holds one slot while fn runs.
 export function createLimiter(max) {
   const waiting = [];
   const l = { active: 0, peak: 0 };

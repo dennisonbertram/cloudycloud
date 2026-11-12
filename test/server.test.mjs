@@ -1,3 +1,4 @@
+import './tmp-cleanup.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
