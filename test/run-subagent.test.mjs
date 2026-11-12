@@ -1137,3 +1137,19 @@ test('a token value in a sandbox error is scrubbed from the reply', async () => 
   const r = await x.wait([await x.start({ prompt: 'FAIL ghp_secret' })]);
   assert.ok(!r.includes('ghp_secret'));
 });
+
+// ---- MCP tokens on a provider without proxy secrets (#41) ----
+test('without proxy secrets an MCP ${MCP_X_TOKEN} server needs --allow-literal; only consented tokens are requested and scrubbed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cc-mcp-'));
+  const file = join(dir, 'mcp.json');
+  const ref = (v) => ({ type: 'http', url: 'https://m.example.com/mcp', headers: { Authorization: `Bearer \${${v}}` } });
+  await writeFile(file, JSON.stringify({ mcpServers: { x: ref('MCP_X_TOKEN'), y: { ...ref('MCP_Y_TOKEN'), cloudyCloudAllowLiteral: true } } }));
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const env = { ...pEnv, CLOUDY_CLOUD_MCP: file, MCP_X_TOKEN: 'xtoken-not-consented', MCP_Y_TOKEN: 'ytoken-consented-1' };
+  const x = await setup({ createSandbox: undefined, provider, env });
+  const r = await x.wait([await x.start({ prompt: 'FAIL ytoken-consented-1' })]);
+  const { secrets } = provider.log.create[0];
+  assert.deepEqual(secrets, ['MCP_Y_TOKEN']);
+  assert.match(r, /MCP servers skipped: x \(.*--allow-literal/);
+  assert.ok(!r.includes('ytoken-consented-1') && !r.includes('xtoken-not-consented'));
+});
