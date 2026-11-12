@@ -228,3 +228,18 @@ test('with the tasks extension, no task response of a follow-up turn holds a con
   assert.ok(!JSON.stringify([t1, first.seen, t2, second.seen]).includes(TOKEN));
   await c.call('cloud_agent_stop', { agent_ids: [agent] });
 });
+
+test("the shared start queue uses the provider's startsPerMin when CLOUDY_CLOUD_STARTS_PER_MIN is unset", async () => {
+  const { buildServer } = await import('../src/mcp.mjs');
+  const { createFakeProvider } = await import('./fake-provider.mjs');
+  const p = createFakeProvider();
+  const deps = { provider: { ...p, caps: { ...p.caps, startsPerMin: 1 } }, env: {}, open: new Map() };
+  buildServer(deps);
+  const a = {}, b = {};
+  await deps.queue.create(a, async () => 'm1');
+  const second = deps.queue.create(b, async () => 'm2');
+  await tick(50);
+  assert.equal(b.status, 'queued', 'the second create in one minute waits when the provider allows 1 per minute');
+  deps.queue.cancel(b);
+  await assert.rejects(second, /cancelled/);
+});
