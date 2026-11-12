@@ -1,4 +1,6 @@
 import './tmp-cleanup.mjs';
+import { mcpConfigText } from '../src/mcpsync.mjs';
+import { ompModels, ompConfig } from '../src/profiles.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -882,6 +884,60 @@ test('a pi worker cannot be a coordinator', async () => {
   assert.match(r.content[0].text, /coordinator.*pi/);
 });
 
+// ---- omp harness ---- (fake omp prints the #36 spike fixtures, test/fixtures/omp-json-*.jsonl)
+const ompLog = (sbx) => readFile(join(sbx.dir, 'home', 'omp.log'), 'utf8');
+
+test('an omp profile installs pinned omp, writes key-free models.yml and config.yml, starts no gateway, and runs omp with the prompt from the file', async () => {
+  const { start, wait, text, sandboxes, deps } = await profileSetup();
+  const id = await start({ profile: 'omp-glm', prompt: 'do the thing' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle[\s\S]*\(profile omp-glm\)/);
+  assert.match(r, /Total: \d+ tool uses?, /);
+  assert.ok(!/\$\d/.test(r), 'no cost in the result');
+  const sbx = sandboxes[0], all = sbx.cmds.join('\n'), home = '/home/user';
+  assert.ok(sbx.cmds.includes(`mkdir -p ${home}/omp-agent ${home}/.local/bin && curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v18.18.7 && test -x ${home}/.local/bin/omp`));
+  assert.match(await readFile(join(sbx.dir, 'home', 'install.log'), 'utf8'), /install --binary --ref v18\.18\.7/);
+  assert.ok(!all.includes('litellm') && !all.includes('uvx') && !all.includes('npm install'));
+  assert.equal(sbx.written[`${home}/omp-agent/models.yml`], ompModels({ baseUrl: 'https://api.particle.ai/v1', keyName: 'PARTICLE_API_KEY', model: 'z-ai/glm-5.3-flash' }));
+  assert.match(sbx.written[`${home}/omp-agent/models.yml`], /apiKey: PARTICLE_API_KEY\n/);
+  assert.equal(sbx.written[`${home}/omp-agent/config.yml`], ompConfig());
+  assert.equal(sbx.written[`${home}/omp-agent/overlay.yml`], ompConfig());
+  assert.ok(!JSON.stringify(sbx.written).includes(PKEY) && !all.includes(PKEY));
+  assert.deepEqual(Object.keys(sbx.envs), ['PARTICLE_API_KEY']);
+  const log = await ompLog(sbx);
+  assert.match(log, /ARGS -p --mode json --config \S+omp-agent\/overlay\.yml --model worker\/z-ai\/glm-5\.3-flash --append-system-prompt .*git push.*foreground/);
+  assert.match(log, /DIR=\S+omp-agent PROMPT=do the thing/);
+  assert.ok(!log.includes('--session') && !log.includes(PKEY));
+  assert.match(text(await listAgents({}, deps)), /profile omp-glm/);
+});
+
+test('an omp follow-up resumes the session by id', async () => {
+  const { start, wait, msg, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'omp-deepseek' });
+  await wait([id]);
+  await msg(id, 'again');
+  assert.match(await wait([id]), /status: idle/);
+  const lines = (await ompLog(sandboxes[0])).trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /--session 01a1cb99-dd23-738e-99bd-0cfd030f263d /);
+  assert.match(lines[1], /PROMPT=again/);
+});
+
+test('an omp run that exits 1 with an error message fails the turn and shows the error', async () => {
+  const { start, wait } = await profileSetup();
+  const r = await wait([await start({ profile: 'omp-particle', prompt: 'OMPERR now' })]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /401 invalid api key/);
+});
+
+test('an omp worker cannot be a coordinator, and no machine starts', async () => {
+  const { deps, created } = await profileSetup();
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'omp-glm', role: 'coordinator' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /coordinator cannot use a pi or omp profile/);
+  assert.equal(created.length, 0);
+});
+
 test('workers get a 6 hour delete deadline by default, CLOUDY_CLOUD_WORKER_HOURS changes it, and the deadline is in the list', async () => {
   const seen = [];
   const x = await setup({ createSandbox: async (envs, opts) => { seen.push(opts); return fakeSandbox(); } });
@@ -967,12 +1023,52 @@ test('a rejected server is named with its reason in the footer and not delivered
   assert.ok(!JSON.stringify(sandboxes[0].written).includes('localhost'));
 });
 
-test('a pi worker gets no MCP servers and the footer says so', async () => {
-  const { start, wait, sandboxes, opts } = await mcpSetup(X);
+test('a pi worker gets its mcp.json in the agent dir, the secrets, and the footer; SSE is skipped', async () => {
+  const servers = { ...X, s: { type: 'sse', url: 'https://s.example.com/sse' }, npxone: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'] } };
+  const ev = [];
+  const { start, wait, sandboxes, opts } = await mcpSetup(servers, { events: (e) => ev.push(e) });
   const r = await wait([await start({ profile: 'pi-glm' })]);
-  assert.match(r, /MCP servers: none \(pi workers do not get MCP servers yet\)/);
+  const sbx = sandboxes[0], home = '/home/user';
+  assert.equal(sbx.written[`${home}/pi-agent/mcp.json`], mcpConfigText({ x: servers.x, npxone: servers.npxone }));
+  assert.ok(sbx.cmds.some((c) => c.includes('umask 077') && c.includes(`: > ${home}/pi-agent/mcp.json`)));
+  assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/pi-agent/mcp.json`)));
+  assert.ok(!sbx.writes.some((p) => p.includes('.config/cloudy-cloud/mcp.json')));
+  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.match(r, /MCP servers: x, npxone/);
+  assert.match(r, /MCP servers skipped: s \(pi does not support the SSE transport\)/);
+  assert.deepEqual(ev.find((e) => e.type === 'agent').mcp, ['x', 'npxone']);
+  assert.ok(!(await piLog(sbx)).includes('mcp'), 'the pi command is unchanged');
+});
+
+test('an omp worker gets its mcp.json (SSE kept) in omp-agent with the 600 sequence, and no key value anywhere', async () => {
+  const servers = { ...X, s: { type: 'sse', url: 'https://s.example.com/sse' } };
+  const { start, wait, sandboxes, opts } = await mcpSetup(servers);
+  const r = await wait([await start({ profile: 'omp-glm' })]);
+  const sbx = sandboxes[0], home = '/home/user';
+  assert.equal(sbx.written[`${home}/omp-agent/mcp.json`], mcpConfigText(servers));
+  assert.ok(sbx.cmds.some((c) => c.includes('umask 077') && c.includes('chmod 700') && c.includes(`: > ${home}/omp-agent/mcp.json`)));
+  assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/omp-agent/mcp.json`)));
+  assert.ok(!sbx.writes.some((p) => p.includes('.config/cloudy-cloud/mcp.json')));
+  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.match(r, /MCP servers: x, s/);
+  assert.ok(!/skipped/.test(r));
+  assert.ok(!(await ompLog(sbx)).includes('mcp'), 'the omp command is unchanged');
+});
+
+test('a pi worker without an mcp.json has no MCP write and no MCP footer line', async () => {
+  const { start, wait, sandboxes, opts, file } = await mcpSetup('{}');
+  await rm(file);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
   assert.ok(!sandboxes[0].writes.some((p) => p.endsWith('mcp.json')));
+  assert.ok(!/MCP/.test(r));
   assert.equal(opts[0].secrets, undefined);
+});
+
+test('a Claude worker still gets an SSE server', async () => {
+  const sse = { s: { type: 'sse', url: 'https://s.example.com/sse' } };
+  const { start, wait, sandboxes } = await mcpSetup(sse);
+  await wait([await start({})]);
+  assert.deepEqual(JSON.parse(sandboxes[0].written['/home/user/.config/cloudy-cloud/mcp.json']).mcpServers, sse);
 });
 
 test('invalid mcp.json fails the first turn with the file name', async () => {

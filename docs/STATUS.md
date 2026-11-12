@@ -1,6 +1,6 @@
 # Cloudy Cloud: what is built, and what has been proven
 
-As of 2026-11-10. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
+As of 2026-11-11. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
 
 Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_PROVIDER` (default `instabox`, the only supported value today). Providers must provide proxy secrets for the GitHub token, server-side delete deadlines, snapshots for coordinators, and port forwarding for `open`. `install.sh` sets up Instabox only. See [sandbox provider research](research/sandbox-providers.md).
 
@@ -22,8 +22,10 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Instabox provider | `src/providers/instabox.mjs`, `src/limits.mjs` | Machine creation and the `GH_TOKEN` proxy secret. Paced starts (25 a minute) with retries on `rate_limited` and `quota_exceeded`. One global limit of 24 Instabox calls. Sliced job waits that survive brief request errors. |
 | MCP server sync | `src/mcpsync.mjs`, `src/mcp-cli.mjs` | `cloudy-cloud mcp add\|ls\|rm`: copies chosen servers from Claude Code settings to `~/.config/cloudy-cloud/mcp.json` (remote `https` and `npx`/`uvx` only), rewrites secrets to `${MCP_<NAME>_TOKEN}` Instabox secrets, validates again at agent start, writes the file to the machine and passes `--mcp-config --strict-mcp-config`. Footer line, `cloud_agent_list` and dashboard MCP row show the names. `--allow-literal` is the confirmed exception that copies the real token. Covered by unit tests; not yet proven live end to end with a real MCP server (see issue #9 for the proxy-secret spike). |
 | Cleanup | `src/reaper.mjs` | A separate process that deletes a session's machines when the session ends, even after a hard kill. |
-| Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, and `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway). |
-| Progress | `src/progress.mjs`, `src/progress-pi.mjs` | Streams tool uses, tokens, elapsed time and the current step from Claude Code or `pi`. |
+| Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway), and `omp-glm`, `omp-deepseek` and `omp-particle` (the `omp` harness, with no gateway). |
+| Progress | `src/progress.mjs`, `src/progress-pi.mjs`, `src/progress-omp.mjs` | Streams tool uses, tokens, elapsed time and the current step from Claude Code, `pi` or `omp`. |
+| The `omp` harness | `src/profiles.mjs`, `src/run-subagent.mjs` | `omp-glm`, `omp-deepseek` and `omp-particle` run oh-my-pi (`omp`, pinned v18.18.7, installed on each worker with the official installer in `--binary` mode) with the same Particle.ai models as `pi-*`. `"harness"` in `profiles.json` may be `claude`, `pi` or `omp`. Config is in `~/omp-agent`. Follow-ups resume the omp session. Coordinators refuse `pi` and `omp` profiles. Proven live once (see below); follow-ups covered by unit tests only. |
+| MCP servers for `pi` and `omp` workers | `src/mcpsync.mjs`, `src/run-subagent.mjs` | The servers from `cloudy-cloud mcp add` are written to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` (mode 600). `pi` skips `sse` servers with a reason in the reply; `omp` accepts them. The footer lists delivered servers and does not confirm a connection. Proven live with a stdio server (see below). |
 | Cloud coordinators | `src/coordinator.mjs` | `coordinator image` (sign in once, then snapshot), `start`, `attach`, `ls` and `stop`. They are long-lived, never pause and run Remote Control. |
 | Fleet skill | `skills/cloud-fleet/SKILL.md` | Teaches Claude flat fan-out, trunk merging into `fleet/<topic>`, waves, model choice per level, briefs and safety. |
 
@@ -39,6 +41,8 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Cleanup | A terminal killed mid-task had its machine deleted within 10 seconds. |
 | Open models through the gateway | Two GLM workers and one DeepSeek worker through Particle pushed their files, and DeepSeek handled a follow-up. |
 | The `pi` harness | Two `pi-glm` workers pushed in about 25 seconds each, and one handled a follow-up in the same `pi` session. |
+| The `omp` harness with MCP | 2026-11-11, a Haiku-coordinated session started one `omp-glm` worker with the no-auth context7 stdio server. Branch `cloudy-cloud/45f4d2a8` on GitHub holds `omp-proof.txt` with `mcp__context7_query_docs`, `mcp__context7_resolve_library_id` and a greeting. Footer: `MCP servers: context7`, `Total: 2 tool uses, 25.6k in / 439 out tokens, 45s`. Setup including the omp install took about 20 s. The Particle key value was absent from the run output, the event log and the branch. The machine was gone afterwards. |
+| MCP servers for `pi` workers | Same session shape with `pi-glm`: branch `cloudy-cloud/6434a4e7` holds `pi-proof.txt` with `mcp__context7__resolve_library_id`, `mcp__context7__query_docs` and a greeting. Footer: `MCP servers: context7`, and `WARNING Model: asked for z-ai/glm-5.3-flash, provider reported glm5.3flash` (Particle's own name for the model). Key absent, machine gone afterwards. |
 | Nested tree | A Claude coordinator subagent started two GLM workers and merged both into `fleet/tree-test-*` with `--no-ff`, and both files are on GitHub. |
 | Fleet skill | A session loaded `cloud-fleet` on its own, chose trunk merging, and delivered one `fleet/fleet-demo` branch whose comparison shows only the three requested pages. |
 | Cloud coordinator | Started from the snapshot with no manual steps. Remote Control came up active, and it started a `pi-glm` worker whose push was checked on GitHub. Stop deleted the machine. |
@@ -61,6 +65,8 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 
 - **agent-drive access for workers:** not built. It needs a `delegate` credential and a dedicated drive.
 - **Particle key:** it sits on worker machines; moving it into an Instabox proxy secret needs the user to run `npx instabox@latest secrets set PARTICLE_API_KEY --host api.particle.ai`.
+- **MCP proxy secrets for pi and omp:** the live checks used a server with no token, so the `MCP_<NAME>_TOKEN` proxy path is still not proven live for any harness.
+- **The `omp` harness:** a follow-up resuming the omp session, `sse` servers on omp, and the model line (omp reports only the requested id, so the footer says "not confirmed by the provider") have not been run live.
 - **The `pi` harness:** fixtures were synthetic, but the live run passed. There's no per-command time limit setting for `pi`.
 - **Old-session shim:** delete `bin/claude-cloud` once no session started before the rename to Cloudy Cloud is still running.
 - **Hosted service:** see [HOSTED-DESIGN.md](HOSTED-DESIGN.md).

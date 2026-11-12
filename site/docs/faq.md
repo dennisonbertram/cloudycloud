@@ -26,7 +26,7 @@ Files tracked by git in your repo, including uncommitted edits. It can't see unt
 
 ### Can subagents use my MCP servers?
 
-Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remote `https` servers on public hosts and `npx` or `uvx` servers work. OAuth sign-in, localhost, local paths and secrets in URLs or arguments do not, and `pi` workers get none. Tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remote `https` servers on public hosts and `npx` or `uvx` servers work. OAuth sign-in, localhost, local paths and secrets in URLs or arguments do not, and `pi` workers skip `sse` servers. Tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ### What happens to the machines?
 

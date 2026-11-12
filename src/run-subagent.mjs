@@ -8,11 +8,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY } from './config.mjs';
-import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText } from './mcpsync.mjs';
+import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels } from './profiles.mjs';
+import { resolveProfile, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
+import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -78,8 +79,10 @@ const ctxOf = (deps) => {
   deps.literals ??= new Set();
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName) };
 };
-const hasMcp = (a) => !isPi(a) && Object.keys(a.mcp?.servers ?? {}).length > 0;
-const isPi = (a) => a.profile?.harness === 'pi';
+const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
+const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp'
+const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress };
+const PARSE = { claude: parseStream, pi: parsePiStream, omp: parseOmpStream };
 
 // Consent path: a server whose token cannot go through an Instabox proxy secret is delivered only when its entry in
 // mcp.json carries "cloudyCloudAllowLiteral": true (the user put it there on purpose; the real value then sits on the
@@ -142,7 +145,7 @@ function newTurn(a) {
   a.turns = (a.turns ?? 0) + 1;
   let resolve;
   const done = new Promise((r) => { resolve = r; });
-  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: isPi(a) ? createPiProgress() : createProgress(), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
+  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: PROGRESS[harnessOf(a)](), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
   a.turn = t;
   return t;
 }
@@ -187,12 +190,9 @@ function mcpFooter(a, t) {
   if (!m || (!Object.keys(m.servers).length && !m.skipped.length)) return '';
   const names = Object.keys(m.servers);
   const lines = [];
-  if (isPi(a)) lines.push('MCP servers: none (pi workers do not get MCP servers yet)');
-  else {
-    if (names.length) lines.push(mcpLine(t.progress) || `MCP servers: ${names.join(', ')}`);
-    if (m.literal.length) lines.push(`MCP servers with a real token on the machine (you allowed it): ${m.literal.join(', ')}`);
-    if (m.skipped.length) lines.push(`MCP servers skipped: ${m.skipped.map((x) => `${x.name} (${x.reason})`).join('; ')}`);
-  }
+  if (names.length) lines.push(mcpLine(t.progress) || `MCP servers: ${names.join(', ')}`);
+  if (m.literal.length) lines.push(`MCP servers with a real token on the machine (you allowed it): ${m.literal.join(', ')}`);
+  if (m.skipped.length) lines.push(`MCP servers skipped: ${m.skipped.map((x) => `${x.name} (${x.reason})`).join('; ')}`);
   return `\n${lines.join('\n')}`;
 }
 
@@ -211,14 +211,15 @@ async function turn(a, message, ctx, t) {
   // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
   const hint = `${commitHint(a.id, a.deleteAt)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
-  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose', hasMcp(a) && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
+  const cmd = [`${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose', hasMcp(a) && harnessOf(a) === 'claude' && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
   // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
   const piCmd = `PI_CODING_AGENT_DIR=${a.home}/pi-agent PATH=${a.home}/.local/bin:$PATH pi --mode json --provider ${PI_PROVIDER} --model ${a.profile?.model} ${a.sessionId ? `--session ${a.sessionId} ` : ''}--append-system-prompt '${hint}' < ${a.home}/prompt.txt`;
   let stdout, failure;
   try {
-    stdout = (await a.sandbox.commands.run(isPi(a) ? piCmd : cmd, {
+    const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
+    stdout = (await a.sandbox.commands.run(ompCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), {
       cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
@@ -230,12 +231,15 @@ async function turn(a, message, ctx, t) {
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
-    const stderr = String(failure.stderr ?? failure.message ?? '').slice(-4000);
+    // omp exits 1 with the error in its last assistant message; show that rather than an empty stderr.
+    const f = harnessOf(a) === 'omp' && (t.progress.final ?? parseOmpStream(failure.stdout ?? '').final);
+    const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n` : '';
+    const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
     return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}` };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
-    const whole = (isPi(a) ? parsePiStream : parseStream)(stdout);
+    const whole = PARSE[harnessOf(a)](stdout);
     whole.startedAt = t.progress.startedAt;
     t.progress = whole;
   }
@@ -315,7 +319,7 @@ async function setup(a, ctx) {
     else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
     else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
-    if (a.profile?.format === 'openai' && !isPi(a)) envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
+    if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => {
@@ -364,7 +368,8 @@ async function setup(a, ctx) {
     }
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (hasMcp(a)) { // references only, except servers the user allowed to carry a real value
-      const dir = `${a.home}/.config/cloudy-cloud`;
+      // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
+      const dir = { pi: `${a.home}/pi-agent`, omp: `${a.home}/omp-agent` }[harnessOf(a)] ?? `${a.home}/.config/cloudy-cloud`;
       // The file may hold a real token. files.write of the SDK sends it to a temp file beside the target and renames it,
       // with the default umask, so the file could briefly be mode 644. So the folder is made mode 700 first (nobody else
       // can enter it, whatever the file mode) and an empty mode-600 file exists before the write; the chmod after is a
@@ -373,7 +378,8 @@ async function setup(a, ctx) {
       await a.sandbox.files.write(`${dir}/mcp.json`, mcpConfigText(a.mcp.servers));
       await a.sandbox.commands.run(`chmod 600 ${dir}/mcp.json`, { cwd: a.home, timeoutMs: SETUP_MS });
     }
-    if (isPi(a)) await setupPi(a, ctx);
+    if (harnessOf(a) === 'pi') await setupPi(a, ctx);
+    else if (harnessOf(a) === 'omp') await setupOmp(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -406,6 +412,17 @@ async function setupPi(a, ctx) {
   await sh(`mkdir -p ${a.home}/pi-agent && npm install -g --ignore-scripts --prefix ${a.home}/.local @earendil-works/pi-coding-agent@${PI_VERSION}`, INSTALL_MS)
     .catch((e) => { throw new Error(`Could not install pi in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
   await a.sandbox.files.write(`${a.home}/pi-agent/models.json`, piModels(a.profile));
+}
+
+// Installs pinned omp with its official installer (it checks the binary's SHA-256 itself) into ~/.local/bin, then writes its
+// key-free config. The agent dir may already hold mcp.json (written above), so only models.yml and config.yml are added.
+async function setupOmp(a, ctx) {
+  const sh = (cmd, timeoutMs) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
+  await sh(`mkdir -p ${a.home}/omp-agent ${a.home}/.local/bin && curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v${OMP_VERSION} && test -x ${a.home}/.local/bin/omp`, INSTALL_MS)
+    .catch((e) => { throw new Error(`Could not install omp in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
+  await a.sandbox.files.write(`${a.home}/omp-agent/models.yml`, ompModels(a.profile));
+  await a.sandbox.files.write(`${a.home}/omp-agent/config.yml`, ompConfig());
+  await a.sandbox.files.write(`${a.home}/omp-agent/overlay.yml`, ompConfig());
 }
 
 // Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
@@ -531,7 +548,7 @@ export async function runSubagent(args, deps) {
     if (r.error) return fail(r.error);
     profile = r.ok;
   }
-  if (role === 'coordinator' && profile?.harness === 'pi') return fail('A coordinator cannot use a pi profile, because coordinators run Claude Code. Use a pi profile for workers only.');
+  if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
   let root;
   try {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
@@ -561,7 +578,7 @@ export async function runSubagent(args, deps) {
   const id = randomUUID().slice(0, 8);
   const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now() };
   ctx.open.set(id, a);
-  try { a.mcp = agentMcp(ctx.env); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
+  try { a.mcp = forHarness(agentMcp(ctx.env), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });
