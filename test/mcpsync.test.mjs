@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF, isLiteralSecret } from '../src/mcpsync.mjs';
+import { loadMcp, checkServer, mcpFile, mcpConfigText, SECRET_REF, isLiteralSecret, forHarness } from '../src/mcpsync.mjs';
 import { redact } from '../src/events.mjs';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'mcp-'));
@@ -181,4 +181,32 @@ test('a url host that is not a plain hostname is rejected by the loader too', ()
   const r = checkServer('inj', { type: 'http', url: 'https://example.com;id/mcp' });
   assert.equal(r.ok, false);
   assert.match(r.reason, /plain hostname/);
+});
+
+test('forHarness moves sse servers to skipped for pi and leaves claude alone', () => {
+  const mcp = { servers: { a: { type: 'sse', url: 'https://a.example.com/s' }, b: { type: 'http', url: 'https://b.example.com' } }, skipped: [{ name: 'z', reason: 'r' }], secrets: ['MCP_B_TOKEN'] };
+  const pi = forHarness(mcp, 'pi');
+  assert.deepEqual(Object.keys(pi.servers), ['b']);
+  assert.deepEqual(pi.skipped, [{ name: 'z', reason: 'r' }, { name: 'a', reason: 'pi does not support the SSE transport' }]);
+  assert.equal(Object.keys(mcp.servers).length, 2, 'input is not mutated');
+  assert.equal(forHarness(mcp, 'claude'), mcp);
+  assert.equal(forHarness(mcp, undefined), mcp);
+});
+
+test('forHarness for pi drops the proxy secret and the allowed-literal name of a skipped sse server', () => {
+  const mcp = { servers: { a: { type: 'sse', url: 'https://a.example.com/s', headers: { Authorization: 'Bearer ${MCP_A_TOKEN}' } }, b: { type: 'http', url: 'https://b.example.com', headers: { X: '${MCP_B_TOKEN}' } }, c: { type: 'sse', url: 'https://c.example.com/s', headers: { X: 'lit-value-123' } } }, skipped: [], secrets: ['MCP_A_TOKEN', 'MCP_B_TOKEN'], literal: ['c'], values: new Set(['lit-value-123']) };
+  const pi = forHarness(mcp, 'pi');
+  assert.deepEqual(pi.secrets, ['MCP_B_TOKEN']);
+  assert.deepEqual(pi.literal, []);
+});
+
+test('forHarness for omp skips values omp would run or resolve as a variable name, and keeps our references', () => {
+  const ok = { type: 'http', url: 'https://ok.example.com', headers: { Authorization: 'Bearer ${MCP_OK_TOKEN}', 'X-Key': '${MCP_OK_TOKEN}', 'X-Flag': 'true-ish value' } };
+  const mcp = { servers: { ok, name: { type: 'http', url: 'https://a.example.com', headers: { 'X-Credential': 'PARTICLE_API_KEY' } }, cmd: { type: 'http', url: 'https://b.example.com', headers: { A: '!cat /etc/passwd' } }, env: { type: 'stdio', command: 'npx', args: ['x'], env: { T: 'OPENROUTER_API_KEY' } } }, skipped: [], secrets: ['MCP_OK_TOKEN'] };
+  const r = forHarness(mcp, 'omp');
+  assert.deepEqual(Object.keys(r.servers), ['ok']);
+  assert.deepEqual(r.skipped.map((x) => x.name).sort(), ['cmd', 'env', 'name']);
+  assert.match(r.skipped[0].reason, /MCP_<NAME>_TOKEN/);
+  assert.deepEqual(r.secrets, ['MCP_OK_TOKEN']);
+  assert.equal(Object.keys(forHarness(mcp, 'claude').servers).length, 4);
 });

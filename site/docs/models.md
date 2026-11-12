@@ -39,13 +39,22 @@ To run a subagent on a non-Claude model, pass the `profile` argument of `cloud_a
 | `pi-glm` | Particle.ai | `z-ai/glm-5.3-flash` | `PARTICLE_API_KEY` | Runs the pi coding agent, not Claude Code. |
 | `pi-deepseek` | Particle.ai | `deepseek-ai/deepseek-v41-flash-1017` | `PARTICLE_API_KEY` | Runs the pi coding agent. |
 | `pi-particle` | Particle.ai | `particle-ai/particle-1` | `PARTICLE_API_KEY` | Runs the pi coding agent. |
+| `omp-glm` | Particle.ai | `z-ai/glm-5.3-flash` | `PARTICLE_API_KEY` | Runs the oh-my-pi (`omp`) coding agent, not Claude Code. |
+| `omp-deepseek` | Particle.ai | `deepseek-ai/deepseek-v41-flash-1017` | `PARTICLE_API_KEY` | Runs the oh-my-pi coding agent. |
+| `omp-particle` | Particle.ai | `particle-ai/particle-1` | `PARTICLE_API_KEY` | Runs the oh-my-pi coding agent. |
 | `openrouter` | OpenRouter | None built in. You pass one. | `OPENROUTER_API_KEY` | See OpenRouter. |
 
 A profile worker receives only its own provider key. It never receives your Claude credential. If the key for a profile is missing, `cloud_agent` fails at once and names the key.
 
 ### The pi profiles
 
-The `pi-*` profiles run the [pi coding agent](https://pi.dev) in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get no MCP servers from `cloudy-cloud mcp add`.
+The `pi-*` profiles run the [pi coding agent](https://pi.dev) in the worker instead of Claude Code. They use none of your Claude allowance. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get the MCP servers from `cloudy-cloud mcp add`, except `sse` servers, because pi has no SSE transport. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+
+### The omp profiles
+
+The `omp-*` profiles run [oh-my-pi](https://github.com/can1357/oh-my-pi) (the `omp` command) in the worker instead of Claude Code. oh-my-pi is a fork of pi rewritten as a coding-first agent. It adds LSP support, persistent Python and Bun kernels, subagents and many providers. The profiles use the same three Particle.ai models as the pi profiles, and none of your Claude allowance.
+
+Each omp worker installs the pinned oh-my-pi release v18.18.7 with the official installer, which checks the binary's SHA-256. The binary is about 243 MB and is downloaded on every omp worker, so an omp worker starts slower than a pi or Claude worker. In one live check the whole omp worker setup (clone, first push, omp install and config) took about 20 seconds from machine creation to running, against 11 seconds for a pi worker started at the same time (one run each). An omp profile is for workers only, because coordinators always run Claude Code. Results from omp workers have no cost line. A follow-up resumes the same omp session. omp workers get the servers from `cloudy-cloud mcp add`, including `sse` servers.
 
 ## OpenRouter
 
@@ -74,7 +83,7 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 }
 ```
 
-`format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness": "pi"` runs the pi agent. Replace `MODEL-ID` with a model id from your provider.
+`format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness"` is `"claude"` (the default), `"pi"` or `"omp"`. `"pi"` runs the pi agent and `"omp"` runs oh-my-pi. Replace `MODEL-ID` with a model id from your provider.
 
 ## Adding or changing keys later
 

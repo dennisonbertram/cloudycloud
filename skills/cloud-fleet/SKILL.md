@@ -18,7 +18,7 @@ Workers can run Claude or open models. Do not tell the user otherwise.
 | A Claude model | `cloud_agent` with `model` (for example `haiku`), or nothing for the default |
 | A non-Claude model | `cloud_agent` with `profile`, never `model` |
 
-Profiles: `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`. `particle` means Particle.ai's `particle-1` model.
+Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness, no gateway; each worker installs `omp`, so it starts slower); `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`. `particle` means Particle.ai's `particle-1` model.
 
 - Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
 - If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
@@ -146,7 +146,7 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - "Commit early and often, and push to your `cloudy-cloud/<id>` branch before you finish. Work that is not pushed is lost."
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
-- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and none for `pi` profiles). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
+- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
 
 Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 

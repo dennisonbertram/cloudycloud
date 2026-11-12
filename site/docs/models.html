@@ -101,13 +101,20 @@
 <tr><td><code>pi-glm</code></td><td>Particle.ai</td><td><code>z-ai/glm-5.3-flash</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the pi coding agent, not Claude Code.</td></tr>
 <tr><td><code>pi-deepseek</code></td><td>Particle.ai</td><td><code>deepseek-ai/deepseek-v41-flash-1017</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the pi coding agent.</td></tr>
 <tr><td><code>pi-particle</code></td><td>Particle.ai</td><td><code>particle-ai/particle-1</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the pi coding agent.</td></tr>
+<tr><td><code>omp-glm</code></td><td>Particle.ai</td><td><code>z-ai/glm-5.3-flash</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi (<code>omp</code>) coding agent, not Claude Code.</td></tr>
+<tr><td><code>omp-deepseek</code></td><td>Particle.ai</td><td><code>deepseek-ai/deepseek-v41-flash-1017</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi coding agent.</td></tr>
+<tr><td><code>omp-particle</code></td><td>Particle.ai</td><td><code>particle-ai/particle-1</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi coding agent.</td></tr>
 <tr><td><code>openrouter</code></td><td>OpenRouter</td><td>None built in. You pass one.</td><td><code>OPENROUTER_API_KEY</code></td><td>See <a href="#openrouter">OpenRouter</a>.</td></tr>
 </tbody>
 </table>
 <p>A profile worker receives only its own provider key. It never receives your Claude credential. If the key for a profile is missing, <code>cloud_agent</code> fails at once and names the key.</p>
 
 <h3 id="pi-profiles">The pi profiles</h3>
-<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. The README says this path has not been run live yet, so treat it as experimental. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get no MCP servers from <code>cloudy-cloud mcp add</code>.</p>
+<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get the MCP servers from <code>cloudy-cloud mcp add</code>, except <code>sse</code> servers, because pi has no SSE transport. See <a href="mcp.html">MCP servers for subagents</a>.</p>
+
+<h3 id="omp-profiles">The omp profiles</h3>
+<p>The <code>omp-*</code> profiles run <a href="https://github.com/can1357/oh-my-pi">oh-my-pi</a> (the <code>omp</code> command) in the worker instead of Claude Code. oh-my-pi is a fork of pi rewritten as a coding-first agent. It adds LSP support, persistent Python and Bun kernels, subagents and many providers. The profiles use the same three Particle.ai models as the pi profiles, and none of your Claude allowance.</p>
+<p>Each omp worker installs the pinned oh-my-pi release v18.18.7 with the official installer, which checks the binary's SHA-256. The binary is about 243 MB and is downloaded on every omp worker, so an omp worker starts slower than a pi or Claude worker. In one live check the whole omp worker setup (clone, first push, omp install and config) took about 20 seconds from machine creation to running, against 11 seconds for a pi worker started at the same time (one run each). An omp profile is for workers only, because coordinators always run Claude Code. Results from omp workers have no cost line. A follow-up resumes the same omp session. omp workers get the servers from <code>cloudy-cloud mcp add</code>, including <code>sse</code> servers.</p>
 
 <h2 id="openrouter">OpenRouter</h2>
 <p>To use OpenRouter:</p>
@@ -129,7 +136,7 @@
     "keyName": "OPENROUTER_API_KEY"
   }
 }</code></pre>
-<p><code>format</code> is <code>anthropic</code> or <code>openai</code>. <code>keyName</code> must be a key in your env file whose name ends in <code>_API_KEY</code>. An optional <code>"harness": "pi"</code> runs the pi agent. Replace <code>MODEL-ID</code> with a model id from your provider.</p>
+<p><code>format</code> is <code>anthropic</code> or <code>openai</code>. <code>keyName</code> must be a key in your env file whose name ends in <code>_API_KEY</code>. An optional <code>"harness"</code> is <code>"claude"</code> (the default), <code>"pi"</code> or <code>"omp"</code>. <code>"pi"</code> runs the pi agent and <code>"omp"</code> runs oh-my-pi. Replace <code>MODEL-ID</code> with a model id from your provider.</p>
 
 <h2 id="change-keys">Adding or changing keys later</h2>
 <ul>
