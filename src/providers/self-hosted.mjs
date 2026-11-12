@@ -32,6 +32,7 @@ export function createProvider(env = process.env, deps = {}) {
   const maxTtlSeconds = 86400;
 
   let ssh;
+  let reserved = 0; // creates in this process that passed the slot check but whose container is not running yet
   const getSsh = () => (ssh ??= deps.ssh ?? createSsh(env, { spawn }));
 
   // Run `<bin> ...args` on the host. Docker daemon errors become `transient` with a doctor hint.
@@ -101,27 +102,30 @@ export function createProvider(env = process.env, deps = {}) {
       }
       for (const n of Object.keys(vars)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
       const running = (await docker(['ps', '--filter', `label=${PREFIX}purpose`, '--format', '{{.ID}}'])).stdout.split('\n').filter(Boolean).length;
-      if (running >= slots) throw fail('quota_exceeded', `All ${slots} self-hosted slots on ${host} are in use. Stop an agent or raise CLOUDY_CLOUD_SELF_HOSTED_SLOTS.`);
-      let img = image;
-      if (from?.startsWith(COORD)) { // a coordinator snapshot: used as is, it carries its own version
-        await api.getSnapshot(from);
-        img = from;
-      } else {
-        const have = await docker(['image', 'inspect', '--format', '{{index .Config.Labels "cloudy-cloud.image"}}', image])
-          .then((r) => r.stdout.trim(), (e) => { if (e.exitCode !== undefined) return 'missing'; throw e; });
-        if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
-      }
+      if (running + reserved >= slots) throw fail('quota_exceeded', `All ${slots} self-hosted slots on ${host} are in use. Stop an agent or raise CLOUDY_CLOUD_SELF_HOSTED_SLOTS.`);
+      reserved++; // the remote count above is the cross-process check; this counter stops concurrent creates here from both taking the last slot
+      let img = image, id, ttl;
+      try {
+        if (from?.startsWith(COORD)) { // a coordinator snapshot: used as is, it carries its own version
+          await api.getSnapshot(from);
+          img = from;
+        } else {
+          const have = await docker(['image', 'inspect', '--format', '{{index .Config.Labels "cloudy-cloud.image"}}', image])
+            .then((r) => r.stdout.trim(), (e) => { if (e.exitCode !== undefined) return 'missing'; throw e; });
+          if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
+        }
 
-      const id = `cc-${randomBytes(6).toString('hex')}`;
-      const ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
-      const now = Date.now();
-      const all = { ...labels, ...(name && { name }), deleteAt: new Date(now + ttl * 1000).toISOString(), startedAt: new Date(now).toISOString() };
-      const label = Object.entries(all).flatMap(([k, v]) => {
-        if (!/^[A-Za-z0-9_.-]+$/.test(k)) throw new Error(`invalid label name "${k}"`);
-        return ['--label', `${PREFIX}${k}=${v}`];
-      });
-      await docker(['run', '-d', '--rm', '--name', id, '--hostname', id, ...label, '--cpus', cpus, '--memory', memory, '--pids-limit', '2048',
-        '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
+        id = `cc-${randomBytes(6).toString('hex')}`;
+        ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
+        const now = Date.now();
+        const all = { ...labels, ...(name && { name }), deleteAt: new Date(now + ttl * 1000).toISOString(), startedAt: new Date(now).toISOString() };
+        const label = Object.entries(all).flatMap(([k, v]) => {
+          if (!/^[A-Za-z0-9_.-]+$/.test(k)) throw new Error(`invalid label name "${k}"`);
+          return ['--label', `${PREFIX}${k}=${v}`];
+        });
+        await docker(['run', '-d', '--rm', '--name', id, '--hostname', id, ...label, '--cpus', cpus, '--memory', memory, '--pids-limit', '2048',
+          '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
+      } finally { reserved--; }
       const sb = sandbox(id, name ?? id);
       try {
         await writeEnv(sb, vars);

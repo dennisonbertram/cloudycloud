@@ -325,3 +325,20 @@ test('coordinator snapshots: commit, inspect, create from the image without the 
   await assert.rejects(provider.snapshot(src, { name: 'bad name; rm -rf /' }), /invalid snapshot name/);
   await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.1.2'), /only deletes coordinator images/);
 });
+
+test('GitHub token consent covers GH_TOKEN only: unrequested env secrets are never copied, requested MCP secrets are', async () => {
+  const { box, provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', GH_TOKEN: 'ghp_X', MCP_A_TOKEN: 'mcp-a-value', MCP_B_TOKEN: 'mcp-b-value' });
+  await mk(provider, { secrets: ['MCP_A_TOKEN'] });
+  const file = readFileSync(join(box.root, 'run/secrets/env'), 'utf8');
+  assert.match(file, /GH_TOKEN='ghp_X'/);
+  assert.match(file, /MCP_A_TOKEN='mcp-a-value'/);
+  assert.ok(!file.includes('mcp-b-value'));
+});
+
+test('two concurrent creates with one free slot: one starts, the other gets quota_exceeded', async () => {
+  const { box, provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '1' });
+  const r = await Promise.allSettled([mk(provider), mk(provider)]);
+  assert.deepEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
+  assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'quota_exceeded');
+  assert.equal(box.table.size, 1);
+});
