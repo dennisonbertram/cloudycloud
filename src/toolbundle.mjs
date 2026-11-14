@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const git = (root, ...a) => execFileSync('git', ['-C', root, '-c', 'user.name=cloudy-cloud', '-c', 'user.email=cloudy-cloud@localhost', ...a], { encoding: 'utf8', maxBuffer: 1 << 28 }).trim();
+const git = (root, ...a) => execFileSync('git', ['-C', root, '-c', 'user.name=cloudy-cloud', '-c', 'user.email=cloudy-cloud@localhost', ...a], { encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 // git stash create refreshes the index, so runs starting at the same moment can collide on index.lock. Wait and retry.
 export function retryIndexLock(fn, tries = 8) {
