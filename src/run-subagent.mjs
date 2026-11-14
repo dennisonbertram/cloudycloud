@@ -343,11 +343,12 @@ async function setup(a, ctx) {
     // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
     // sending both would make Claude Code bill the API key.
     // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
-    const proxied = provider.caps.hasProxySecrets ? proxySecrets(env) : new Set();
-    const keyName = a.profile?.keyName ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || proxied.has(n));
+    const named = proxySecrets(env);
+    const proxied = provider.caps.hasProxySecrets ? named : new Set();
+    const keyName = a.profile?.keyName ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || named.has(n));
     const keySecrets = [];
     if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
-    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env.`);
+    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
     else if (keyName) {
       envs[keyName] = env[keyName];
       if (provider.caps.hasProxySecrets) {
@@ -441,7 +442,7 @@ async function installCoordinator(a, ctx, envs) {
   // The coordinator's machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and needs its key.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const own = ctx.provider.coordinatorEnv?.(env);
-  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY')])];
+  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY'), 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES'])];
   const lines = [...(own?.fixed ?? []), ...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -596,6 +597,7 @@ export async function runSubagent(args, deps) {
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
+  if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
   let root;
@@ -693,7 +695,8 @@ export async function waitAgents(args = {}, deps) {
 async function allMachines({ provider }) {
   const rows = await provider.list({ purpose: 'cloudy-cloud' });
   if (!rows.length) return 'No cloudy-cloud machines.';
-  const groups = Map.groupBy(rows, (m) => m.labels?.parent || m.labels?.owner || 'unknown');
+  const groups = new Map();
+  for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
   return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
 }
 

@@ -118,7 +118,7 @@ find_missing() {
   # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
   # A Claude secret named in CLOUDY_CLOUD_PROXY_SECRETS (stored as an Instabox secret) counts too.
   if [ -z "$missing" ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
-    && ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; then
+    && { [ "$provider" = self-hosted ] || ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | tr -d ' \t' | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; }; then
     missing='Claude token'
   fi
 }

@@ -398,3 +398,12 @@ test('a provider that cannot give a coordinator its keys refuses image and start
   }
   assert.equal(provider.log.create.length, 0);
 });
+
+test('the coordinator env file carries the proxy secret names and apt package list', async () => {
+  const f = fixture();
+  f.deps.env = { ...f.deps.env, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
+  assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN$/m);
+  assert.match(w.d, /^CLOUDY_CLOUD_APT_PACKAGES=ffmpeg$/m);
+});

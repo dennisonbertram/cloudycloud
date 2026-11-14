@@ -1373,3 +1373,40 @@ test('a package name with a shell character is rejected at start, before any mac
   assert.match(r.content[0].text, /CLOUDY_CLOUD_APT_PACKAGES/);
   assert.equal(deps.provider.log.create.length, 0);
 });
+
+// ---- review fixes (#64, #47, #48) ----
+test('a coordinator env file carries the proxy secret names', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_APT_PACKAGES: '' };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
+  assert.match(env, /^CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN$/m);
+});
+
+test('a Claude key named only in CLOUDY_CLOUD_PROXY_SECRETS is refused on a provider without proxy secrets', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.env = { CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  await new Promise((res) => setTimeout(res, 300));
+  const all = JSON.stringify(r) + JSON.stringify(await listAgents({}, deps));
+  assert.match(all, /cannot attach proxy secrets/);
+});
+
+test('apt packages are refused at start on a provider without sudo', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.provider.name = 'self-hosted';
+  deps.env = { CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+test('apt packages accept one pair of surrounding quotes, as written in the docs', async () => {
+  const { aptPackages } = await import('../src/config.mjs');
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: '"ffmpeg postgresql-client"' }).list, ['ffmpeg', 'postgresql-client']);
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: "'ffmpeg'" }).list, ['ffmpeg']);
+});

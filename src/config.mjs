@@ -14,7 +14,7 @@ export const proxySecrets = (env = process.env) => new Set(String(env.CLOUDY_CLO
 // Extra Debian packages for the worker image (space-separated). Returns { list } or { error }.
 const APT_NAME = /^[a-z0-9][a-z0-9.+-]*$/;
 export function aptPackages(env = process.env) {
-  const list = String(env.CLOUDY_CLOUD_APT_PACKAGES ?? '').split(/\s+/).filter(Boolean);
+  const list = String(env.CLOUDY_CLOUD_APT_PACKAGES ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').split(/\s+/).filter(Boolean);
   const bad = list.find((n) => !APT_NAME.test(n));
   return bad ? { error: `CLOUDY_CLOUD_APT_PACKAGES has an invalid package name "${bad.slice(0, 40)}". Names must match ${APT_NAME}, separated by spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list };
 }
