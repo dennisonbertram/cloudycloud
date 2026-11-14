@@ -7,7 +7,7 @@ description: How to run fleets of cloudy-cloud subagents (Instabox cloud machine
 
 Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
-Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
+Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`.
 
 ## Choosing a worker's model
 
@@ -147,6 +147,8 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
 - A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
+
+When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present.
 
 Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 

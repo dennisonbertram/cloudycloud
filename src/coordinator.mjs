@@ -13,6 +13,7 @@ import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
+import { guide, guideObj, classify } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
@@ -319,6 +320,13 @@ export async function main(argv, deps = {}) {
   if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) fail(c.provider.text.coordinatorRefusal);
   try { return await commands[cmd](c, args); } catch (e) {
     if (e?.code === 'no_key') fail(`${e.message} Run: cloudy-cloud setup`);
+    if (cmd === 'start') {
+      // Add the guidance for the failure; --json also prints it as an error object.
+      const code = classify(e?.message);
+      const g = guideObj(code, { message: redact(String(e?.message ?? e)) });
+      if (args.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
+      if (code !== 'unknown') throw new Error(guide(code, { message: e.message }));
+    }
     throw e;
   }
 }

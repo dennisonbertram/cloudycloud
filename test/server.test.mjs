@@ -98,7 +98,7 @@ test('with the tasks extension, cloud_agent answers with a task; tasks/get shows
 
   // the task result counts as reported, and cloud_agent_list shows the same progress fields
   const w = await c.call('cloud_agent_wait', { agent_ids: [t.taskId.split('-')[1]], timeout_seconds: 5 });
-  assert.match(text(w), /already reported/);
+  assert.match(text(w), /already delivered/);
   const list = text(await c.call('cloud_agent_list', {}));
   assert.match(list, /idle\s+idle 0 min\s+deleted at \S+\s+d\n\s+cc-[0-9a-f]{8}-t1: 2 tool uses · 1\.0k tokens/);
 });
@@ -172,11 +172,11 @@ test('modern revision without the tasks extension: immediate result, cloud_agent
   assert.match(text(w), /Total: 2 tool uses/);
 });
 
-test('older protocol revision (2025-11-25): all five tools are listed and work with immediate results', async () => {
+test('older protocol revision (2025-11-25): all six tools are listed and work with immediate results', async () => {
   const c = await connect('legacy');
   const list = (await c.rpc('tools/list')).result.tools;
-  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_list', 'cloud_agent_stop']);
-  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_wait', 'cloud_agent_list']);
+  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list', 'cloud_agent_stop']);
+  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list']);
   const r = await c.call('cloud_agent', { prompt: 'OK old', description: 'd' });
   assert.equal(r.result.resultType, undefined);
   const id = text(r).match(/agent_id: ([0-9a-f]{8})/)[1];

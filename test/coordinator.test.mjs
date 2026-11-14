@@ -172,6 +172,16 @@ test('start --json prints name, machine, remoteControlName and attach', async ()
   assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude' });
 });
 
+test('start --json reports a structured error with guidance when the spend limit is hit', async () => {
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw new Error('You have reached your spend limit'); };
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps), /Next step: .*cloud_agent_list/s);
+  const o = JSON.parse(f.log.out.join('\n')).error;
+  assert.equal(o.code, 'spend_limit');
+  assert.match(o.tellUser, /spend limit is reached/);
+  assert.ok(o.whatHappened && o.likelyCause && o.nextStep);
+});
+
 test('start rejects bad repo urls and duplicate names', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { role: 'coordinator', name: 'boss' } }] });
   await assert.rejects(main(['start', 'x', '--repo', 'git@github.com:o/r.git'], f.deps), /--repo/);

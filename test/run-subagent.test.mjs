@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
-import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -91,15 +91,21 @@ test('the machine event records when the server deletes the machine', async () =
 });
 
 test('wait returns the result once, then marks it reported; agent stays open', async () => {
-  const { start, wait, created, open } = await setup();
+  const { start, wait, created, open, deps } = await setup();
   const id = await start({ prompt: 'hi' });
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
   assert.match(first, /Pushed to origin cloudy-cloud\//);
   const second = await wait([id]);
-  assert.match(second, /already reported/);
+  assert.match(second, /already delivered; call cloud_agent_result/);
   assert.doesNotMatch(second, /hello/);
+  const again = (await resultAgent({ agent_id: id }, deps)).content[0].text;
+  assert.match(again, /hello/);
+  assert.match((await resultAgent({ agent_id: id }, deps)).content[0].text, /hello/);
+  const gone = await resultAgent({ agent_id: 'nope' }, deps);
+  assert.equal(gone.isError, true);
+  assert.match(gone.content[0].text, /Next step: .*cloud_agent_list/);
   assert.equal(created[0].killed, false);
   assert.ok(open.has(id));
 });
@@ -155,7 +161,7 @@ test('quota_exceeded that never clears fails the agent after the give-up time, w
   });
   const bad = await start();
   const r = await wait([bad]);
-  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit reached \\(quota_exceeded\\)[^#]*Provider message: machine limit`));
+  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit is reached[^#]*Provider message: machine limit`));
   assert.equal((await msg(bad, 'x')).isError, true);
 });
 
@@ -164,7 +170,7 @@ test('rate_limited create is reported as the start rate', async () => {
     queue: createStartQueue({ sleep: async () => {} }),
     createSandbox: async () => { throw Object.assign(new Error('slow down'), { code: 'rate_limited' }); },
   });
-  assert.match(await wait([await start()]), /start rate limit reached \(rate_limited\) and still limited after 5 tries/);
+  assert.match(await wait([await start()]), /limiting how fast[\s\S]*Still limited after 5 tries/);
 });
 
 test('message to a busy agent is rejected, not queued', async () => {

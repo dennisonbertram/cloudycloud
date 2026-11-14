@@ -11,6 +11,7 @@ import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileKeyNames, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
+import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
@@ -27,7 +28,7 @@ export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
 };
 const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
-const NO_ORIGIN = 'cloudy-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
+const NO_ORIGIN = guide('no_origin');
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -287,8 +288,8 @@ const BUNDLE_MARGIN = 1024 * 1024;
 
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
-  if (/quota_exceeded/.test(s)) return `Provider machine limit reached (quota_exceeded) and still full after waiting in the start queue. Stop other agents or upgrade the plan. Provider message: ${e?.message}`;
-  if (/rate_limited/.test(s)) return `Provider start rate limit reached (rate_limited) and still limited after ${MAX_START_TRIES} tries. Provider message: ${e?.message}`;
+  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded')}\nProvider message: ${e?.message}`;
+  if (/rate_limited/.test(s)) return `${guide('rate_limited')}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
 };
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
@@ -476,7 +477,7 @@ async function work(a, message, first, ctx, t) {
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? `cloudy-cloud error: ${e?.message}` };
+    r = { error: true, text: limitText(e) ?? guide(classify(e?.message), { message: e?.message }) };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
@@ -623,9 +624,9 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   const { fail, ok } = ctx;
   if (typeof message !== 'string' || !message) return fail('message is required');
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
-  if (!a) return fail(`Agent ${id} is not open. It may have been stopped, been idle for 60 minutes, or never existed.`);
-  if (active(a)) return fail(`Agent ${id} is still working (status ${a.status}). Wait for it with cloud_agent_wait; messages are not queued.`);
-  if (a.status === 'failed') return fail(`Agent ${id} failed and cannot take messages. Call cloud_agent_wait for the error, then cloud_agent_stop.`);
+  if (!a) return fail(guide('agent_gone', { id }));
+  if (active(a)) return fail(guide('agent_busy', { id }));
+  if (a.status === 'failed') return fail(guide('agent_failed', { id }));
   clearTimeout(a.idleTimer);
   a.status = 'running';
   a.emit?.({ type: 'message', text: message });
@@ -660,11 +661,21 @@ export async function waitAgents(args = {}, deps) {
     if (!a || a.status === 'stopped') return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`;
     const head = `## ${id}${a.description ? ` (${a.description})` : ''}\nstatus: ${a.status}`;
     if (active(a) || !a.result) return head;
-    if (a.result.reported) return `${head}\n(result already reported)`;
+    if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
     a.result.reported = true;
     return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}`;
   });
   return ctx.ok(parts.join('\n\n'));
+}
+
+// cloud_agent_result: read-only. Returns the latest result as often as asked.
+export async function resultAgent(args = {}, deps) {
+  const ctx = ctxOf(deps);
+  const id = idList(args)[0];
+  const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
+  if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
+  if (active(a) || !a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
+  return ctx.ok(`${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
 }
 
 // cloud_agent_list: read-only.
