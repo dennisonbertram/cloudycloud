@@ -69,6 +69,14 @@ If you see `rate_limited` after 5 tries, lower `CLOUDY_CLOUD_STARTS_PER_MIN` and
 
 An agent with nothing to do is stopped after 60 minutes and its machine is deleted. A message to it then returns `Agent <id> is not open. It may have been stopped, been idle for 60 minutes, or never existed.` A single task is also stopped after 29 minutes. Start a new subagent from the branch the old one pushed.
 
+### Error messages with "Next step"
+
+Every `cloud_agent` tool error has the same shape: `What happened`, `Likely cause`, `Next step` (an exact tool call or command) and, when only you can fix it, `Tell the user`. The agent follows the next step and tells you the last line. If an error is not recognised, the text shows the original message and says to call `cloud_agent_list`. `coordinator start --json` prints the same fields as an `error` object on failure.
+
+### Missing, unapplied or mis-hosted secrets
+
+`The Instabox secret NAME is not in your org`: run `cloudy-cloud setup`, or `printf %s "$KEY" | npx --yes instabox@latest secrets set NAME --host <host>`. The hosts are `api.anthropic.com` (Claude token), `api.particle.ai` (`PARTICLE_API_KEY`), `openrouter.ai` (`OPENROUTER_API_KEY`) and `api.instabox.sh` (Instabox key). If Instabox did not apply a secret within 60 seconds, retry, then run `npx instabox@latest secrets show <machine>`.
+
 ### "This session has already started N agents"
 
 One session may start 200 agents by default. Stop idle agents or raise `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`.

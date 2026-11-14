@@ -7,7 +7,7 @@ description: How to run fleets of cloudy-cloud subagents (Instabox cloud machine
 
 Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
-Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list`, `cloud_agent_stop`.
+Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`.
 
 ## Choosing a worker's model
 
@@ -48,7 +48,7 @@ When the user wants a long job to run unattended, start a cloud coordinator inst
 
 - Hand off when the job is long or large, the user is leaving, and the work needs only what is on GitHub. Do not hand off when it needs untracked local files or the user wants to steer step by step.
 - Confirm first: coordinator name, repo, base branch, and that it is billed until stopped. Commit and push what it needs.
-- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`.
+- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`. If `cloudy-cloud` is not found on PATH, run `"$CLOUDY_CLOUD_BIN"` instead; the launcher sets it.
 - Tell the user the Remote Control session name, how to attach, and `cloudy-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
 
 Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).
@@ -147,6 +147,8 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
 - A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
+
+When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present.
 
 Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 

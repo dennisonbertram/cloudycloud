@@ -7,3 +7,4 @@ import { join } from 'node:path';
 const dir = mkdtempSync(join(realpathSync(tmpdir()), 'cc-test-'));
 process.env.TMPDIR = dir;
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+process.env.CLOUDY_CLOUD_STREAMS = join(dir, 'streams'); // stream copies of fake agents never reach the real home folder

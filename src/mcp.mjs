@@ -1,5 +1,5 @@
 import { Server, ProtocolError, ProtocolErrorCode, fromJsonSchema } from '@modelcontextprotocol/server';
-import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, getTask, cancelTask, startQueue } from './run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, startQueue } from './run-subagent.mjs';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
 const CAPABILITIES_META = 'io.modelcontextprotocol/clientCapabilities';
@@ -33,12 +33,18 @@ const tools = [
   },
   {
     name: 'cloud_agent_wait',
-    description: 'Wait until every listed agent finishes its current turn, or the timeout passes. Returns each agent\'s status (starting, running, idle, failed, stopped) and its latest result once; later calls mark it already reported.',
+    description: 'Wait until every listed agent finishes its current turn, or the timeout passes. Returns each agent\'s status (starting, running, idle, failed, stopped) and its latest result once; later calls mark it already reported (read it again with cloud_agent_result).',
     inputSchema: {
       type: 'object',
       properties: { agent_ids: ids, timeout_seconds: { type: 'number', description: 'Default 600, max 1500' } },
       required: ['agent_ids'],
     },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'cloud_agent_result',
+    description: 'Return the latest result of one agent again, as often as asked, even after cloud_agent_wait or a task notification delivered it. Says so if the agent has no result yet or is not open.',
+    inputSchema: { type: 'object', properties: { agent_id: { type: 'string' } }, required: ['agent_id'] },
     annotations: { readOnlyHint: true },
   },
   {
@@ -54,7 +60,7 @@ const tools = [
   },
 ];
 const handlers = {
-  cloud_agent: runSubagent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents,
+  cloud_agent: runSubagent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
   cloud_agent_list: listAgents, cloud_agent_stop: stopAgents,
 };
 

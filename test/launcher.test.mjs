@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -11,17 +11,17 @@ const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd, provider, socketIn }) {
+function run({ config, cwd, provider, socketIn, extraEnv }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
-  writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+  writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\nprintf '%s' "$CLOUDY_CLOUD_BIN" > "${argvFile}.bin"\n`);
   chmodSync(stub, 0o755);
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
-  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }), ...(socketIn && { CLOUDY_CLOUD_DOCKER_SOCKET_IN: socketIn }) };
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }), ...(socketIn && { CLOUDY_CLOUD_DOCKER_SOCKET_IN: socketIn }), ...extraEnv };
   const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
-  return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
+  return { ...r, bin: existsSync(`${argvFile}.bin`) ? readFileSync(`${argvFile}.bin`, 'utf8') : '', started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
 
 function repo(origin) {
@@ -226,4 +226,18 @@ test('proxy secret names do not count as a Claude token on the self-hosted provi
   const r = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=h\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, cwd: repo('https://github.com/test/repo.git') });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Claude token/);
+});
+
+test('CLOUDY_CLOUD_BIN names this launcher, an existing executable, even when it is not on PATH (#46)', () => {
+  const r = run({ config: full, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.bin, join(resolve('.'), 'bin/cloudy-cloud'));
+  accessSync(r.bin, constants.X_OK);
+});
+
+test('--strict-mcp-config is passed only on a coordinator, so a repo .mcp.json cannot block it on an approval prompt (#44)', () => {
+  const d = repo('https://github.com/test/repo.git');
+  assert.doesNotMatch(run({ config: full, cwd: d }).argv, /--strict-mcp-config/);
+  const r = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: '1' } });
+  assert.match(r.argv, /^--strict-mcp-config$/m);
 });

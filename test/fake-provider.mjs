@@ -92,7 +92,7 @@ export async function fakeSandbox(github = currentGithub) {
         try {
           const r = await exec('sh', ['-c', map(cmd)], {
             cwd: map(cwd),
-            env: { ...process.env, ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
+            env: { ...process.env, HOME: map('/home/user'), ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
           });
           await onStdout?.(r.stdout);
           return { stdout: r.stdout, stderr: r.stderr, exitCode: 0 };

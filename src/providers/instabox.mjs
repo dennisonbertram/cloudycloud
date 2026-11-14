@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { createLimiter } from '../limits.mjs';
 
+import { guide } from '../errors.mjs';
 const ARCHIVE_MS = 8 * 60 * 60_000; // backstop; agents are normally stopped sooner.
 const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 minutes.
 const WAIT_SLICE_MS = 20_000; // one job.wait() holds a request slot, so wait in short slices.
@@ -37,7 +38,7 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
       const e = j.error && typeof j.error === 'object' ? j.error : j;
       const detail = e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200);
       const missing = names.find((n) => `${t}`.includes(n));
-      const help = missing ? `The Instabox secret ${missing} could not be attached. Create it with: printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${missing} --host ${KEY_HOSTS[missing] ?? '<host>'}`
+      const help = missing ? guide('secret_missing', { secret: missing, host: KEY_HOSTS[missing] })
         : names.length ? `${SECRET_HELP} Secrets tried: GH_TOKEN, ${names.join(', ')}.` : SECRET_HELP;
       throw new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`);
     }
@@ -48,7 +49,7 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
   for (const deadline = Date.now() + timeoutMs; ; await new Promise((r) => setTimeout(r, pollMs))) {
     const d = await (await call('GET')).json().catch(() => ({}));
     if (applied(d.proxy) && applied(d.guest)) return;
-    if (Date.now() >= deadline) throw new Error(`${SECRET_HELP} (not applied within ${timeoutMs / 1000} s)`);
+    if (Date.now() >= deadline) throw new Error(`${guide('secret_not_applied', { id })}\n${SECRET_HELP} (not applied within ${timeoutMs / 1000} s)`);
   }
 }
 
