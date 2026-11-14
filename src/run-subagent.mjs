@@ -294,7 +294,7 @@ const limitText = (e) => {
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], role })); // role is an option, not a label: Instabox's wire request stays the same
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
