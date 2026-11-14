@@ -90,7 +90,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       a.status = e.status;
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
-    } else if (e.type === 'message') a.messages.push({ t: e.t, kind: 'out', text: e.text });
+    } else if (e.type === 'message') { a.turns = (a.turns ?? 0) + 1; a.messages.push({ t: e.t, kind: 'out', text: e.text }); } // `turns` counts every message; `messages` keeps the last 300
     else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; }
     else if (e.type === 'progress') a.messages.push({ t: e.t, kind: 'progress', text: e.text });
   }

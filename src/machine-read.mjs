@@ -131,7 +131,7 @@ export function createMachineReader(provider, env, { now = Date.now, maxConcurre
     async capturePane(machineId) {
       check(machineId);
       await checkListed(machineId);
-      return limited(machineId, 'pane', () => ({ lines: [], fetchedAt: now() }), async () => {
+      return limited(machineId, 'pane', () => ({ lines: [], fetchedAt: now(), source: 'cache' }), async () => {
         const { stdout } = await exec(machineId, PANE_CMD);
         return { lines: scrub(redactText(stdout)).replace(/\n$/, '').split('\n'), fetchedAt: now() };
       });
