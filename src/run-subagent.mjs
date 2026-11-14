@@ -32,7 +32,7 @@ const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.g
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = guide('no_origin');
 // A real key was about to go to a machine whose provider keeps keys off machines.
-export const refused = (name) => new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`);
+export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -661,7 +661,8 @@ export async function runSubagent(args, deps) {
   ctx.tasks.set(t.id, t);
   work(a, prompt, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
-  return ok(`agent_id: ${id}\nstatus: starting\nCall cloud_agent_wait with the agent_ids to get the result.`);
+  const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
+  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.

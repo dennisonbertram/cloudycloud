@@ -606,3 +606,72 @@ test('launcher: a coordinator with only the CLOUDY_CLOUD_INSTABOX_API_KEY placeh
   assert.equal(r.status, 0, r.stderr);
   assert.equal(readFileSync(join(dir, 'seen'), 'utf8'), 'ibsec_placeholder');
 });
+
+test('an optional profile key set only as a plain value is skipped with a plain line, and the start continues (#67 #68)', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create.length, 1);
+  const all = JSON.stringify([f.log.create.map((x) => x.opts.envs), f.log.writes, f.log.cmds, f.log.fetches.map((x) => x.body)]);
+  for (const v of [PROV, IBK, TOK]) assert.ok(!all.includes(v), `value ${v.slice(0, 6)} reaches the machine: ${all.slice(Math.max(0, all.indexOf(v) - 80), all.indexOf(v) + 20)}`);
+  assert.doesNotMatch(f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env').d, /OPENROUTER_API_KEY/);
+  const out = f.log.out.join('\n');
+  assert.match(out, /Not sent to the coordinator[^\n]*OPENROUTER_API_KEY/);
+  assert.match(out, /cloudy-cloud setup/);
+  assert.ok(!out.includes(PROV));
+});
+
+test('the Instabox key not being a proxy secret still refuses, with the guidance once and its own code in --json', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  await assert.rejects(main(['start', 'rtprobe', '--repo', 'https://github.com/o/r', '--json'], f.deps), (e) => {
+    assert.equal(e.code, 'key_on_machine_refused');
+    assert.doesNotMatch(e.message, /Something failed/);
+    assert.equal(e.message.split('What happened:').length, 2, 'guidance appears once');
+    return true;
+  });
+  assert.equal(f.log.create.length, 0);
+  const j = JSON.parse(f.log.out.at(-1)).error;
+  assert.equal(j.code, 'key_on_machine_refused');
+  assert.match(j.whatHappened, /^A real key/);
+  assert.match(j.nextStep, /^Run `cloudy-cloud setup`/);
+});
+
+test('an error that already carries guidance but no known code keeps its own fields in --json', async () => {
+  const f = fixture();
+  f.deps.sdk = { get Sandbox() { throw Object.assign(new Error('boom\nWhat happened: X broke.\nLikely cause: Y.\nNext step: Do Z.'), {}); } };
+  await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
+  const j = JSON.parse(f.log.out.at(-1)).error;
+  assert.equal(j.whatHappened, 'X broke.');
+  assert.equal(j.nextStep, 'Do Z.');
+});
+
+test('a custom skipped key: the recovery text has the proxy-list step and never a host with shell characters', async () => {
+  const f = fixture();
+  writeFileSync(f.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ evil: { harness: 'claude', format: 'anthropic', baseUrl: 'https://example.com;id/v1', keyName: 'EVIL_API_KEY', model: 'm1' } }));
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.EVIL_API_KEY = 'evil-real-value-12345';
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const out = f.log.out.join('\n');
+  assert.match(out, /EVIL_API_KEY/);
+  assert.match(out, /--host <host>/);
+  assert.doesNotMatch(out, /;id/);
+  assert.match(out, /CLOUDY_CLOUD_PROXY_SECRETS/);
+  assert.match(out, /delete the plain EVIL_API_KEY=/);
+});
+
+test('guidance labels mid-line are not treated as guidance; multiline fields keep their continuation lines', async () => {
+  for (const [msg, check] of [
+    ['Provider error: What happened: storage unavailable. Next step: retry later.', (j) => { assert.equal(j.code, 'unknown'); assert.match(j.whatHappened, /Provider error: What happened: storage unavailable/); }],
+    ['What happened: first line\nsecond line\nNext step: do A\nthen B', (j) => { assert.equal(j.whatHappened, 'first line\nsecond line'); assert.equal(j.nextStep, 'do A\nthen B'); }],
+  ]) {
+    const f = fixture();
+    f.deps.sdk = { get Sandbox() { throw new Error(msg); } };
+    await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
+    check(JSON.parse(f.log.out.at(-1)).error);
+  }
+});

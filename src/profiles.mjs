@@ -51,22 +51,24 @@ export function profileKeyNames(env = process.env) {
 export const COORDINATOR_KEY_SECRET = 'CLOUDY_CLOUD_INSTABOX_API_KEY';
 
 // What a coordinator's machine gets: { secrets: names attached as proxy secrets, lines: env-file lines (settings and, on a
-// provider without proxy secrets, key values), legacy: key names that would be written as real values on a provider with proxy
-// secrets }. `single`: only one Claude credential (a nested coordinator), else both are kept (coordinator start).
+// provider without proxy secrets, key values), legacy: REQUIRED keys (the Instabox key; the Claude credential when no Claude secret
+// exists) that would go as real values on a provider with proxy secrets, skipped: OPTIONAL keys held only as plain values, not sent }. `single`: only one Claude credential (a nested coordinator), else both are kept (coordinator start).
 export function coordinatorKeys(env, provider, { single = false } = {}) {
   const own = provider.coordinatorEnv?.(env);
   const proxied = provider.caps.hasProxySecrets ? proxySecrets(env) : new Set();
   const claude = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].filter((k) => env[k] || proxied.has(k));
   const keys = [...new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(single ? claude.slice(0, 1) : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']), ...profileKeyNames(env).filter((k) => !single || k !== 'ANTHROPIC_API_KEY')])];
-  const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [];
+  const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [], skipped = [];
+  const required = new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(claude.some((k) => proxied.has(k)) ? [] : claude)]);
   if (!own && proxied.has(COORDINATOR_KEY_SECRET)) secrets.push(COORDINATOR_KEY_SECRET);
   for (const k of [...(own?.names ?? []), ...keys, 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES']) {
     const isKey = keys.includes(k);
     if (isKey && proxied.has(COORDINATOR_KEY_SECRET) && k === DEFAULT_PROVIDER_KEY) continue; // the secret stands in for it
     if (isKey && proxied.has(k)) secrets.push(k);
-    else if (env[k]) { lines.push(`${k}=${env[k]}`); if (isKey && provider.caps.hasProxySecrets) legacy.push(k); }
+    else if (env[k] && isKey && provider.caps.hasProxySecrets) (required.has(k) ? legacy : skipped).push(k); // never as a value
+    else if (env[k]) lines.push(`${k}=${env[k]}`);
   }
-  return { secrets: [...new Set(secrets)], lines, legacy };
+  return { secrets: [...new Set(secrets)], lines, legacy, skipped };
 }
 
 // Returns { ok: profile } or { error: text }. `model` is the optional per-call model.
