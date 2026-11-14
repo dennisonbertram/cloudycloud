@@ -661,3 +661,25 @@ test('page: full-text responses are cleared on agent or turn change and capped i
   assert.match(PAGE, /S\.full = \{\}/);
   assert.match(PAGE, /FULL_CAP/);
 });
+
+test('a coordinator whose pane shows a waiting prompt gets `waiting` (redacted), read at most every 30 s, and a quiet pane clears it (#88)', async () => {
+  const clock = { t: 100_000 }, { getState, reader } = await coordWithLog([{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }], clock);
+  let pane = ['working', '│ Do you want to read /data/tmp/claude-1000/x.md? sk-ant-oat01-LEAKYTOKEN0123'], reads = 0;
+  reader.capturePane = async () => { reads++; return { lines: pane, fetchedAt: clock.t }; };
+  const co = async () => (await getState()).boxes.find((b) => b.kind === 'coordinator');
+  const first = await co();
+  assert.match(first.waiting, /^Do you want to read \/data\/tmp\/claude-1000\/x\.md\?/);
+  assert.doesNotMatch(first.waiting, /LEAKYTOKEN/);
+  clock.t += 10_000; await co();
+  assert.equal(reads, 1, 'not again within 30 s');
+  pane = ['working']; clock.t += 25_000;
+  assert.equal((await co()).waiting, undefined);
+  assert.equal(reads, 2);
+});
+
+test('the page lists a waiting coordinator under Needs you with its line and the attach command (#88)', () => {
+  const page = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.match(page, /needsYou = \(b\) => [^\n]*b\.waiting/);
+  assert.match(page, /Waiting on a prompt/);
+  assert.match(page, /coordinator attach/);
+});

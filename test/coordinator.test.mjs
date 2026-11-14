@@ -5,7 +5,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { main, toolRepoUrl } from '../src/coordinator.mjs';
+import { main, toolRepoUrl, FIRST_RUN_SCRIPT } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -674,4 +674,68 @@ test('guidance labels mid-line are not treated as guidance; multiline fields kee
     await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
     check(JSON.parse(f.log.out.at(-1)).error);
   }
+});
+
+test('the first-run script pre-answers the bypass confirmation and the folder trust, and keeps existing settings (#88)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-firstrun-'));
+  execFileSync('mkdir', ['-p', join(home, '.claude')]);
+  writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ theme: 'x', permissions: { deny: ['Agent'] } }));
+  execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: home } });
+  const s = JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8'));
+  assert.equal(s.skipDangerousModePermissionPrompt, true);
+  assert.deepEqual([s.theme, s.permissions], ['x', { deny: ['Agent'] }]);
+  const j = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+  assert.equal(j.projects[join(home, 'repo')].hasTrustDialogAccepted, true);
+});
+
+test('start pre-answers the bypass confirmation before Claude starts (#88)', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const prep = f.log.cmds.findIndex((c) => c.includes('skipDangerousModePermissionPrompt'));
+  assert.ok(prep > -1 && prep < f.log.cmds.findIndex((c) => /tmux new-session/.test(c)));
+});
+
+const WAIT_LINE = 'Do you want to read /data/tmp/claude-1000/brief.md?';
+const stuck = () => fixture({ pane: `some output\n\u2502 ${WAIT_LINE}\n\u276f 1. Yes`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { role: 'coordinator', name: 'a' } }] });
+
+test('a permission prompt on the screen counts as waiting; ordinary output does not (#88)', async () => {
+  const f = fixture({ pane: `Do you want to proceed?` });
+  await main(START, f.deps);
+  assert.match(f.log.out.join('\n'), /waiting on a prompt/);
+  const g = fixture({ pane: 'Bypass Permissions mode\n 2. Yes, I accept' });
+  await main(START, g.deps);
+  assert.match(g.log.out.join('\n'), /waiting on a prompt/);
+});
+
+test('ls adds a WAITING column with the prompt line, and says "screen not read" when the pane read fails (#88)', async () => {
+  const f = stuck();
+  await main(['ls'], f.deps);
+  const [head, row] = f.log.out;
+  assert.match(head, /\tWAITING$/);
+  assert.ok(row.endsWith(`\twaiting on a prompt: ${WAIT_LINE}`), row);
+  assert.equal(f.log.cmds.filter((c) => /capture-pane/.test(c)).length, 1, 'one pane read per coordinator');
+  const g = fixture({ pane: 'working', machines: f.machines });
+  await main(['ls'], g.deps);
+  assert.ok(g.log.out[1].endsWith('\t-'), g.log.out[1]);
+  const h = fixture({ machines: f.machines });
+  const orig = h.deps.sdk.Sandbox.connect;
+  h.deps.sdk.Sandbox.connect = async (id) => { const s = await orig(id); s.commands.run = async () => { throw new Error('network'); }; return s; };
+  await main(['ls'], h.deps);
+  assert.ok(h.log.out[1].endsWith('\tscreen not read'), h.log.out[1]);
+});
+
+test('status NAME prints state, the waiting line and the attach command; --json gives the same fields; it never writes (#88)', async () => {
+  const f = stuck();
+  await main(['status', 'a'], f.deps);
+  const text = f.log.out.join('\n');
+  assert.match(text, /running/);
+  assert.match(text, new RegExp(`waiting on a prompt: ${WAIT_LINE.replace(/[?.]/g, '\\$&')}`));
+  assert.match(text, /tmux attach -t claude/);
+  const g = stuck();
+  await main(['status', 'a', '--json'], g.deps);
+  const j = JSON.parse(g.log.out[0]);
+  assert.deepEqual([j.name, j.state, j.waiting, j.screenRead, j.attach], ['a', 'running', WAIT_LINE, true, 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude']);
+  assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane/.test(c) && c !== '/data/home'), [], 'only the pane read runs');
+  await assert.rejects(main(['status', 'zzz'], f.deps), /No coordinator named zzz/);
+  await assert.rejects(main(['status'], f.deps), /cloudy-cloud coordinator status/);
 });

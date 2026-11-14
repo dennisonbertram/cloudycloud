@@ -330,12 +330,13 @@
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
       h('div', { class: 'l1' }, kids && h('span', { class: 'chev', 'aria-hidden': 'true', title: open ? 'Hide workers' : 'Show workers', text: open ? '▾' : '▸', onclick: (e) => { e.stopPropagation(); setOpen(b.id, !open); } }), dot(b.status), h('span', { class: 'title', text: titleOf(b) }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
+      b.waiting && h('div', { class: 'l3 err' }, h('b', { text: 'Waiting on a prompt: ' }), b.waiting, ' · ', h('code', { text: 'cloudy-cloud coordinator attach ' + b.id })),
       a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
   }
 
   const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
-  const needsYou = (b) => b.status === 'idle' || (b.status === 'failed' && today(b));
+  const needsYou = (b) => b.status === 'idle' || !!b.waiting || (b.status === 'failed' && today(b));
   // A coordinator is grouped by its workers too, so a worker that needs you is never hidden under a closed coordinator.
   const fam = (f) => (b) => f(b) || (S.kids[b.id] || []).some(f);
   const groupsOf = (boxes) => { const need = fam(needsYou), act = fam(active); return [['Needs you', boxes.filter(need)], ['Active', boxes.filter((b) => !need(b) && act(b))], ['Finished', boxes.filter((b) => !need(b) && !act(b))]].filter(([, l]) => l.length); };
@@ -709,7 +710,7 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);

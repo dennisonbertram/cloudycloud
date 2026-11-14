@@ -810,6 +810,7 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);
   assert.equal(s.envs.CLOUDY_CLOUD_DEPTH, '1');
   assert.ok(s.cmds.some((c) => c.includes('ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet')), 'nested coordinator gets the fleet skill');
+  assert.ok(s.cmds.some((c) => c.includes('skipDangerousModePermissionPrompt') && c.includes('hasTrustDialogAccepted')), 'bypass confirmation and folder trust are pre-answered on a nested coordinator (#88)');
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
   assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
   assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\. Your workers are deleted as soon as your reply ends.*call cloud_agent_wait on every worker you started/);

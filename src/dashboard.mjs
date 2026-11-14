@@ -11,6 +11,7 @@ import { loadEnv, ownerFile } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { eventsFile, foldAgents, readEvents, redact, redactText } from './events.mjs';
 import { createMachineReader } from './machine-read.mjs';
+import { paneState } from './pane-state.mjs';
 import { secretValues } from './run-subagent.mjs';
 import { isLiteralSecret, mcpFile } from './mcpsync.mjs';
 import { demoState, demoStream } from './dashboard-demo.mjs';
@@ -265,6 +266,7 @@ function consentedLiterals(env) {
 const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
 
 const COORD_MS = 10_000;
+const PANE_MS = 30_000; // a coordinator's screen is checked for a waiting prompt at most this often
 const MAX_EVENTS = 5000; // events kept per coordinator: its recent history, not all of it
 const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
 
@@ -276,7 +278,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
     let st = logs.get(m.id);
-    if (!st) logs.set(m.id, st = { offset: 0, at: -Infinity, events: [], folded: [] });
+    if (!st) logs.set(m.id, st = { id: m.id, offset: 0, at: -Infinity, events: [], folded: [] });
     if (now() - st.at < COORD_MS && !st.behind) return; // read recently; while catching up a long log, only the reader's own interval applies
     try {
       const r = await reader.readTail(m.id, 'events.jsonl', st.offset);
@@ -291,6 +293,16 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (added) st.dirty = true;
     } catch { /* keep what was read; the next poll tries again */ }
   };
+  // A prompt on a coordinator's screen that a person must answer (#88). Read at most every PANE_MS, through the reader's own limit.
+  const checkPane = async (reader, st) => {
+    if (!reader.capturePane || now() - (st.paneAt ?? -Infinity) < PANE_MS) return;
+    st.paneAt = now();
+    try {
+      const r = await reader.capturePane(st.id);
+      if (r.source === 'cache' && !r.lines.length) { st.paneAt = undefined; return; } // rate limited: not a read, try again at the next poll
+      st.waiting = paneState(r.lines.join('\n')).waiting || undefined;
+    } catch { /* keep the last answer */ }
+  };
   return async () => {
     if (cached && now() - at < cacheMs) return cached;
     let machines, machineError;
@@ -304,10 +316,12 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     if (reader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
       await pull(reader, m);
       const st = logs.get(m.id);
+      await checkPane(reader, st);
       if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
       coordLogs[m.id] = st.folded;
     }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
+    for (const b of cached.boxes) if (b.kind === 'coordinator' && logs.get(b.machine)?.waiting) b.waiting = logs.get(b.machine).waiting;
     at = now();
     return cached;
   };

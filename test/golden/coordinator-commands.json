@@ -229,7 +229,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});'"
+        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});\nconst d=process.env.HOME+'\\''/.claude'\\'',g=d+'\\''/settings.json'\\'';fs.mkdirSync(d,{recursive:true});\nconst u=fs.existsSync(g)?JSON.parse(fs.readFileSync(g,'\\''utf8'\\'')):{};u.skipDangerousModePermissionPrompt=true;\nfs.writeFileSync(g,JSON.stringify(u,null,2),{mode:0o600});'"
       },
       {
         "sdk": "files.write",
@@ -369,7 +369,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});'"
+        "cmd": "node -e 'const fs=require('\\''fs'\\''),f=process.env.HOME+'\\''/.claude.json'\\'';\nconst j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'\\''utf8'\\'')):{};\nObject.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'\\''dark'\\'',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});\nconst p=process.env.HOME+'\\''/repo'\\'';j.projects=j.projects||{};\nj.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};\nfs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});\nconst d=process.env.HOME+'\\''/.claude'\\'',g=d+'\\''/settings.json'\\'';fs.mkdirSync(d,{recursive:true});\nconst u=fs.existsSync(g)?JSON.parse(fs.readFileSync(g,'\\''utf8'\\'')):{};u.skipDangerousModePermissionPrompt=true;\nfs.writeFileSync(g,JSON.stringify(u,null,2),{mode:0o600});'"
       },
       {
         "sdk": "files.write",
@@ -411,11 +411,21 @@
         "metadata": {
           "role": "coordinator"
         }
+      },
+      {
+        "sdk": "Sandbox.connect",
+        "id": "m1",
+        "apiKey": "<API_KEY>"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p",
+        "timeoutMs": 15000
       }
     ],
     "out": [
-      "NAME\tSTATE\tCREATED\tMACHINE\tDELETES",
-      "boss\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss\tnever"
+      "NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING",
+      "boss\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss\tnever\t-"
     ]
   },
   "attach": {
