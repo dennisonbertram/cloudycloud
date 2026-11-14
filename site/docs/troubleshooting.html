@@ -165,7 +165,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <li><strong>GitHub token:</strong> never reaches the machine. Instabox stores it as the secret <code>GH_TOKEN</code>. The machine sees a placeholder that Instabox's proxy replaces on requests to <code>github.com</code> and <code>api.github.com</code>.</li>
 <li><strong>Instabox key:</strong> stays in <code>~/.config/cloudy-cloud/env</code> (readable only by you) and in the tool server. It is never put in process arguments.</li>
 <li><strong>MCP server tokens:</strong> only for servers you added with <code>cloudy-cloud mcp add</code>. The token stays in Instabox as <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without <code>--host</code>. With <code>--allow-literal</code> the real token is on the machine. See <a href="mcp.html">MCP servers for subagents</a>.</li>
-<li><strong>Provider keys</strong> (for example Particle): these sit on the worker machines that use them. See <a href="models.html">Models and keys</a>.</li>
+<li><strong>Provider keys</strong> (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See <a href="models.html">Models and keys</a>.</li>
 </ul>
 <p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.</p>
 

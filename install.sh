@@ -275,6 +275,95 @@ yn() { # yn QUESTION: default no
   [[ $a == [yY]* ]]
 }
 
+yn_yes() { # yn_yes QUESTION: default yes
+  local a
+  drain_tty
+  printf '  %s?%s %s%s%s %s[Y/n]%s ' "$C_ACC" "$C_X" "$C_B" "$1" "$C_X" "$C_DIM" "$C_X" >&2
+  IFS= read -r a </dev/tty || a=""
+  [[ $a != [nN]* ]]
+}
+
+# ---- Instabox proxy secrets: a key stored this way never reaches a worker machine, only a placeholder ----
+# secret_hosts NAME: the hosts a key may be sent to (from the proxy spike, #63). Fails for any other name.
+secret_hosts() {
+  case $1 in
+    CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY) echo api.anthropic.com ;;
+    PARTICLE_API_KEY) echo api.particle.ai ;;
+    OPENROUTER_API_KEY) echo openrouter.ai ;;
+    *) return 1 ;;
+  esac
+}
+
+is_proxied() { case ",$(get_saved CLOUDY_CLOUD_PROXY_SECRETS)," in *",$1,"*) return 0 ;; esac; return 1; }
+
+# store_secret NAME VALUE: stores VALUE as an Instabox secret limited to NAME's hosts (the value goes on stdin, never argv),
+# records NAME in CLOUDY_CLOUD_PROXY_SECRETS and removes any NAME= line from the config. Needs your instabox login session.
+store_secret() {
+  local name=$1 h cur args=()
+  for h in $(secret_hosts "$name") ; do args+=(--host "$h"); done
+  [ "${#args[@]}" -gt 0 ] || return 1
+  npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty || return 1
+  printf '%s' "$2" | npx --yes instabox@latest secrets set "$name" "${args[@]}" >/dev/null || return 1
+  # The runtime reads secrets in the org of INSTABOX_API_KEY; your login may point at another org or workspace
+  # (instabox secrets set uses --org, else your default workspace). Keep the env line unless the API-key org shows the secret.
+  secret_visible "$name" || { warn "$name is not visible to your Instabox API key (your login may use another org or workspace), so it is not treated as stored" "check with: npx --yes instabox@latest whoami" >&2; return 1; }
+  if ! is_proxied "$name"; then cur=$(get_saved CLOUDY_CLOUD_PROXY_SECRETS); write_env CLOUDY_CLOUD_PROXY_SECRETS "${cur:+$cur,}$name" || return 1; fi
+  del_env "$name" || { warn "Stored $name, but could not remove its line from $(cfg)" "delete the $name= line yourself" >&2; return 1; }
+}
+
+# secret_visible NAME: the org of the saved Instabox API key lists NAME with all of its hosts.
+secret_visible() {
+  secrets_list | node -e '
+    const [name,...hosts]=process.argv.slice(1);let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
+    const a=Array.isArray(j)?j:(j.items||j.data||j.secrets||[]);
+    process.exit(a.some(x=>x&&x.name===name&&hosts.every(h=>(x.hosts||[]).includes(h)))?0:1)}catch{process.exit(1)}})' "$1" $(secret_hosts "$1")
+}
+
+# keep_key NAME VALUE: on Instabox, stores the key as a secret; if that fails (or on your own machine), saves it in the config instead.
+keep_key() {
+  if [ "${PROVIDER:-}" = instabox ] && secret_hosts "$1" >/dev/null; then
+    if store_secret "$1" "$2"; then return 0; fi
+    warn "Could not store $1 as an Instabox secret, so it is saved in $(cfg) instead" "run $(rerun_cmd) again to retry" >&2
+  fi
+  write_env "$1" "$2" || { bad "Could not write $(cfg)." >&2; exit 1; }
+}
+
+# migrate_key NAME: asks to move a key that sits in the config file into an Instabox secret. A no changes nothing.
+migrate_key() {
+  local v
+  [ "${PROVIDER:-}" = instabox ] || return 1
+  v=$(get_saved "$1"); [ -n "$v" ] || return 1
+  yn_yes "Move $1 into an Instabox secret (host $(secret_hosts "$1"))?" || { hint "Kept $1 in $(cfg). Workers that use it receive the real key."; return 1; }
+  if store_secret "$1" "$v"; then ok "Moved $1 into an Instabox secret" "workers see a placeholder"
+  else warn "Could not store $1 as an Instabox secret; it stays in $(cfg)" "run $(rerun_cmd) again to retry"; return 1; fi
+}
+
+# check_proxy_secrets: every name in CLOUDY_CLOUD_PROXY_SECRETS must exist in the org, with the hosts of the profiles that use it.
+check_proxy_secrets() {
+  local names n pairs=() root rc
+  names=$(get_saved CLOUDY_CLOUD_PROXY_SECRETS); [ -n "$names" ] || return 0
+  root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  for n in ${names//,/ }; do pairs+=("$n=$(secret_hosts "$n" 2>/dev/null)"); done
+  secrets_list | node --input-type=module -e '
+    const root=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",async()=>{
+    let list;try{const j=JSON.parse(s);list=Array.isArray(j)?j:(j.items||j.data||j.secrets||[])}catch{console.log("  Could not read your Instabox secrets. Check with: npx --yes instabox@latest secrets ls");process.exit(2)}
+    let profiles={};try{profiles=(await import(root+"/src/profiles.mjs")).loadProfiles()}catch{}
+    let bad=0;
+    for(const pair of process.argv.slice(2)){
+      const [name,fixed]=[pair.slice(0,pair.indexOf("=")),pair.slice(pair.indexOf("=")+1)];
+      const need=new Set(fixed?[fixed]:[]);
+      for(const p of Object.values(profiles))if(p&&p.keyName===name){try{need.add(new URL(p.baseUrl).host)}catch{}}
+      const cmd="npx --yes instabox@latest secrets set "+name+[...need].map(h=>" --host "+h).join("");
+      const have=list.find(x=>x&&x.name===name);
+      if(!have){bad=1;console.log("  "+name+" is not an Instabox secret. Fix: "+cmd);continue}
+      const miss=[...need].filter(h=>!(have.hosts||[]).includes(h));
+      if(miss.length){bad=1;console.log("  "+name+" is missing host "+miss.join(", ")+". Fix: "+cmd+" (paste the key again)")}
+      else console.log("  "+name+" is stored with its hosts.")}
+    process.exit(bad)})' "$root" "${pairs[@]}"
+  rc=$?
+  return $rc
+}
+
 # clean_paste TEXT: prints TEXT without whitespace, control characters and terminal escape sequences
 # (including the bracketed-paste markers ESC[200~ and ESC[201~).
 clean_paste() {
@@ -436,11 +525,12 @@ strip_escapes() {
   printf '%s' "$v"
 }
 
-del_env() { # del_env NAME: removes NAME from the config file, if present
+del_env() { # del_env NAME: removes NAME from the config file, if present. Returns non-zero, leaving the file as it was, on any failure.
   local file t
   file=$(cfg); [ -f "$file" ] || return 0
   t="$file.tmp.$$"
-  ( umask 077; grep -v "^$1=" "$file" > "$t"; mv "$t" "$file" ) || rm -f "$t"
+  # grep exits 1 when no line is left, which is fine; 2 or more is an error.
+  ( umask 077; grep -v "^$1=" "$file" > "$t"; [ $? -le 1 ] && [ -f "$t" ] && mv "$t" "$file" ) || { rm -f "$t"; return 1; }
 }
 
 # preview VALUE: first 8 and last 4 characters only, and only for values long enough to hide the middle.
@@ -622,18 +712,21 @@ setup_instabox() {
 }
 
 setup_claude() {
-  local saved key tries=0 auto=1 acct marker result reason
+  local saved key tries=0 auto=1 acct marker result reason shown
+  migrate_key CLAUDE_CODE_OAUTH_TOKEN || true
+  migrate_key ANTHROPIC_API_KEY || true
   saved=$(get_saved CLAUDE_CODE_OAUTH_TOKEN)
   marker=$(get_saved CLOUDY_CLOUD_TOKEN_ACCOUNT)
-  if [ -n "$saved" ]; then
-    STATUS_CLAUDE="OK ($(mask sk-ant-oat01- "$saved")${marker:+, $marker})"
+  if [ -n "$saved" ] || is_proxied CLAUDE_CODE_OAUTH_TOKEN; then
+    if [ -n "$saved" ]; then shown=$(mask sk-ant-oat01- "$saved"); else shown="stored in Instabox"; fi
+    STATUS_CLAUDE="OK ($shown${marker:+, $marker})"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
       warn "The saved Claude token is for $marker, but your local Claude is $LOCAL_ACCOUNT."
     else
-      ok "Claude token saved" "$(mask sk-ant-oat01- "$saved")${marker:+, account $marker}"
+      ok "Claude token saved" "$shown${marker:+, account $marker}"
     fi
     yn "Replace it?" || return 0
-  elif [ -n "$(get_saved ANTHROPIC_API_KEY)" ]; then
+  elif [ -n "$(get_saved ANTHROPIC_API_KEY)" ] || is_proxied ANTHROPIC_API_KEY; then
     warn "Subagents use a saved ANTHROPIC_API_KEY" "billed per use"
     yn "Replace it with a setup-token?" || return 0
   fi
@@ -672,7 +765,7 @@ setup_claude() {
       fail*) bad "Claude rejected this token: $reason"; hint "Make a fresh one with claude setup-token and try again."; tries=$((tries + 1)); continue ;;
       *) yn "Could not check the token ($reason). Save it anyway?" || { tries=$((tries + 1)); continue; } ;;
     esac
-    write_env CLAUDE_CODE_OAUTH_TOKEN "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+    keep_key CLAUDE_CODE_OAUTH_TOKEN "$key"
     acct=$(claude_account "$key")
     if [ -n "$acct" ]; then write_env CLOUDY_CLOUD_TOKEN_ACCOUNT "$acct"; else del_env CLOUDY_CLOUD_TOKEN_ACCOUNT; fi
     STATUS_CLAUDE="OK ($(mask sk-ant-oat01- "$key")${acct:+, $acct})"
@@ -742,17 +835,21 @@ setup_coordinators() {
   ok "Coordinator image saved" "${acct:+$acct, }$SPIN_T"
 }
 
-# Prints yes, no, or unknown (the org lookup failed or has an unexpected shape).
-gh_secret_state() {
-  local key orgs id secrets
+# Prints the JSON list of the org's secrets (nothing if the org lookup fails).
+secrets_list() {
+  local key orgs id
   key=$(get_saved INSTABOX_API_KEY)
   orgs=$(api_get "$key" /v1/orgs) || true
   id=$(printf '%s' "$orgs" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
     const a=Array.isArray(j)?j:(j.items||j.data||j.orgs||[]);const o=a.find(x=>x&&x.personal)||a[0];console.log(o&&o.id||"")}catch{console.log("")}})') || true
-  [[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || { echo unknown; return; }
-  secrets=$(api_get "$key" "/v1/orgs/$id/secrets") || true
-  printf '%s' "$secrets" | node -e '
+  [[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || return 0
+  api_get "$key" "/v1/orgs/$id/secrets" || true
+}
+
+# Prints yes, no, or unknown (the org lookup failed or has an unexpected shape).
+gh_secret_state() {
+  secrets_list | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
     const a=Array.isArray(j)?j:(j.items||j.data||j.secrets||[]);
     console.log(a.some(x=>x.name==="GH_TOKEN"&&["github.com","api.github.com"].every(h=>(x.hosts||[]).includes(h)))?"yes":"no")}catch{console.log("unknown")}})'
@@ -794,9 +891,10 @@ setup_github() {
 # Optional: a provider key for open-model workers (profiles glm, deepseek, particle, openrouter).
 setup_provider() { # setup_provider NAME LABEL WHERE
   local name=$1 label=$2 where=$3 saved key
+  migrate_key "$name" || true
   saved=$(get_saved "$name")
-  if [ -n "$saved" ]; then
-    ok "$label key saved" "$(mask "" "$saved")"
+  if [ -n "$saved" ] || is_proxied "$name"; then
+    if [ -n "$saved" ]; then ok "$label key saved" "$(mask "" "$saved")"; else ok "$label key stored in Instabox" "as $name"; fi
     yn "Replace it?" || return 0
   fi
   drain_tty
@@ -804,9 +902,10 @@ setup_provider() { # setup_provider NAME LABEL WHERE
   ask_line "Paste it (nothing shows as you paste; Enter to skip):"
   read_secret key
   [ -n "$key" ] || { hint "Skipped $label."; return 0; }
-  write_env "$name" "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+  keep_key "$name" "$key"
   ok "Saved the $label key" "$(mask "" "$key")"
-  hint "Unlike GH_TOKEN, this key is stored on the worker machines that use it."
+  if is_proxied "$name"; then hint "Stored as an Instabox secret: worker machines see a placeholder, not the key."
+  else hint "Unlike GH_TOKEN, this key is stored on the worker machines that use it."; fi
 }
 
 # summary_row LABEL STATUS: a green check for OK and ready, a yellow triangle for anything else.
@@ -854,7 +953,7 @@ main() {
   [ "${1:-}" = --check-only ] || banner
   step 1 Tools
   check_prereqs || exit 1
-  [ "${1:-}" = --check-only ] && exit 0
+  if [ "${1:-}" = --check-only ]; then check_proxy_secrets; exit $?; fi
   ok "git, node, npm, curl and claude are installed"
 
   local root branch sha log
@@ -926,7 +1025,7 @@ main() {
   hint "To change a key later, run: cloudy-cloud setup"
   hint "Restart any open cloudy-cloud session to use the new keys."
   warn "Recommended: block direct pushes to your main branch on GitHub"
-  hint "Settings > Rules > Rulesets. Subagents can push to any branch the token reaches."
+  hint "Subagents can push to any branch the token reaches. In a repo, run: cloudy-cloud protect"
   box_open Next
   box_text "In a repo with a github.com origin, run:"
   box_text "  cloudy-cloud" "$C_B$C_ACC"
