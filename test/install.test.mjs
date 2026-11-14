@@ -259,6 +259,8 @@ const pty = (spec) => {
   return { text: r.stdout, code: m ? Number(m[1]) : -1 };
 };
 
+// The first question of every run: Enter keeps the default, Instabox.
+const WHERE = ['Where should subagents run', '\n'];
 function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   const cl = claudeStub(claudeExtra);
   const cfgDir = tmp(); const cfg = join(cfgDir, 'env');
@@ -271,8 +273,8 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   symlinkSync(resolve('bin/cloudy-cloud'), join(cl, 'cloudy-cloud'));
   const tdir = tmp();
   const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
-  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps });
-  return { cl, cfg, tdir, run };
+  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps: [WHERE, ...steps] });
+  return { cl, cfg, tdir, run, env };
 }
 const P_IB = ['Paste it', null]; // placeholders, built per test
 const tail = [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
@@ -368,7 +370,7 @@ function uiRig(opts, env = {}) {
   const g = rig(opts);
   const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLOUDY_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
   for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
-  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps, ...extra }) };
+  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [WHERE, ...steps], ...extra }) };
 }
 const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
 const NOANIM = { CLOUDY_CLOUD_NO_ANIMATION: '1' };
@@ -458,7 +460,7 @@ test('animation: Ctrl-C restores the cursor and echo', () => {
 
 test('animation: a key pressed during it skips it and does not reach the first prompt', () => {
   const g = uiRig({ saved: savedBoth });
-  const r = g.run([['\\?25l', 'yy'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']]);
+  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -569,4 +571,63 @@ test('link_command (npm mode): an old cloudy-cloud link is replaced only with a 
   const no = runLink(n, 1);
   assert.doesNotMatch(readFileSync(n.calls, 'utf8'), /rm -g|install -g/);
   assert.match(no.stdout, /Left the old command in place/);
+});
+
+// ---- provider question ----
+test('choose_provider: --provider skips the question; Enter and 1 mean Instabox; 2 means self-hosted; anything unknown is refused', () => {
+  assert.equal(fn('choose_provider self-hosted; echo $PROVIDER').stdout, 'self-hosted\n');
+  assert.equal(fn('choose_provider instabox; echo $PROVIDER').stdout, 'instabox\n');
+  const r = fn('choose_provider other');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout + r.stderr, /Unknown provider "other"/);
+  for (const [ans, want] of [['\n', 'instabox'], ['1\n', 'instabox'], ['2\n', 'self-hosted']]) {
+    const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1' }, steps: [['Type 1 or 2', ans]] });
+    assert.match(p.text, /Where should subagents run\?/);
+    assert.match(p.text, /1  Instabox cloud \(default\)/);
+    assert.match(p.text, /2  your own machine over SSH/);
+    assert.match(p.text, new RegExp(`PROVIDER=${want}`));
+  }
+});
+
+// A node wrapper that records calls to the self-hosted script and, when asked, replaces it with a stub that exits 0.
+function nodeSpy(g, { stub }) {
+  const dir = tmp(); const log = join(dir, 'node-calls');
+  writeFileSync(join(dir, 'node'), `#!/bin/sh\ncase "$1" in\n *self-hosted-setup.mjs) echo "$*" >> "${log}"; ${stub ? 'exit 0' : `exec "${process.execPath}" "$@"`} ;;\n *) exec "${process.execPath}" "$@" ;;\nesac\n`);
+  chmodSync(join(dir, 'node'), 0o755);
+  return { env: { ...g.env, PATH: `${dir}:${g.env.PATH}` }, log };
+}
+
+test('pty: answer 1 (the default) is the Instabox flow and never runs the self-hosted script', () => {
+  const g = rig({ saved: savedBoth });
+  const spy = nodeSpy(g, { stub: true });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [WHERE, ...answers] });
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Instabox key saved and working/);
+  assert.ok(!existsSync(spy.log), 'self-hosted script was called');
+});
+
+test('pty: answer 2 runs the self-hosted script, skips every Instabox step and keeps the Claude step', () => {
+  const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\n` });
+  const spy = nodeSpy(g, { stub: true });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '2\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.equal(readFileSync(spy.log, 'utf8').trim().endsWith('self-hosted-setup.mjs setup'), true);
+  assert.ok(!/Instabox API key|Instabox key saved|GH_TOKEN|coordinators/i.test(r.text), r.text);
+  assert.match(r.text, /Your machine\s+OK \(me@mac-studio, 4 at once\)/);
+});
+
+test('pty: --provider self-hosted skips the question', () => {
+  const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n` });
+  const spy = nodeSpy(g, { stub: true });
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'self-hosted'], env: spy.env, steps: [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.ok(!/Where should subagents run/.test(r.text));
+  assert.ok(existsSync(spy.log));
+});
+
+test('npm package includes the file self-hosted setup reads (#41)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' }));
+  const files = out[0].files.map((f) => f.path);
+  for (const f of ['docker/worker.Dockerfile', 'src/self-hosted-setup.mjs', 'bin/cloudy-cloud', 'install.sh']) assert.ok(files.includes(f), `${f} missing from the npm package`);
 });

@@ -3,6 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { watch, reaperSpawn, startReaper } from '../src/reaper.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
@@ -59,7 +62,7 @@ test('spawn options pass the key and provider only in env', () => {
 });
 
 test('the reaper process exits 1 with no key, without touching the network', () => {
-  const env = { PATH: process.env.PATH };
+  const env = { PATH: process.env.PATH, CLOUDY_CLOUD_CONFIG: '/nonexistent/cloudy-cloud-env' };
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), '1', OWNER], { env, timeout: 5000 });
   assert.equal(r.status, 1);
 });
@@ -89,7 +92,7 @@ test('the reaper never loads the SDK: reap through the real adapter, and exit 1 
   const hook = fileURLToPath(new URL('./fixtures/block-sdk.mjs', import.meta.url));
   const reaper = fileURLToPath(new URL('../src/reaper.mjs', import.meta.url));
   const adapter = fileURLToPath(new URL('../src/providers/instabox.mjs', import.meta.url));
-  const empty = spawnSync(process.execPath, ['--import', hook, reaper, '1', OWNER], { env: { PATH: process.env.PATH }, timeout: 5000, encoding: 'utf8' });
+  const empty = spawnSync(process.execPath, ['--import', hook, reaper, '1', OWNER], { env: { PATH: process.env.PATH, CLOUDY_CLOUD_CONFIG: '/nonexistent/cloudy-cloud-env' }, timeout: 5000, encoding: 'utf8' });
   assert.equal(empty.status, 1);
   assert.ok(!empty.stderr.includes('SDK_LOADED'), empty.stderr);
   const code = `
@@ -114,4 +117,22 @@ test('the reaper deletes the machines of page 1 when page 2 of the list fails, a
   assert.equal(n, 1);
   assert.deepEqual(deleted, ['m1']);
   assert.match(logs.join('\n'), /list failed.*HTTP 500/);
+});
+
+test('the reaper reads the saved settings file, so a self-hosted reaper uses the saved docker path and ssh key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-'));
+  try {
+    writeFileSync(join(dir, 'env'), 'CLOUDY_CLOUD_CONTAINER_BIN=/saved/bin/docker\nCLOUDY_CLOUD_SSH_KEY=/saved/key\n');
+    // a fake ssh that records its argv and answers with no containers
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin/ssh'), `#!/bin/sh\necho "$@" >> ${join(dir, 'log')}\n`, { mode: 0o755 });
+    const dead = spawnSync('true').pid;
+    const env = { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: 'me@box' };
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), String(dead), OWNER], { env, timeout: 10000, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const log = readFileSync(join(dir, 'log'), 'utf8');
+    assert.match(log, /-i \/saved\/key/);
+    const cmd = Buffer.from(log.match(/printf %s (\S+) \| base64 -d/)[1], 'base64').toString();
+    assert.match(cmd, /^'\/saved\/bin\/docker' 'ps'/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -2,7 +2,7 @@
 
 As of 2026-11-11. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
 
-Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_PROVIDER` (default `instabox`, the only supported value today). Providers must provide proxy secrets for the GitHub token, server-side delete deadlines, snapshots for coordinators, and port forwarding for `open`. `install.sh` sets up Instabox only. See [sandbox provider research](research/sandbox-providers.md).
+Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_PROVIDER` (`instabox`, the default, or `self-hosted`). `install.sh` asks which one, and `cloudy-cloud setup --provider` skips the question. See [sandbox provider research](research/sandbox-providers.md).
 
 ## What it is
 
@@ -26,6 +26,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Progress | `src/progress.mjs`, `src/progress-pi.mjs`, `src/progress-omp.mjs` | Streams tool uses, tokens, elapsed time and the current step from Claude Code, `pi` or `omp`. |
 | The `omp` harness | `src/profiles.mjs`, `src/run-subagent.mjs` | `omp-glm`, `omp-deepseek` and `omp-particle` run oh-my-pi (`omp`, pinned v18.18.7, installed on each worker with the official installer in `--binary` mode) with the same Particle.ai models as `pi-*`. `"harness"` in `profiles.json` may be `claude`, `pi` or `omp`. Config is in `~/omp-agent`. Follow-ups resume the omp session. Coordinators refuse `pi` and `omp` profiles. Proven live once (see below); follow-ups covered by unit tests only. |
 | MCP servers for `pi` and `omp` workers | `src/mcpsync.mjs`, `src/run-subagent.mjs` | The servers from `cloudy-cloud mcp add` are written to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` (mode 600). `pi` skips `sse` servers with a reason in the reply; `omp` accepts them. The footer lists delivered servers and does not confirm a connection. Proven live with a stdio server (see below). |
+| Self-hosted provider (your own machine over SSH) | `src/providers/self-hosted.mjs`, `src/providers/ssh.mjs`, `src/self-hosted-setup.mjs`: one Docker container per subagent, `setup --provider self-hosted`, `doctor`, slots, consented GitHub token, `open` through an SSH bridge. Covered by unit tests and an opt-in local test against a throwaway sshd container. Docs: [RUNBOOK section 9](RUNBOOK.md#9-your-own-machine). **Not yet proven live:** the first live check on a Mac Studio over Tailscale is still to do. Coordinators use `docker commit --pause=true` images named `cloudy-cloud-coordinator:<name>` (issue #35); they are covered by unit tests only and not proven live on a Mac Studio. Coordinators on this provider start workers as sibling containers through the box's Docker socket (`CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes`, local transport `src/providers/local.mjs`, #41); covered by unit tests and an opt-in local test with a real coordinator container starting a sibling worker, not proven live on a Mac Studio. |
 | Cloud coordinators | `src/coordinator.mjs` | `coordinator image` (sign in once, then snapshot), `start`, `attach`, `ls` and `stop`. They are long-lived, never pause and run Remote Control. |
 | Fleet skill | `skills/cloud-fleet/SKILL.md` | Teaches Claude flat fan-out, trunk merging into `fleet/<topic>`, waves, model choice per level, briefs and safety. |
 
@@ -63,6 +64,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 
 ## Open items
 
+- **Self-hosted live check:** run setup, one worker that pushes, a follow-up, `open`, stop, and a killed-session cleanup on the real Mac Studio, then move the row above to "Proven live". Also try a coordinator (`coordinator image`, `--save`, `start`) there.
 - **agent-drive access for workers:** not built. It needs a `delegate` credential and a dedicated drive.
 - **Particle key:** it sits on worker machines; moving it into an Instabox proxy secret needs the user to run `npx instabox@latest secrets set PARTICLE_API_KEY --host api.particle.ai`.
 - **MCP proxy secrets for pi and omp:** the live checks used a server with no token, so the `MCP_<NAME>_TOKEN` proxy path is still not proven live for any harness.

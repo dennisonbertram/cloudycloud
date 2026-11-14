@@ -619,6 +619,15 @@ test('an auth failure on the first push gives the GH_TOKEN hint', async () => {
   assert.match(r, /GH_TOKEN.*RUNBOOK\.md, step 2\.4/s);
 });
 
+test('without proxy secrets an auth failure on the first push gives the provider\'s token help, not the Instabox one', async () => {
+  const f = flakyFirstPush(9, 'remote: Permission to test/repo.git denied. fatal: 403');
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const { start, wait } = await setup({ ...f, provider });
+  const r = await wait([await start()]);
+  assert.match(r, /first push to origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
+  assert.ok(!r.includes('step 2.4'));
+});
+
 test('the safety push retries once', async () => {
   const sleeps = [];
   let pushes = 0;
@@ -794,6 +803,17 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\. Your workers are deleted as soon as your reply ends.*call cloud_agent_wait on every worker you started/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
+});
+
+test('a provider that defines coordinatorEnv adds fixed lines and its own names (not the Instabox key) to the shared allowlist; the depth lines are still added (#41)', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  x.deps.provider.coordinatorEnv = () => ({ fixed: ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1'], names: ['GH_TOKEN'] });
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
+  assert.equal(env, 'CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SELF_HOSTED_LOCAL=1\nGH_TOKEN=ghp_secret\nCLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1\nPARTICLE_API_KEY=part-key-1\nCLOUDY_CLOUD_DEPTH=1\nCLOUDY_CLOUD_MAX_DEPTH=3\nCLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200\n');
+  assert.doesNotMatch(env, /INSTABOX/);
 });
 
 test('a coordinator at max depth is refused before any sandbox; depth goes up by one', async () => {
@@ -1203,6 +1223,62 @@ test('a provider without proxy secrets is refused before any machine starts', as
   const x = await setup({ createSandbox: undefined, provider });
   const r = await runSubagent({ description: 'd', prompt: 'hi' }, x.deps);
   assert.equal(r.isError, true);
-  assert.equal(r.content[0].text, 'Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets.');
+  assert.match(r.content[0].text, /^Provider fake cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets\. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question\./);
   assert.equal(provider.log.create.length, 0);
+});
+
+test('a provider without proxy secrets but with consent runs, and every reply says where the token is', async () => {
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  provider.text.hostLabel = 'box1';
+  const x = await setup({ provider });
+  const r = await x.wait([await x.start({})]);
+  assert.match(r, /\nGitHub token: on your machine box1 \(you allowed it\)/);
+});
+
+test('with proxy secrets the reply has no token line', async () => {
+  const x = await setup();
+  assert.ok(!(await x.wait([await x.start({})])).includes('GitHub token:'));
+});
+
+test('a token value in a sandbox error is scrubbed from the reply', async () => {
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const x = await setup({ provider });
+  const r = await x.wait([await x.start({ prompt: 'FAIL ghp_secret' })]);
+  assert.ok(!r.includes('ghp_secret'));
+});
+
+// ---- MCP tokens on a provider without proxy secrets (#41) ----
+for (const profile of [undefined, 'pi-glm', 'omp-glm']) test(`without proxy secrets (${profile ?? 'claude'}) an MCP token reference needs --allow-literal; only consented tokens are requested and scrubbed`, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cc-mcp-'));
+  const file = join(dir, 'mcp.json');
+  const ref = (v) => ({ type: 'http', url: 'https://m.example.com/mcp', headers: { Authorization: `Bearer \${${v}}` } });
+  await writeFile(file, JSON.stringify({ mcpServers: { x: ref('MCP_X_TOKEN'), y: { ...ref('MCP_Y_TOKEN'), cloudyCloudAllowLiteral: true } } }));
+  const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const env = { ...pEnv, CLOUDY_CLOUD_MCP: file, MCP_X_TOKEN: 'xtoken-not-consented', MCP_Y_TOKEN: 'ytoken-consented-1' };
+  const x = await setup({ createSandbox: undefined, provider, env });
+  const r = await x.wait([await x.start({ prompt: 'FAIL ytoken-consented-1', ...(profile && { profile }) })]);
+  const { secrets } = provider.log.create[0];
+  assert.deepEqual(secrets, ['MCP_Y_TOKEN']);
+  assert.match(r, /MCP servers skipped: x \(.*--allow-literal/);
+  assert.ok(!r.includes('ytoken-consented-1') && !r.includes('xtoken-not-consented'));
+});
+
+test('a coordinator is refused before any machine starts when the provider says it cannot host one (#41)', async () => {
+  const provider = createFakeProvider();
+  provider.text.coordinatorRefusal = 'Coordinators are not supported on fake yet.';
+  const x = await setup({ createSandbox: undefined, provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /not supported on fake yet/);
+  assert.equal(provider.log.create.length, 0);
+});
+
+test('the default create passes the role to the provider so a self-hosted coordinator can get the Docker socket (#41)', async () => {
+  const calls = [];
+  const provider = createFakeProvider();
+  provider.create = async (o) => { calls.push(o); throw new Error('stop here'); };
+  const x = await setup({ createSandbox: null, provider });
+  await x.wait([await x.start({ role: 'coordinator' })]);
+  await x.wait([await x.start({ role: 'worker' })]);
+  assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
 });

@@ -52,6 +52,10 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
+### Can I use my own computer?
+
+Yes. Run `cloudy-cloud setup --provider self-hosted` to send subagents to a Mac or Linux machine you own, reached over SSH (for example through Tailscale). Each subagent runs in its own Docker container there. You must allow the GitHub token on that machine. Coordinators work through Docker images but have not been run live yet. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
+
 ### Can work continue with my laptop closed?
 
 Not from a laptop session: subagents stop when the session ends. For work that must continue with the laptop closed, use a [cloud coordinator](https://cloudycloud.tech/docs/fleets.html).

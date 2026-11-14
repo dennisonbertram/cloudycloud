@@ -118,7 +118,25 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`. It defaults to `instabox`, the only supported value today. A provider must keep the GitHub token behind proxy secrets, enforce a server-side machine delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`. `install.sh` currently sets up Instabox only. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default) or `self-hosted`. A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+
+## Run on your own machine
+
+Instead of Instabox, subagents can run in Docker containers on a Mac or Linux computer you own, reached over SSH (for example through Tailscale).
+
+```sh
+cloudy-cloud setup --provider self-hosted
+cloudy-cloud doctor
+```
+
+Setup asks for the SSH address (`user@host`), an optional SSH key, how many subagents may run at once, and whether to allow your GitHub token inside the worker containers on that machine. It builds the worker image there and saves the settings. `doctor` checks the machine afterwards.
+
+- **A Mac needs** Remote Login turned on, an SSH key, Docker Desktop or OrbStack running, and sleep turned off.
+- **The GitHub token** must be stored in each worker container while it runs. Setup asks for your consent once. Workers do not start without it.
+- **Coordinators:** `cloudy-cloud coordinator image` signs in once on a container and saves it with `docker commit --pause=true` as the image `cloudy-cloud-coordinator:<name>`. The image keeps the Claude login but not `/run/secrets`, which is a tmpfs, so no token is saved. `coordinator start` creates a container from that image. Coordinators on the self-hosted provider need one more consent in `cloudy-cloud setup --provider self-hosted` ("Coordinators on <host> can start containers through Docker, which gives them full control of Docker on that machine. Allow?"). A coordinator container then gets the machine's Docker socket and starts its workers as sibling containers, so no SSH key is copied onto it. They are covered by unit tests and the opt-in local test, but have not been run live on a real Mac Studio yet.
+- **Not supported:** `cloudy-cloud open --share`.
+
+Details are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-your-own-machine) and [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
 
 ## Dashboard
 
@@ -190,7 +208,8 @@ Both kinds of coordinator need a git clone install for now: run `./install.sh` f
 | Command | What it does |
 | --- | --- |
 | `cloudy-cloud` | Starts a Claude Code session with subagents on cloud machines. |
-| `cloudy-cloud setup [--check-only]` | Checks your tools and saves your keys. `--check-only` only checks tools. |
+| `cloudy-cloud setup [--check-only] [--provider instabox\|self-hosted]` | Checks your tools and saves your keys. `--check-only` only checks tools. `--provider` picks where subagents run without asking. |
+| `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
 | `cloudy-cloud mcp add <name> [--allow-literal]` \| `ls` \| `rm <name>` | Chooses which of your MCP servers cloud subagents get. |

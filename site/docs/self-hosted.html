@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run on your own machine · Cloudy Cloud docs</title>
+<meta name="description" content="Run Cloudy Cloud subagents in Docker containers on a Mac or Linux computer you own, reached over SSH or Tailscale.">
+<!--seo-->
+<link rel="canonical" href="https://cloudycloud.tech/docs/self-hosted.html">
+<link rel="alternate" type="text/markdown" href="self-hosted.md">
+<meta property="og:site_name" content="Cloudy Cloud">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Run on your own machine · Cloudy Cloud docs">
+<meta property="og:description" content="Run Cloudy Cloud subagents in Docker containers on a Mac or Linux computer you own, reached over SSH or Tailscale.">
+<meta property="og:url" content="https://cloudycloud.tech/docs/self-hosted.html">
+<meta property="og:image" content="https://cloudycloud.tech/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Cloudy Cloud: your subagents, up in the clouds">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
+<meta name="twitter:title" content="Run on your own machine · Cloudy Cloud docs">
+<meta name="twitter:description" content="Run Cloudy Cloud subagents in Docker containers on a Mac or Linux computer you own, reached over SSH or Tailscale.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Run on your own machine","description":"Run Cloudy Cloud subagents in Docker containers on a Mac or Linux computer you own, reached over SSH or Tailscale.","url":"https://cloudycloud.tech/docs/self-hosted.html","mainEntityOfPage":"https://cloudycloud.tech/docs/self-hosted.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
+,{"@type":"ListItem","position":3,"name":"Run on your own machine","item":"https://cloudycloud.tech/docs/self-hosted.html"}]}</script>
+<!--/seo-->
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 18'%3E%3Cpath d='M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z' fill='%235867f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side">Menu</button>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 26 18" fill="none"><path d="M7 17h13.5a5 5 0 0 0 .6-9.96A7 7 0 0 0 7.6 5.2 6 6 0 0 0 7 17Z" stroke="url(#bg)" stroke-width="1.6"/><defs><linearGradient id="bg" x1="0" x2="26" y1="0" y2="0"><stop stop-color="#0087ff"/><stop offset="1" stop-color="#87ffff"/></linearGradient></defs></svg>
+      Cloudy Cloud
+    </a>
+    <span class="label">Docs</span>
+    <nav class="top-links" aria-label="Site">
+      <a class="hide-s" href="/">Homepage</a>
+      <a id="gh" href="https://github.com/dennisonbertram/cloudycloud" aria-label="GitHub repository"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span class="gh-t">GitHub</span><span class="gh-n" id="ghn" hidden><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .6l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L.8 5.9l5-.7L8 .6Z"/></svg><span id="ghc"></span></span></a>
+      <button class="theme" id="theme" type="button" aria-label="Switch to dark mode"><svg class="i-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" hidden><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg></button>
+    </nav>
+  </div>
+</header>
+<div class="shell">
+  <aside class="side" id="side">
+    <nav aria-label="Docs">
+      <p class="side-h">Documentation</p>
+      <ul>
+        <li><a href="./" data-page="index">Getting started</a></li>
+        <li><a href="how-it-works.html" data-page="how-it-works">How it works</a></li>
+        <li><a href="models.html" data-page="models">Models and keys</a></li>
+        <li><a href="reference.html" data-page="reference">Command and tool reference</a></li>
+        <li><a href="fleets.html" data-page="fleets">Coordinators and fleets</a></li>
+        <li><a href="dashboard.html" data-page="dashboard">Dashboard and app previews</a></li>
+        <li><a href="mcp.html" data-page="mcp">MCP servers for subagents</a></li>
+        <li><a href="self-hosted.html" data-page="self-hosted" aria-current="page">Run on your own machine</a></li>
+        <li><a href="troubleshooting.html" data-page="troubleshooting">Troubleshooting, security and FAQ</a></li>
+        <li><a href="what-is-cloudy-cloud.html" data-page="what-is-cloudy-cloud">What is Cloudy Cloud?</a></li>
+        <li><a href="faq.html" data-page="faq">FAQ</a></li>
+        <li><a href="glossary.html" data-page="glossary">Glossary</a></li>
+      </ul>
+    </nav>
+  </aside>
+  <main id="content" tabindex="-1">
+    <article>
+<h1>Run on your own machine</h1>
+<p class="lede">Instead of Instabox, subagents can run in Docker containers on a computer you own, such as a Mac Studio or a Linux server. Cloudy Cloud reaches it over SSH. Tools, branches and follow-ups work the same way.</p>
+
+<h2 id="how-it-works">How it works</h2>
+<p>Set <code>CLOUDY_CLOUD_PROVIDER=self-hosted</code> (setup does this). Each subagent gets its own container on the machine, named <code>cc-&lt;id&gt;</code>, started from a worker image that setup builds there. Cloudy Cloud runs every command through one shared SSH connection and uses <code>docker exec</code> inside the container. The reaper that deletes a session's machines also removes that session's containers.</p>
+<div class="warn"><p>On your own machine there is no proxy to hide the GitHub token. If you allow it, the token is stored inside each worker container for as long as it runs. See <a href="#github-token">The GitHub token</a>.</p></div>
+
+<h2 id="prerequisites">What the machine needs</h2>
+<h3 id="prereq-mac">A Mac</h3>
+<ul>
+<li><strong>Remote Login.</strong> Turn it on in System Settings, General, Sharing. This is the macOS SSH server.</li>
+<li><strong>An SSH key.</strong> Remote Login with a key needs your public key in <code>~/.ssh/authorized_keys</code> on the Mac. Cloudy Cloud never asks for a password (it runs <code>ssh</code> with <code>BatchMode=yes</code>). Test with <code>ssh user@host true</code>.</li>
+<li><strong>Tailscale</strong>, on the Mac and on your computer, so you can reach the Mac by its Tailscale name or <code>100.x</code> address from anywhere. Tailscale's own SSH server runs only on Linux, so on a Mac you use Remote Login with a key over the tailnet.</li>
+<li><strong>Docker Desktop or OrbStack.</strong> Open it once so its engine is running. Setup looks for the <code>docker</code> program and saves its full path, because a non-interactive SSH session on a Mac does not have <code>/opt/homebrew/bin</code> on its <code>PATH</code>.</li>
+<li><strong>No sleep.</strong> A sleeping Mac stops every subagent on it. In System Settings, Battery (or Energy), turn on "Prevent automatic sleeping when the display is off", or run <code>sudo pmset -a sleep 0</code> on the Mac. Doctor warns when the Mac is set to sleep.</li>
+</ul>
+
+<h3 id="prereq-linux">Linux</h3>
+<ul>
+<li>Docker (or Podman) installed and running. Setup finds <code>docker</code> first and <code>podman</code> second.</li>
+<li>SSH access with a key, or Tailscale SSH (<code>sudo tailscale up --ssh</code>), in which case you need no key.</li>
+</ul>
+<p>Either way, about 20 GB of free disk is expected for the worker image and containers. Setup and doctor warn below that.</p>
+
+<h2 id="setup">Run setup</h2>
+<pre><code>cloudy-cloud setup --provider self-hosted</code></pre>
+<p>Without <code>--provider</code>, the installer asks "Where should subagents run?" and you type 2. Setup then asks, in order:</p>
+<ol>
+<li><strong>SSH address</strong> (<code>user@host</code>), for example <code>me@mac-studio</code>.</li>
+<li><strong>Path to your SSH key</strong>, optional. Press Enter to use your default keys or Tailscale SSH.</li>
+<li><strong>How many subagents may run at once.</strong> The suggestion is half the CPUs or one per 4 GB of memory, whichever is lower, and at least 1. On a Mac the container VM's own CPU and memory limit counts if it is lower than the Mac's.</li>
+<li><strong>Allow the GitHub token on the machine?</strong> Default is no. If you say yes, it asks you to paste a token. Nothing shows as you paste.</li>
+</ol>
+<p>Between the questions it checks SSH, sleep (Mac), the container runtime and free disk, then builds the worker image <code>cloudy-cloud-worker:&lt;version&gt;</code> on the machine. The first build takes several minutes. It then saves the settings to <code>~/.config/cloudy-cloud/env</code> (mode 600). Run setup again after you update Cloudy Cloud, because the image version must match.</p>
+
+<h2 id="github-token">The GitHub token</h2>
+<p>Subagents need a GitHub token to push their branches. On Instabox the token never reaches the machine. On your own machine it has to. If you answer yes at setup:</p>
+<ul>
+<li>The token is saved as <code>GH_TOKEN</code> in the config file, and <code>CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes</code> records your consent.</li>
+<li>For each worker, the token is written over SSH standard input into a file on a memory-only filesystem inside the container (<code>/run/secrets/env</code>, mode 600). It is not in a command line, a container label or <code>docker inspect</code>, and it disappears with the container.</li>
+<li>Every <code>cloud_agent</code> reply says <code>GitHub token: on your machine &lt;host&gt; (you allowed it)</code>.</li>
+</ul>
+<p>If you answer no, workers will not start, because they could not push. A subagent that runs on the machine can read the token while it runs, and it can push to any branch the token reaches. Use a fine-grained token limited to the repositories subagents may push to, and protect your main branch. Allow the token only on a machine you own and trust.</p>
+
+<h2 id="doctor">Check the machine</h2>
+<pre><code>cloudy-cloud doctor</code></pre>
+<p>Doctor checks the saved machine and prints one line per check, marked <code>ok</code>, <code>warn</code> or <code>fail</code>, with a <code>fix:</code> line under each problem. It exits with status 1 if any check fails. If the provider is not <code>self-hosted</code> it says so and checks nothing. It covers:</p>
+<ul>
+<li>SSH reachability and how long it took. A slow answer may mean Tailscale check mode is asking you to sign in again. Give the machine an "accept" rule or a longer <code>checkPeriod</code> in the Tailscale admin console, or use a normal key.</li>
+<li>Sleep settings, on a Mac.</li>
+<li>The container runtime, its path and version. A rootless Podman gets a warning that limits may not apply.</li>
+<li>Free disk, with a warning under 20 GB.</li>
+<li>The worker image, and whether its version matches Cloudy Cloud.</li>
+<li>Capacity: whether your slot count is above what the machine suggests.</li>
+<li>Running Cloudy Cloud containers, and a warning for any that is past its deadline, with the command to remove it.</li>
+<li>Saved settings: the container path, the slot count, and the GitHub token consent.</li>
+</ul>
+
+<h2 id="slots">Slots and sizing</h2>
+<p>The number of subagents at once is <code>CLOUDY_CLOUD_SELF_HOSTED_SLOTS</code>. Past it, a new subagent waits with the status <code>queued</code> and starts when one ends. Setup also saves a per-container limit that splits the machine between the slots: CPUs (<code>CLOUDY_CLOUD_SELF_HOSTED_CPUS</code>, at least 1) and 80% of memory (<code>CLOUDY_CLOUD_SELF_HOSTED_MEMORY</code>). On a Mac, "the machine" means the container VM's limits, which you set in Docker Desktop or OrbStack. If you raise them there, run setup again.</p>
+
+<h2 id="cleanup">Cleanup and deadlines</h2>
+<p>Each container runs <code>timeout &lt;seconds&gt; sleep infinity</code> as its main process and is started with <code>--rm</code>. It exits at its deadline (at most 24 hours) and Docker removes it, even if your computer is off. The client also deletes a session's containers when the session ends. To see and remove them yourself:</p>
+<pre><code>ssh user@host /path/to/docker ps -a --filter label=cloudy-cloud.purpose
+ssh user@host /path/to/docker rm -f cc-&lt;id&gt;</code></pre>
+<p>Doctor prints these with your real values. What happens to containers when the machine reboots has not been checked yet. Doctor lists any that are left over.</p>
+
+<h2 id="open">Previewing an app</h2>
+<p><code>cloudy-cloud open &lt;agent&gt; &lt;port&gt;</code> works. It forwards a port on your computer to the container over SSH. <code>--share</code> does not work on this provider, because it cannot publish links.</p>
+
+<h2 id="limits">Limits</h2>
+<ul>
+<li><strong>One machine.</strong> Setup saves one SSH address.</li>
+<li><strong>Coordinators use Docker images.</strong> <code>cloudy-cloud coordinator image --save</code> runs <code>docker commit --pause=true</code> on your signed-in image container and saves it as <code>cloudy-cloud-coordinator:&lt;name&gt;</code> on the machine. The image keeps your Claude login but never <code>/run/secrets</code> (a tmpfs), so no token is saved. <code>coordinator start</code> creates a container from it. You list and remove images with <code>docker image ls</code> and <code>docker rmi</code> on the machine; <code>cloudy-cloud</code> has no command for that. This has not been run live on a real Mac Studio yet.</li>
+<li><strong>Coordinators start workers through Docker.</strong> Setup asks once: <q>Coordinators on &lt;host&gt; can start containers through Docker, which gives them full control of Docker on that machine. Allow?</q> If you say yes, a coordinator container gets the machine's Docker socket (workers never do) and starts its workers as sibling containers, so no SSH key is copied onto it. Its settings file holds the Claude login and sizing settings, plus the GitHub token only if you allowed it, and never the SSH host or key. The risk: a coordinator can control every container on that machine. Without the consent, coordinators are refused and the reply says to run setup. Docker only, not Podman.</li>
+<li><strong>No published links.</strong> <code>open --share</code> is refused.</li>
+<li><strong>Docker and rootless Podman.</strong> Docker is the supported route. Podman is accepted but its limits may not apply when rootless.</li>
+<li><strong>Setup asks for no Instabox key.</strong> It still asks for your Claude token and optional model provider keys.</li>
+<li><strong>The agent can reach your network.</strong> A container on your machine can reach the other devices that machine can reach.</li>
+</ul>
+
+<h2 id="docker-desktop-keychain">Docker Desktop: image build fails over SSH</h2>
+<p>Docker Desktop on a Mac can store registry logins in the macOS keychain (<code>credsStore</code> in <code>~/.docker/config.json</code>). A build started over SSH cannot unlock the keychain, so pulling the base image can fail with an error about credentials. The image uses <code>node:22-bookworm-slim</code>. Two ways around it:</p>
+<ul>
+<li>On the Mac itself, in a Terminal window, run <code>docker pull node:22-bookworm-slim</code>, then run setup again. The build then finds the base image locally.</li>
+<li>Use OrbStack instead.</li>
+</ul>
+<p>This is a known Docker Desktop behavior. It has not yet been checked on the Mac Studio.</p>
+    </article>
+    <nav class="pn" aria-label="Previous and next page">
+<a class="prev" href="mcp.html"><small>Previous</small><span>MCP servers for subagents</span></a>
+<a class="next" href="troubleshooting.html"><small>Next</small><span>Troubleshooting, security and FAQ</span></a>
+    </nav>
+  </main>
+  <aside class="toc" id="toc" aria-label="On this page">
+    <p class="toc-h">On this page</p>
+    <ul id="toc-list"></ul>
+  </aside>
+</div>
+<footer class="foot">
+  <span>cloudycloud.tech</span>
+  <span>Not affiliated with Anthropic.</span>
+</footer>
+<div class="sr" id="live" aria-live="polite"></div>
+<script src="docs.js"></script>
+</body>
+</html>

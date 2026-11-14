@@ -10,7 +10,7 @@ contractSuite('fake', ({ withKey }) => createFakeProvider(withKey ? { FAKE_API_K
 contractSuite('fake without snapshots', ({ withKey }) => createFakeProvider(withKey ? { FAKE_API_KEY: 'k' } : {}, { hasSnapshots: false }));
 
 test('loadProvider rejects an unknown provider name', async () => {
-  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox.' });
+  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox, self-hosted.' });
   await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'constructor' }), /Unknown CLOUDY_CLOUD_PROVIDER/);
 });
 

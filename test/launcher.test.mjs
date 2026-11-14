@@ -11,7 +11,7 @@ const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd, provider }) {
+function run({ config, cwd, provider, socketIn }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
@@ -19,7 +19,7 @@ function run({ config, cwd, provider }) {
   chmodSync(stub, 0o755);
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
-  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }) };
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }), ...(socketIn && { CLOUDY_CLOUD_DOCKER_SOCKET_IN: socketIn }) };
   const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
   return { ...r, started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
@@ -177,4 +177,35 @@ test('mcp add <name> --allow-literal goes to src/mcp-cli.mjs with the flag', () 
   const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
   assert.match(argv[0], /src\/mcp-cli\.mjs$/);
   assert.deepEqual(argv.slice(1), ['add', 'notion', '--allow-literal']);
+});
+
+test('self-hosted provider needs the SSH host, not the Instabox key (#41)', () => {
+  const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+  const ok = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=me@box\n${claude}`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.started, true);
+  const noHost = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nINSTABOX_API_KEY=${IBK}\n${claude}` });
+  assert.equal(noHost.status, 1);
+  assert.match(noHost.stderr, /CLOUDY_CLOUD_SSH_HOST/);
+  assert.equal(noHost.started, false);
+  // Instabox stays the default when the saved provider is instabox or absent.
+  const ib = run({ config: `CLOUDY_CLOUD_PROVIDER=instabox\nCLOUDY_CLOUD_SSH_HOST=me@box\n${claude}` });
+  assert.match(ib.stderr, /Instabox API key/);
+});
+
+test('self-hosted local mode (a coordinator) needs the Docker socket setting and the socket, not the SSH host (#41)', () => {
+  const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+  const sock = join(mkdtempSync(join(tmpdir(), 'cc-sock-')), 'docker.sock');
+  writeFileSync(sock, '');
+  const base = `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SELF_HOSTED_LOCAL=1\n${claude}`;
+  const noSetting = run({ config: base });
+  assert.equal(noSetting.status, 1);
+  assert.match(noSetting.stderr, /CLOUDY_CLOUD_DOCKER_SOCKET/);
+  assert.equal(noSetting.started, false);
+  const gone = run({ config: `${base}CLOUDY_CLOUD_DOCKER_SOCKET=/nonexistent/docker.sock\n`, socketIn: '/nonexistent/in.sock' });
+  assert.equal(gone.status, 1);
+  assert.match(gone.stderr, /CLOUDY_CLOUD_DOCKER_SOCKET/);
+  const ok = run({ config: `${base}CLOUDY_CLOUD_DOCKER_SOCKET=/run/user/1000/docker.sock\n`, socketIn: sock, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.started, true);
 });

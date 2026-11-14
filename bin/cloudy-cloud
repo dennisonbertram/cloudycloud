@@ -20,6 +20,12 @@ if [ "${1:-}" = open ]; then
   exec node "$root/src/open.mjs" "$@"
 fi
 
+# `cloudy-cloud doctor` checks the self-hosted machine (the active provider only).
+if [ "${1:-}" = doctor ]; then
+  shift
+  exec node "$root/src/self-hosted-setup.mjs" doctor "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
@@ -47,7 +53,8 @@ Cloudy Cloud: Claude Code with every subagent on its own cloud machine.
 Usage: cloudy-cloud [command]
 
   (no command)           start a Claude Code session
-  setup [--check-only]   check your tools and save your keys
+  setup [--check-only]   check your tools and save your keys (--provider instabox|self-hosted)
+  doctor                 check your own machine when subagents run there
   dashboard              open a read-only web page about your cloud machines
   open <agent> <port>    reach an app running on a cloud machine
   coordinator            manage cloud coordinators (coordinator --help for details)
@@ -85,12 +92,31 @@ hint() { printf '  %s%s %s%s\n' "$c_dim" "$m_hint" "$1" "$c_x" >&2; }
 config=${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}
 find_missing() {
   missing=
+  # The provider comes from the environment or the saved file; Instabox is the default.
+  provider=$(printenv CLOUDY_CLOUD_PROVIDER)
+  [ -n "$provider" ] || provider=$(sed -n 's/^CLOUDY_CLOUD_PROVIDER=//p' "$config" 2>/dev/null | tail -n 1)
+  if [ "$provider" = self-hosted ]; then
+    # Inside a coordinator (local mode) the Docker socket stands in for the SSH host; elsewhere the SSH address counts.
+    # Each counts from the environment or the file.
+    selflocal=$(printenv CLOUDY_CLOUD_SELF_HOSTED_LOCAL)
+    [ -n "$selflocal" ] || selflocal=$(sed -n 's/^CLOUDY_CLOUD_SELF_HOSTED_LOCAL=//p' "$config" 2>/dev/null | tail -n 1)
+    if [ "$selflocal" = 1 ]; then
+      sock=$(printenv CLOUDY_CLOUD_DOCKER_SOCKET)
+      [ -n "$sock" ] || sock=$(sed -n 's/^CLOUDY_CLOUD_DOCKER_SOCKET=//p' "$config" 2>/dev/null | tail -n 1)
+      # The configured path is the socket's place on the box; a coordinator sees it mounted at /var/run/docker.sock.
+      if [ -z "$sock" ] || [ ! -e "${CLOUDY_CLOUD_DOCKER_SOCKET_IN:-/var/run/docker.sock}" ]; then
+        missing='Docker socket (CLOUDY_CLOUD_DOCKER_SOCKET, and the socket mounted in this container)'
+      fi
+    elif [ -z "$(printenv CLOUDY_CLOUD_SSH_HOST)" ] && ! grep -q '^CLOUDY_CLOUD_SSH_HOST=.' "$config" 2>/dev/null; then
+      missing='self-hosted machine (CLOUDY_CLOUD_SSH_HOST)'
+    fi
   # The Instabox key counts from the environment or the file.
-  if [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
+  elif [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
     missing='Instabox API key'
+  fi
   # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
   # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
-  elif ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
+  if [ -z "$missing" ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null; then
     missing='Claude token'
   fi
 }

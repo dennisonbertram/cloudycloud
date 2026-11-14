@@ -15,6 +15,7 @@ Each page below also has its text as Markdown at its URL with `.html` replaced b
 - [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.md): Run a cloud coordinator that manages many workers, and the limits that apply.
 - [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.md): Watch your cloud agents in a local web page and open apps running on their machines.
 - [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.md): Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.
+- [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.md): Run Cloudy Cloud subagents in Docker containers on a Mac or Linux computer you own, reached over SSH or Tailscale.
 
 ## Reference
 

@@ -33,7 +33,7 @@ case "$p" in
   RAW*) echo "not json" ;;
   LEAK*) reply "leak $LEAK1 $LEAK2" ;;
   ECHO*) reply "$p" ;;
-  FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY" >&2; exit 3 ;;
+  FAIL*) echo changed > a.txt; commit fail; echo "boom $ANTHROPIC_API_KEY ghp_secret" >&2; exit 3 ;;
   *) reply "\${resumed}hello" ;;
 esac
 `;
@@ -110,7 +110,7 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [] };
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
@@ -119,7 +119,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   const wrap = (sbx, id, name) => Object.assign(sbx, { id, name, home: '/home/user' });
   return {
     name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
-    caps: { hasServerTTL: true, hasProxySecrets: true, hasSnapshots, hasPortForward: true, hasPublish: true,
+    caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
       maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760 },
     async create(opts) {
       needKey();
