@@ -96,8 +96,18 @@ find_missing() {
   provider=$(printenv CLOUDY_CLOUD_PROVIDER)
   [ -n "$provider" ] || provider=$(sed -n 's/^CLOUDY_CLOUD_PROVIDER=//p' "$config" 2>/dev/null | tail -n 1)
   if [ "$provider" = self-hosted ]; then
-    # The machine's SSH address counts from the environment or the file.
-    if [ -z "$(printenv CLOUDY_CLOUD_SSH_HOST)" ] && ! grep -q '^CLOUDY_CLOUD_SSH_HOST=.' "$config" 2>/dev/null; then
+    # Inside a coordinator (local mode) the Docker socket stands in for the SSH host; elsewhere the SSH address counts.
+    # Each counts from the environment or the file.
+    selflocal=$(printenv CLOUDY_CLOUD_SELF_HOSTED_LOCAL)
+    [ -n "$selflocal" ] || selflocal=$(sed -n 's/^CLOUDY_CLOUD_SELF_HOSTED_LOCAL=//p' "$config" 2>/dev/null | tail -n 1)
+    if [ "$selflocal" = 1 ]; then
+      sock=$(printenv CLOUDY_CLOUD_DOCKER_SOCKET)
+      [ -n "$sock" ] || sock=$(sed -n 's/^CLOUDY_CLOUD_DOCKER_SOCKET=//p' "$config" 2>/dev/null | tail -n 1)
+      # The configured path is the socket's place on the box; a coordinator sees it mounted at /var/run/docker.sock.
+      if [ -z "$sock" ] || [ ! -e "${CLOUDY_CLOUD_DOCKER_SOCKET_IN:-/var/run/docker.sock}" ]; then
+        missing='Docker socket (CLOUDY_CLOUD_DOCKER_SOCKET, and the socket mounted in this container)'
+      fi
+    elif [ -z "$(printenv CLOUDY_CLOUD_SSH_HOST)" ] && ! grep -q '^CLOUDY_CLOUD_SSH_HOST=.' "$config" 2>/dev/null; then
       missing='self-hosted machine (CLOUDY_CLOUD_SSH_HOST)'
     fi
   # The Instabox key counts from the environment or the file.
