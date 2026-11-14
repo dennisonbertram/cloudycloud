@@ -26,12 +26,14 @@ Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness,
 
 ## Before using a repo
 
-Check these once per repo, before the first subagent or coordinator. Tell the user plainly about any that fail. Never change GitHub settings yourself.
+Check these once per repo, before the first subagent or coordinator. Tell the user plainly about any that fail. Never change GitHub settings yourself; the one command that does, `cloudy-cloud protect`, asks the user for a yes itself.
 
 1. **GitHub origin.** Run `git remote get-url origin`. It must be a github.com URL, because subagents push there. If it isn't, stop and tell the user how to add one.
 2. **Main branch protected.** Subagents run with permission checks off and can push to any branch the token reaches.
    - Check with `gh api repos/OWNER/REPO/rulesets --jq 'length'` and `gh api repos/OWNER/REPO/branches/<default>/protection` (a 404 means unprotected).
-   - If the default branch is unprotected, warn the user and suggest a ruleset that blocks direct pushes (repo Settings, then Rules, then Rulesets). Continue only if they say so.
+   - You act as the user, so a ruleset that lets admins bypass does not stop you; only one with no bypass actors does.
+   - If the default branch is unprotected, tell the user and offer this exact command: `cloudy-cloud protect OWNER/REPO`. It shows what it will do, asks for a yes, and creates a ruleset on the default branch (pull request required, no force pushes, no deletion, no bypass actors) using the user's own `gh` sign-in (they must be a repo admin). Tell the user that after it runs their own direct pushes to the default branch are blocked too, and changes go through pull requests. Never run it with `--yes` yourself unless the user told you to in this conversation.
+   - If it reports gh not signed in, no admin rights, or a plan without rulesets, relay its next step to the user. Continue without protection only if they say so.
 3. **Token access: ask the user.** The GitHub token stored in Instabox as `GH_TOKEN` must include this repo, and you cannot check that from here.
    - The first time you use a repo, ask with the structured question tool if you have one: "Is OWNER/REPO in your cloudy-cloud GitHub token?" Offer three options:
      - **Already included:** continue.

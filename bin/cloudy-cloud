@@ -26,6 +26,12 @@ if [ "${1:-}" = doctor ]; then
   exec node "$root/src/self-hosted-setup.mjs" doctor "$@"
 fi
 
+# `cloudy-cloud protect [owner/repo] [--yes]` creates a no-bypass ruleset on the default branch (asks first).
+if [ "${1:-}" = protect ]; then
+  shift
+  exec node "$root/src/protect.mjs" "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
@@ -57,6 +63,7 @@ Usage: cloudy-cloud [command]
   doctor                 check your own machine when subagents run there
   dashboard              open a read-only web page about your cloud machines
   open <agent> <port>    reach an app running on a cloud machine
+  protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
