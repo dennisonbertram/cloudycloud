@@ -32,7 +32,7 @@ const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.g
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = guide('no_origin');
 // A real key was about to go to a machine whose provider keeps keys off machines.
-export const refused = (name) => new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`);
+export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;

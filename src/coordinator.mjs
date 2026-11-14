@@ -6,14 +6,14 @@ import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile } from './config.mjs';
-import { coordinatorKeys } from './profiles.mjs';
+import { coordinatorKeys, loadProfiles } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
-import { guide, guideObj, classify, CODES } from './errors.mjs';
+import { guide, guideObj, classify, CODES, SECRET_HOSTS, setCmd } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
@@ -136,6 +136,8 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
+const customHost = (env, key) => { try { const p = Object.values(loadProfiles(env)).find((x) => x?.keyName === key); return URL.canParse(p?.baseUrl) ? new URL(p.baseUrl).host : undefined; } catch { return undefined; } };
+
 async function start(c, args) {
   const name = args[0];
   if (!name || !NAME_RE.test(name)) fail('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
@@ -162,7 +164,9 @@ async function start(c, args) {
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
   const keys = coordinatorKeys(c.env, c.provider);
-  if (keys.legacy.length) fail(`${keys.legacy[0]} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`);
+  if (keys.legacy.length) throw Object.assign(new Error(`${keys.legacy[0]} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
+  // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
+  const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup\`${keys.skipped.some((k) => !SECRET_HOSTS[k]) ? ', or for a custom key: ' + keys.skipped.filter((k) => !SECRET_HOSTS[k]).map((k) => `\`${setCmd({ secret: k, host: customHost(c.env, k) })}\``).join(' ; ') : ''}.` : '';
   c.progress('Creating the coordinator machine...');
   const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
@@ -203,7 +207,8 @@ async function start(c, args) {
     if (line) fail(`The coordinator session started but is not working. Its screen shows: ${redact(safeText(line.trim()))}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) }));
+  if (!args.includes('--json') && skipNote) c.out(skipNote);
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) }));
   if (c.ui.on) {
     const u = c.ui;
     const wait = !screenRead ? [u.warn('Could not read the session screen to check it started'), u.hint(`Look with: cloudy-cloud coordinator attach ${name}`), ''] : waiting ? [u.warn('The session is waiting on a prompt', waiting), u.hint(`Run: cloudy-cloud coordinator attach ${name}, then accept the prompt.`), ''] : [];
@@ -355,9 +360,14 @@ export async function main(argv, deps = {}) {
     const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
     const message = clean(e?.message ?? e);
     const code = CODES.includes(e?.code) ? e.code : classify(message);
-    const g = guideObj(code, { message, secrets });
+    // A message that already carries guidance (What happened / Next step) is not wrapped or repeated.
+    const has = /What happened:/.test(message) && /Next step:/.test(message);
+    const field = (n) => message.match(new RegExp(`^${n}: (.*)$`, 'm'))?.[1];
+    const g = has && code === 'unknown'
+      ? { code, whatHappened: field('What happened'), likelyCause: field('Likely cause'), nextStep: field('Next step'), tellUser: field('Tell the user') }
+      : guideObj(code, { message, secrets });
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
-    throw Object.assign(new Error(code !== 'unknown' ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code });
+    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code });
   }
 }
 

@@ -5,7 +5,7 @@
 // Hosts that each secret is swapped for on the way out (Instabox proxy secrets).
 export const SECRET_HOSTS = { CLAUDE_CODE_OAUTH_TOKEN: 'api.anthropic.com', ANTHROPIC_API_KEY: 'api.anthropic.com', PARTICLE_API_KEY: 'api.particle.ai', OPENROUTER_API_KEY: 'openrouter.ai', CLOUDY_CLOUD_INSTABOX_API_KEY: 'api.instabox.sh' };
 
-const setCmd = (d) => `printf %s "$KEY" | npx --yes instabox@latest secrets set ${d.secret} --host ${d.host ?? SECRET_HOSTS[d.secret] ?? '<host>'}`;
+export const setCmd = (d) => `printf %s "$KEY" | npx --yes instabox@latest secrets set ${d.secret} --host ${d.host ?? SECRET_HOSTS[d.secret] ?? '<host>'}`;
 const SETTINGS = 'Add it in cloudy-cloud setup: run `cloudy-cloud setup`.';
 
 // [what, cause, next, tell]. Cause text contains "likely" when it is not certain.
