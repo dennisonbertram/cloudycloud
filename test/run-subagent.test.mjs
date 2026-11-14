@@ -1272,3 +1272,13 @@ test('a coordinator is refused before any machine starts when the provider says 
   assert.match(r.content[0].text, /not supported on fake yet/);
   assert.equal(provider.log.create.length, 0);
 });
+
+test('the default create passes the role to the provider so a self-hosted coordinator can get the Docker socket (#41)', async () => {
+  const calls = [];
+  const provider = createFakeProvider();
+  provider.create = async (o) => { calls.push(o); throw new Error('stop here'); };
+  const x = await setup({ createSandbox: null, provider });
+  await x.wait([await x.start({ role: 'coordinator' })]);
+  await x.wait([await x.start({ role: 'worker' })]);
+  assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
+});

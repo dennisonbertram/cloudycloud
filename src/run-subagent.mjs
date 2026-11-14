@@ -294,7 +294,7 @@ const limitText = (e) => {
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [] }));
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], role })); // role is an option, not a label: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
@@ -346,7 +346,7 @@ async function setup(a, ctx) {
     a.sandbox = await ctx.queue.create(a, () => {
       const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
       a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-      return createSandbox(envs, { deleteAfterSeconds, ...(hasMcp(a) && a.mcp.secrets.length && { secrets: a.mcp.secrets }) });
+      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(hasMcp(a) && a.mcp.secrets.length && { secrets: a.mcp.secrets }) });
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';

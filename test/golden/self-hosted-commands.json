@@ -5,7 +5,7 @@
     "--filter",
     "label=cloudy-cloud.purpose",
     "--format",
-    "{{.ID}}"
+    "{{.Names}}"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -49,6 +49,14 @@
     "600s",
     "sleep",
     "infinity"
+  ],
+  [
+    "/opt/homebrew/bin/docker",
+    "ps",
+    "--filter",
+    "label=cloudy-cloud.purpose",
+    "--format",
+    "{{.Names}}"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -133,7 +141,7 @@
     "--filter",
     "label=cloudy-cloud.purpose",
     "--format",
-    "{{.ID}}"
+    "{{.Names}}"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -177,6 +185,14 @@
     "600s",
     "sleep",
     "infinity"
+  ],
+  [
+    "/opt/homebrew/bin/docker",
+    "ps",
+    "--filter",
+    "label=cloudy-cloud.purpose",
+    "--format",
+    "{{.Names}}"
   ],
   [
     "/opt/homebrew/bin/docker",

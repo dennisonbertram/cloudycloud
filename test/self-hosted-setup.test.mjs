@@ -59,10 +59,10 @@ function rig(table, { env = '', files = {} } = {}) {
   writeFileSync(log, '');
   writeFileSync(tablePath, JSON.stringify(Object.entries(table)));
   if (env) writeFileSync(cfg, env, { mode: 0o600 });
-  const run = (args, input = '') => {
+  const run = (args, input = '', extraEnv = {}) => {
     const r = spawnSync(process.execPath, [script, ...args], {
       encoding: 'utf8', input, timeout: 60000,
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir, TMPDIR: tmpdir(), NO_COLOR: '1', CLOUDY_CLOUD_CONFIG: cfg, FAKE_LOG: log, FAKE_TABLE: tablePath },
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir, TMPDIR: tmpdir(), NO_COLOR: '1', CLOUDY_CLOUD_CONFIG: cfg, FAKE_LOG: log, FAKE_TABLE: tablePath, ...extraEnv },
     });
     return { code: r.status, out: r.stdout, err: r.stderr, text: r.stdout + r.stderr };
   };
@@ -340,4 +340,12 @@ test('setup: a Linux box with a rootless socket saves that path; No saves nothin
   assert.equal(r.code, 0, r.text);
   assert.ok(!/COORDINATORS|DOCKER_SOCKET/.test(readFileSync(g.cfg, 'utf8')));
   assert.match(r.out, /coordinators stay off|Coordinators: not allowed/i);
+});
+
+test('setup: Enter keeps a token that exists only in the shell, and saves it to the env file without printing it', () => {
+  const g = rig(mac(), { env: SAVED.replace(/GH_TOKEN=.*\n/, '') });
+  const r = g.run(['setup'], '\n\n\ny\n\n', { GH_TOKEN: FAKE_TOKEN });
+  assert.equal(r.code, 0, r.text);
+  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`GH_TOKEN=${FAKE_TOKEN}\n`));
+  assert.ok(!r.text.includes(FAKE_TOKEN));
 });

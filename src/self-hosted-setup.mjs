@@ -267,7 +267,7 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     if (allow) {
       set.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX = 'yes';
       const tok = (await inp.line(`  > Paste a GitHub token limited to the repos subagents may push to (nothing shows as you paste${env.GH_TOKEN ? '; Enter keeps the saved one' : ''}): `, true)).replace(/\s+/g, '');
-      if (tok) set.GH_TOKEN = tok;
+      if (tok || env.GH_TOKEN) set.GH_TOKEN = tok || env.GH_TOKEN; // Enter keeps the current one, which may exist only in the shell: save it too
       if (tok || env.GH_TOKEN) ui.say('ok', `GitHub token: allowed on ${host}; saved in ${file} (mode 600), never shown`);
       else ui.say('warn', 'GitHub token: allowed, but no token is saved yet', `${SETUP_CMD} (run it again and paste a token)`);
     } else {

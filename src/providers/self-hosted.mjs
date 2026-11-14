@@ -38,7 +38,6 @@ export function createProvider(env = process.env, deps = {}) {
   const maxTtlSeconds = 86400;
 
   let ssh;
-  let reserved = 0; // creates in this process that passed the slot check but whose container is not running yet
   const getSsh = () => (ssh ??= deps.ssh ?? (local ? createLocal({ spawn }) : createSsh(env, { spawn }))); // either transport: run(cmd, opts), close()
 
   // Run `<bin> ...args` on the host. Docker daemon errors become `transient` with a doctor hint.
@@ -97,7 +96,7 @@ export function createProvider(env = process.env, deps = {}) {
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role }) {
       getSsh();
       const vars = { ...envs };
       // The GitHub token consent (setup) covers GH_TOKEN only; it goes in like Instabox's GH_TOKEN secret. Any other secret is
@@ -108,9 +107,9 @@ export function createProvider(env = process.env, deps = {}) {
         vars[n] = env[n];
       }
       for (const n of Object.keys(vars)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
-      const running = (await docker(['ps', '--filter', `label=${PREFIX}purpose`, '--format', '{{.ID}}'])).stdout.split('\n').filter(Boolean).length;
-      if (running + reserved >= slots) throw fail('quota_exceeded', `All ${slots} self-hosted slots on ${host} are in use. Stop an agent or raise CLOUDY_CLOUD_SELF_HOSTED_SLOTS.`);
-      reserved++; // the remote count above is the cross-process check; this counter stops concurrent creates here from both taking the last slot
+      const full = () => fail('quota_exceeded', `All ${slots} self-hosted slots on ${host ?? 'the box'} are in use. Stop an agent or raise CLOUDY_CLOUD_SELF_HOSTED_SLOTS.`);
+      const labelled = async () => (await docker(['ps', '--filter', `label=${PREFIX}purpose`, '--format', '{{.Names}}'])).stdout.split('\n').filter(Boolean).reverse(); // oldest first
+      if ((await labelled()).length >= slots) throw full(); // cheap early exit; the real check is after the container exists
       let img = image, id, ttl;
       try {
         if (from?.startsWith(COORD)) { // a coordinator snapshot: used as is, it carries its own version
@@ -125,7 +124,7 @@ export function createProvider(env = process.env, deps = {}) {
         // A coordinator (and only a coordinator) gets the box's Docker socket, so it can start its workers as siblings. The socket's
         // group is added to the worker user; on Docker Desktop and OrbStack it is root (gid 0), on Linux usually docker.
         let socket = [];
-        if (labels.role === 'coordinator') {
+        if (role === 'coordinator') {
           if (!coordsOk) throw new Error(api.text.coordinatorRefusal);
           const gid = (await docker(['run', '--rm', '--entrypoint', 'stat', '-v', `${sock}:${SOCK_IN}`, img, '-c', '%g', SOCK_IN])).stdout.trim();
           if (!/^\d+$/.test(gid)) throw new Error(`Could not read the group of the Docker socket ${sock} on ${host ?? 'the box'}. Run: cloudy-cloud doctor`);
@@ -135,14 +134,19 @@ export function createProvider(env = process.env, deps = {}) {
         id = `cc-${randomBytes(6).toString('hex')}`;
         ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
         const now = Date.now();
-        const all = { ...labels, ...(name && { name }), deleteAt: new Date(now + ttl * 1000).toISOString(), startedAt: new Date(now).toISOString() };
+        const all = { ...labels, ...(role && { role }), ...(name && !labels.name && { name }), deleteAt: new Date(now + ttl * 1000).toISOString(), startedAt: new Date(now).toISOString() };
         const label = Object.entries(all).flatMap(([k, v]) => {
           if (!/^[A-Za-z0-9_.-]+$/.test(k)) throw new Error(`invalid label name "${k}"`);
           return ['--label', `${PREFIX}${k}=${v}`];
         });
         await docker(['run', '-d', '--rm', '--name', id, '--hostname', id, ...label, '--cpus', cpus, '--memory', memory, '--pids-limit', '2048',
           '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', ...socket, '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
-      } finally { reserved--; }
+        // Atomic on the box: the container (with its label) exists first, then it counts the labelled containers. The daemon creates them
+        // one at a time, so a container always sees every older one: it keeps its slot only if fewer than `slots` older ones are running.
+        // Laptop and coordinators each do this, so none can take a slot another already holds. ponytail: two losers can briefly both
+        // count a third that is itself rolling back and lose together; the caller retries on quota_exceeded.
+        if ((await labelled()).indexOf(id) >= slots) throw full(); // the catch below removes our container
+      } catch (e) { if (id) await api.delete(id).catch(() => {}); throw e; }
       const sb = sandbox(id, name ?? id);
       try {
         await writeEnv(sb, vars);
@@ -166,7 +170,7 @@ export function createProvider(env = process.env, deps = {}) {
         const state = c.State?.Status ?? '';
         const id = String(c.Name).replace(/^\//, '');
         return {
-          id, name: l.name ?? id, labels: l, state,
+          id, name: l.name ?? id, machineName: id, labels: l, state,
           status: state === 'running' ? 'running' : state === 'created' ? 'starting' : ['exited', 'dead', 'removing'].includes(state) ? 'stopped' : 'failed',
           startedAt: Date.parse(l.startedAt) || Date.parse(c.State?.StartedAt) || 0, deleteAt: l.deleteAt,
         };

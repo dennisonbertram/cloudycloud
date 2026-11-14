@@ -14,6 +14,7 @@ import { contractSuite } from './provider-contract.mjs';
 import { golden } from './golden-util.mjs';
 import { createProvider } from '../src/providers/self-hosted.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
+import { main as coordinatorMain } from '../src/coordinator.mjs';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const BIN = '/opt/homebrew/bin/docker';
@@ -55,7 +56,7 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
       table.set(name, { Args: rest, Id: randomBytes(32).toString('hex'), Name: `/${name}`, Config: { Labels: labels }, State: { Status: 'running', StartedAt: new Date().toISOString() }, NetworkSettings: { IPAddress: `172.17.0.${table.size + 2}` } });
       return done(0, `${table.get(name).Id}\n`);
     }
-    if (cmd === 'ps') return done(0, [...table.values()].filter((c) => 'cloudy-cloud.purpose' in c.Config.Labels).map((c) => c.Id.slice(0, 12)).join('\n') + '\n');
+    if (cmd === 'ps') return done(0, [...table.values()].filter((c) => 'cloudy-cloud.purpose' in c.Config.Labels).map((c) => (rest.includes('{{.Names}}') ? c.Name.slice(1) : c.Id.slice(0, 12))).reverse().join('\n') + '\n'); // newest first, like docker ps
     if (cmd === 'image') {
       const ref = rest.at(-1);
       if (rest[0] === 'ls') return done(0, [...images.keys()].join('\n') + '\n');
@@ -415,4 +416,43 @@ test('local mode: a missing docker CLI in the image says how to rebuild it', asy
     c.stdin.resume(); c.stdin.on('end', () => { c.stderr.write('sh: 1: docker: not found'); c.emit('close', 127, null); }); return c; };
   const p = createProvider({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_DOCKER_SOCKET: '/var/run/docker.sock' }, { spawn });
   await assert.rejects(p.list({}), /docker CLI.*cloudy-cloud setup/s);
+});
+
+test('two provider instances on one box with one free slot: only one create wins, and the loser leaves no container (#41)', async () => {
+  const box = fakeBox();
+  const mkP = () => createProvider({ ...ENV, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '3' }, { spawn: box.spawn });
+  const [a, b] = [mkP(), mkP()];
+  await mk(a); await mk(a); // two existing
+  const r = await Promise.allSettled([mk(a), mk(b)]);
+  assert.deepEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
+  assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'quota_exceeded');
+  assert.equal(box.table.size, 3);
+});
+
+test('the coordinator keeps its logical name: ls, attach, stop and finish all find it by boss and by its cc- machine name (#41)', async () => {
+  const { box, provider } = make(coordEnv);
+  const c = await provider.create({ image: 'x', name: 'coord-boss', envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 600 });
+  const [row] = await provider.list({ role: 'coordinator', name: 'boss' });
+  assert.equal(row.name, 'boss');
+  assert.equal(row.machineName, c.id);
+  assert.match(c.id, /^cc-/);
+  const out = [];
+  const deps = { provider, env: {}, out: (s) => out.push(s) };
+  await coordinatorMain(['attach', 'boss'], deps);
+  assert.match(out.join('\n'), new RegExp(`exec -it ${c.id} tmux attach -t claude`));
+  await coordinatorMain(['finish', '--force'], { ...deps, hostname: c.id });
+  assert.equal(box.table.size, 0, 'finish deleted this machine');
+  const c2 = await provider.create({ image: 'x', name: 'coord-boss', envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 600 });
+  await coordinatorMain(['stop', 'boss'], deps);
+  assert.equal(box.table.has(c2.id), false);
+});
+
+test('a coordinator started through the role option gets the Docker socket; a worker does not (#41)', async () => {
+  const { box, provider } = make(coordEnv);
+  await mk(provider, { role: 'worker' });
+  await mk(provider, { role: 'coordinator' });
+  const [w, c] = [...box.table.values()].map((x) => x.Args);
+  assert.ok(!w.includes('-v'));
+  assert.equal(c[c.indexOf('-v') + 1], `${SOCK}:/var/run/docker.sock`);
+  assert.ok(c.includes('cloudy-cloud.role=coordinator'));
 });
