@@ -263,7 +263,7 @@
       }
     ],
     "out": [
-      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\".\n  - Terminal: cloudy-cloud coordinator attach boss\n    (runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude)\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop boss"
+      "INSTABOX_API_KEY, CLAUDE_CODE_OAUTH_TOKEN copied to the coordinator machine; run cloudy-cloud setup to store them as Instabox secrets.\n\nCoordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\".\n  - Terminal: cloudy-cloud coordinator attach boss\n    (runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude)\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop boss"
     ]
   },
   "start --json": {

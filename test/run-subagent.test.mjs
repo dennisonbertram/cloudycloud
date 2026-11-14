@@ -1509,3 +1509,30 @@ test('argument errors and worker error results carry guidance and keep their ERR
   const w = await wait([id]);
   assert.match(w, /ERROR: [\s\S]*Next step:/);
 });
+
+// ---- #67: a coordinator gets the Instabox key, the Claude token and provider keys as proxy secrets; its env file holds names only ----
+const COORD_PROXIED = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY';
+test('a nested coordinator gets its keys as secret names and its env file has no key value', async () => {
+  const x = await setup();
+  delete x.deps.createSandbox;
+  x.deps.env = { INSTABOX_API_KEY: 'ib-key-1', GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: COORD_PROXIED, CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const c = x.deps.provider.log.create[0];
+  for (const n of ['CLOUDY_CLOUD_INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'PARTICLE_API_KEY']) assert.ok(c.secrets.includes(n), `${n} in ${c.secrets}`);
+  const w = x.deps.provider.log.writes.find((f) => f.p.endsWith('.config/cloudy-cloud/env'));
+  assert.match(w.d, new RegExp(`^CLOUDY_CLOUD_PROXY_SECRETS=${COORD_PROXIED}$`, 'm'));
+  assert.doesNotMatch(w.d, /ib-key-1|^(INSTABOX_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|PARTICLE_API_KEY|CLOUDY_CLOUD_INSTABOX_API_KEY)=/m);
+});
+
+test('a nested coordinator still gets a key that is not proxied as a value, with a warning (until #68)', async () => {
+  const x = await setup();
+  delete x.deps.createSandbox;
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'PARTICLE_API_KEY' };
+  await withTool(x);
+  const r = await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const w = x.deps.provider.log.writes.find((f) => f.p.endsWith('.config/cloudy-cloud/env'));
+  assert.match(w.d, /^INSTABOX_API_KEY=ib-key-1$/m);
+  assert.doesNotMatch(w.d, /PARTICLE_API_KEY=/);
+  assert.match(r, /INSTABOX_API_KEY.*copied to the coordinator machine/);
+});

@@ -290,6 +290,7 @@ secret_hosts() {
     CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY) echo api.anthropic.com ;;
     PARTICLE_API_KEY) echo api.particle.ai ;;
     OPENROUTER_API_KEY) echo openrouter.ai ;;
+    CLOUDY_CLOUD_INSTABOX_API_KEY) echo api.instabox.sh ;;
     *) return 1 ;;
   esac
 }
@@ -777,6 +778,17 @@ setup_claude() {
   else warn "Stopped the Claude step after 3 tries. No token is saved. Run $(rerun_cmd) again to retry."; fi
 }
 
+# Cloud coordinators start workers, so their machine needs the Instabox key. Instabox reserves the INSTABOX_ prefix, so the
+# coordinator's copy is the secret CLOUDY_CLOUD_INSTABOX_API_KEY (host api.instabox.sh): an extra copy of your key's value.
+# Your laptop keeps using the real INSTABOX_API_KEY. The value goes on stdin, never on a command line.
+store_coordinator_key() {
+  local name=CLOUDY_CLOUD_INSTABOX_API_KEY key
+  is_proxied "$name" && secret_visible "$name" && return 0
+  key=$(get_saved INSTABOX_API_KEY)
+  if [ -n "$key" ] && store_secret "$name" "$key"; then ok "Stored $name as an Instabox secret" "coordinators see a placeholder"
+  else warn "Could not store $name, so coordinator start will refuse to run" "run $(rerun_cmd) again to retry"; return 1; fi
+}
+
 # Removes the image machine so nothing keeps running, or says how to.
 coordinator_cleanup() {
   if npx --yes instabox@latest rm --yes "$1" </dev/null >/dev/null 2>&1; then
@@ -792,6 +804,7 @@ setup_coordinators() {
   snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
   marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
   if [ -n "$snap" ]; then
+    store_coordinator_key || true
     STATUS_COORD="ready${marker:+ ($marker)}"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
       warn "Coordinators use $marker, but your local Claude is $LOCAL_ACCOUNT."
@@ -800,6 +813,7 @@ setup_coordinators() {
   else
     yn "Set up cloud coordinators (they keep working when your laptop is closed)?" || return 0
   fi
+  [ -n "$snap" ] || store_coordinator_key || true
   hint "This can take a few minutes."
   spin_start "Building the coordinator image machine"
   out=$("$root/bin/cloudy-cloud" coordinator image 2>&1) || rc=$?

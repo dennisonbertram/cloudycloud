@@ -289,7 +289,8 @@ test('launcher: coordinator goes to the script; plain cloudy-cloud still starts 
   assert.ok(!/cloud coordinator/.test(plain));
   sh(['--remote-control', 'boss'], { CLOUDY_CLOUD_COORDINATOR: '1' });
   const coord = readFileSync(join(dir, 'argv'), 'utf8');
-  assert.match(coord, /Never print, share, commit or send these keys/);
+  assert.match(coord, /holds placeholders for the Instabox key.*not the real keys/);
+  assert.doesNotMatch(coord, /real Instabox key/);
   assert.match(coord, /--remote-control\nboss/);
 });
 
@@ -565,4 +566,34 @@ test('toolRepoUrl in a checkout with no origin prints nothing on stderr (#44)', 
   assert.equal(r.stderr, '');
   assert.equal(r.stdout, '""');
   assert.equal(toolRepoUrl(d), '');
+});
+
+test('start attaches the Instabox key, the Claude token and provider keys as secrets, and the env file holds names only', async () => {
+  const f = fixture();
+  delete f.deps.env.CLAUDE_CODE_OAUTH_TOKEN; delete f.deps.env.OPENROUTER_API_KEY;
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY';
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const patch = f.log.fetches.find((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN'));
+  for (const n of ['CLOUDY_CLOUD_INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENROUTER_API_KEY']) assert.ok(patch.body.includes(n), n);
+  const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
+  assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY$/m);
+  assert.ok(!w.d.includes(IBK), 'no Instabox key value');
+  assert.doesNotMatch(w.d, /^(INSTABOX_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY)=/m);
+});
+
+test('a coordinator key that is not proxied is still written as a value, with a warning (until #68)', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.match(f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env').d, new RegExp(`^INSTABOX_API_KEY=${IBK}$`, 'm'));
+  assert.match(f.log.out.join('\n'), /INSTABOX_API_KEY.*copied to the coordinator machine/);
+});
+
+test('launcher: a coordinator with only the CLOUDY_CLOUD_INSTABOX_API_KEY placeholder is set up, and the server gets it as INSTABOX_API_KEY', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-coord-p-'));
+  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s' "$INSTABOX_API_KEY" > "${dir}/seen"\n`);
+  chmodSync(join(dir, 'claude'), 0o755);
+  writeFileSync(join(dir, 'env'), 'CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN\n');
+  const r = spawnSync('/bin/sh', [resolve('bin/cloudy-cloud')], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_INSTABOX_API_KEY: 'ibsec_placeholder' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(dir, 'seen'), 'utf8'), 'ibsec_placeholder');
 });

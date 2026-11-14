@@ -5,8 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, DEFAULT_PROVIDER_KEY } from './config.mjs';
-import { profileKeyNames } from './profiles.mjs';
+import { loadEnv, ownerFile } from './config.mjs';
+import { coordinatorKeys } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi } from './ui.mjs';
@@ -136,13 +136,6 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
-// What goes in the coordinator's own env file: the provider key (and the default provider's, which the machine loads), the Claude setup-token and the provider keys that
-// profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
-function keysFile(env, own, keyName) { // own: the provider's coordinatorEnv() ({ names, fixed }), if it has one
-  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', ...profileKeyNames(env)]);
-  return `${[...(own?.fixed ?? []), ...Object.entries(env).filter(([k, v]) => v && names.has(k)).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`;
-}
-
 async function start(c, args) {
   const name = args[0];
   if (!name || !NAME_RE.test(name)) fail('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
@@ -167,14 +160,17 @@ async function start(c, args) {
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
+  // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
+  const keys = coordinatorKeys(c.env, c.provider);
+  const legacyNote = keys.legacy.length ? `${keys.legacy.join(', ')} copied to the coordinator machine; run cloudy-cloud setup to store ${keys.legacy.length > 1 ? 'them' : 'it'} as Instabox secrets.` : '';
   c.progress('Creating the coordinator machine...');
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
-    await sbx.files.write(`${dir}/env`, keysFile(c.env, c.provider.coordinatorEnv?.(c.env), c.provider.keyName)); // values never appear in a command string
+    await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
@@ -208,7 +204,7 @@ async function start(c, args) {
   if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) }));
   if (c.ui.on) {
     const u = c.ui;
-    const wait = !screenRead ? [u.warn('Could not read the session screen to check it started'), u.hint(`Look with: cloudy-cloud coordinator attach ${name}`), ''] : waiting ? [u.warn('The session is waiting on a prompt', waiting), u.hint(`Run: cloudy-cloud coordinator attach ${name}, then accept the prompt.`), ''] : [];
+    const wait = [...(legacyNote ? [u.warn(legacyNote)] : []), ...(!screenRead ? [u.warn('Could not read the session screen to check it started'), u.hint(`Look with: cloudy-cloud coordinator attach ${name}`), ''] : waiting ? [u.warn('The session is waiting on a prompt', waiting), u.hint(`Run: cloudy-cloud coordinator attach ${name}, then accept the prompt.`), ''] : [])];
     return c.out([...wait, u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
       u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), '',
       u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
@@ -216,7 +212,7 @@ async function start(c, args) {
       u.hint('The first time, attach once and accept any trust or Remote Control prompts.'),
       u.hint(`Stop it earlier with: cloudy-cloud coordinator stop ${name}`)].join('\n'));
   }
-  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+  c.out((legacyNote ? `${legacyNote}\n\n` : '') + (!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${c.ssh(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop ${name}`);
 }
 
