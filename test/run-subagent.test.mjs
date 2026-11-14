@@ -1555,3 +1555,13 @@ test('the refusal for a real key carries its code', async () => {
   const { refused } = await import('../src/run-subagent.mjs');
   assert.equal(refused('X').code, 'key_on_machine_refused');
 });
+
+test('a nested coordinator start reply names the keys that were not sent', async () => {
+  const x = await setup({ provider: proxyProvider() });
+  delete x.deps.createSandbox;
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN,CLOUDY_CLOUD_INSTABOX_API_KEY' };
+  await withTool(x);
+  const t = (await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps)).content[0].text;
+  assert.match(t, /Not sent to the coordinator[^\n]*PARTICLE_API_KEY/);
+  assert.ok(!t.includes('part-key-1'));
+});

@@ -649,3 +649,29 @@ test('an error that already carries guidance but no known code keeps its own fie
   assert.equal(j.whatHappened, 'X broke.');
   assert.equal(j.nextStep, 'Do Z.');
 });
+
+test('a custom skipped key: the recovery text has the proxy-list step and never a host with shell characters', async () => {
+  const f = fixture();
+  writeFileSync(f.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ evil: { harness: 'claude', format: 'anthropic', baseUrl: 'https://example.com;id/v1', keyName: 'EVIL_API_KEY', model: 'm1' } }));
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.EVIL_API_KEY = 'evil-real-value-12345';
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const out = f.log.out.join('\n');
+  assert.match(out, /EVIL_API_KEY/);
+  assert.match(out, /--host <host>/);
+  assert.doesNotMatch(out, /;id/);
+  assert.match(out, /CLOUDY_CLOUD_PROXY_SECRETS/);
+  assert.match(out, /delete the plain EVIL_API_KEY=/);
+});
+
+test('guidance labels mid-line are not treated as guidance; multiline fields keep their continuation lines', async () => {
+  for (const [msg, check] of [
+    ['Provider error: What happened: storage unavailable. Next step: retry later.', (j) => { assert.equal(j.code, 'unknown'); assert.match(j.whatHappened, /Provider error: What happened: storage unavailable/); }],
+    ['What happened: first line\nsecond line\nNext step: do A\nthen B', (j) => { assert.equal(j.whatHappened, 'first line\nsecond line'); assert.equal(j.nextStep, 'do A\nthen B'); }],
+  ]) {
+    const f = fixture();
+    f.deps.sdk = { get Sandbox() { throw new Error(msg); } };
+    await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
+    check(JSON.parse(f.log.out.at(-1)).error);
+  }
+});

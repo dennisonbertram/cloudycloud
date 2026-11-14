@@ -166,7 +166,8 @@ async function start(c, args) {
   const keys = coordinatorKeys(c.env, c.provider);
   if (keys.legacy.length) throw Object.assign(new Error(`${keys.legacy[0]} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
-  const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup\`${keys.skipped.some((k) => !SECRET_HOSTS[k]) ? ', or for a custom key: ' + keys.skipped.filter((k) => !SECRET_HOSTS[k]).map((k) => `\`${setCmd({ secret: k, host: customHost(c.env, k) })}\``).join(' ; ') : ''}.` : '';
+  const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
+  const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
   c.progress('Creating the coordinator machine...');
   const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
@@ -360,11 +361,17 @@ export async function main(argv, deps = {}) {
     const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
     const message = clean(e?.message ?? e);
     const code = CODES.includes(e?.code) ? e.code : classify(message);
-    // A message that already carries guidance (What happened / Next step) is not wrapped or repeated.
-    const has = /What happened:/.test(message) && /Next step:/.test(message);
-    const field = (n) => message.match(new RegExp(`^${n}: (.*)$`, 'm'))?.[1];
+    // A message whose own lines start with the guidance labels is already guided: keep its fields, do not wrap or repeat it.
+    const labels = ['What happened', 'Likely cause', 'Next step', 'Tell the user'], fields = {};
+    let cur;
+    for (const l of message.split('\n')) {
+      const m = l.match(/^(What happened|Likely cause|Next step|Tell the user): ?(.*)$/);
+      if (m) { cur = m[1]; fields[cur] = m[2]; } else if (cur) fields[cur] += `\n${l}`;
+    }
+    const has = !!(fields['What happened']?.trim() && fields['Next step']?.trim());
+    const f = (n) => fields[n]?.trim() || undefined;
     const g = has && code === 'unknown'
-      ? { code, whatHappened: field('What happened'), likelyCause: field('Likely cause'), nextStep: field('Next step'), tellUser: field('Tell the user') }
+      ? { code, whatHappened: f('What happened'), likelyCause: f('Likely cause'), nextStep: f('Next step'), tellUser: f('Tell the user') }
       : guideObj(code, { message, secrets });
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
     throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code });
