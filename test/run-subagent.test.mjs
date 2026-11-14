@@ -765,7 +765,8 @@ async function withTool(x) {
   x.deps.toolRoot = tool;
   return { tool, sha: await sh(tool, 'git rev-parse HEAD') };
 }
-const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret' };
+// STRIPE_API_KEY stands for any *_API_KEY in the shell that no profile uses.
+const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret', STRIPE_API_KEY: 'stripe-key-1', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
 
 test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
   const x = await setup();
@@ -782,6 +783,7 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   const env = await readFile(join(home, '.config/cloudy-cloud/env'), 'utf8');
   for (const l of ['INSTABOX_API_KEY=ib-key-1', 'CLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1', 'PARTICLE_API_KEY=part-key-1', 'CLOUDY_CLOUD_DEPTH=1', 'CLOUDY_CLOUD_MAX_DEPTH=3', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200']) assert.ok(env.includes(l), l);
   assert.doesNotMatch(env, /ANTHROPIC_API_KEY/);
+  assert.doesNotMatch(env, /STRIPE_API_KEY|stripe-key-1/, 'a key no profile uses stays on the laptop');
   assert.equal((await sh(home, 'stat -f %Lp .config/cloudy-cloud/env 2>/dev/null || stat -c %a .config/cloudy-cloud/env')), '600');
   assert.ok(s.writes.some((w) => w.endsWith('.config/cloudy-cloud/env')));
   for (const c of s.cmds) for (const k of ['ib-key-1', 'oauth-tok-1', 'part-key-1', SECRET]) assert.ok(!c.includes(k), `key in command: ${c}`);

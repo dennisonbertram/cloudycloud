@@ -215,7 +215,7 @@ The first time you attach, accept any trust or Remote Control prompts. Then pick
 
 ### 8.3 Keys on the coordinator
 
-- The coordinator's `~/.config/cloudy-cloud/env` (mode 600) holds the real Instabox key, the Claude setup-token and every `*_API_KEY` provider key from your laptop config. Workers started from the coordinator need them.
+- The coordinator's `~/.config/cloudy-cloud/env` (mode 600) holds the real Instabox key, the Claude setup-token and the provider keys that profiles use (the built-in ones and any `keyName` in `profiles.json`). Other `*_API_KEY` variables in your shell stay on the laptop. Workers started from the coordinator need them.
 - The values are written with a file upload, never in a command line.
 - The coordinator's system prompt tells it never to print, share, commit or send these keys, and never to pass them to workers except through `cloudy-cloud`.
 - GitHub access uses the `GH_TOKEN` Instabox secret, as on your laptop.
