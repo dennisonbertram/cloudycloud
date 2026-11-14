@@ -172,6 +172,16 @@ test('start --json prints name, machine, remoteControlName and attach', async ()
   assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true });
 });
 
+test('start --json reports a structured error with guidance when the spend limit is hit', async () => {
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw new Error('You have reached your spend limit'); };
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps), /Next step: .*cloud_agent_list/s);
+  const o = JSON.parse(f.log.out.join('\n')).error;
+  assert.equal(o.code, 'spend_limit');
+  assert.match(o.tellUser, /spend limit is reached/);
+  assert.ok(o.whatHappened && o.likelyCause && o.nextStep);
+});
+
 test('start rejects bad repo urls and duplicate names', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { role: 'coordinator', name: 'boss' } }] });
   await assert.rejects(main(['start', 'x', '--repo', 'git@github.com:o/r.git'], f.deps), /--repo/);
@@ -399,6 +409,38 @@ test('a provider that cannot give a coordinator its keys refuses image and start
   assert.equal(provider.log.create.length, 0);
 });
 
+const jsonErr = (f) => { const lines = f.log.out.filter((s) => s.startsWith('{')); assert.equal(lines.length, 1, 'exactly one JSON object'); return JSON.parse(lines[0]).error; };
+
+test('start --json scrubs an exact configured key echoed by the provider, in stdout and the thrown message', async () => {
+  const f = fixture();
+  const OPAQUE = 'opaqueKEYvalue9f3a77c1d2';
+  f.deps.env.INSTABOX_API_KEY = OPAQUE;
+  f.deps.sdk.Sandbox.create = async () => { throw new Error(`bad request for key ${OPAQUE}`); };
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps), (e) => { assert.ok(!e.message.includes(OPAQUE)); return true; });
+  assert.ok(!f.log.out.join('\n').includes(OPAQUE));
+  assert.ok(jsonErr(f).code);
+});
+
+test('start --json prints one error object for argument errors and a missing key', async () => {
+  const f = fixture();
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--typo', 'x', '--json'], f.deps), /Unknown argument/);
+  const o = jsonErr(f);
+  assert.ok(o.code && o.whatHappened && o.likelyCause && o.nextStep && o.tellUser !== undefined || o.whatHappened);
+  assert.match(o.whatHappened, /Unknown argument/);
+  const g = fixture();
+  delete g.deps.env.INSTABOX_API_KEY;
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps), /setup/);
+  assert.match(jsonErr(g).whatHappened, /INSTABOX_API_KEY/);
+});
+
+test('start --json prefers a known error code over the message text', async () => {
+  for (const code of ['quota_exceeded', 'secret_missing']) {
+    const f = fixture();
+    f.deps.sdk.Sandbox.create = async () => { throw Object.assign(new Error('plain words'), { code }); };
+    await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps));
+    assert.equal(jsonErr(f).code, code);
+  }
+});
 // ---- #44 and #46 ----
 const START = ['start', 'boss', '--repo', 'https://github.com/o/r'];
 
@@ -411,7 +453,8 @@ test('start fails and deletes the machine when the session screen shows a spend 
     return true;
   });
   assert.deepEqual(f.log.killed, ['m_new']);
-  assert.equal(f.log.out.length, 0, 'no success output');
+  assert.equal(f.log.out.length, 1, 'only the error object, no success output');
+  assert.ok(JSON.parse(f.log.out[0]).error, 'the one line is the --json error object');
   assert.ok(f.log.cmds.some((c) => /tmux capture-pane/.test(c)));
 });
 

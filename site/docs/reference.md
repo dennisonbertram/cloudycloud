@@ -244,6 +244,14 @@ Waits until every listed agent finishes its current turn, or until the timeout p
 | `agent_ids` | array of strings | yes | none | The agent ids to wait for. |
 | `timeout_seconds` | number | no | 600 | How long to wait. Values above 1500 are limited to 1500. |
 
+### cloud_agent_result
+
+Returns an agent's latest result again, as often as asked, even after `cloud_agent_wait` or a task notification delivered it. If the agent has no result yet it says `no result yet, status running`. If the agent is not open it returns an error with a next step. The tool is read-only.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `agent_id` | string | yes | The agent id. |
+
 ### cloud_agent_list
 
 Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only and takes no parameters.
