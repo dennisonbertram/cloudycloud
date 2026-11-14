@@ -11,12 +11,15 @@ import { loadEnv, ownerFile } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { eventsFile, foldAgents, readEvents, redact, redactText } from './events.mjs';
 import { createMachineReader } from './machine-read.mjs';
+import { secretValues } from './run-subagent.mjs';
 import { isLiteralSecret, mcpFile } from './mcpsync.mjs';
 import { demoState, demoStream } from './dashboard-demo.mjs';
 import { normalise, pruneStreams, streamsDir } from './stream.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_PORT = 4477;
+// One async init shared by concurrent first callers; a failed init is tried again next time.
+export const lazy = (f) => { let p; return () => (p ??= f().catch((e) => { p = undefined; throw e; })); };
 const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'";
 const GENERIC_FIX = 'Check CLOUDY_CLOUD_PROVIDER and your internet connection, then your provider API key in ~/.config/cloudy-cloud/env.';
 
@@ -69,18 +72,21 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
       all.push(...msgs);
       let b = boxes.find((x) => x !== c && (x.id === w.id || x.labels?.agent === w.id));
       if (b && b.source !== 'machine') continue; // this session's own log knows it better
-      if (b) { delete b.note; Object.assign(b, { messages: w.messages, description: w.description ?? b.description, title: w.description ?? b.title, titleSource: w.description ? 'log' : b.titleSource, profile: w.profile, model: w.model, branch: w.branch, push: w.push, turns: w.messages.filter((m) => m.kind === 'out').length, source: 'coordinator-log' }); }
-      else boxes.push(b = { ...w, kind: 'agent', pid: undefined, status: w.status === 'failed' ? 'failed' : 'stopped', title: w.description, titleSource: 'log', source: 'coordinator-log', turns: w.messages.filter((m) => m.kind === 'out').length });
+      if (b) { delete b.note; Object.assign(b, { messages: w.messages, description: w.description ?? b.description, title: w.description ?? b.title, titleSource: w.description ? 'log' : b.titleSource, profile: w.profile, model: w.model, branch: w.branch, push: w.push, turns: w.turns, source: 'coordinator-log' }); }
+      else boxes.push(b = { ...w, kind: 'agent', pid: undefined, status: w.status === 'failed' ? 'failed' : 'stopped', title: w.description, titleSource: 'log', source: 'coordinator-log', turns: w.turns });
       b.parent = c.id;
       (c.children ??= []).push(b.id);
     }
     if (!c.messages.length) c.messages = all.sort((x, y) => x.t - y.t).slice(-300);
   }
-  // Tree: a worker's `parent` label names a coordinator by its name label or owner id. A parent this session started is not unknown.
+  // Tree: a worker's `parent` label names a coordinator by its name label or id. It is never matched against an owner id:
+  // cloud_agent sets owner and parent to the creating session's id, so that would make siblings children of each other.
+  // A worker the coordinator's own log lists was linked above. A parent chain that would loop is not followed.
   const coords = boxes.filter((b) => b.kind === 'coordinator');
+  const loops = (c, b) => { for (let x = c, n = 0; x && n <= boxes.length; x = coords.find((y) => y.id === x.parent), n++) if (x === b) return true; return false; };
   for (const b of boxes) {
     const p = b.labels?.parent;
-    const c = b.parent ? coords.find((x) => x.id === b.parent) : p && coords.find((x) => x !== b && (x.labels?.name === p || x.labels?.owner === p || x.startedByOwner === p));
+    const c = b.parent ? coords.find((x) => x.id === b.parent) : p && coords.find((x) => x !== b && (x.labels?.name === p || x.id === p) && !loops(x, b));
     if (c) { if (!b.parent) { b.parent = c.id; (c.children ??= []).push(b.id); } } else if (p && p !== owner) b.parentUnknown = true;
     const o = b.startedByOwner;
     b.startedBy = o && o === owner ? 'this session' : c ? (c.labels?.name || c.id) : o;
@@ -90,9 +96,15 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
   return { now, hasLog: events.length > 0, machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
 }
 
-const deepRedact = (v) => (typeof v === 'string' ? redactText(v) : Array.isArray(v) ? v.map(deepRedact) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deepRedact(x)])) : v);
+// Pattern redaction plus the exact secret values (`secrets`), on every string and every key.
+const deepRedact = (v, secrets = []) => {
+  const str = (t) => redactText(secrets.reduce((a, x) => a.split(x).join('[redacted]'), t));
+  const go = (x) => (typeof x === 'string' ? str(x) : Array.isArray(x) ? x.map(go) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, y]) => [str(k), go(y)])) : x);
+  return go(v);
+};
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const FULL_MAX = 256 * 1024;
+const MEMO_MAX = 24;
 const REMOTE_MS = 3000; // one machine read per file per 3 s; the reader enforces its own limits on top
 const REASON = { not_found: 'machine_gone', not_listed: 'machine_gone' };
 const reasonOf = (e) => REASON[e?.code] ?? 'provider_error';
@@ -122,23 +134,28 @@ const totalsOf = (events) => events.reduce((t, e) => {
 
 // The request handler, separate from listen() so tests can drive it without a network.
 // `streamsDir`: this laptop's stream copies. `getReader`: async, gives the machine reader (see machine-read.mjs); none means no machine reads.
+// `getSecrets`: async, the exact secret values to drop from every response (see secretValues in run-subagent.mjs).
 // `demo`: { stream(box, turn) -> raw stream text, pane(box) -> lines } replaces both for --demo.
-export function createHandler({ token, getState, html, streamsDir: sdir = streamsDir(), getReader, demo, now = Date.now }) {
+export function createHandler({ token, getState, html, streamsDir: sdir = streamsDir(), getReader, getSecrets, demo, now = Date.now }) {
   const memo = new Map(); // file or machine path -> { sig, raw, events }: a stream is parsed again only when it has grown
+  const panes = new Map(); // box id -> the last real pane read
   const remote = new Map(); // machine/path -> { raw, next, at, fetchedAt }: what has been read from a machine so far
   const parsed = (key, sig, raw, turn) => {
     let m = memo.get(key);
-    if (m?.sig !== sig) { m = { sig, raw: raw(), events: undefined }; m.events = parseStream(m.raw, turn); memo.set(key, m); if (memo.size > 24) memo.delete(memo.keys().next().value); } // ponytail: whole-file parse; a 20 MB file costs a few hundred ms per growth
+    if (m?.sig !== sig) { m = { sig, raw: raw(), events: undefined }; m.events = parseStream(m.raw, turn); memo.set(key, m); if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value); } // ponytail: whole-file parse; a 20 MB file costs a few hundred ms per growth
     return m;
   };
   async function fromMachine(reader, machine, name) {
     const k = `${machine}/${name}`;
     let st = remote.get(k);
-    if (!st) remote.set(k, st = { raw: '', next: 0, at: -Infinity, fetchedAt: 0 });
+    remote.delete(k); // most recently used last; the oldest goes with the memo's oldest, so neither grows without bound
+    if (!st) st = { raw: '', next: 0, at: -Infinity, fetchedAt: 0 };
+    remote.set(k, st);
+    if (remote.size > MEMO_MAX) remote.delete(remote.keys().next().value);
     if (now() - st.at >= REMOTE_MS) {
       const r = await reader.readTail(machine, name, st.next);
       st.at = now();
-      if (r.from === st.next && r.data && st.raw.length < 20 * 1024 * 1024) { st.raw += r.data; st.next = r.next; }
+      if (r.from === st.next && (!r.data || st.raw.length < 20 * 1024 * 1024)) { st.raw += r.data; st.next = r.next; } // `next` always moves: the reader skips an oversize line with no data
       if (r.source !== 'cache') st.fetchedAt = r.fetchedAt;
     }
     return st;
@@ -176,6 +193,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     return { kind: 'none', reason, machine: box.machine };
   }
 
+  const secretsNow = async () => (await getSecrets?.().catch(() => null)) ?? [];
   const eq = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
   return async (req, res) => {
     const send = (code, body, type = 'text/plain; charset=utf-8') => {
@@ -195,17 +213,28 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
       return send(200, page, 'text/html; charset=utf-8');
     }
     if (url.pathname === '/api/state') {
-      try { return send(200, JSON.stringify(deepRedact(await getState())), 'application/json'); } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
+      try { return send(200, JSON.stringify(deepRedact(await getState(), await secretsNow())), 'application/json'); } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
     }
     if (url.pathname === '/api/stream' || url.pathname === '/api/pane') {
-      const json = (code, body) => send(code, JSON.stringify(deepRedact(body)), 'application/json');
+      let secrets = [];
+      const json = (code, body) => send(code, JSON.stringify(deepRedact(body, secrets)), 'application/json');
       try {
+        secrets = await secretsNow();
         const q = url.searchParams, boxes = (await getState()).boxes ?? [], box = boxes.find((b) => b.id === q.get('box'));
         if (!box) return json(404, { error: 'unknown box' });
         if (url.pathname === '/api/pane') {
           if (box.kind !== 'coordinator' || !isLive(box)) return json(404, { error: 'unknown box' });
           if (demo) return json(200, { lines: demo.pane(box.id) ?? [], fetchedAt: now(), source: { kind: 'machine', machine: box.machine } });
-          try { const r = await (await getReader()).capturePane(box.machine); return json(200, { lines: r.lines, fetchedAt: r.fetchedAt, source: { kind: 'machine', machine: box.machine } }); } catch (e) { return json(200, { lines: [], fetchedAt: null, source: { kind: 'none', machine: box.machine, reason: reasonOf(e) } }); }
+          try {
+            const r = await (await getReader()).capturePane(box.machine);
+            if (r.source === 'cache' && !r.lines.length) { // the reader's rate-limit fallback: not a new read, so show the last real one
+              const last = panes.get(box.id);
+              return json(200, last ? { ...last, source: { kind: 'cache', machine: box.machine } } : { lines: [], fetchedAt: null, source: { kind: 'none', machine: box.machine, reason: 'rate_limited' } });
+            }
+            panes.delete(box.id); panes.set(box.id, { lines: r.lines, fetchedAt: r.fetchedAt });
+            if (panes.size > MEMO_MAX) panes.delete(panes.keys().next().value);
+            return json(200, { lines: r.lines, fetchedAt: r.fetchedAt, source: { kind: 'machine', machine: box.machine } });
+          } catch (e) { return json(200, { lines: [], fetchedAt: null, source: { kind: 'none', machine: box.machine, reason: reasonOf(e) } }); }
         }
         const turn = q.get('turn') ?? String(box.turns || 1), from = q.get('from') ?? '0', one = q.get('event');
         if (!/^\d{1,4}$/.test(turn) || !/^\d{1,9}$/.test(from) || (one !== null && !/^\d{1,9}$/.test(one))) return json(404, { error: 'unknown box' });
@@ -236,6 +265,7 @@ function consentedLiterals(env) {
 const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
 
 const COORD_MS = 10_000;
+const MAX_EVENTS = 5000; // events kept per coordinator: its recent history, not all of it
 const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
 
 // Live state with a short cache so several open tabs do not each call the provider API. With `getReader`, each live
@@ -246,7 +276,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
     let st = logs.get(m.id);
-    if (!st) logs.set(m.id, st = { offset: 0, at: -Infinity, events: [] });
+    if (!st) logs.set(m.id, st = { offset: 0, at: -Infinity, events: [], folded: [] });
     if (now() - st.at < COORD_MS && !st.behind) return; // read recently; while catching up a long log, only the reader's own interval applies
     try {
       const r = await reader.readTail(m.id, 'events.jsonl', st.offset);
@@ -255,7 +285,10 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (st.offset === 0 && r.size > MAX_LOG) { st.offset = r.size - MAX_LOG; st.behind = true; return; } // the first line of the tail is cut off and skipped below
       st.offset = r.next;
       st.behind = r.data !== '' && r.size - r.next >= 4096; // an unfinished last line (under 4 KB) is not 'behind'
-      for (const l of r.data.split('\n')) try { const j = JSON.parse(l); if (j && typeof j === 'object') st.events.push(j); } catch { /* blank or cut line */ }
+      let added = 0;
+      for (const l of r.data.split('\n')) try { const j = JSON.parse(l); if (j && typeof j === 'object') { st.events.push(j); added++; } } catch { /* blank or cut line */ }
+      if (st.events.length > MAX_EVENTS) st.events.splice(0, st.events.length - MAX_EVENTS);
+      if (added) st.dirty = true;
     } catch { /* keep what was read; the next poll tries again */ }
   };
   return async () => {
@@ -267,7 +300,13 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
     const coordLogs = {};
     const reader = getReader && machines?.some((m) => m.labels?.role === 'coordinator') ? await getReader().catch(() => null) : null;
-    if (reader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) { await pull(reader, m); coordLogs[m.id] = foldAgents(logs.get(m.id).events, { alive: () => true, now: now() }); }
+    if (machines) for (const id of logs.keys()) if (!machines.some((m) => m.id === id)) logs.delete(id); // its machine is gone: forget its history
+    if (reader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
+      await pull(reader, m);
+      const st = logs.get(m.id);
+      if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
+      coordLogs[m.id] = st.folded;
+    }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     at = now();
     return cached;
@@ -299,11 +338,13 @@ export async function main(argv = process.argv.slice(2)) {
   if (pi >= 0 && !(port >= 0 && port < 65536)) { console.error('cloudy-cloud dashboard: --port needs a number from 0 to 65535'); process.exit(1); }
   const env = loadEnv();
   const token = randomBytes(18).toString('base64url');
-  let reader; // one reader per process; consented MCP token values are read at each use, so values added later are covered
+  // one provider and one reader per process; consented MCP token values are read at each use, so values added later are covered
+  const getProvider = lazy(() => loadProvider(env));
   const literals = { [Symbol.iterator]: () => consentedLiterals(env)[Symbol.iterator]() };
-  const getReader = async () => (reader ??= createMachineReader(await loadProvider(env), env, { literals }));
+  const getReader = lazy(async () => createMachineReader(await getProvider(), env, { literals }));
+  const getSecrets = async () => secretValues(env, (await getProvider()).keyName, consentedLiterals(env));
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
-  const server = await listen(createHandler({ token, html, getReader, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env, { getReader }) }), port);
+  const server = await listen(createHandler({ token, html, getReader, getSecrets, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env, { getReader }) }), port);
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);

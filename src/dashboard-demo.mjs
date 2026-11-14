@@ -81,6 +81,8 @@ export function demoState(now = Date.now()) {
     }),
     { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
+  // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
+  boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
   return { now, demo: true, hasLog: true, machines: { ok: true }, boxes };
 }
 

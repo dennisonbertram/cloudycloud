@@ -120,6 +120,7 @@
   .ptxt { flex: 1; min-width: 0; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ev.prog.now::before { background: var(--accent); }
   .ev.prog.now .ptxt { color: var(--text); }
+  .wlink { color: var(--accent); font-weight: 500; text-decoration: underline; }
   .ptime, .btime { flex: none; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); }
   .blk { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--surface); }
   .ev.out .blk { background: var(--subtle); }
@@ -488,7 +489,7 @@
     }
     const evs = st?.events || [];
     const hasTools = evs.some((e) => e.kind === 'tool_use');
-    const items = [...msgs.filter((m) => !(hasTools && m.kind === 'progress')).map((m) => ({ t: m.t, m })), ...evs.map((e) => ({ t: e.t, e }))].sort((x, y) => x.t - y.t);
+    const items = [...msgs.filter((m) => !(hasTools && m.kind === 'progress') && !(m.agent && m.agent !== b.id && m.kind === 'progress')).map((m) => ({ t: m.t, m })), ...evs.map((e) => ({ t: e.t, e }))].sort((x, y) => x.t - y.t);
     const kids = [];
     let run = null;
     const last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress' && !hasTools;
@@ -506,7 +507,9 @@
       const out = m.kind === 'out';
       kids.push(h('div', { class: 'ev ' + (out ? 'out' : 'reply') + (m.error ? ' err' : '') },
         h('div', { class: 'blk' },
-          h('div', { class: 'bh' }, h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
+          h('div', { class: 'bh' }, m.agent && m.agent !== b.id // a worker's message merged into its coordinator's activity
+            ? h('span', {}, h('button', { class: 'wlink', type: 'button', title: 'Open this worker', text: 'worker ' + m.agent, onclick: () => select(m.agent, true) }), out ? ' was sent a message' : m.error ? ' failed' : ' replied')
+            : h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
           h('div', { class: 'bb', text: m.text }))));
     }
     if (b.kind === 'agent' && active(b) && turn === (b.turns || 1)) {

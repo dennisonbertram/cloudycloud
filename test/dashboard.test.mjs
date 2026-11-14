@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
-import { buildState, createHandler, listen, liveState, listMachines } from '../src/dashboard.mjs';
+import { buildState, createHandler, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -475,4 +475,134 @@ test('demo state has a coordinator with two workers, tool-call streams, and a bo
   const lines = demoStream.stream('b42f0d17', 1).split('\n').filter(Boolean).map((l) => JSON.parse(l));
   assert.ok(lines.some((l) => l.message?.content?.[0]?.type === 'tool_use') && lines.some((l) => l.message?.content?.[0]?.type === 'tool_result') && lines.some((l) => l.type === 'result'));
   assert.ok(d.boxes.some((b) => demoStream.stream(b.id, 1) === undefined), 'a box with no stream');
+});
+
+// ---- review fixes (#71 #72 #73 #74) ----
+test('every string /api/state, /api/stream and /api/pane return, keys included, drops the exact secret values', async () => {
+  const sec = 'opaque-secret-value-9876';
+  const boxes = [{ id: 'k1', kind: 'coordinator', status: 'running', machine: 'm', machineState: 'running', title: `t ${sec}`, labels: { [`key-${sec}`]: `v ${sec}` } }];
+  const reader = fakeReader({ capturePane: async () => ({ lines: [`$ echo ${sec}`], fetchedAt: 1 }) });
+  const { dir, opts } = streamEnv(boxes, reader, { getSecrets: async () => [sec] });
+  putLocal(dir, 'k1', 1, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `say ${sec}` }] } }) + '\n');
+  for (const path of ['/api/state', '/api/stream?box=k1&turn=1', '/api/pane?box=k1']) assert.doesNotMatch((await api(opts, path)).body, /opaque-secret-value/, path);
+});
+
+test('a worker started by the same laptop session as its siblings is nobody\'s child; one started by a coordinator is', () => {
+  const lab = (o) => ({ purpose: 'cloudy-cloud', ...o });
+  const mk = (id, role, labels) => ({ id, name: id, role, owner: 'laptop', labels: lab({ owner: 'laptop', parent: 'laptop', ...labels }), state: 'running', status: 'running', startedAt: 1 });
+  const machines = [mk('c1', 'coordinator', { role: 'coordinator', name: 'n1' }), mk('c2', 'coordinator', { role: 'coordinator', name: 'n2' }), mk('w1', 'worker', { role: 'worker', agent: 'aaaa1111' }),
+    { ...mk('w2', 'worker', { role: 'worker', agent: 'bbbb2222' }), labels: lab({ role: 'worker', agent: 'bbbb2222', parent: 'n1', owner: 'cown' }) }];
+  const by = Object.fromEntries(buildState({ events: [], machines, alive: () => true, owner: 'laptop' }).boxes.map((b) => [b.machine, b]));
+  assert.equal(by.c1.parent, undefined); assert.equal(by.c2.parent, undefined); assert.equal(by.w1.parent, undefined);
+  assert.equal(by.w2.parent, by.c1.id);
+  assert.deepEqual(by.c1.children, [by.w2.id]);
+  assert.equal(by.c2.children, undefined);
+  // two coordinators naming each other never make a cycle
+  const loop = [mk('c1', 'coordinator', { role: 'coordinator', name: 'n1', parent: 'n2' }), mk('c2', 'coordinator', { role: 'coordinator', name: 'n2', parent: 'n1' })];
+  const ls = buildState({ events: [], machines: loop, alive: () => true }).boxes;
+  assert.ok(ls.filter((b) => b.parent).length <= 1);
+});
+
+const coordWithLog = async (lines, clockRef) => {
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
+  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'cn', owner: 'o' }, ttlSeconds: 600 });
+  const home = join(coord.dir, 'home/.config/cloudy-cloud');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'events.jsonl'), lines.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const reader = createMachineReader(provider, env, { minIntervalMs: 0, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
+  return { env, provider, coord, home, reader, getState: liveState(env, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, getReader: async () => reader, now: () => clockRef.t }) };
+};
+
+test('a coordinator\'s turn count comes from all its message events, not the 300 kept', async () => {
+  const ev = [{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }, ...Array.from({ length: 400 }, (_, i) => ({ type: 'message', id: 'aaaa1111', t: 2 + i, text: 'm' + i }))];
+  const clock = { t: 0 }, { getState } = await coordWithLog(ev, clock);
+  const w = (await getState()).boxes.find((b) => b.id === 'aaaa1111');
+  assert.equal(w.turns, 400);
+});
+
+test('a coordinator\'s event history is bounded, and forgotten once its machine is gone', async () => {
+  const ev = Array.from({ length: 12_000 }, (_, i) => ({ type: 'agent', id: String(i).padStart(8, '0'), t: i + 1, description: 'w', role: 'worker' }));
+  const clock = { t: 0 }, { getState, provider } = await coordWithLog(ev, clock);
+  let s;
+  for (let i = 0; i < 12; i++) { clock.t += 11_000; s = await getState(); }
+  const n = s.boxes.filter((b) => b.source === 'coordinator-log').length;
+  assert.ok(n > 0 && n <= 5000, `kept ${n}`);
+  const tails = [];
+  let gone = false;
+  const r = createMachineReader(provider, { FAKE_API_KEY: 'x' }, { minIntervalMs: 0, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
+  const gs = liveState({ FAKE_API_KEY: 'x' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, now: () => clock.t, list: async (e, p) => (gone ? [] : listMachines(e, p)), getReader: async () => ({ ...r, readTail: (m, name, from) => { tails.push(from); return r.readTail(m, name, from); } }) });
+  await gs(); clock.t += 11_000; await gs();
+  assert.ok(tails.at(-1) > 0);
+  gone = true; clock.t += 11_000; await gs();
+  gone = false; clock.t += 11_000; await gs();
+  assert.equal(tails.at(-1), 0, 'a machine that came back is read from the start: its old events were dropped');
+});
+
+test('/api/stream keeps raw machine streams for as many boxes as it keeps parsed ones', async () => {
+  const clock = { t: 10_000 };
+  const boxes = Array.from({ length: 30 }, (_, i) => ({ id: 'b' + i, kind: 'agent', status: 'running', machine: 'm' + i, machineState: 'running' }));
+  const reader = fakeReader();
+  const { opts } = streamEnv(boxes, reader, { now: () => clock.t });
+  const s = await serve(opts), { port } = s.address();
+  try {
+    for (const b of boxes) await get(port, `/api/stream?box=${b.id}&turn=1&t=${TOKEN}`);
+    clock.t += 4000;
+    reader.calls.length = 0;
+    await get(port, `/api/stream?box=b0&turn=1&t=${TOKEN}`);
+    assert.deepEqual(reader.calls, [['tail', 'm0', 'stream/t1.jsonl', 0]], 'the oldest was evicted, so it is read again from 0');
+  } finally { s.close(); }
+});
+
+test('the stream cursor follows the reader\'s `next` even when it returns no data (skipped oversize line)', async () => {
+  const clock = { t: 10_000 }, froms = [];
+  const reader = fakeReader({ readTail: async (m, name, from) => { froms.push(from); return from === 0 ? { data: '', from, next: 500, size: 900, fetchedAt: 1 } : { data: SAMPLE, from, next: from + SAMPLE.length, size: 900, fetchedAt: 2 }; } });
+  const { opts } = streamEnv([{ id: 'o1', kind: 'agent', status: 'running', machine: 'mo', machineState: 'running' }], reader, { now: () => clock.t });
+  const s = await serve(opts), { port } = s.address();
+  try {
+    await get(port, `/api/stream?box=o1&turn=1&t=${TOKEN}`);
+    clock.t += 4000;
+    await get(port, `/api/stream?box=o1&turn=1&t=${TOKEN}`);
+    assert.deepEqual(froms, [0, 500]);
+  } finally { s.close(); }
+});
+
+test('a rate-limited pane read is the last real pane with its real time, or "rate_limited", never a fresh empty one', async () => {
+  let limited = false;
+  const reader = fakeReader({ capturePane: async () => (limited ? { lines: [], fetchedAt: 9000, source: 'cache' } : { lines: ['real'], fetchedAt: 6000 }) });
+  const { opts } = streamEnv([{ id: 'co', kind: 'coordinator', machine: 'mco', machineState: 'running' }, { id: 'c2', kind: 'coordinator', machine: 'mc2', machineState: 'running' }], reader);
+  const s = await serve(opts), { port } = s.address();
+  const pane = async (id) => JSON.parse((await get(port, `/api/pane?box=${id}&t=${TOKEN}`)).body);
+  try {
+    limited = true;
+    assert.deepEqual(await pane('c2'), { lines: [], fetchedAt: null, source: { kind: 'none', machine: 'mc2', reason: 'rate_limited' } });
+    limited = false; await pane('co'); limited = true;
+    assert.deepEqual(await pane('co'), { lines: ['real'], fetchedAt: 6000, source: { kind: 'cache', machine: 'mco' } });
+  } finally { s.close(); }
+});
+
+test('the machine reader marks its rate-limit pane fallback as from the cache', async () => {
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
+  const m = await provider.create({ labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 600 });
+  const reader = createMachineReader(provider, env, { minIntervalMs: 60_000, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
+  await reader.readTail(m.id, 'events.jsonl', 0).catch(() => {}); // uses the machine within the interval
+  assert.equal((await reader.capturePane(m.id)).source, 'cache');
+});
+
+test('lazy builds its value once for concurrent callers and retries after a failure', async () => {
+  let n = 0;
+  const get1 = lazy(async () => { n++; await new Promise((r) => setTimeout(r, 10)); return {}; });
+  const [a, b] = await Promise.all([get1(), get1()]);
+  assert.equal(a, b); assert.equal(n, 1);
+  let fail = true;
+  const g2 = lazy(async () => { if (fail) throw new Error('x'); return 1; });
+  await assert.rejects(g2());
+  fail = false;
+  assert.equal(await g2(), 1);
+});
+
+test('the page names the worker on a coordinator\'s merged messages and links to it', () => {
+  const script = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.match(script, /m\.agent && m\.agent !== b\.id/);
+  assert.match(script, /'worker ' \+ /);
+  assert.match(script, /select\(m\.agent, true\)/);
 });
