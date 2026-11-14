@@ -48,7 +48,7 @@ When the user wants a long job to run unattended, start a cloud coordinator inst
 
 - Hand off when the job is long or large, the user is leaving, and the work needs only what is on GitHub. Do not hand off when it needs untracked local files or the user wants to steer step by step.
 - Confirm first: coordinator name, repo, base branch, and that it is billed until stopped. Commit and push what it needs.
-- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`.
+- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`. If `cloudy-cloud` is not found on PATH, run `"$CLOUDY_CLOUD_BIN"` instead; the launcher sets it.
 - Tell the user the Remote Control session name, how to attach, and `cloudy-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
 
 Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).

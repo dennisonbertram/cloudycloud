@@ -161,4 +161,9 @@ if [ -n "${CLOUDY_CLOUD_EXTRA_PROMPT:-}" ]; then
 fi
 
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-1800000}"
-exec claude --mcp-config "$mcp" --settings "$settings" --append-system-prompt "$prompt" "$@"
+# Skills run "$CLOUDY_CLOUD_BIN" when `cloudy-cloud` is not on PATH (a source checkout).
+export CLOUDY_CLOUD_BIN="$root/bin/cloudy-cloud"
+# An unattended coordinator cannot answer "New MCP server found in this project"; only the servers above are used there.
+strict=
+[ -z "${CLOUDY_CLOUD_COORDINATOR:-}" ] || strict=--strict-mcp-config
+exec claude --mcp-config "$mcp" ${strict:+"$strict"} --settings "$settings" --append-system-prompt "$prompt" "$@"

@@ -1,11 +1,11 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { main } from '../src/coordinator.mjs';
+import { main, toolRepoUrl } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -42,7 +42,7 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
   }
 });
 
-function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
+function fixture({ machines = [], snapshot = 'sn_1', pane = '' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
@@ -51,7 +51,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
     sandboxId: id,
     getInfo: async () => ({ name }),
     files: { write: async (p, d) => { log.writes.push({ p, d }); } },
-    commands: { run: async (cmd, o) => { log.cmds.push(cmd); return { stdout: '/data/home', stderr: '', exitCode: 0 }; } },
+    commands: { run: async (cmd, o) => { log.cmds.push(cmd); return { stdout: /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
   });
@@ -169,7 +169,7 @@ test('start --task-file reads the file; empty or over 100 KB tasks are refused b
 test('start --json prints name, machine, remoteControlName and attach', async () => {
   const f = fixture();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps);
-  assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude' });
+  assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true });
 });
 
 test('start rejects bad repo urls and duplicate names', async () => {
@@ -372,7 +372,7 @@ test('start on a terminal shows a Reach it block; --json stays exactly the same'
   const g = fixture();
   g.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
-  assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude' });
+  assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true });
 });
 
 test('stop and image on a terminal use status lines; piped output has no escapes', async () => {
@@ -397,4 +397,52 @@ test('a provider that cannot give a coordinator its keys refuses image and start
     await assert.rejects(main(args, { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, out: () => {} }), /^Error: Coordinators are not supported on fake yet\.$/);
   }
   assert.equal(provider.log.create.length, 0);
+});
+
+// ---- #44 and #46 ----
+const START = ['start', 'boss', '--repo', 'https://github.com/o/r'];
+
+test('start fails and deletes the machine when the session screen shows a spend limit (#44)', async () => {
+  const f = fixture({ pane: "  You've hit your monthly spend limit\n" });
+  await assert.rejects(main([...START, '--json'], f.deps), (e) => {
+    assert.match(e.message, /monthly spend limit/);
+    assert.match(e.message, /Next: /);
+    assert.match(e.message, /coordinator stop|coordinator start/);
+    return true;
+  });
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.equal(f.log.out.length, 0, 'no success output');
+  assert.ok(f.log.cmds.some((c) => /tmux capture-pane/.test(c)));
+});
+
+test('start also fails on a login, trust or MCP approval screen', async () => {
+  for (const pane of ['Select login method:', 'Do you trust the files in this folder?', 'New MCP server found in this project']) {
+    const f = fixture({ pane });
+    await assert.rejects(main(START, f.deps), /Next: /, pane);
+    assert.deepEqual(f.log.killed, ['m_new']);
+  }
+});
+
+test('start --model puts the model on the tmux command line; a bad model is refused before any machine', async () => {
+  const f = fixture();
+  await main([...START, '--model', 'claude-opus-5-5'], f.deps);
+  assert.match(f.log.cmds.find((c) => /tmux new-session/.test(c)), /--remote-control '\\''boss'\\'' --model '\\''claude-opus-5-5'\\''/);
+  const g = fixture();
+  await assert.rejects(main([...START, '--model', 'x;rm -rf /'], g.deps), /--model/);
+  assert.equal(g.log.create.length, 0);
+});
+
+test('the coordinator session has cloudy-cloud on PATH (#46)', async () => {
+  const f = fixture();
+  await main(START, f.deps);
+  assert.match(f.log.cmds.find((c) => /tmux new-session/.test(c)), /PATH=\/data\/home\/cloudy-cloud\/bin:\$PATH /);
+});
+
+test('toolRepoUrl in a checkout with no origin prints nothing on stderr (#44)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'cc-noorigin-'));
+  execFileSync('git', ['init', '-q'], { cwd: d });
+  const r = spawnSync(process.execPath, ['-e', `import('${resolve('src/coordinator.mjs')}').then((m) => process.stdout.write(JSON.stringify(m.toolRepoUrl(${JSON.stringify(d)}))))`], { encoding: 'utf8' });
+  assert.equal(r.stderr, '');
+  assert.equal(r.stdout, '""');
+  assert.equal(toolRepoUrl(d), '');
 });

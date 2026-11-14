@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
@@ -22,6 +22,8 @@ const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
+// Lines on the session's screen that mean it is stuck or dead, not working.
+const BLOCKED = /hit your (?:monthly |weekly |5-hour )?(?:spend|usage) limit|usage limit reached|Select login method|Please run \/login|Invalid API key|Do you trust the files|trust this folder|New MCP server/i;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
@@ -38,9 +40,9 @@ function saveKey(file, name, value) {
 }
 
 // The GitHub URL of cloudy-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
-function toolRepoUrl(root) {
+export function toolRepoUrl(root) {
   let u;
-  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim(); } catch { return ''; }
+  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; }
   const m = u.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+?)(?:\.git)?$/);
   const url = m ? `https://github.com/${m[1]}.git` : u;
   return REPO_RE.test(url) ? url : ''; // goes into a quoted shell word
@@ -80,7 +82,7 @@ async function installTool(sbx, root) {
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
   await run('gh auth setup-git'); // before the work-repo clone, so git uses the GH_TOKEN placeholder
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
-  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8' }).trim() || d; } catch { return d; } };
+  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
   // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
   const b = toolBundle(root);
@@ -144,6 +146,8 @@ async function start(c, args) {
   if (!repo || !REPO_RE.test(repo)) fail('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO');
   const branch = flag(args, '--branch');
   if (branch && !/^[\w./-]+$/.test(branch)) fail('--branch has characters that are not allowed.');
+  const model = flag(args, '--model');
+  if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) fail('--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.');
   const taskFile = flag(args, '--task-file');
   const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
   if (task !== undefined) {
@@ -179,10 +183,16 @@ async function start(c, args) {
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${prompt}`)}`);
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} PATH=${home}/cloudy-cloud/bin:$PATH ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
+    await c.sleep(5000);
+    let pane = '';
+    try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch { fail(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`); }
+    const line = pane.split('\n').find((l) => BLOCKED.test(l));
+    if (line) fail(`The coordinator session started but is not working. Its screen shows: ${redact(safeText(line.trim()))}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude') }));
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true }));
   if (c.ui.on) {
     const u = c.ui;
     return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
@@ -285,7 +295,7 @@ async function finish(c, args, deps) {
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
-const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours'];
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
 function validateArgs(cmd, args) {
   const bad = (message) => fail(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`);
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
@@ -312,7 +322,7 @@ export async function main(argv, deps = {}) {
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
+  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
   validateArgs(cmd, args);
   const c = await context(deps);
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) fail(`Provider ${c.provider.name} has no snapshots, which coordinators need.`);
