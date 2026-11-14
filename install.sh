@@ -706,6 +706,7 @@ setup_instabox() {
     write_env INSTABOX_API_KEY "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
     STATUS_INSTABOX="OK ($(mask ibk_ "$key"))"
     ok "Saved the Instabox key" "$(mask ibk_ "$key")"
+    INSTABOX_KEY_CHANGED=1
     return
   done
   if [ -n "$saved" ]; then warn "Stopped the Instabox step after 3 tries. Your saved key is unchanged. Run $(rerun_cmd) again to retry."
@@ -783,7 +784,8 @@ setup_claude() {
 # Your laptop keeps using the real INSTABOX_API_KEY. The value goes on stdin, never on a command line.
 store_coordinator_key() {
   local name=CLOUDY_CLOUD_INSTABOX_API_KEY key
-  is_proxied "$name" && secret_visible "$name" && return 0
+  # A key saved in this run (INSTABOX_KEY_CHANGED) replaces the stored copy, so rotating the key does not leave the old one.
+  [ -z "${INSTABOX_KEY_CHANGED:-}" ] && is_proxied "$name" && secret_visible "$name" && return 0
   key=$(get_saved INSTABOX_API_KEY)
   if [ -n "$key" ] && store_secret "$name" "$key"; then ok "Stored $name as an Instabox secret" "coordinators see a placeholder"
   else warn "Could not store $name, so coordinator start will refuse to run" "run $(rerun_cmd) again to retry"; return 1; fi
@@ -804,7 +806,6 @@ setup_coordinators() {
   snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
   marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
   if [ -n "$snap" ]; then
-    store_coordinator_key || true
     STATUS_COORD="ready${marker:+ ($marker)}"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
       warn "Coordinators use $marker, but your local Claude is $LOCAL_ACCOUNT."
@@ -813,7 +814,6 @@ setup_coordinators() {
   else
     yn "Set up cloud coordinators (they keep working when your laptop is closed)?" || return 0
   fi
-  [ -n "$snap" ] || store_coordinator_key || true
   hint "This can take a few minutes."
   spin_start "Building the coordinator image machine"
   out=$("$root/bin/cloudy-cloud" coordinator image 2>&1) || rc=$?
@@ -1000,6 +1000,7 @@ main() {
     step 2 "Instabox key"
     setup_instabox
     [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
+    store_coordinator_key || true # whether or not you build a coordinator image: nested coordinators need it too
   fi
   step 3 "Claude token"
   setup_claude

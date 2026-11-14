@@ -184,7 +184,9 @@ async function start(c, args) {
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
+    // a setup-token cannot start Remote Control and an env token beats the saved full login (code.claude.com/docs/en/remote-control).
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
     // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
     await c.sleep(5000);
     let pane = '';

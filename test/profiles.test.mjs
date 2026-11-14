@@ -128,3 +128,13 @@ test('a baseUrl that URL cannot parse still returns an error, not a throw', () =
   const r = resolveProfile('mine', undefined, { CLOUDY_CLOUD_PROFILES: file({ mine: { harness: 'claude', format: 'openai', baseUrl: 'https://foo:bar', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
   assert.match(r.error, /PARTICLE_API_KEY/);
 });
+
+test('a custom profile key set as a real value is refused with the exact steps for that key (#68)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-'));
+  const file = join(dir, 'profiles.json');
+  writeFileSync(file, JSON.stringify({ acme: { format: 'openai', baseUrl: 'https://api.acme.example/v1', keyName: 'ACME_API_KEY', model: 'm1' } }));
+  const r = resolveProfile('acme', undefined, { CLOUDY_CLOUD_PROFILES: file, ACME_API_KEY: 'plainvalue' }, { proxyOnly: true });
+  assert.match(r.error, /secrets set ACME_API_KEY --host api\.acme\.example/);
+  assert.match(r.error, /CLOUDY_CLOUD_PROXY_SECRETS/);
+  assert.ok(!r.error.includes('plainvalue'));
+});

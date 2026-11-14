@@ -105,6 +105,12 @@ test('start without a snapshot fails and points to coordinator image', async () 
   assert.equal(f.log.create.length, 0);
 });
 
+test('the coordinator own Claude starts without the setup-token or API key, so its saved full login is used (#67)', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.ok(f.log.cmds.some((c) => /tmux new-session/.test(c) && /env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1/.test(c)));
+});
+
 test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file and starts tmux', async () => {
   const f = fixture();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--branch', 'main'], f.deps);

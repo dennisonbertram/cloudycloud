@@ -87,7 +87,7 @@ export function resolveProfile(name, model, env = process.env, { proxyOnly = fal
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
   if (!env[p.keyName] && !proxied) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
-  if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}` };
+  if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName, proxied } };
 }
 

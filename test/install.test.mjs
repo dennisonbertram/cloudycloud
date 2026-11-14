@@ -719,3 +719,35 @@ test('a key is only deleted from the env file after the API-key org shows the se
   assert.equal(readFileSync(cfg, 'utf8'), `PARTICLE_API_KEY=${PK}\nINSTABOX_API_KEY=${KEY}\n`);
   assert.ok(!r.text.includes(PK));
 });
+
+// ---- #67: the coordinator's copy of the Instabox key ----
+const COORD_SECRET = 'CLOUDY_CLOUD_INSTABOX_API_KEY';
+const coordSecretJson = JSON.stringify([{ name: COORD_SECRET, hosts: ['api.instabox.sh'] }]);
+
+test('a changed Instabox key replaces the coordinator secret even when it is already stored; an unchanged one does not', () => {
+  const run = (changed) => {
+    const s = npxStub({ secrets: coordSecretJson });
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, `CLOUDY_CLOUD_PROXY_SECRETS=${COORD_SECRET}\nINSTABOX_API_KEY=${KEY}\n`, { mode: 0o600 });
+    const r = spawnSync('/bin/bash', ['-c', `. "${script}"; PROVIDER=instabox; ${changed ? 'INSTABOX_KEY_CHANGED=1; ' : ''}store_coordinator_key`], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!calls(s).includes(KEY), 'key in argv');
+    return s;
+  };
+  const s = run(true);
+  assert.match(calls(s), /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY --host api\.instabox\.sh\n/);
+  assert.equal(readFileSync(s.stdin, 'utf8'), KEY);
+  assert.ok(!/secrets set/.test(calls(run(false))));
+});
+
+test('pty: declining the coordinator image still stores the coordinator secret', () => {
+  const g = rig({ saved: savedBoth });
+  const log = join(g.cl, 'npx-argv'); const stdin = join(g.cl, 'npx-stdin');
+  writeFileSync(join(g.cl, 'npx'), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"secrets set"*) cat >> "${stdin}" ;; esac\nexit 0\n`);
+  writeFileSync(join(g.cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *secrets*) echo '[{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]},{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},{"name":"${COORD_SECRET}","hosts":["api.instabox.sh"]}]' ;;\n *) echo '[{"id":"o1","personal":true}]' ;;\nesac\n`);
+  const r = g.run(answers);
+  assert.equal(r.code, 0, r.text);
+  assert.match(readFileSync(log, 'utf8'), /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY --host api\.instabox\.sh/);
+  assert.equal(readFileSync(stdin, 'utf8'), KEY);
+  assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROXY_SECRETS=.*CLOUDY_CLOUD_INSTABOX_API_KEY/);
+});
