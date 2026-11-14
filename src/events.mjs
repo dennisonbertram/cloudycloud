@@ -19,9 +19,14 @@ const SECRET_RES = [
   /(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi,
   /(\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*[=:]\s*)["']?[^\s"']{6,}["']?/g,
 ];
-export function redact(text) {
+// Same as redact() without the length limit, for stored streams that must stay whole.
+export function redactText(text) {
   let s = String(text ?? '');
   for (const re of SECRET_RES) s = s.replace(re, (m, pre) => `${typeof pre === 'string' ? pre : ''}[redacted]`);
+  return s;
+}
+export function redact(text) {
+  const s = redactText(text);
   return s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}… [truncated]` : s;
 }
 

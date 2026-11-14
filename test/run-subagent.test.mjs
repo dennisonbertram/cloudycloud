@@ -6,12 +6,12 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
-import { runSubagent, messageAgent, waitAgents, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -91,15 +91,21 @@ test('the machine event records when the server deletes the machine', async () =
 });
 
 test('wait returns the result once, then marks it reported; agent stays open', async () => {
-  const { start, wait, created, open } = await setup();
+  const { start, wait, created, open, deps } = await setup();
   const id = await start({ prompt: 'hi' });
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
   assert.match(first, /Pushed to origin cloudy-cloud\//);
   const second = await wait([id]);
-  assert.match(second, /already reported/);
+  assert.match(second, /already delivered; call cloud_agent_result/);
   assert.doesNotMatch(second, /hello/);
+  const again = (await resultAgent({ agent_id: id }, deps)).content[0].text;
+  assert.match(again, /hello/);
+  assert.match((await resultAgent({ agent_id: id }, deps)).content[0].text, /hello/);
+  const gone = await resultAgent({ agent_id: 'nope' }, deps);
+  assert.equal(gone.isError, true);
+  assert.match(gone.content[0].text, /Next step: .*cloud_agent_list/);
   assert.equal(created[0].killed, false);
   assert.ok(open.has(id));
 });
@@ -155,7 +161,7 @@ test('quota_exceeded that never clears fails the agent after the give-up time, w
   });
   const bad = await start();
   const r = await wait([bad]);
-  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit reached \\(quota_exceeded\\)[^#]*Provider message: machine limit`));
+  assert.match(r, new RegExp(`## ${bad}[^#]*status: failed[^#]*machine limit is reached[^#]*Provider message: machine limit`));
   assert.equal((await msg(bad, 'x')).isError, true);
 });
 
@@ -164,7 +170,7 @@ test('rate_limited create is reported as the start rate', async () => {
     queue: createStartQueue({ sleep: async () => {} }),
     createSandbox: async () => { throw Object.assign(new Error('slow down'), { code: 'rate_limited' }); },
   });
-  assert.match(await wait([await start()]), /start rate limit reached \(rate_limited\) and still limited after 5 tries/);
+  assert.match(await wait([await start()]), /limiting how fast[\s\S]*Still limited after 5 tries/);
 });
 
 test('message to a busy agent is rejected, not queued', async () => {
@@ -1008,11 +1014,12 @@ async function mcpSetup(servers, over = {}) {
 const X = { x: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ${MCP_X_TOKEN}' } } };
 const claudeCmd = (sbx) => sbx.cmds.find((c) => /claude -p|cloudy-cloud\/bin\/cloudy-cloud -p/.test(c));
 
-test('a plain worker without mcp.json runs the exact command it always did and writes no mcp file', async () => {
+test('a plain worker without mcp.json runs the same claude command (now inside the stream tee) and writes no mcp file', async () => {
   const { start, wait, sandboxes, opts } = await mcpSetup('{"mcpServers":{}}');
   await wait([await start({})]);
   const sbx = sandboxes[0];
-  assert.equal(claudeCmd(sbx).replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
+  const inner = /\{ (.*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
+  assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
     'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
@@ -1213,7 +1220,7 @@ test('the core creates machines through provider.create, with names only in envs
   assert.match(await x.wait([id]), /status: idle/);
   assert.equal(provider.log.create.length, 1);
   const { envs, ...rest } = provider.log.create[0];
-  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 21600, secrets: [] });
+  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: [] });
   assert.deepEqual(Object.keys(envs), ['ANTHROPIC_API_KEY']);
 });
 
@@ -1281,4 +1288,224 @@ test('the default create passes the role to the provider so a self-hosted coordi
   await x.wait([await x.start({ role: 'coordinator' })]);
   await x.wait([await x.start({ role: 'worker' })]);
   assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
+});
+
+// ---- #64: keys reach workers as proxy secrets, never as env values ----
+const PROXIED = 'PARTICLE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY';
+for (const [profile, key] of [['glm', 'PARTICLE_API_KEY'], ['pi-glm', 'PARTICLE_API_KEY'], ['omp-glm', 'PARTICLE_API_KEY'], ['openrouter', 'OPENROUTER_API_KEY'], [undefined, 'CLAUDE_CODE_OAUTH_TOKEN']]) {
+  test(`proxy secrets: a ${profile ?? 'default'} worker gets ${key} as a secret name, not an env value`, async () => {
+    const { deps, start, wait } = await setup();
+    delete deps.createSandbox;
+    deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: PROXIED };
+    await wait([await start({ profile, ...(profile === 'openrouter' && { model: 'deepseek/deepseek-chat' }) })]);
+    const c = deps.provider.log.create[0];
+    assert.ok(c.secrets.includes(key), `secrets ${c.secrets}`);
+    assert.deepEqual(Object.keys(c.envs).filter((k) => /_API_KEY$|_TOKEN$/.test(k)), []);
+  });
+}
+
+test('a key value in env still works, with one warning line naming the key', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-legacy-value' };
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  const c = deps.provider.log.create[0];
+  assert.equal(c.envs.PARTICLE_API_KEY, 'pk-legacy-value');
+  assert.ok(!c.secrets.includes('PARTICLE_API_KEY'));
+  assert.match(r, /`PARTICLE_API_KEY` is copied to the worker machine; run `cloudy-cloud setup` to store it as an Instabox secret\./);
+  assert.ok(!r.includes('pk-legacy-value'));
+});
+
+test('a provider without proxy secrets ignores CLOUDY_CLOUD_PROXY_SECRETS and keeps the env value', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.env = { PARTICLE_API_KEY: 'pk-x', CLOUDY_CLOUD_PROXY_SECRETS: 'PARTICLE_API_KEY' };
+  await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(deps.provider.log.create[0].envs.PARTICLE_API_KEY, 'pk-x');
+});
+
+// ---- #48: labels and the agent tree ----
+test('a worker is labelled with role, profile, parent and agent', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.owner = 'owner123';
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-secret-value' };
+  const id = await start({ profile: 'pi-deepseek', description: 'Fix the login bug: it has spaces & a token pk-secret-value' });
+  await wait([id]);
+  const l = deps.provider.log.create[0].labels;
+  assert.deepEqual([l.purpose, l.owner, l.role, l.profile, l.parent, l.agent], ['cloudy-cloud', 'owner123', 'worker', 'pi-deepseek', 'owner123', id]);
+  assert.match(l.description, /^[A-Za-z0-9_.-]{1,60}$/);
+  assert.ok(!l.description.includes('secret-value'), l.description); // the key value is redacted
+});
+
+test('a default worker has profile claude', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.owner = 'o1';
+  await wait([await start()]);
+  assert.equal(deps.provider.log.create[0].labels.profile, 'claude');
+});
+
+test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent', async () => {
+  const { deps, text } = await setup();
+  const mk = (id, labels) => deps.provider.machines.set(id, { id, name: id, labels: { purpose: 'cloudy-cloud', ...labels }, state: 'running', status: 'running', startedAt: Date.now() });
+  mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
+  mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
+  mk('m3', { purpose: 'other', owner: 'o3' });
+  const r = text(await listAgents({ all: true }, deps));
+  assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
+  assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
+  assert.ok(!r.includes('m3'));
+});
+
+// ---- #47: optional apt packages ----
+test('CLOUDY_CLOUD_APT_PACKAGES installs the packages with one apt command; without it no apt command runs', async () => {
+  for (const [pkgs, expected] of [['ffmpeg postgresql-client', 1], [undefined, 0]]) {
+    const cmds = [];
+    const { deps, start, wait } = await setup({ createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; } });
+    deps.env = { GH_TOKEN: 'ghp_secret', ...(pkgs && { CLOUDY_CLOUD_APT_PACKAGES: pkgs }) };
+    await wait([await start()]);
+    const apt = cmds.filter((c) => /apt-get/.test(c));
+    assert.equal(apt.length, expected);
+    if (pkgs) assert.match(apt[0], /sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg postgresql-client/);
+  }
+});
+
+test('a package name with a shell character is rejected at start, before any machine', async () => {
+  const { deps } = await setup();
+  deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg; rm -rf /' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /CLOUDY_CLOUD_APT_PACKAGES/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+// ---- review fixes (#64, #47, #48) ----
+test('a coordinator env file carries the proxy secret names', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_APT_PACKAGES: '' };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
+  assert.match(env, /^CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN$/m);
+});
+
+test('a Claude key named only in CLOUDY_CLOUD_PROXY_SECRETS is refused on a provider without proxy secrets', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.env = { CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  await new Promise((res) => setTimeout(res, 300));
+  const all = JSON.stringify(r) + JSON.stringify(await listAgents({}, deps));
+  assert.match(all, /cannot attach proxy secrets/);
+});
+
+test('apt packages are refused at start on a provider without sudo', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.provider.name = 'self-hosted';
+  deps.env = { CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+test('apt packages accept one pair of surrounding quotes, as written in the docs', async () => {
+  const { aptPackages } = await import('../src/config.mjs');
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: '"ffmpeg postgresql-client"' }).list, ['ffmpeg', 'postgresql-client']);
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: "'ffmpeg'" }).list, ['ffmpeg']);
+});
+
+test('a turn keeps its stream on the machine and, redacted, in a private folder on this laptop', async () => {
+  const streams = join(await mkdtemp(join(tmpdir(), 'cc-streams-')), 'streams');
+  const { start, wait, msg, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_STREAMS: streams } });
+  const id = await start({ prompt: `ECHO use ${SECRET} and ghp_secret`, description: `deploy with ${SECRET}` });
+  await wait([id]);
+  await msg(id, 'again');
+  await wait([id]);
+  const dir = join(created[0].dir, 'home/.config/cloudy-cloud/stream');
+  const onMachine = await readFile(join(dir, 't1.jsonl'), 'utf8');
+  assert.match(onMachine, /"type":"tool_use"/);
+  assert.match(onMachine, /"type":"result"/);
+  assert.ok(await readFile(join(dir, 't2.jsonl'), 'utf8'));
+  const meta = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8'));
+  assert.equal(meta.agent, id);
+  assert.equal(meta.branch, `cloudy-cloud/${id}`);
+  assert.equal(meta.description, 'deploy with [redacted]');
+  assert.deepEqual(meta.turns.map((t) => [t.n, t.exit, typeof t.startedAt, typeof t.endedAt]), [[1, 0, 'number', 'number'], [2, 0, 'number', 'number']]);
+  // laptop copy: private, valid JSON per line, no key value
+  assert.equal((await stat(join(streams, id))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(streams, id, 't1.jsonl'))).mode & 0o777, 0o600);
+  const local = await readFile(join(streams, id, 't1.jsonl'), 'utf8');
+  assert.ok(!local.includes(SECRET) && !local.includes('ghp_secret'));
+  assert.match(local, /\[redacted\]/);
+  for (const l of local.trim().split('\n')) JSON.parse(l);
+  assert.ok(!(await readFile(join(streams, id, 't2.jsonl'), 'utf8')).includes('ghp_secret'));
+});
+
+test('a failing turn still reports its exit code and records it in meta.json', async () => {
+  const { start, wait, created } = await setup();
+  const id = await start({ prompt: 'FAIL' });
+  assert.match(await wait([id]), /exit code 3/);
+  const meta = JSON.parse(await readFile(join(created[0].dir, 'home/.config/cloudy-cloud/stream/meta.json'), 'utf8'));
+  assert.equal(meta.turns[0].exit, 3);
+  assert.equal(meta.agent, id);
+});
+
+test('the turn command tees the raw stream on the machine and keeps the exit code', async () => {
+  const { start, wait, created } = await setup();
+  await wait([await start()]);
+  const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
+  assert.match(cmd, /tee -a \$D\/t1\.jsonl; s=\$\(cat \$D\/t1\.exit 2>\/dev\/null\); exit \$\{s:-1\}$/);
+  assert.ok(cmd.includes('D=$HOME/.config/cloudy-cloud/stream'));
+  assert.ok(!cmd.includes(SECRET));
+});
+
+test('the local copy stops at 20 MB with one truncated note', async () => {
+  const { createLocalStream } = await import('../src/stream.mjs');
+  const dir = join(await mkdtemp(join(tmpdir(), 'cc-cap-')), 'a');
+  const w = createLocalStream(join(dir, 't1.jsonl'), { scrub: (s) => s, cap: 200 });
+  for (let i = 0; i < 10; i++) w.write(`${JSON.stringify({ type: 'x', i, pad: 'p'.repeat(40) })}\n`);
+  w.end();
+  const lines = (await readFile(join(dir, 't1.jsonl'), 'utf8')).trim().split('\n');
+  assert.deepEqual(JSON.parse(lines.at(-1)), { type: 'cloudy-cloud', note: 'truncated' });
+  assert.equal(lines.filter((l) => l.includes('truncated')).length, 1);
+  assert.ok(lines.length < 10);
+});
+
+test('the tee wrapper returns the harness exit code, and 1 when the exit file cannot be written', async () => {
+  const { teed } = await import('../src/run-subagent.mjs');
+  const home = await mkdtemp(join(tmpdir(), 'cc-tee-'));
+  const go = (cmd) => exec('sh', ['-c', cmd], { env: { ...process.env, HOME: home } }).then(() => 0, (e) => e.code);
+  assert.equal(await go(teed('sh -c "exit 3"', 1)), 3);
+  assert.equal(await go(teed('true', 2)), 0);
+  await mkdir(join(home, '.config/cloudy-cloud/stream/t4.exit'), { recursive: true }); // writing the exit file now fails
+  assert.equal(await go(teed('true', 4)), 1);
+});
+
+test('cloud_agent_result returns the previous result while a follow-up turn runs', async () => {
+  const { start, wait, msg, deps, text } = await setup();
+  const id = await start({ prompt: 'hi' });
+  await wait([id]);
+  await msg(id, 'SLOW');
+  const r = text(await resultAgent({ agent_id: id }, deps));
+  assert.match(r, /hello/);
+  assert.match(r, /newer turn is running/);
+  await wait([id]);
+});
+
+test('argument errors and worker error results carry guidance and keep their ERROR prefix', async () => {
+  const { start, wait, deps, text } = await setup();
+  const a = await runSubagent({ description: 'd' }, deps);
+  assert.equal(a.isError, true);
+  assert.match(text(a), /prompt is required[\s\S]*Next step: .*cloud_agent/);
+  const b = await messageAgent({ agent_id: 'x' }, deps);
+  assert.match(text(b), /message is required[\s\S]*Next step: .*cloud_agent_message/);
+  const c = await waitAgents({ agent_ids: 'x'.repeat(0) || [] }, deps);
+  assert.match(text(c), /agent_ids must be[\s\S]*Next step: .*cloud_agent_wait/);
+  const id = await start({ prompt: 'FAIL' });
+  const w = await wait([id]);
+  assert.match(w, /ERROR: [\s\S]*Next step:/);
 });

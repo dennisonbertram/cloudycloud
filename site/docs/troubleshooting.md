@@ -69,6 +69,14 @@ If you see `rate_limited` after 5 tries, lower `CLOUDY_CLOUD_STARTS_PER_MIN` and
 
 An agent with nothing to do is stopped after 60 minutes and its machine is deleted. A message to it then returns `Agent <id> is not open. It may have been stopped, been idle for 60 minutes, or never existed.` A single task is also stopped after 29 minutes. Start a new subagent from the branch the old one pushed.
 
+### Error messages with "Next step"
+
+Every `cloud_agent` tool error has the same shape: `What happened`, `Likely cause`, `Next step` (an exact tool call or command) and, when only you can fix it, `Tell the user`. The agent follows the next step and tells you the last line. If an error is not recognised, the text shows the original message and says to call `cloud_agent_list`. `coordinator start --json` prints the same fields as an `error` object on failure.
+
+### Missing, unapplied or mis-hosted secrets
+
+`The Instabox secret NAME is not in your org`: run `cloudy-cloud setup`, or `printf %s "$KEY" | npx --yes instabox@latest secrets set NAME --host <host>`. The hosts are `api.anthropic.com` (Claude token), `api.particle.ai` (`PARTICLE_API_KEY`), `openrouter.ai` (`OPENROUTER_API_KEY`) and `api.instabox.sh` (Instabox key). If Instabox did not apply a secret within 60 seconds, retry, then run `npx instabox@latest secrets show <machine>`.
+
 ### "This session has already started N agents"
 
 One session may start 200 agents by default. Stop idle agents or raise `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`.
@@ -83,6 +91,14 @@ npx instabox@latest rm <name>
 ```
 
 Machines made by this tool have the label `purpose=cloudy-cloud`. To stop a cloud coordinator, run `cloudy-cloud coordinator stop NAME`.
+
+### What is on the cloud machine
+
+Machines start from Instabox's `agent-browser` image. cloudy-cloud does not build it. Present: Chromium at `/usr/bin/chromium`, Docker, Node, pnpm, git and gh. Absent: `ffmpeg`, `psql` and `agent-browser`. The disk is 20 GB, with about 16 GB free after the image.
+
+- **Extra packages.** Set `CLOUDY_CLOUD_APT_PACKAGES="ffmpeg postgresql-client"` in `~/.config/cloudy-cloud/env`. Each new worker then runs one `sudo -n apt-get install` for those names after the repo is set up. Names must match `[a-z0-9][a-z0-9.+-]*`, or the agent is refused at start. With the setting empty, nothing extra runs.
+- **Chromium with Playwright.** Launch it with `executablePath: "/usr/bin/chromium"` and the argument `--no-sandbox`.
+- **Playwright in a pnpm monorepo.** `playwright` may not resolve from the repo root, because pnpm does not hoist it. Import the copy under `node_modules/.pnpm/playwright-core@*/node_modules/playwright-core` instead.
 
 ### The session says the built-in Agent tool is unavailable
 

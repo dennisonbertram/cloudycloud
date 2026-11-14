@@ -7,18 +7,21 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileKeyNames, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
+import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
+import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
+import { redact } from './events.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+export const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 
 // Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
 export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
@@ -27,7 +30,7 @@ export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
 };
 const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
-const NO_ORIGIN = 'cloudy-cloud needs the repo to have an `origin` remote on github.com (https://github.com/owner/repo.git or git@github.com:owner/repo.git), because each agent pushes its own branch there. Add one with `git remote add origin https://github.com/OWNER/REPO.git`, then retry.';
+const NO_ORIGIN = guide('no_origin');
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -67,19 +70,21 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
-function helpers(env, literals, keyName) {
-  const secrets = [...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
-  const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
+// Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
+const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
+export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals];
+function helpers(env, literals, keyName, tool) {
+  const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
-  return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
+  return { scrub, ok, fail: (text) => ({ ...ok(/^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 export const startQueue = (env, provider) => createStartQueue({ perMin: Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || provider?.caps.startsPerMin || 25 });
-const ctxOf = (deps) => {
+const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
   deps.queue ??= startQueue(deps.env, deps.provider);
   deps.literals ??= new Set();
-  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName) };
+  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp'
@@ -219,6 +224,19 @@ function mcpFooter(a, t) {
 const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: on your machine ${a.tokenOnBox} (you allowed it)` : '';
 const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${tokenLine(a)}${mcpFooter(a, t)}`;
 
+// Raw stream of every turn, kept on the machine (tee) next to meta.json; the laptop keeps a redacted copy (createLocalStream).
+// The harness exit code goes through a file because the pipe to tee hides it; `umask 077` only covers the stream files.
+const STREAM_DIR = '$HOME/.config/cloudy-cloud/stream';
+// A missing or empty exit file (the write failed) exits 1, never tee's status.
+export const teed = (cmd, n) => `D=${STREAM_DIR}; (umask 077; mkdir -p $D && : >> $D/t${n}.jsonl) && ({ ${cmd}; echo $? > $D/t${n}.exit; }) | tee -a $D/t${n}.jsonl; s=$(cat $D/t${n}.exit 2>/dev/null); exit \${s:-1}`;
+// meta.json on the machine, best effort: the first write may fail before the folder exists; the one after the turn lands.
+async function writeMeta(a, ctx) {
+  try {
+    const meta = { agent: a.id, description: redact(ctx.scrub(a.description)).slice(0, 200), role: a.role, profile: a.profile?.name, model: a.profile ? a.profile.model : a.model, parent: ctx.owner, branch: `cloudy-cloud/${a.id}`, turns: a.turnMeta };
+    await a.sandbox.files.write(`${a.home}/.config/cloudy-cloud/stream/meta.json`, `${JSON.stringify(meta)}\n`);
+  } catch { /* meta is best effort */ }
+}
+
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   try {
@@ -238,15 +256,22 @@ async function turn(a, message, ctx, t) {
   // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
   const piCmd = `PI_CODING_AGENT_DIR=${a.home}/pi-agent PATH=${a.home}/.local/bin:$PATH pi --mode json --provider ${PI_PROVIDER} --model ${a.profile?.model} ${a.sessionId ? `--session ${a.sessionId} ` : ''}--append-system-prompt '${hint}' < ${a.home}/prompt.txt`;
   let stdout, failure;
+  (a.turnMeta ??= []).push(t.meta = { n: t.n, startedAt: Date.now() });
+  if (!a.pruned) { a.pruned = true; pruneStreams(streamsDir(ctx.env)); }
+  await writeMeta(a, ctx);
+  const local = createLocalStream(join(streamsDir(ctx.env), a.id, `t${t.n}.jsonl`), { scrub });
   try {
     const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
-    stdout = (await a.sandbox.commands.run(ompCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), {
-      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+    stdout = (await a.sandbox.commands.run(teed(ompCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
+      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
   }
   t.progress.end();
+  local.end();
+  Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
+  await writeMeta(a, ctx);
   const { where, failed } = await safetyPush(a, ctx);
 
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
@@ -287,14 +312,20 @@ const BUNDLE_MARGIN = 1024 * 1024;
 
 const limitText = (e) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
-  if (/quota_exceeded/.test(s)) return `Provider machine limit reached (quota_exceeded) and still full after waiting in the start queue. Stop other agents or upgrade the plan. Provider message: ${e?.message}`;
-  if (/rate_limited/.test(s)) return `Provider start rate limit reached (rate_limited) and still limited after ${MAX_START_TRIES} tries. Provider message: ${e?.message}`;
+  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded')}\nProvider message: ${e?.message}`;
+  if (/rate_limited/.test(s)) return `${guide('rate_limited')}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
 };
+
+// Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
+const labelValue = (v) => String(v ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+// What `cloud_agent_list {all: true}` and the dashboard read. The description is redacted first; owner and purpose are added by createSandbox.
+const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description) })
+  .map(([k, v]) => [k, labelValue(v)]).filter(([, v]) => v));
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }, labels) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
@@ -336,9 +367,20 @@ async function setup(a, ctx) {
     const envs = {};
     // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
     // sending both would make Claude Code bill the API key.
-    if (a.profile) envs[a.profile.keyName] = env[a.profile.keyName];
-    else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
-    else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
+    const named = proxySecrets(env);
+    const proxied = provider.caps.hasProxySecrets ? named : new Set();
+    const keyName = a.profile?.keyName ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || named.has(n));
+    const keySecrets = [];
+    if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
+    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
+    else if (keyName) {
+      envs[keyName] = env[keyName];
+      if (provider.caps.hasProxySecrets) {
+        a.notice = `\`${keyName}\` is copied to the worker machine; run \`cloudy-cloud setup\` to store it as an Instabox secret.`;
+        log(`${a.id}: ${a.notice}`);
+      }
+    }
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
     if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
@@ -346,7 +388,8 @@ async function setup(a, ctx) {
     a.sandbox = await ctx.queue.create(a, () => {
       const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
       a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(hasMcp(a) && a.mcp.secrets.length && { secrets: a.mcp.secrets }) });
+      const secrets = [...keySecrets, ...(hasMcp(a) ? a.mcp.secrets : [])];
+      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }) }, machineLabels(a, ctx));
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
@@ -388,6 +431,8 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    const apt = aptPackages(env).list; // validated at start
+    if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (hasMcp(a)) { // references only, except servers the user allowed to carry a real value
       // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
@@ -422,7 +467,7 @@ async function installCoordinator(a, ctx, envs) {
   // The coordinator's machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and needs its key.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const own = ctx.provider.coordinatorEnv?.(env);
-  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY')])];
+  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY'), 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES'])];
   const lines = [...(own?.fixed ?? []), ...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -473,14 +518,16 @@ async function work(a, message, first, ctx, t) {
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
+    if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? `cloudy-cloud error: ${e?.message}` };
+    r = { error: true, text: limitText(e) ?? guide(classify(e?.message), { message: e?.message }) };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
   const dead = first ? r.error : r.gone;
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : 'worker_error', { id: a.id })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
@@ -556,7 +603,7 @@ export async function cancelTask(taskId, deps) {
 
 // cloud_agent: returns at once; the sandbox starts in the background.
 export async function runSubagent(args, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent');
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
@@ -574,6 +621,9 @@ export async function runSubagent(args, deps) {
     if (r.error) return fail(r.error);
     profile = r.ok;
   }
+  const apt = aptPackages(ctx.env);
+  if (apt.error) return fail(apt.error);
+  if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
   let root;
@@ -619,13 +669,13 @@ export async function runSubagent(args, deps) {
 
 // cloud_agent_message: returns at once; the turn runs in the background.
 export async function messageAgent({ agent_id: id, message } = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_message');
   const { fail, ok } = ctx;
   if (typeof message !== 'string' || !message) return fail('message is required');
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
-  if (!a) return fail(`Agent ${id} is not open. It may have been stopped, been idle for 60 minutes, or never existed.`);
-  if (active(a)) return fail(`Agent ${id} is still working (status ${a.status}). Wait for it with cloud_agent_wait; messages are not queued.`);
-  if (a.status === 'failed') return fail(`Agent ${id} failed and cannot take messages. Call cloud_agent_wait for the error, then cloud_agent_stop.`);
+  if (!a) return fail(guide('agent_gone', { id }));
+  if (active(a)) return fail(guide('agent_busy', { id }));
+  if (a.status === 'failed') return fail(guide('agent_failed', { id }));
   clearTimeout(a.idleTimer);
   a.status = 'running';
   a.emit?.({ type: 'message', text: message });
@@ -643,7 +693,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
 const idList = (a) => [a.agent_ids ?? a.agent_id].flat().filter((x) => x !== undefined);
 
 export async function waitAgents(args = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_wait');
   const ids = idList(args), t = args.timeout_seconds;
   if (!Array.isArray(ids) || !ids.length || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be a non-empty array of strings');
   const secs = Math.min(typeof t === 'number' && t > 0 ? t : WAIT_DEFAULT_S, WAIT_MAX_S);
@@ -660,17 +710,37 @@ export async function waitAgents(args = {}, deps) {
     if (!a || a.status === 'stopped') return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`;
     const head = `## ${id}${a.description ? ` (${a.description})` : ''}\nstatus: ${a.status}`;
     if (active(a) || !a.result) return head;
-    if (a.result.reported) return `${head}\n(result already reported)`;
+    if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
     a.result.reported = true;
     return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}`;
   });
   return ctx.ok(parts.join('\n\n'));
 }
 
+// cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
+async function allMachines({ provider }) {
+  const rows = await provider.list({ purpose: 'cloudy-cloud' });
+  if (!rows.length) return 'No cloudy-cloud machines.';
+  const groups = new Map();
+  for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
+  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+}
+
+// cloud_agent_result: read-only. Returns the latest result as often as asked.
+export async function resultAgent(args = {}, deps) {
+  const ctx = ctxOf(deps, 'cloud_agent_result');
+  const id = idList(args)[0];
+  const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
+  if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
+  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
+}
+
 // cloud_agent_list: read-only.
-export async function listAgents(_args, deps) {
-  const ctx = ctxOf(deps);
+export async function listAgents(args, deps) {
+  const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
+  if (args?.all === true) return ok(await allMachines(ctx));
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
@@ -681,7 +751,7 @@ export async function listAgents(_args, deps) {
 
 // cloud_agent_stop: idempotent.
 export async function stopAgents(args = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_stop');
   const ids = idList(args);
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be an array of strings');
   const lines = await Promise.all(ids.map(async (id) => {

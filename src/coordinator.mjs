@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
@@ -13,6 +13,7 @@ import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
+import { guide, guideObj, classify, CODES } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
@@ -22,6 +23,11 @@ const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
+// Lines on the session's screen that mean it is stuck or dead, not working.
+const LEAD = String.raw`^[\s│|●⎿>*·⏺✗✖!-]*`; // box, bullet and prompt marks Claude Code draws before a message
+const BLOCKED = new RegExp(`${LEAD}(?:You've hit your [\\w -]*limit|Authentication required \u00b7|Login expired \u00b7|Invalid API key \u00b7|Not logged in \u00b7|Credit balance is too low|Select login method)`, 'i');
+// Screens a person answers once by attaching; the session is fine, so the machine stays.
+const WAITING = new RegExp(`${LEAD}(?:.*Do you trust the files|.*trust this folder|New MCP server found|Enable Remote Control|.*Remote Control.*\\(y/n\\))`, 'i');
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
@@ -38,9 +44,9 @@ function saveKey(file, name, value) {
 }
 
 // The GitHub URL of cloudy-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
-function toolRepoUrl(root) {
+export function toolRepoUrl(root) {
   let u;
-  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim(); } catch { return ''; }
+  try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; }
   const m = u.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+?)(?:\.git)?$/);
   const url = m ? `https://github.com/${m[1]}.git` : u;
   return REPO_RE.test(url) ? url : ''; // goes into a quoted shell word
@@ -80,7 +86,7 @@ async function installTool(sbx, root) {
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
   await run('gh auth setup-git'); // before the work-repo clone, so git uses the GH_TOKEN placeholder
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
-  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8' }).trim() || d; } catch { return d; } };
+  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
   // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
   const b = toolBundle(root);
@@ -133,7 +139,7 @@ const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? arg
 // What goes in the coordinator's own env file: the provider key (and the default provider's, which the machine loads), the Claude setup-token and the provider keys that
 // profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
 function keysFile(env, own, keyName) { // own: the provider's coordinatorEnv() ({ names, fixed }), if it has one
-  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', ...profileKeyNames(env)]);
+  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', ...profileKeyNames(env)]);
   return `${[...(own?.fixed ?? []), ...Object.entries(env).filter(([k, v]) => v && names.has(k)).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`;
 }
 
@@ -144,6 +150,8 @@ async function start(c, args) {
   if (!repo || !REPO_RE.test(repo)) fail('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO');
   const branch = flag(args, '--branch');
   if (branch && !/^[\w./-]+$/.test(branch)) fail('--branch has characters that are not allowed.');
+  const model = flag(args, '--model');
+  if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) fail('--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.');
   const taskFile = flag(args, '--task-file');
   const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
   if (task !== undefined) {
@@ -158,6 +166,7 @@ async function start(c, args) {
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
+  let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   c.progress('Creating the coordinator machine...');
   const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
@@ -179,20 +188,35 @@ async function start(c, args) {
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${prompt}`)}`);
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
+    await c.sleep(5000);
+    let pane = '';
+    try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch (e) {
+      // A command that ran and failed carries exitCode (no tmux session). Anything else is the provider or network: the session may be fine.
+      if (typeof e?.exitCode === 'number') fail(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`);
+      screenRead = false;
+    }
+    // The task is typed into the session, so its own lines can be on screen; they are not errors.
+    const mine = (l) => { const t = l.trim(); return t.length > 3 && (task ?? '').includes(t); };
+    const find = (re) => pane.split('\n').find((l) => !mine(l) && re.test(l));
+    const line = find(BLOCKED);
+    if (!line) { const w = find(WAITING); if (w) waiting = redact(safeText(w.trim())); }
+    if (line) fail(`The coordinator session started but is not working. Its screen shows: ${redact(safeText(line.trim()))}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude') }));
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) }));
   if (c.ui.on) {
     const u = c.ui;
-    return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
+    const wait = !screenRead ? [u.warn('Could not read the session screen to check it started'), u.hint(`Look with: cloudy-cloud coordinator attach ${name}`), ''] : waiting ? [u.warn('The session is waiting on a prompt', waiting), u.hint(`Run: cloudy-cloud coordinator attach ${name}, then accept the prompt.`), ''] : [];
+    return c.out([...wait, u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
       u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), '',
       u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
         ['Terminal', `cloudy-cloud coordinator attach ${name}`, `runs: ${c.ssh(machine, 'tmux attach -t claude')}`]]), '',
       u.hint('The first time, attach once and accept any trust or Remote Control prompts.'),
       u.hint(`Stop it earlier with: cloudy-cloud coordinator stop ${name}`)].join('\n'));
   }
-  c.out(`Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${c.ssh(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop ${name}`);
 }
 
@@ -285,7 +309,7 @@ async function finish(c, args, deps) {
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
-const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours'];
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
 function validateArgs(cmd, args) {
   const bad = (message) => fail(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`);
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
@@ -305,14 +329,14 @@ function validateArgs(cmd, args) {
   }
 }
 
-export async function main(argv, deps = {}) {
+async function run(argv, deps) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop, finish: (c, a) => finish(c, a, deps) };
   const isHelp = (a) => a === '--help' || a === '-h';
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
+  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
   validateArgs(cmd, args);
   const c = await context(deps);
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) fail(`Provider ${c.provider.name} has no snapshots, which coordinators need.`);
@@ -320,6 +344,22 @@ export async function main(argv, deps = {}) {
   try { return await commands[cmd](c, args); } catch (e) {
     if (e?.code === 'no_key') fail(`${e.message} Run: cloudy-cloud setup`);
     throw e;
+  }
+}
+
+// Every `start` failure (bad arguments, missing key, provider errors) gets guidance, scrubbed of exact configured
+// secret values; --json also prints it as one error object.
+export async function main(argv, deps = {}) {
+  try { return await run(argv, deps); } catch (e) {
+    if (argv[0] !== 'start') throw e;
+    const env = deps.env ?? loadEnv();
+    const secrets = Object.entries(env).filter(([k, v]) => /KEY|TOKEN|SECRET/i.test(k) && String(v ?? '').length >= 8).map(([, v]) => String(v));
+    const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
+    const message = clean(e?.message ?? e);
+    const code = CODES.includes(e?.code) ? e.code : classify(message);
+    const g = guideObj(code, { message, secrets });
+    if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
+    throw Object.assign(new Error(code !== 'unknown' ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code });
   }
 }
 
