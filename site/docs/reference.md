@@ -119,7 +119,7 @@ cloudy-cloud open 3f9a1c2e 5173
 
 ```
 cloudy-cloud coordinator image [--save]
-cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json]
+cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator stop NAME
@@ -148,9 +148,10 @@ Starts a coordinator named NAME on a new machine from the saved image. It sends 
 | `--task TEXT` | none | A task for the coordinator to start on. Up to 100,000 bytes. Cannot be empty. |
 | `--task-file PATH` | none | Read the task from a local file instead. Same limits. |
 | `--max-hours N` | 24 | Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended. |
-| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName` and `attach` instead of the usual text. |
+| `--model NAME` | Claude Code's default | Model for the coordinator's session, such as `opus` or `claude-opus-5-5`. Rejected before any machine is created if it has characters other than letters, digits and `._:[]-`. |
+| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. |
 
-If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved.
+About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or a login problem, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved.
 
 Example:
 
@@ -242,6 +243,14 @@ Waits until every listed agent finishes its current turn, or until the timeout p
 |---|---|---|---|---|
 | `agent_ids` | array of strings | yes | none | The agent ids to wait for. |
 | `timeout_seconds` | number | no | 600 | How long to wait. Values above 1500 are limited to 1500. |
+
+### cloud_agent_result
+
+Returns an agent's latest result again, as often as asked, even after `cloud_agent_wait` or a task notification delivered it. If the agent has no result yet it says `no result yet, status running`. If the agent is not open it returns an error with a next step. The tool is read-only.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `agent_id` | string | yes | The agent id. |
 
 ### cloud_agent_list
 

@@ -123,3 +123,8 @@ test('omp rejects format anthropic, since ompModels only writes openai-completio
   const r = resolveProfile('mine', undefined, { ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: 'omp', format: 'anthropic', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
   assert.match(r.error, /omp harness only supports format "openai"/);
 });
+
+test('a baseUrl that URL cannot parse still returns an error, not a throw', () => {
+  const r = resolveProfile('mine', undefined, { CLOUDY_CLOUD_PROFILES: file({ mine: { harness: 'claude', format: 'openai', baseUrl: 'https://foo:bar', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
+  assert.match(r.error, /PARTICLE_API_KEY/);
+});
