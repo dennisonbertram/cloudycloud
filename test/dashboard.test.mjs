@@ -606,3 +606,58 @@ test('the page names the worker on a coordinator\'s merged messages and links to
   assert.match(script, /'worker ' \+ /);
   assert.match(script, /select\(m\.agent, true\)/);
 });
+
+// ---- page fixes for the dashboard review (#73): the page is one script, so these check its source and run its small pure helpers
+const PAGE = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+const pageLine = (start) => PAGE.split('\n').find((l) => l.trim().startsWith(start));
+
+test('page: an event with no timestamp renders without a time element instead of throwing', () => {
+  const run = new Function('h', 'now', `${pageLine('const clock')}\n${pageLine('const timeEl')}\nreturn timeEl;`);
+  const timeEl = run((tag, a) => ({ tag, ...a }), () => Date.now());
+  assert.doesNotThrow(() => timeEl('btime', undefined));
+  assert.equal(timeEl('btime', undefined) || null, null);
+  assert.equal(timeEl('btime', 'x') || null, null);
+  assert.equal(timeEl('btime', Date.now()).tag, 'time');
+});
+
+test('page: an inactive agent keeps fetching its stream while the server says it is not complete and next advances, within a bound', () => {
+  assert.match(PAGE, /!st\.complete && st\.next > nextBefore && \+\+st\.hops <= 20/);
+});
+
+test('page: a turn\'s messages come from the retained outgoing messages offset by the dropped ones, never the whole history', () => {
+  assert.match(PAGE, /const first = Math\.max\(1, \(b\.turns \|\| 1\) - outs\.length \+ 1\)/);
+  assert.match(PAGE, /turn < first/);
+  assert.doesNotMatch(PAGE, /outs\[turn - 1\] \?\? 0/);
+  assert.match(PAGE, /were not kept/);
+});
+
+test('page: Terminal polling needs the list view and an open detail pane, like the stream tail', () => {
+  assert.match(PAGE, /const visible = /);
+  assert.match(PAGE, /paneEnsure\(b\) \{\s*if \(b\.kind !== 'coordinator' \|\| S\.tab !== 'terminal' \|\| !visible\(b\)/);
+});
+
+test('page: collapsing a coordinator with one of its workers selected selects the coordinator first', () => {
+  assert.match(PAGE, /S\.kids\[id\]\?\.some\(\(c\) => c\.id === S\.sel\)\) return select\(id, false\)/);
+});
+
+test('page: the fleet signature includes workers', () => {
+  assert.match(PAGE, /const f = sig\(\['f', roots\.map\(\(b\) => \[[^\]]*, \(S\.kids\[b\.id\] \|\| \[\]\)\.map/);
+});
+
+test('page: pane failures show their reason, and pane data gets the source and age badge', () => {
+  assert.match(PAGE, /source: j\.source/);
+  assert.match(PAGE, /Could not read the terminal/);
+  assert.match(PAGE, /term \? null : turnBar\(b\), badgeEl/);
+  assert.doesNotMatch(PAGE, /term \? null : badgeEl/);
+});
+
+test('page: a cached stream is not called a deleted machine unless the reason says so', () => {
+  assert.doesNotMatch(PAGE, /'cached copy · machine deleted'/);
+  assert.match(PAGE, /machine_gone'\s*\?\s*'saved copy · machine deleted'/);
+  assert.match(PAGE, /from the saved copy \(machine not reachable\)/);
+});
+
+test('page: full-text responses are cleared on agent or turn change and capped in total size', () => {
+  assert.match(PAGE, /S\.full = \{\}/);
+  assert.match(PAGE, /FULL_CAP/);
+});
