@@ -1,13 +1,13 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
 import { buildState, createHandler, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
-import { demoState } from '../src/dashboard-demo.mjs';
+import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const TOKEN = 'tok-123';
@@ -276,4 +276,140 @@ test('buildState joins an agent without a machine event to its machine by the ag
   assert.equal(s.boxes[0].title, 'Logged title');
   assert.equal(s.boxes[0].titleSource, 'log');
   assert.equal(s.boxes[0].turns, 1);
+});
+
+// ---- /api/stream and /api/pane ----
+const SAMPLE = readFileSync(new URL('./fixtures/stream-json-sample.jsonl', import.meta.url), 'utf8');
+const fakeReader = (o = {}) => {
+  const calls = [];
+  return Object.assign(o, {
+    calls,
+    readTail: o.readTail ?? (async (m, name, from) => { calls.push(['tail', m, name, from]); return { data: SAMPLE.slice(from), from, next: SAMPLE.length, size: SAMPLE.length, fetchedAt: 5000 }; }),
+    readCached: o.readCached ?? (async () => null),
+    capturePane: o.capturePane ?? (async (m) => { calls.push(['pane', m]); return { lines: ['$ claude', 'working'], fetchedAt: 6000 }; }),
+  });
+};
+const streamEnv = (boxes, reader, extra = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-streams-'));
+  return { dir, reader, opts: { getState: async () => ({ boxes }), streamsDir: dir, getReader: async () => reader, now: () => 10_000, ...extra } };
+};
+const api = async (opts, path, host, method) => { const s = await serve(opts); try { const r = await get(s.address().port, `${path}${path.includes('?') ? '&' : '?'}t=${TOKEN}`, host, method); return { ...r, json: r.status === 200 || r.status === 404 ? JSON.parse(r.body) : undefined }; } finally { s.close(); } };
+const putLocal = (dir, box, n, text) => { mkdirSync(join(dir, box), { recursive: true }); writeFileSync(join(dir, box, `t${n}.jsonl`), text); };
+
+test('/api/stream serves the local stream file first, then only events after `from`', async () => {
+  const { dir, opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running', turns: 1 }], fakeReader());
+  putLocal(dir, 'a1', 1, SAMPLE);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`)).body);
+    assert.equal(r.source.kind, 'local');
+    assert.equal(r.source.path, 'streams/a1/t1.jsonl');
+    assert.ok(r.events.some((e) => e.kind === 'tool_use' && e.name === 'Bash'));
+    assert.ok(r.events.some((e) => e.kind === 'result' && e.costUsd > 0));
+    assert.equal(r.complete, true);
+    assert.equal(r.totals.tools, 2);
+    assert.ok(r.totals.costUsd > 0);
+    const more = JSON.parse((await get(port, `/api/stream?box=a1&turn=1&from=${r.next}&t=${TOKEN}`)).body);
+    assert.deepEqual(more.events, []);
+    assert.equal(more.next, r.next);
+  } finally { s.close(); }
+});
+
+test('/api/stream reads a live machine once and reuses it within 3 seconds', async () => {
+  const reader = fakeReader();
+  const { opts } = streamEnv([{ id: 'b1', kind: 'agent', status: 'running', machine: 'mb', machineState: 'running' }], reader);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const a = JSON.parse((await get(port, `/api/stream?box=b1&turn=1&t=${TOKEN}`)).body);
+    const b = JSON.parse((await get(port, `/api/stream?box=b1&turn=1&t=${TOKEN}`)).body);
+    assert.deepEqual(reader.calls, [['tail', 'mb', 'stream/t1.jsonl', 0]]);
+    assert.equal(a.source.kind, 'machine');
+    assert.equal(a.source.machine, 'mb');
+    assert.equal(a.source.fetchedAt, 5000);
+    assert.equal(b.events.length, a.events.length);
+    assert.equal(a.complete, true); // a result event was seen
+  } finally { s.close(); }
+});
+
+test('/api/stream falls back to the cache, then says why there is nothing', async () => {
+  const gone = Object.assign(new Error('gone'), { code: 'not_found' });
+  const box = { id: 'c1', kind: 'agent', status: 'stopped', machine: 'mc', machineState: 'running' };
+  const cached = fakeReader({ readTail: async () => { throw gone; }, readCached: async () => ({ data: SAMPLE, fetchedAt: 42 }) });
+  const r1 = (await api(streamEnv([box], cached).opts, '/api/stream?box=c1&turn=1')).json;
+  assert.equal(r1.source.kind, 'cache');
+  assert.equal(r1.source.fetchedAt, 42);
+  assert.ok(r1.events.length > 0);
+  const none = fakeReader({ readTail: async () => { throw gone; } });
+  assert.deepEqual((await api(streamEnv([box], none).opts, '/api/stream?box=c1&turn=1')).json.source, { kind: 'none', reason: 'machine_gone', machine: 'mc' });
+  const flaky = fakeReader({ readTail: async () => { throw Object.assign(new Error('x'), { code: 'transient' }); } });
+  assert.equal((await api(streamEnv([box], flaky).opts, '/api/stream?box=c1&turn=1')).json.source.reason, 'provider_error');
+  const nomachine = { id: 'd1', kind: 'agent', status: 'stopped' };
+  const r4 = (await api(streamEnv([nomachine], fakeReader()).opts, '/api/stream?box=d1&turn=1')).json;
+  assert.deepEqual([r4.source.kind, r4.source.reason, r4.events, r4.complete], ['none', 'no_stream_yet', [], true]);
+});
+
+test('/api/stream and /api/pane keep the token, host, method and box checks', async () => {
+  const { opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running' }], fakeReader());
+  for (const bad of ['../../etc', 'nope', '']) assert.equal((await api(opts, `/api/stream?box=${encodeURIComponent(bad)}&turn=1`)).status, 404, bad);
+  for (const q of ['turn=1e9', 'turn=-1', 'turn=abc', 'turn=12345', 'from=-1', 'from=1.5']) assert.equal((await api(opts, `/api/stream?box=a1&${q}`)).status, 404, q);
+  assert.deepEqual((await api(opts, '/api/stream?box=../../etc&turn=1')).json, { error: 'unknown box' });
+  const s = await serve(opts), { port } = s.address();
+  try {
+    assert.equal((await get(port, '/api/stream?box=a1&turn=1')).status, 401);
+    assert.equal((await get(port, '/api/pane?box=a1')).status, 401);
+    assert.equal((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`, 'evil.example')).status, 403);
+    assert.equal((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+    assert.equal((await get(port, `/api/pane?box=a1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+  } finally { s.close(); }
+});
+
+test('/api/pane returns the pane of a live coordinator and 404 for anything else', async () => {
+  const reader = fakeReader();
+  const { opts } = streamEnv([{ id: 'co', kind: 'coordinator', machine: 'mco', machineState: 'running', status: 'running' }, { id: 'w', kind: 'agent', machine: 'mw', machineState: 'running' }, { id: 'old', kind: 'coordinator', machine: 'mo', status: 'stopped' }], reader);
+  const ok = await api(opts, '/api/pane?box=co');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { lines: ['$ claude', 'working'], fetchedAt: 6000, source: { kind: 'machine', machine: 'mco' } });
+  assert.equal((await api(opts, '/api/pane?box=w')).status, 404);
+  assert.equal((await api(opts, '/api/pane?box=old')).status, 404);
+  assert.equal((await api(opts, '/api/pane?box=zzz')).status, 404);
+  const down = fakeReader({ capturePane: async () => { throw Object.assign(new Error('x'), { code: 'not_found' }); } });
+  const r = await api(streamEnv([{ id: 'co', kind: 'coordinator', machine: 'mco', machineState: 'running' }], down).opts, '/api/pane?box=co');
+  assert.deepEqual([r.status, r.json.lines, r.json.source.reason], [200, [], 'machine_gone']);
+});
+
+test('/api/stream never returns a key value, and event+full gives the whole redacted input', async () => {
+  const big = 'x'.repeat(6000);
+  const lines = [
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: `export ANTHROPIC_API_KEY=sk-abcdefghijklmnop1234 && echo ${big}` } }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'ANTHROPIC_API_KEY=sk-abcdefghijklmnop1234 and ghp_abcdefghijklmnop1234' }] } },
+  ].map((j) => JSON.stringify(j)).join('\n') + '\n';
+  const { dir, opts } = streamEnv([{ id: 'k1', kind: 'agent', status: 'running' }], fakeReader());
+  putLocal(dir, 'k1', 1, lines);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const r = await get(port, `/api/stream?box=k1&turn=1&t=${TOKEN}`);
+    assert.doesNotMatch(r.body, /sk-abcdefghijklmnop|ghp_abcdefghij/);
+    const ev = JSON.parse(r.body).events.find((e) => e.kind === 'tool_use');
+    assert.equal(ev.truncated, true);
+    const f = await get(port, `/api/stream?box=k1&turn=1&event=${ev.seq}&full=1&t=${TOKEN}`);
+    assert.doesNotMatch(f.body, /sk-abcdefghijklmnop/);
+    const [full, ...rest] = JSON.parse(f.body).events;
+    assert.equal(rest.length, 0);
+    assert.ok(full.input.length > 6000 && full.input.includes(big));
+    assert.equal((await get(port, `/api/stream?box=k1&turn=1&event=99&full=1&t=${TOKEN}`)).status, 404);
+  } finally { s.close(); }
+});
+
+test('/api/state gives each box the turns it has, from its message events', () => {
+  const events = [{ type: 'agent', id: 'a1', t: 1, pid: 1 }, { type: 'message', id: 'a1', t: 2, text: 'one' }, { type: 'message', id: 'a1', t: 3, text: 'two' }];
+  assert.equal(buildState({ events, machines: [], alive: () => true }).boxes[0].turns, 2);
+});
+
+test('the demo serves a stream and a pane for its boxes through the same endpoints', async () => {
+  const demo = demoState(Date.now());
+  const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
+  const r = (await api(opts, '/api/stream?box=7c1e90ab&turn=1')).json;
+  assert.equal(r.source.kind, 'local');
+  assert.ok(r.events.some((e) => e.kind === 'tool_use') && r.events.some((e) => e.kind === 'tool_result'));
+  assert.ok((await api(opts, '/api/pane?box=fleet-main')).json.lines.length > 3);
 });

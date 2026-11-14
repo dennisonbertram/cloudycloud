@@ -83,3 +83,27 @@ export function demoState(now = Date.now()) {
   ];
   return { now, demo: true, hasLog: true, machines: { ok: true }, boxes };
 }
+
+// Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so
+// every progress line becomes a tool call with a result and every reply becomes text plus a result line.
+export const demoStream = {
+  stream(id, turn) {
+    const box = demoState().boxes.find((b) => b.id === id && b.kind === 'agent');
+    let n = 0;
+    const msgs = (box?.messages ?? []).filter((m) => { if (m.kind === 'out') n++; return n === turn && m.kind !== 'out'; });
+    if (!msgs.length) return undefined;
+    const lines = [{ type: 'system', subtype: 'init', model: box.model, session_id: 'demo', tools: ['Bash', 'Read', 'Edit'], mcp_servers: (box.mcp ?? []).map((name) => ({ name, status: 'connected' })), timestamp: box.startedAt }];
+    msgs.forEach((m, i) => {
+      if (m.kind === 'progress') {
+        const [name, ...rest] = m.text.split(' '), arg = rest.join(' ');
+        lines.push({ type: 'assistant', timestamp: m.t, message: { content: [{ type: 'tool_use', id: `tu${i}`, name, input: name === 'Bash' ? { command: arg } : name === 'Grep' ? { pattern: arg } : { file_path: arg } }] } });
+        lines.push({ type: 'user', timestamp: m.t + 1500, message: { content: [{ type: 'tool_result', tool_use_id: `tu${i}`, content: `(demo output of ${m.text})` }] } });
+      } else {
+        lines.push({ type: 'assistant', timestamp: m.t, message: { content: [{ type: 'text', text: m.text }] } });
+        lines.push({ type: 'result', timestamp: m.t, subtype: m.error ? 'error' : 'success', is_error: !!m.error, result: m.text, total_cost_usd: 0.0214, duration_ms: 124_000, session_id: 'demo', usage: { input_tokens: 4100, cache_read_input_tokens: 37_000, output_tokens: 3100 } });
+      }
+    });
+    return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
+  },
+  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
+};
