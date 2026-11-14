@@ -299,7 +299,7 @@ test('loadProvider finds self-hosted; text names the fix', async () => {
 });
 
 test('coordinator snapshots: commit, inspect, create from the image without the worker label check, list, delete', async () => {
-  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' }, { imageVersion: '0.0.1' }); // worker image is stale
+  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes' }, { imageVersion: '0.0.1' }); // worker image is stale
   assert.equal(provider.caps.hasSnapshots, true);
   box.table.set('cc-src', { Id: 'a'.repeat(64), Name: '/cc-src', Config: { Labels: {} }, State: { Status: 'running' } });
   const src = await provider.connect('cc-src');
@@ -313,7 +313,7 @@ test('coordinator snapshots: commit, inspect, create from the image without the 
   assert.ok(!commit.join(' ').includes('ghp_SECRETVALUE'));
   // the stale worker image would fail the label check, but a coordinator image is used as is
   const c = await provider.create({ image: snap.id, envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator' }, ttlSeconds: 60, neverSuspend: true });
-  const run = box.log.find((a) => a[1] === 'run');
+  const run = box.log.find((a) => a[1] === 'run' && a.includes('--user'));
   assert.equal(run[run.indexOf('--user') + 2], snap.id);
   assert.ok(run.includes('--tmpfs'), 'a fresh /run/secrets tmpfs is mounted on the new container');
   assert.ok(!box.log.some((a) => a[1] === 'image' && a.includes('{{index .Config.Labels "cloudy-cloud.image"}}')), 'worker label check skipped');
@@ -412,7 +412,7 @@ test('local mode runs the same command strings through sh, never ssh; slots coun
 
 test('local mode: a missing docker CLI in the image says how to rebuild it', async () => {
   const spawn = () => { const c = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill() {} });
-    c.stdin.on('end', () => { c.stderr.write('sh: 1: docker: not found'); c.emit('close', 127, null); }); return c; };
+    c.stdin.resume(); c.stdin.on('end', () => { c.stderr.write('sh: 1: docker: not found'); c.emit('close', 127, null); }); return c; };
   const p = createProvider({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_DOCKER_SOCKET: '/var/run/docker.sock' }, { spawn });
   await assert.rejects(p.list({}), /docker CLI.*cloudy-cloud setup/s);
 });

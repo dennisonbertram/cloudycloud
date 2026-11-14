@@ -125,6 +125,24 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
     await assert.rejects(p.getSnapshot(snap.id), (e) => e.code === 'not_found');
   });
 
+  await t.test('close stops the ssh master and removes the private /tmp/cc-ssh-* dir', async () => {
+    const q = createProvider(loadEnv(env));
+    await q.list({ owner: OWNER }); // opens the ssh connection
+    const dirs = () => new Set(readdirSync('/tmp').filter((n) => n.startsWith('cc-ssh-')));
+    const before = dirs();
+    q.close();
+    assert.ok(dirs().size < before.size || before.size === 0, 'close removed a cc-ssh dir');
+  });
+
+  await t.test('delete removes it; a short TTL removes a container on its own', async () => {
+    await p.delete(s.id);
+    assert.deepEqual(await p.list({ owner: OWNER }), []);
+    const short = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: OWNER }, ttlSeconds: 5 });
+    let gone = false;
+    for (let i = 0; i < 30 && !gone; i++) { await new Promise((r) => setTimeout(r, 1000)); gone = !(await p.list({ owner: OWNER })).some((r) => r.id === short.id); }
+    assert.ok(gone, 'container with ttlSeconds 5 still there after 30 s');
+  });
+
   await t.test('a coordinator container starts a sibling worker through the Docker socket (local transport, no ssh key)', async () => {
     const c = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: OWNER, role: 'coordinator' }, ttlSeconds: 600, neverSuspend: true });
     const mounts = JSON.parse(docker('inspect', '--format', '{{json .Mounts}}', c.id));
@@ -148,23 +166,5 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
     assert.ok(docker('ps', '--filter', `label=cloudy-cloud.owner=${OWNER}`, '--format', '{{.Names}}').split('\n').includes(sibling), 'sibling visible on the box');
     await p.delete(sibling);
     await p.delete(c.id);
-  });
-
-  await t.test('close stops the ssh master and removes the private /tmp/cc-ssh-* dir', async () => {
-    const q = createProvider(loadEnv(env));
-    await q.list({ owner: OWNER }); // opens the ssh connection
-    const dirs = () => new Set(readdirSync('/tmp').filter((n) => n.startsWith('cc-ssh-')));
-    const before = dirs();
-    q.close();
-    assert.ok(dirs().size < before.size || before.size === 0, 'close removed a cc-ssh dir');
-  });
-
-  await t.test('delete removes it; a short TTL removes a container on its own', async () => {
-    await p.delete(s.id);
-    assert.deepEqual(await p.list({ owner: OWNER }), []);
-    const short = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: OWNER }, ttlSeconds: 5 });
-    let gone = false;
-    for (let i = 0; i < 30 && !gone; i++) { await new Promise((r) => setTimeout(r, 1000)); gone = !(await p.list({ owner: OWNER })).some((r) => r.id === short.id); }
-    assert.ok(gone, 'container with ttlSeconds 5 still there after 30 s');
   });
 });
