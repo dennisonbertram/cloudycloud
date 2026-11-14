@@ -92,6 +92,14 @@ npx instabox@latest rm <name>
 
 Machines made by this tool have the label `purpose=cloudy-cloud`. To stop a cloud coordinator, run `cloudy-cloud coordinator stop NAME`.
 
+### What is on the cloud machine
+
+Machines start from Instabox's `agent-browser` image. cloudy-cloud does not build it. Present: Chromium at `/usr/bin/chromium`, Docker, Node, pnpm, git and gh. Absent: `ffmpeg`, `psql` and `agent-browser`. The disk is 20 GB, with about 16 GB free after the image.
+
+- **Extra packages.** Set `CLOUDY_CLOUD_APT_PACKAGES="ffmpeg postgresql-client"` in `~/.config/cloudy-cloud/env`. Each new worker then runs one `sudo -n apt-get install` for those names after the repo is set up. Names must match `[a-z0-9][a-z0-9.+-]*`, or the agent is refused at start. With the setting empty, nothing extra runs.
+- **Chromium with Playwright.** Launch it with `executablePath: "/usr/bin/chromium"` and the argument `--no-sandbox`.
+- **Playwright in a pnpm monorepo.** `playwright` may not resolve from the repo root, because pnpm does not hoist it. Import the copy under `node_modules/.pnpm/playwright-core@*/node_modules/playwright-core` instead.
+
 ### The session says the built-in Agent tool is unavailable
 
 This is expected. `cloudy-cloud` turns off Claude Code's built-in `Agent` and `Workflow` tools. Ask for "a subagent" and it uses `cloud_agent`. Plain `claude` keeps its built-in tools.

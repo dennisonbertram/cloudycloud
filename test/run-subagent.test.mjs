@@ -1220,7 +1220,7 @@ test('the core creates machines through provider.create, with names only in envs
   assert.match(await x.wait([id]), /status: idle/);
   assert.equal(provider.log.create.length, 1);
   const { envs, ...rest } = provider.log.create[0];
-  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 21600, secrets: [] });
+  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: [] });
   assert.deepEqual(Object.keys(envs), ['ANTHROPIC_API_KEY']);
 });
 
@@ -1288,6 +1288,134 @@ test('the default create passes the role to the provider so a self-hosted coordi
   await x.wait([await x.start({ role: 'coordinator' })]);
   await x.wait([await x.start({ role: 'worker' })]);
   assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
+});
+
+// ---- #64: keys reach workers as proxy secrets, never as env values ----
+const PROXIED = 'PARTICLE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY';
+for (const [profile, key] of [['glm', 'PARTICLE_API_KEY'], ['pi-glm', 'PARTICLE_API_KEY'], ['omp-glm', 'PARTICLE_API_KEY'], ['openrouter', 'OPENROUTER_API_KEY'], [undefined, 'CLAUDE_CODE_OAUTH_TOKEN']]) {
+  test(`proxy secrets: a ${profile ?? 'default'} worker gets ${key} as a secret name, not an env value`, async () => {
+    const { deps, start, wait } = await setup();
+    delete deps.createSandbox;
+    deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: PROXIED };
+    await wait([await start({ profile, ...(profile === 'openrouter' && { model: 'deepseek/deepseek-chat' }) })]);
+    const c = deps.provider.log.create[0];
+    assert.ok(c.secrets.includes(key), `secrets ${c.secrets}`);
+    assert.deepEqual(Object.keys(c.envs).filter((k) => /_API_KEY$|_TOKEN$/.test(k)), []);
+  });
+}
+
+test('a key value in env still works, with one warning line naming the key', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-legacy-value' };
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  const c = deps.provider.log.create[0];
+  assert.equal(c.envs.PARTICLE_API_KEY, 'pk-legacy-value');
+  assert.ok(!c.secrets.includes('PARTICLE_API_KEY'));
+  assert.match(r, /`PARTICLE_API_KEY` is copied to the worker machine; run `cloudy-cloud setup` to store it as an Instabox secret\./);
+  assert.ok(!r.includes('pk-legacy-value'));
+});
+
+test('a provider without proxy secrets ignores CLOUDY_CLOUD_PROXY_SECRETS and keeps the env value', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.env = { PARTICLE_API_KEY: 'pk-x', CLOUDY_CLOUD_PROXY_SECRETS: 'PARTICLE_API_KEY' };
+  await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(deps.provider.log.create[0].envs.PARTICLE_API_KEY, 'pk-x');
+});
+
+// ---- #48: labels and the agent tree ----
+test('a worker is labelled with role, profile, parent and agent', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.owner = 'owner123';
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-secret-value' };
+  const id = await start({ profile: 'pi-deepseek', description: 'Fix the login bug: it has spaces & a token pk-secret-value' });
+  await wait([id]);
+  const l = deps.provider.log.create[0].labels;
+  assert.deepEqual([l.purpose, l.owner, l.role, l.profile, l.parent, l.agent], ['cloudy-cloud', 'owner123', 'worker', 'pi-deepseek', 'owner123', id]);
+  assert.match(l.description, /^[A-Za-z0-9_.-]{1,60}$/);
+  assert.ok(!l.description.includes('secret-value'), l.description); // the key value is redacted
+});
+
+test('a default worker has profile claude', async () => {
+  const { deps, start, wait } = await setup();
+  delete deps.createSandbox;
+  deps.owner = 'o1';
+  await wait([await start()]);
+  assert.equal(deps.provider.log.create[0].labels.profile, 'claude');
+});
+
+test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent', async () => {
+  const { deps, text } = await setup();
+  const mk = (id, labels) => deps.provider.machines.set(id, { id, name: id, labels: { purpose: 'cloudy-cloud', ...labels }, state: 'running', status: 'running', startedAt: Date.now() });
+  mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
+  mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
+  mk('m3', { purpose: 'other', owner: 'o3' });
+  const r = text(await listAgents({ all: true }, deps));
+  assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
+  assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
+  assert.ok(!r.includes('m3'));
+});
+
+// ---- #47: optional apt packages ----
+test('CLOUDY_CLOUD_APT_PACKAGES installs the packages with one apt command; without it no apt command runs', async () => {
+  for (const [pkgs, expected] of [['ffmpeg postgresql-client', 1], [undefined, 0]]) {
+    const cmds = [];
+    const { deps, start, wait } = await setup({ createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; } });
+    deps.env = { GH_TOKEN: 'ghp_secret', ...(pkgs && { CLOUDY_CLOUD_APT_PACKAGES: pkgs }) };
+    await wait([await start()]);
+    const apt = cmds.filter((c) => /apt-get/.test(c));
+    assert.equal(apt.length, expected);
+    if (pkgs) assert.match(apt[0], /sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg postgresql-client/);
+  }
+});
+
+test('a package name with a shell character is rejected at start, before any machine', async () => {
+  const { deps } = await setup();
+  deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg; rm -rf /' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /CLOUDY_CLOUD_APT_PACKAGES/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+// ---- review fixes (#64, #47, #48) ----
+test('a coordinator env file carries the proxy secret names', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_APT_PACKAGES: '' };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
+  assert.match(env, /^CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN$/m);
+});
+
+test('a Claude key named only in CLOUDY_CLOUD_PROXY_SECRETS is refused on a provider without proxy secrets', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.env = { CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  await new Promise((res) => setTimeout(res, 300));
+  const all = JSON.stringify(r) + JSON.stringify(await listAgents({}, deps));
+  assert.match(all, /cannot attach proxy secrets/);
+});
+
+test('apt packages are refused at start on a provider without sudo', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  deps.provider.name = 'self-hosted';
+  deps.env = { CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+test('apt packages accept one pair of surrounding quotes, as written in the docs', async () => {
+  const { aptPackages } = await import('../src/config.mjs');
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: '"ffmpeg postgresql-client"' }).list, ['ffmpeg', 'postgresql-client']);
+  assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: "'ffmpeg'" }).list, ['ffmpeg']);
 });
 
 test('a turn keeps its stream on the machine and, redacted, in a private folder on this laptop', async () => {

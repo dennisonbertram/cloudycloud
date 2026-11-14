@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, profileKeyNames, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
@@ -316,10 +316,16 @@ const limitText = (e) => {
   if (/rate_limited/.test(s)) return `${guide('rate_limited')}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
 };
 
+// Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
+const labelValue = (v) => String(v ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+// What `cloud_agent_list {all: true}` and the dashboard read. The description is redacted first; owner and purpose are added by createSandbox.
+const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description) })
+  .map(([k, v]) => [k, labelValue(v)]).filter(([, v]) => v));
+
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }, labels) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
@@ -361,9 +367,20 @@ async function setup(a, ctx) {
     const envs = {};
     // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
     // sending both would make Claude Code bill the API key.
-    if (a.profile) envs[a.profile.keyName] = env[a.profile.keyName];
-    else if (env.CLAUDE_CODE_OAUTH_TOKEN) envs.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
-    else if (env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
+    const named = proxySecrets(env);
+    const proxied = provider.caps.hasProxySecrets ? named : new Set();
+    const keyName = a.profile?.keyName ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || named.has(n));
+    const keySecrets = [];
+    if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
+    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
+    else if (keyName) {
+      envs[keyName] = env[keyName];
+      if (provider.caps.hasProxySecrets) {
+        a.notice = `\`${keyName}\` is copied to the worker machine; run \`cloudy-cloud setup\` to store it as an Instabox secret.`;
+        log(`${a.id}: ${a.notice}`);
+      }
+    }
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
     if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
@@ -371,7 +388,8 @@ async function setup(a, ctx) {
     a.sandbox = await ctx.queue.create(a, () => {
       const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
       a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(hasMcp(a) && a.mcp.secrets.length && { secrets: a.mcp.secrets }) });
+      const secrets = [...keySecrets, ...(hasMcp(a) ? a.mcp.secrets : [])];
+      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }) }, machineLabels(a, ctx));
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
@@ -413,6 +431,8 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    const apt = aptPackages(env).list; // validated at start
+    if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
     if (hasMcp(a)) { // references only, except servers the user allowed to carry a real value
       // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
@@ -447,7 +467,7 @@ async function installCoordinator(a, ctx, envs) {
   // The coordinator's machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and needs its key.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const own = ctx.provider.coordinatorEnv?.(env);
-  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY')])];
+  const names = [...new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), claudeKey, ...profileKeyNames(env).filter((k) => k !== 'ANTHROPIC_API_KEY'), 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES'])];
   const lines = [...(own?.fixed ?? []), ...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -498,6 +518,7 @@ async function work(a, message, first, ctx, t) {
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
+    if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
@@ -600,6 +621,9 @@ export async function runSubagent(args, deps) {
     if (r.error) return fail(r.error);
     profile = r.ok;
   }
+  const apt = aptPackages(ctx.env);
+  if (apt.error) return fail(apt.error);
+  if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
   let root;
@@ -693,6 +717,15 @@ export async function waitAgents(args = {}, deps) {
   return ctx.ok(parts.join('\n\n'));
 }
 
+// cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
+async function allMachines({ provider }) {
+  const rows = await provider.list({ purpose: 'cloudy-cloud' });
+  if (!rows.length) return 'No cloudy-cloud machines.';
+  const groups = new Map();
+  for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
+  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+}
+
 // cloud_agent_result: read-only. Returns the latest result as often as asked.
 export async function resultAgent(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_result');
@@ -704,9 +737,10 @@ export async function resultAgent(args = {}, deps) {
 }
 
 // cloud_agent_list: read-only.
-export async function listAgents(_args, deps) {
+export async function listAgents(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
+  if (args?.all === true) return ok(await allMachines(ctx));
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +

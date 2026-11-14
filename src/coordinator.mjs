@@ -139,7 +139,7 @@ const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? arg
 // What goes in the coordinator's own env file: the provider key (and the default provider's, which the machine loads), the Claude setup-token and the provider keys that
 // profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
 function keysFile(env, own, keyName) { // own: the provider's coordinatorEnv() ({ names, fixed }), if it has one
-  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', ...profileKeyNames(env)]);
+  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', ...profileKeyNames(env)]);
   return `${[...(own?.fixed ?? []), ...Object.entries(env).filter(([k, v]) => v && names.has(k)).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`;
 }
 

@@ -20,6 +20,9 @@ function isTransientWaitError(e) {
 const API = 'https://api.instabox.sh/v1/machines';
 const SECRET_HELP = 'The GH_TOKEN Instabox secret could not be attached to the sandbox. Create it as described in https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4.';
 
+// Hosts of the keys cloudy-cloud itself stores as secrets (#62); other names keep the <host> placeholder.
+const KEY_HOSTS = { CLAUDE_CODE_OAUTH_TOKEN: 'api.anthropic.com', ANTHROPIC_API_KEY: 'api.anthropic.com', PARTICLE_API_KEY: 'api.particle.ai', OPENROUTER_API_KEY: 'openrouter.ai' };
+
 // Attach the org's GH_TOKEN secret (a proxy placeholder) plus any MCP_<NAME>_TOKEN secrets in one PATCH (the selection is
 // replaced, so all names go together), and wait until Instabox has applied them.
 export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 2000, timeoutMs = 60_000 } = {}) {
@@ -35,7 +38,7 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
       const e = j.error && typeof j.error === 'object' ? j.error : j;
       const detail = e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200);
       const missing = names.find((n) => `${t}`.includes(n));
-      const help = missing ? guide('secret_missing', { secret: missing })
+      const help = missing ? guide('secret_missing', { secret: missing, host: KEY_HOSTS[missing] })
         : names.length ? `${SECRET_HELP} Secrets tried: GH_TOKEN, ${names.join(', ')}.` : SECRET_HELP;
       throw new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`);
     }

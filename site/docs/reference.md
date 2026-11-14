@@ -254,7 +254,7 @@ Returns an agent's latest result again, as often as asked, even after `cloud_age
 
 ### cloud_agent_list
 
-Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only and takes no parameters.
+Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With `all: true` it instead lists every machine on the provider labelled `purpose=cloudy-cloud` (other sessions and coordinators included), grouped by its `parent` label. Each worker machine carries the labels `role`, `profile` (`claude` for the default), `parent`, `agent` and a short redacted `description`.
 
 ### cloud_agent_stop
 
@@ -310,12 +310,14 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_MAX_INSTABOX_CALLS` | 24 | The most Instabox command and file requests that run at once. Instabox's own limit is 32. |
 | `CLOUDY_CLOUD_MAX_DEPTH` | 3 | How many levels of coordinators can exist below your session. Starting a coordinator past this is refused. Workers do not add depth. Passed down to child coordinators. |
 | `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` | 200 | How many agents one cloudy-cloud session may start. Passed down to child coordinators. |
+| `CLOUDY_CLOUD_PROXY_SECRETS` | empty | Comma-separated names of Instabox secrets that hold your Claude token and provider keys, for example `CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY,OPENROUTER_API_KEY`. A worker that needs a listed key gets the secret by name, so no key value reaches its environment. A key not listed is still copied to the machine, and the agent reply says so. Has no effect on providers without proxy secrets. |
+| `CLOUDY_CLOUD_APT_PACKAGES` | empty | Space-separated Debian package names (for example `ffmpeg postgresql-client`) that each worker installs with `sudo -n apt-get install` after its repo is set up. A name with other characters is refused when the agent starts. |
 | `CLOUDY_CLOUD_CHECK_SECONDS` | 60 | Setup only: how long to wait for the test request that checks your Claude token. |
 | `CLOUDY_CLOUD_NO_ANIMATION` | unset | Setup only: set to `1` to skip the animated banner. The banner is also skipped when `CI` is set or there is no terminal. |
 | `MCP_TOOL_TIMEOUT` | 1800000 | Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not. |
 | `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb` | unset | Any of these turns off colour and the animated setup display. Output is plain text with the same messages. |
 
-> Note: You can set `CLOUDY_CLOUD_STARTS_PER_MIN`, `CLOUDY_CLOUD_MAX_INSTABOX_CALLS`, `CLOUDY_CLOUD_WORKER_HOURS`, `CLOUDY_CLOUD_MAX_DEPTH` and `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` in the config file as well as in the environment.
+> Note: You can set `CLOUDY_CLOUD_STARTS_PER_MIN`, `CLOUDY_CLOUD_MAX_INSTABOX_CALLS`, `CLOUDY_CLOUD_WORKER_HOURS`, `CLOUDY_CLOUD_MAX_DEPTH`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`, `CLOUDY_CLOUD_PROXY_SECRETS` and `CLOUDY_CLOUD_APT_PACKAGES` in the config file as well as in the environment.
 
 ### Files
 

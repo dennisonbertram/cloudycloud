@@ -289,6 +289,12 @@ test('MCP secrets go in the same PATCH as GH_TOKEN', async () => {
   assert.equal(http.filter((c) => c.method === 'PATCH').length, 1);
 });
 
+test('a missing key secret says the exact secrets set command with its host', async () => {
+  const f = async (url, init) => init.method === 'PATCH' ? new Response(JSON.stringify({ error: { code: 'not_found', message: 'secret PARTICLE_API_KEY not found' } }), { status: 404 }) : Response.json({});
+  await assert.rejects(createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, fakeSdk().sdk, f, timing)({}, { secrets: ['PARTICLE_API_KEY'] }),
+    (e) => e.message.includes('secrets set PARTICLE_API_KEY --host api.particle.ai'));
+});
+
 test('a 4xx that names a missing MCP secret says how to create it', async () => {
   const f = async (url, init) => init.method === 'PATCH' ? new Response(JSON.stringify({ error: { code: 'not_found', message: 'secret MCP_X_TOKEN not found' } }), { status: 404 }) : Response.json({});
   const { sdk } = fakeSdk();
