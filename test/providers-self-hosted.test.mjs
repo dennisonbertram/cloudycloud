@@ -370,21 +370,16 @@ test('only a coordinator container gets the Docker socket, with the socket owner
   assert.ok(box.log.some((a) => a.includes('--entrypoint') && a.includes('stat')), 'gid probe');
 });
 
-test('coordinatorEnv: the names a coordinator gets; no SSH host, key or port; token only with consent', () => {
+test('coordinatorEnv: the names a coordinator gets from this provider; no SSH host, key or port; token only with consent', () => {
   const base = { ...ENV, ...coordEnv, CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2222', CLOUDY_CLOUD_SELF_HOSTED_CPUS: '2', CLOUDY_CLOUD_SELF_HOSTED_MEMORY: '4g',
-    CLOUDY_CLOUD_CONTAINER_RUNTIME: 'docker', CLAUDE_CODE_OAUTH_TOKEN: 'oauth', ANTHROPIC_API_KEY: 'ak', PARTICLE_API_KEY: 'pk', GH_TOKEN: 'ghp_x', INSTABOX_API_KEY: 'ib' };
-  const names = (e) => createProvider(e, { spawn: fakeBox().spawn }).coordinatorEnv(e).map((l) => l.split('=')[0]).sort();
-  assert.deepEqual(names(base), ['CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'CLOUDY_CLOUD_PROVIDER',
-    'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
-    'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'PARTICLE_API_KEY'].sort());
-  const t = { ...base, CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' };
-  assert.deepEqual(names(t).filter((n) => /TOKEN/.test(n) && n !== 'CLAUDE_CODE_OAUTH_TOKEN'), ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN']);
-  const lines = createProvider(base, { spawn: fakeBox().spawn }).coordinatorEnv(base);
-  assert.ok(lines.includes('CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1') && lines.includes('CLOUDY_CLOUD_PROVIDER=self-hosted'));
-  assert.ok(lines.includes(`CLOUDY_CLOUD_DOCKER_SOCKET=${SOCK}`));
-  assert.ok(!lines.join('\n').match(/SSH|me@box|ghp_x|INSTABOX|ANTHROPIC/));
-  const api = { ...base, CLAUDE_CODE_OAUTH_TOKEN: undefined };
-  assert.ok(createProvider(api, { spawn: fakeBox().spawn }).coordinatorEnv(api).includes('ANTHROPIC_API_KEY=ak'));
+    CLOUDY_CLOUD_CONTAINER_RUNTIME: 'docker', GH_TOKEN: 'ghp_x' };
+  const own = (e) => createProvider(e, { spawn: fakeBox().spawn }).coordinatorEnv();
+  const o = own(base);
+  assert.deepEqual(o.fixed.map((l) => l.split('=')[0]), ['CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'CLOUDY_CLOUD_CONTAINER_BIN']);
+  assert.ok(o.fixed.includes('CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1') && o.fixed.includes('CLOUDY_CLOUD_PROVIDER=self-hosted') && o.fixed.includes(`CLOUDY_CLOUD_DOCKER_SOCKET=${SOCK}`));
+  assert.deepEqual(o.names, ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY']);
+  assert.deepEqual(own({ ...base, CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' }).names.slice(-2), ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN']);
+  assert.ok(!JSON.stringify(o).match(/SSH|me@box|INSTABOX/));
 });
 
 // The local transport: inside a coordinator container the same docker commands run through `sh -c` against the socket, no ssh.

@@ -8,7 +8,6 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createSsh } from './ssh.mjs';
 import { createLocal } from './local.mjs';
-import { PROVIDER_KEY } from '../config.mjs';
 
 const PREFIX = 'cloudy-cloud.';
 const HOME = '/home/worker';
@@ -243,18 +242,16 @@ export function createProvider(env = process.env, deps = {}) {
 
     localMachineName: (hostname) => (hostname.startsWith('cc-') ? hostname : ''),
 
-    // Names for the env file of a coordinator container (src/run-subagent.mjs installCoordinator, src/coordinator.mjs). Local mode, the
-    // socket and the settings that size the box go in; the SSH host, key and port never do, so no SSH key leaves the laptop.
-    // GH_TOKEN goes in only with the token consent, as for workers.
-    coordinatorEnv(e = env) {
-      const names = ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
-        ...(consented ? ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN'] : []), e.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY',
-        ...Object.keys(e).filter((k) => PROVIDER_KEY.test(k) && !['ANTHROPIC_API_KEY', 'INSTABOX_API_KEY'].includes(k))];
-      return [
-        'CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes',
-        `CLOUDY_CLOUD_DOCKER_SOCKET=${sock}`, `CLOUDY_CLOUD_CONTAINER_BIN=${runtime}`, // the CLI inside the container is on PATH, not at the box's path
-        ...names.filter((k) => e[k]).map((k) => `${k}=${e[k]}`),
-      ];
+    // What a coordinator's env file takes from this provider; the core adds the Claude credential, profile keys and depth settings through
+    // its own allowlist. Local mode, the socket and the settings that size the box go in; the SSH host, key and port and the Instabox key never
+    // do, so no SSH key leaves the laptop. GH_TOKEN only with the token consent, as for workers.
+    coordinatorEnv() {
+      return {
+        fixed: ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes',
+          `CLOUDY_CLOUD_DOCKER_SOCKET=${sock}`, `CLOUDY_CLOUD_CONTAINER_BIN=${runtime}`], // the CLI inside the container is on PATH, not at the box's path
+        names: ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
+          ...(consented ? ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN'] : [])],
+      };
     },
 
     text: {

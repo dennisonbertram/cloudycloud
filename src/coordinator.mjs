@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, PROVIDER_KEY } from './config.mjs';
+import { loadEnv, ownerFile, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { profileKeyNames } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi } from './ui.mjs';
@@ -128,10 +129,11 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
-// What goes in the coordinator's own env file: the provider key, the Claude setup-token and provider keys.
-function keysFile(env, keyName) {
-  return `${Object.entries(env).filter(([k, v]) => v && ([keyName, 'CLAUDE_CODE_OAUTH_TOKEN'].includes(k) || PROVIDER_KEY.test(k)))
-    .map(([k, v]) => `${k}=${v}`).join('\n')}\n`;
+// What goes in the coordinator's own env file: the provider key (and the default provider's, which the machine loads), the Claude setup-token and the provider keys that
+// profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
+function keysFile(env, own, keyName) { // own: the provider's coordinatorEnv() ({ names, fixed }), if it has one
+  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', ...profileKeyNames(env)]);
+  return `${[...(own?.fixed ?? []), ...Object.entries(env).filter(([k, v]) => v && names.has(k)).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`;
 }
 
 async function start(c, args) {
@@ -162,7 +164,7 @@ async function start(c, args) {
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
-    await sbx.files.write(`${dir}/env`, c.provider.coordinatorEnv ? `${c.provider.coordinatorEnv(c.env).join('\n')}\n` : keysFile(c.env, c.provider.keyName)); // values never appear in a command string
+    await sbx.files.write(`${dir}/env`, keysFile(c.env, c.provider.coordinatorEnv?.(c.env), c.provider.keyName)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });

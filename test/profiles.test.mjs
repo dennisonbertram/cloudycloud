@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveProfile, loadProfiles, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
+import { resolveProfile, loadProfiles, profileKeyNames, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
 import { loadEnv } from '../src/config.mjs';
 
 const none = join(tmpdir(), 'no-such-profiles.json');
@@ -67,6 +67,19 @@ test('pi built-ins use the pi harness; others default to claude', () => {
   const e = { ...env, CLOUDY_CLOUD_PROFILES: f };
   assert.equal(resolveProfile('mine', undefined, e).ok.harness, 'pi');
   assert.match(resolveProfile('bad', undefined, e).error, /harness/);
+});
+
+test('profileKeyNames lists the keys profiles use, not every *_API_KEY in the environment', () => {
+  const none = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'missing.json');
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  const f = file({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'mm', keyName: 'OTHER_API_KEY' }, bad: { keyName: 'lower' }, worse: null });
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
+  // A coordinator has no profiles.json, so it still needs the key of a built-in profile that the laptop file overrides.
+  const over = file({ openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', model: 'mm', keyName: 'MINE_API_KEY' } });
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  const broken = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'p.json');
+  writeFileSync(broken, '{not json');
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
 });
 
 test('omp built-ins and profiles.json use the omp harness; other harness names are rejected', () => {
