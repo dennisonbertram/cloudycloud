@@ -120,6 +120,7 @@
   .ptxt { flex: 1; min-width: 0; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ev.prog.now::before { background: var(--accent); }
   .ev.prog.now .ptxt { color: var(--text); }
+  .wlink { color: var(--accent); font-weight: 500; text-decoration: underline; }
   .ptime, .btime { flex: none; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); }
   .blk { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--surface); }
   .ev.out .blk { background: var(--subtle); }
@@ -131,6 +132,45 @@
   .ev.work::before { width: 7px; height: 7px; left: -23px; top: 9px; border: 0; background: var(--accent); animation: blink 1.4s ease-in-out infinite; }
   @keyframes blink { 50% { opacity: .25; } }
 
+  .row.child { padding-left: 36px; }
+  .row.child::after { content: ""; position: absolute; left: 22px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .chev { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin: -2px -4px -2px -6px; border-radius: 4px; color: var(--text-3); font-size: 14px; }
+  .chev:hover { background: var(--border); color: var(--text); }
+  .subbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 32px 0; }
+  .subbar .seclabel { padding: 0; }
+  .tabs { display: inline-flex; gap: 2px; }
+  .tab { height: 28px; padding: 0 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); border: 1px solid transparent; }
+  .tab[aria-selected="true"] { background: var(--subtle); color: var(--text); border-color: var(--border); }
+  .turns { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); }
+  .tb { min-width: 28px; height: 24px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+  .tb[aria-pressed="true"] { background: var(--subtle); color: var(--text); font-weight: 600; }
+  .badge { margin-left: auto; font-size: 12px; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; line-height: 1.3; }
+  .badge.bad { color: var(--warn-text); background: var(--warn-bg); border-color: transparent; }
+  .badge.live { color: var(--t-running); }
+  .sub { margin: 16px 0 4px -24px; font-size: 12px; color: var(--text-3); }
+  .note { font-size: 13px; color: var(--text-2); background: var(--subtle); border-radius: 8px; padding: 10px 14px; }
+  .ev.text .blk { background: var(--surface); }
+  .ev.tool .th { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ev.tool .th .chip { min-width: 0; }
+  .tin { margin-top: 4px; padding: 8px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); color: var(--text); }
+  .more { margin-top: 4px; padding: 4px 8px; margin-left: -8px; font-size: 12px; font-weight: 500; color: var(--accent); border-radius: 4px; }
+  .ev.res .rl { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+  .rtag { flex: none; font: 500 11px/1.4 "JetBrains Mono", monospace; }
+  .res.ok .rtag { color: var(--t-running); } .res.err .rtag { color: var(--s-failed); }
+  .rtxt { flex: 1; min-width: 0; font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rtxt.open { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+  .ev.res::before { width: 5px; height: 5px; left: -22px; top: 7px; border: 0; background: var(--t-running); }
+  .ev.res.err::before { background: var(--s-failed); }
+  .ev.warn .rl, .ev.bad .rl { display: flex; gap: 8px; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+  .ev.warn .rl { background: var(--warn-bg); color: var(--warn-text); } .ev.bad .rl { background: var(--err-bg); color: var(--s-failed); }
+  .ev.warn .rtxt, .ev.bad .rtxt { color: inherit; }
+  .ev.warn::before { border-color: var(--s-starting); } .ev.bad::before, .ev.fin.err::before { border-color: var(--s-failed); }
+  .ev.think { font-size: 12px; color: var(--text-3); } .ev.think summary { cursor: pointer; padding: 2px 0; }
+  .ev.fin::before { border-color: var(--s-running); }
+  .term { max-width: 960px; }
+  .termnote { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 8px; font-size: 12px; color: var(--text-2); }
+  .tpre { padding: 12px 16px; max-height: calc(100dvh - 320px); min-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); color: var(--text); }
+  .grp.sub2 { position: static; padding: 12px 0 6px; }
   .fleet { grid-column: 1 / -1; overflow-y: auto; padding: 8px 24px 24px; }
   .fleet .grp { padding: 16px 0 8px; background: var(--page); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -160,7 +200,9 @@
     main.detail .rail { display: none; }
     main:not(.detail) .panel { display: none; }
     .back { display: inline-block; }
-    .panel-head, .seclabel, .thread { padding-left: 16px; padding-right: 16px; }
+    .panel-head, .seclabel, .thread, .subbar { padding-left: 16px; padding-right: 16px; }
+    .badge { margin-left: 0; }
+    .panel-head { max-height: 38dvh; overflow-y: auto; } /* keep room for the timeline: the header scrolls on its own */
     .props { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .fleet { padding: 4px 16px 16px; }
     .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
@@ -199,7 +241,8 @@
   const $ = (id) => kept[id] || document.getElementById(id);
   const NS = 'http://www.w3.org/2000/svg';
   const ORDER = { idle: 0, running: 1, starting: 2, queued: 3, failed: 4, stopped: 5 };
-  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {} };
+  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {}, kids: {}, collapsed: new Set(), tab: 'activity', turn: {}, st: null, pane: null, full: {}, open: new Set(), busyFull: new Set(), failFull: new Set() };
+  const enc = encodeURIComponent;
   try { S.view = localStorage.getItem('cc-view') === 'fleet' ? 'fleet' : 'list'; } catch {}
 
   // Build DOM without innerHTML: every string from the server goes in as text.
@@ -213,7 +256,7 @@
     for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid);
     return e;
   };
-  const svg = (inner, cls, vb) => { const s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', vb); s.setAttribute('aria-hidden', 'true'); if (cls) s.setAttribute('class', cls); s.innerHTML = inner; return s; }; // inner is a constant, never server data
+  const svg = (inner, cls, vb) => { const s = document.importNode(new DOMParser().parseFromString('<svg xmlns="' + NS + '">' + inner + '</svg>', 'image/svg+xml').documentElement, true); s.setAttribute('viewBox', vb); s.setAttribute('aria-hidden', 'true'); if (cls) s.setAttribute('class', cls); return s; }; // inner is a constant, never server data
   const copyIcon = () => svg('<g fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></g>', '', '0 0 16 16');
   const okIcon = () => svg('<path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8"/>', '', '0 0 16 16');
 
@@ -228,14 +271,15 @@
   const rel = (ms) => dur(ms).split(' ')[0]; // one unit, for the compact time column
   // Time of day for today; weekday and date otherwise. Hover shows the full date and time.
   const clock = (t) => { const d = new Date(t), today = new Date(now()).toDateString() === d.toDateString(); return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
-  const timeEl = (cls, t) => h('time', { class: cls, text: clock(t), title: new Date(t).toLocaleString(), datetime: new Date(t).toISOString() });
+  const timeEl = (cls, t) => Number.isFinite(t) && t > 0 && h('time', { class: cls, text: clock(t), title: new Date(t).toLocaleString(), datetime: new Date(t).toISOString() });
   const active = (b) => ['queued', 'starting', 'running'].includes(b.status);
   const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
+  const titleOf = (b) => b.title || b.description || '(no description)';
   const stamp = (b) => b.lastActivity || b.startedAt;
 
   function lastAct(b) {
     const m = (b.messages || []).at(-1);
-    if (!m) return b.kind === 'machine' ? { text: 'no session log' } : null;
+    if (!m) return b.note ? { text: b.note } : b.kind === 'machine' ? { text: 'no session log' } : null;
     if (m.kind === 'progress') { const [tool, ...rest] = m.text.split(' '); return { tool, text: rest.length ? ' ' + rest.join(' ') : '' }; }
     return { text: m.kind === 'out' ? 'you: ' + m.text : (m.error ? 'error: ' : 'reply: ') + m.text, err: !!m.error };
   }
@@ -270,19 +314,21 @@
   const soon = (b) => canExpire(b) && b.deadline - now() < 3_600_000;
   const soonTag = (b) => soon(b) && h('span', { class: 'soon', title: deadlineTitle(b) }, live('del', b.deadline));
   const deadlineTitle = (b) => b.status === 'idle' ? 'The idle agent is stopped and its machine deleted at this time' : 'Time the server deletes the machine (default 6 hours after it starts; set by CLOUDY_CLOUD_WORKER_HOURS)';
-  function row(b) {
-    const a = lastAct(b), t = stamp(b);
+  function row(b, lvl = 1) {
+    const a = lastAct(b), t = stamp(b), kids = S.kids[b.id], open = kids && !S.collapsed.has(b.id);
     // Status in words (the dot colour alone is not enough); the deadline only when it is under an hour away.
     const parts = [];
     if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
+    if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
+    else if (lvl === 1 && b.startedBy && b.startedBy !== 'this session') parts.push(h('span', { text: 'started by ' + b.startedBy }));
     const s = soonTag(b); if (s) parts.push(s);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
-    const el = h('div', { class: 'row', role: 'option', 'data-id': b.id,
-      'aria-label': [b.status, b.description || '(no description)', b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
+    const el = h('div', { class: 'row' + (lvl > 1 ? ' child' : ''), role: 'treeitem', 'aria-level': String(lvl), 'aria-expanded': kids ? String(open) : null, 'data-id': b.id,
+      'aria-label': [b.status, titleOf(b), b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
       'aria-description': a ? ((a.tool || '') + a.text).trim().slice(0, 140) : null, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
-      h('div', { class: 'l1' }, dot(b.status), h('span', { class: 'title', text: b.description || '(no description)' }), t && live('rel', t, 'rel', 'Time since last activity')),
+      h('div', { class: 'l1' }, kids && h('span', { class: 'chev', 'aria-hidden': 'true', title: open ? 'Hide workers' : 'Show workers', text: open ? '▾' : '▸', onclick: (e) => { e.stopPropagation(); setOpen(b.id, !open); } }), dot(b.status), h('span', { class: 'title', text: titleOf(b) }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
       a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
@@ -290,16 +336,22 @@
 
   const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
   const needsYou = (b) => b.status === 'idle' || (b.status === 'failed' && today(b));
-  const groupsOf = (boxes) => [['Needs you', boxes.filter(needsYou)], ['Active', boxes.filter(active)], ['Finished', boxes.filter((b) => !needsYou(b) && !active(b))]].filter(([, l]) => l.length);
+  // A coordinator is grouped by its workers too, so a worker that needs you is never hidden under a closed coordinator.
+  const fam = (f) => (b) => f(b) || (S.kids[b.id] || []).some(f);
+  const groupsOf = (boxes) => { const need = fam(needsYou), act = fam(active); return [['Needs you', boxes.filter(need)], ['Active', boxes.filter((b) => !need(b) && act(b))], ['Finished', boxes.filter((b) => !need(b) && !act(b))]].filter(([, l]) => l.length); };
+  const setOpen = (id, on) => {
+    if (on) S.collapsed.delete(id); else { S.collapsed.add(id); if (S.kids[id]?.some((c) => c.id === S.sel)) return select(id, false); } // the selected worker is about to leave the tree: keep the one tab stop on its coordinator
+    S.sigs.r = null; render();
+  };
   const grp = (name, n) => h('div', { class: 'grp', 'aria-hidden': 'true' }, name, h('span', { text: String(n) }));
 
   function railView(boxes) {
     const rail = $('rail');
     const focusId = document.activeElement?.closest?.('[data-id]')?.dataset.id;
     const top = rail.scrollTop;
-    const wrap = h('div', { role: 'listbox', 'aria-label': 'Agent list' });
+    const wrap = h('div', { role: 'tree', 'aria-label': 'Agent list' });
     wrap.addEventListener('keydown', listKeys);
-    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.map(row)));
+    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.flatMap((b) => [row(b), ...(S.kids[b.id] && !S.collapsed.has(b.id) ? S.kids[b.id].map((c) => row(c, 2)) : [])])));
     rail.replaceChildren(wrap);
     rail.scrollTop = top;
     if (focusId) (wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]') || wrap.querySelector('.row[tabindex="0"]'))?.focus({ preventScroll: true });
@@ -311,6 +363,9 @@
     let n = -1;
     if (e.key === 'ArrowDown') n = Math.min(cards.length - 1, i + 1); else if (e.key === 'ArrowUp') n = Math.max(0, i - 1);
     else if (e.key === 'Home') n = 0; else if (e.key === 'End') n = cards.length - 1;
+    else if (e.key === 'ArrowRight' && cards[i]?.getAttribute('aria-expanded') === 'false') { e.preventDefault(); return setOpen(cards[i].dataset.id, true); }
+    else if (e.key === 'ArrowLeft' && cards[i]?.getAttribute('aria-expanded') === 'true') { e.preventDefault(); return setOpen(cards[i].dataset.id, false); }
+    else if (e.key === 'ArrowLeft' && cards[i]?.getAttribute('aria-level') === '2') n = cards.findLastIndex((c, j) => j < i && c.getAttribute('aria-level') === '1');
     if (n < 0) return;
     e.preventDefault();
     cards.forEach((c, j) => c.tabIndex = j === n ? 0 : -1);
@@ -331,17 +386,126 @@
     ? h('span', { class: 'push failed', text: 'push failed', title: 'The last turn could not push. The reply below says what survived.' })
     : h('span', { class: 'push', title: "Last commit pushed from the agent's machine, at " + new Date(p.t).toLocaleString() }, 'pushed ', h('span', { class: 'mono', text: p.sha }));
 
-  function panelView(b) {
-    const p = $('panel');
-    if (!b) { p.replaceChildren(h('div', { class: 'state' }, h('h2', { text: 'Select a box' }), h('p', { text: 'Pick an agent on the left to read its messages.' }))); return; }
-    const old = p.querySelector('.thread');
-    const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 8 || S.sticky === b.id;
-    const keep = old ? old.scrollTop : 0;
-    const a = document.activeElement, fk = p.contains(a) && (a.getAttribute('aria-label') || a.className || a.tagName);
+  // ---- stream events (everything below goes in as text; nothing from the stream is ever parsed as HTML)
+  const NONE = {
+    machine_gone: ['machine deleted, no saved copy', 'This agent\'s machine was deleted and no copy of its stream was kept on this computer, so there is nothing to show here. The messages above come from the session log.'],
+    no_stream_yet: ['no stream recorded', 'No stream is recorded for this box. If it started before stream capture existed, nothing will appear; agents started now show every tool call here.'],
+    provider_error: ['cloud provider did not answer', 'The cloud provider did not answer when the stream was requested. The page tries again every few seconds; the message at the top of the page says how to fix a missing key.'],
+  };
+  const str = (v) => typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  const pretty = (v) => { try { return JSON.stringify(JSON.parse(v), null, 2); } catch { return v; } }; // inputs arrive as compact JSON text; a cut one does not parse and stays as is
+  const num = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+  const CAP = 4096, FULL_CAP = 2_000_000; // characters of Show-all text kept
+  const turnOf = (b) => S.turn[b.id] || b.turns || 1;
+  const selBox = () => S.data?.boxes.find((b) => b.id === S.sel);
+  const redo = () => { S.sigs.p = null; render(); };
+  const stOf = (b) => S.st && S.st.box === b.id && S.st.turn === turnOf(b) ? S.st : null;
+
+  const badgeEl = h('span', { class: 'badge', 'aria-live': 'polite' });
+  // Where the shown events came from and how old they are. The age counts up through tick(), and is hidden from screen readers so the live region speaks only when the source changes.
+  function updateBadge(b) {
+    const term = b && b.kind === 'coordinator' && S.tab === 'terminal', st = b && (term ? (S.pane?.box === b.id ? S.pane : null) : stOf(b)), src = st?.source;
+    let text, cls = 'badge', at = null;
+    if (!st || (!st.loaded && !st.err)) text = term ? 'checking the terminal…' : 'checking the stream…';
+    else if (st.err && !st.loaded) { text = 'unavailable: ' + st.err; cls += ' bad'; }
+    else if (src?.kind === 'none') { text = 'unavailable: ' + (NONE[src.reason]?.[0] || src.reason || (term ? 'no terminal' : 'no stream')); cls += ' bad'; }
+    else if (src?.kind === 'cache') { text = src.reason === 'machine_gone' ? 'saved copy · machine deleted' : 'from the saved copy (machine not reachable)'; at = src.fetchedAt; }
+    else if (src?.kind === 'local') text = 'from local log';
+    else { text = 'live from machine'; cls += ' live'; at = src?.fetchedAt; }
+    if (st?.err && st.loaded && !term) { text += ' · refresh failed: ' + st.err; cls += ' bad'; }
+    badgeEl.className = cls;
+    if (badgeEl.dataset.k !== text + (at ? '+' : '')) { badgeEl.dataset.k = text + (at ? '+' : ''); badgeEl.replaceChildren(text, ...(at ? [' · ', h('span', { id: 'srcage', 'data-live': 'ago', 'data-t': at, 'aria-hidden': 'true' })] : [])); }
+    else if (at) badgeEl.querySelector('#srcage').dataset.t = at;
+    tick();
+  }
+
+  const showAll = (e, k, what) => h('button', { class: 'more', type: 'button', 'aria-label': 'Show all of ' + what + ', step ' + e.seq, onclick: () => fullLoad(e, k) }, S.busyFull.has(k) ? 'Loading…' : S.failFull.has(k) ? 'Could not load, try again' : 'Show all');
+  async function fullLoad(e, k) {
+    const st = S.st; if (!st || S.busyFull.has(k)) return;
+    S.busyFull.add(k); S.failFull.delete(k); redo();
+    try {
+      const r = await fetch('/api/stream?t=' + enc(T) + '&box=' + enc(st.box) + '&turn=' + st.turn + '&event=' + e.seq + '&full=1', { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json(), ev = j.events?.[0] || j.event || j;
+      if (S.st === st) { // not if the agent or turn changed while loading
+        delete S.full[k]; S.full[k] = ev.input != null ? pretty(str(ev.input)) : ev.summary ?? ev.text ?? '';
+        for (const o of Object.keys(S.full)) { if (Object.values(S.full).reduce((n, v) => n + v.length, 0) <= FULL_CAP || o === k) break; delete S.full[o]; } // oldest first
+      }
+    } catch { S.failFull.add(k); }
+    S.busyFull.delete(k); redo();
+  }
+
+  function evRow(e, b, st) {
+    const k = st.key + ':' + e.seq, tm = timeEl('btime', e.t);
+    const line = (cls, tag, text, open) => h('div', { class: 'ev ' + cls }, h('div', { class: 'rl' }, h('span', { class: 'rtag', text: tag }), h('span', { class: 'rtxt' + (open ? ' open' : ''), text }), tm));
+    if (e.kind === 'text') return h('div', { class: 'ev text' }, h('div', { class: 'blk' }, h('div', { class: 'bh' }, h('span', { text: b.id + ' said' }), tm), h('div', { class: 'bb', text: str(e.text ?? '') })));
+    if (e.kind === 'tool_use') {
+      const raw = e.input == null ? '' : str(e.input), full = S.full[k], cut = full == null && (e.truncated || raw.length > CAP);
+      return h('div', { class: 'ev tool' }, h('div', { class: 'th' }, h('span', { class: 'chip', text: e.name || 'tool' }), tm),
+        raw && h('pre', { class: 'mono tin', tabindex: '0', 'aria-label': 'Input of ' + (e.name || 'tool') + ', step ' + e.seq, text: full ?? (cut ? raw.slice(0, CAP) : pretty(raw)) }), cut && showAll(e, k, 'the ' + (e.name || 'tool') + ' input'));
+    }
+    if (e.kind === 'tool_result') {
+      const txt = str(S.full[k] ?? e.summary ?? e.text ?? ''), open = S.open.has(k), more = e.truncated && S.full[k] == null;
+      const btn = (txt.length > 110 || txt.includes('\n') || more) && h('button', { class: 'more', type: 'button', 'aria-expanded': String(open), 'aria-label': (open ? 'Show less of' : 'Show all of') + ' the tool result, step ' + e.seq,
+        onclick: () => { if (open) S.open.delete(k); else S.open.add(k); if (!open && more) fullLoad(e, k); else redo(); } }, open ? 'Show less' : S.busyFull.has(k) ? 'Loading…' : 'Show all');
+      return h('div', { class: 'ev res ' + (e.isError ? 'err' : 'ok') }, line('', e.isError ? 'error' : 'result', txt, open).firstChild, btn);
+    }
+    if (e.kind === 'retry') {
+      const x = (a, c) => e[a] ?? e[c], max = x('maxRetries', 'max_retries'), status = x('errorStatus', 'error_status') ?? e.status, why = e.error ?? e.message, wait = e.delayMs ?? x('retryDelayMs', 'retry_delay_ms');
+      return line('warn', 'retry', ['Attempt ' + (e.attempt ?? '?') + (max ? ' of ' + max : ''), status && 'HTTP ' + status, why && str(why), wait && 'waiting ' + dur(wait)].filter(Boolean).join(' · '), true);
+    }
+    if (e.kind === 'error') return line('bad', 'error', str(e.message ?? e.error ?? e.text ?? 'error'), true);
+    if (e.kind === 'thinking') {
+      const n = e.chars ?? e.length ?? e.text?.length, label = 'Thinking' + (n != null ? ', ' + num(n) + ' chars' : '');
+      return e.text ? h('details', { class: 'ev think', open: S.open.has(k), ontoggle: (ev) => { if (ev.target.open) S.open.add(k); else S.open.delete(k); } }, h('summary', {}, label, ' · ', tm), h('div', { class: 'bb', text: str(e.text) })) : h('div', { class: 'ev think' }, label, ' · ', tm);
+    }
+    if (e.kind === 'init') return h('div', { class: 'ev prog' }, h('span', { class: 'chip', text: 'start' }), h('span', { class: 'ptxt', text: 'Session started' + (e.model ? ' · ' + e.model : '') }), timeEl('ptime', e.t));
+    if (e.kind === 'result') {
+      const u = e.usage || {}, i = u.input ?? u.in ?? u.input_tokens, o = u.output ?? u.out ?? u.output_tokens;
+      const parts = [i != null && num(i) + ' in / ' + num(o ?? 0) + ' out tokens', e.costUsd != null && '$' + Number(e.costUsd).toFixed(4), e.durationMs != null && dur(e.durationMs)].filter(Boolean);
+      return h('div', { class: 'ev fin' + (e.isError ? ' err' : '') }, h('div', { class: 'blk' }, h('div', { class: 'bh' }, h('span', { text: e.isError ? 'Turn failed' : 'Turn finished' }), tm), parts.length ? h('div', { class: 'bb mono', text: parts.join(' · ') }) : null));
+    }
+    return null;
+  }
+
+  function turnBar(b) {
+    const n = b.turns || 1; if (n < 2) return null;
+    return h('div', { class: 'turns', role: 'group', 'aria-label': 'Turn' }, 'Turn', Array.from({ length: n }, (_, i) => i + 1).map((t) => h('button', { class: 'tb', type: 'button', 'aria-label': 'Turn ' + t, 'aria-pressed': String(t === turnOf(b)), text: String(t), onclick: () => { S.turn[b.id] = t; S.sticky = b.id; S.sigs = {}; render(); } })));
+  }
+  function tabBar(b) {
+    if (b.kind !== 'coordinator') return h('span', { class: 'seclabel', text: 'Activity' });
+    const go = (id) => { S.tab = id; S.sigs.p = null; render(); $('panel').querySelector('#tab-' + id)?.focus(); };
+    return h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Coordinator view', onkeydown: (e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); go(S.tab === 'activity' ? 'terminal' : 'activity'); } } },
+      [['activity', 'Activity'], ['terminal', 'Terminal']].map(([id, name]) => h('button', { class: 'tab', role: 'tab', id: 'tab-' + id, 'aria-controls': 'tabpanel', 'aria-label': name, 'aria-selected': String(S.tab === id), tabindex: S.tab === id ? '0' : '-1', text: name, onclick: () => go(id) })));
+  }
+
+  function terminalView(b) {
+    const cmd = 'cloudy-cloud coordinator attach ' + b.id, p = S.pane && S.pane.box === b.id ? S.pane : null;
+    const text = !p ? 'Loading…' : p.err || (p.lines.length ? p.lines.join('\n') : '(the terminal is empty)');
+    return h('div', { class: 'term' }, h('div', { class: 'termnote' }, 'Read-only view of the tmux session. Attach with: ', h('code', { text: cmd }), copyBtn(cmd, 'attach command')),
+      h('pre', { class: 'mono tpre', tabindex: '0', 'aria-label': 'Terminal output', text }));
+  }
+
+  function timeline(b, st) {
+    const turn = turnOf(b), all = b.messages || [];
+    let msgs = all;
+    let dropped = false;
+    if ((b.turns || 1) > 1 && !all.some((m) => m.agent && m.agent !== b.id)) { // a turn starts at your n-th message; the API keeps only the last 300 messages, so the first one kept is turn `first`, not turn 1
+      const outs = all.map((m, i) => m.kind === 'out' && (!m.agent || m.agent === b.id) ? i : -1).filter((i) => i >= 0);
+      const first = Math.max(1, (b.turns || 1) - outs.length + 1);
+      if (turn < first || !outs.length) { msgs = []; dropped = true; } else msgs = all.slice(outs[turn - first], outs[turn - first + 1] ?? all.length);
+    }
+    const evs = st?.events || [];
+    const hasTools = evs.some((e) => e.kind === 'tool_use');
+    const items = [...msgs.filter((m) => !(hasTools && m.kind === 'progress') && !(m.agent && m.agent !== b.id && m.kind === 'progress')).map((m) => ({ t: m.t, m })), ...evs.map((e) => ({ t: e.t, e }))].sort((x, y) => (Number.isFinite(x.t) ? x.t : 9e15) - (Number.isFinite(y.t) ? y.t : 9e15));
     const kids = [];
+    if (dropped) kids.push(h('div', { class: 'note', text: 'The messages for turn ' + turn + ' were not kept: the dashboard holds only the most recent 300 messages. The tool calls below come from its stream.' }));
     let run = null;
-    const msgs = b.messages || [], last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress';
-    for (const m of msgs) {
+    const last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress' && !hasTools;
+    if (st?.loaded && st.source?.kind === 'none' && NONE[st.source.reason]) kids.push(h('div', { class: 'note', text: NONE[st.source.reason][1] }));
+    else if (st?.loaded && st.source?.kind === 'none') kids.push(h('div', { class: 'note', text: 'No stream to show: ' + (st.source.reason || 'unknown reason') }));
+    for (const { m, e } of items) {
+      if (e) { run = null; const r = evRow(e, b, st); if (r) kids.push(r); continue; }
       if (m.kind === 'progress') {
         if (!run) { run = h('div', { class: 'run', 'aria-label': 'Progress' }); kids.push(run); }
         const [tool, ...rest] = m.text.split(' ');
@@ -352,49 +516,122 @@
       const out = m.kind === 'out';
       kids.push(h('div', { class: 'ev ' + (out ? 'out' : 'reply') + (m.error ? ' err' : '') },
         h('div', { class: 'blk' },
-          h('div', { class: 'bh' }, h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
+          h('div', { class: 'bh' }, m.agent && m.agent !== b.id // a worker's message merged into its coordinator's activity
+            ? h('span', {}, h('button', { class: 'wlink', type: 'button', title: 'Open this worker', text: 'worker ' + m.agent, onclick: () => select(m.agent, true) }), out ? ' was sent a message' : m.error ? ' failed' : ' replied')
+            : h('span', { text: out ? 'You → ' + b.id : m.error ? 'Failed' : b.id + ' replied' }), timeEl('btime', m.t)),
           h('div', { class: 'bb', text: m.text }))));
     }
-    if (b.kind === 'agent' && active(b)) {
-      const turnT = msgs.findLast((m) => m.kind === 'out')?.t ?? b.startedAt;
+    if (b.kind === 'agent' && active(b) && turn === (b.turns || 1)) {
+      const turnT = all.findLast((m) => m.kind === 'out')?.t ?? b.startedAt;
+      const lastT = Math.max(msgs.findLast((m) => m.kind === 'progress')?.t || 0, evs.at(-1)?.t || 0);
       kids.push(h('div', { class: 'ev work' }, b.status === 'queued' ? 'Queued: waiting for a free machine…' : b.status === 'starting' ? 'Starting the machine…'
-        : h('span', { title: "Time since your last message, and since the agent's last tool step" }, 'Working · ', live('age', turnT), nowRow && [' · last step ', live('ago', last.t)])));
+        : h('span', { title: "Time since your last message, and since the agent's last event" }, 'Working · ', live('age', turnT), lastT > turnT && [' · last event ', live('ago', lastT)])));
     }
-    if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : b.kind === 'coordinator' ? 'This coordinator runs in the cloud, so its messages are not recorded on this computer. Its workers are listed as machines without a session log.' : 'No session messages: this box is not tracked by a session log on this computer.' })));
+    if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : b.kind === 'coordinator' ? 'This coordinator runs in the cloud, so its messages are not recorded on this computer. Its workers are listed under it.' : 'No session messages: this box is not tracked by a session log on this computer.' })));
+    return kids;
+  }
+
+  function panelView(b) {
+    const p = $('panel');
+    if (!b) { p.replaceChildren(h('div', { class: 'state' }, h('h2', { text: 'Select a box' }), h('p', { text: 'Pick an agent on the left to read its messages.' }))); return; }
+    const old = p.querySelector('.thread');
+    const stick = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 8 || S.sticky === b.id;
+    const keep = old ? old.scrollTop : 0;
+    const a = document.activeElement, fk = p.contains(a) && (a.getAttribute('aria-label') || a.className || a.tagName);
+    const term = b.kind === 'coordinator' && S.tab === 'terminal', st = stOf(b);
+    const kids = term ? [terminalView(b)] : timeline(b, st);
     const gone = b.status === 'stopped' || b.status === 'failed';
     const head = h('div', { class: 'panel-head' },
       h('button', { class: 'back', type: 'button', onclick: () => { if (S.from === 'fleet') setView('fleet'); else $('main').classList.remove('detail'); $('main').querySelector('[data-id="' + CSS.escape(S.sel) + '"]')?.focus(); } }, '← Agents'),
       h('div', { class: 'crumb' }, (b.kind === 'agent' ? 'Subagent' : b.kind[0].toUpperCase() + b.kind.slice(1)) + ' · ', h('span', { class: 'mono', text: b.id })),
-      h('h1', { tabindex: '-1', text: b.description || b.id }),
+      h('h1', { tabindex: '-1', text: titleOf(b) === '(no description)' ? b.id : titleOf(b) }),
       h('div', { class: 'props' },
         prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: b.status })),
         prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
+        prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') })),
+        prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
+        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine })),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
           : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
             b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
         openable(b) && openApp(b)));
-    const thread = h('div', { class: 'thread', tabindex: '0', 'aria-label': 'Message thread' }, h('div', { class: 'tl' }, kids));
-    p.replaceChildren(head, h('div', { class: 'seclabel', text: 'Activity' }), thread);
+    updateBadge(b);
+    const thread = h('div', { class: 'thread', tabindex: '0', role: b.kind === 'coordinator' ? 'tabpanel' : null, id: b.kind === 'coordinator' ? 'tabpanel' : null, 'aria-label': term ? 'Terminal' : 'Message thread' }, term ? kids : h('div', { class: 'tl' }, kids));
+    p.replaceChildren(head, h('div', { class: 'subbar' }, tabBar(b), term ? null : turnBar(b), badgeEl), thread);
     // A finished agent opens at its answer's first line (not its footer); a running one at the bottom.
-    const lastReply = b.messages?.at(-1)?.kind === 'reply' && [...thread.querySelectorAll('.ev.reply')].at(-1);
+    const lastReply = !term && b.messages?.at(-1)?.kind === 'reply' && [...thread.querySelectorAll('.ev.reply')].at(-1);
     if (stick && !active(b) && lastReply) thread.scrollTop = Math.min(thread.scrollHeight - thread.clientHeight, thread.scrollTop + (lastReply.getBoundingClientRect().top - thread.getBoundingClientRect().top) - 12);
     else thread.scrollTop = stick ? thread.scrollHeight : keep;
     // Keep keyboard focus across the rebuild; if the element is gone (the open command), fall back to the thread.
-    if (fk) ([...p.querySelectorAll('button, .thread, h1')].find((e) => (e.getAttribute('aria-label') || e.className || e.tagName) === fk) || thread).focus({ preventScroll: true });
+    if (fk) ([...p.querySelectorAll('button, .thread, h1, pre')].find((e) => (e.getAttribute('aria-label') || e.className || e.tagName) === fk) || thread).focus({ preventScroll: true });
     S.sticky = null; tick();
+  }
+
+  // Live tail of the selected box: /api/stream every 2 s while it is active, once otherwise; paused while the tab is hidden.
+  const visible = (b) => b && S.view === 'list' && !document.hidden && !(matchMedia('(max-width: 820px)').matches && !$('main').classList.contains('detail'));
+  const shown = (b) => visible(b) && !(b.kind === 'coordinator' && S.tab === 'terminal');
+  function streamEnsure(b) {
+    const turn = turnOf(b), key = b.id + ':' + turn;
+    if (S.st?.key !== key) { clearTimeout(S.st?.timer); S.full = {}; S.st = { key, box: b.id, turn, hops: 0, events: [], next: 0, last: -1, loaded: false, err: '', source: null, busy: false, timer: 0, was: false }; }
+    const st = S.st, act = active(b), again = !st.loaded || !!st.err || act || st.was;
+    st.was = act;
+    if (shown(b) && again && !st.busy && !st.timer) streamPoll(st);
+  }
+  async function streamPoll(st) {
+    st.busy = true; st.timer = 0;
+    const nextBefore = st.next;
+    const before = [st.events.length, st.source?.kind, st.source?.reason, st.err, st.loaded].join();
+    try {
+      const r = await fetch('/api/stream?t=' + enc(T) + '&box=' + enc(st.box) + '&turn=' + st.turn + '&from=' + st.next, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      if (r.ok) {
+        const j = await r.json();
+        for (const e of j.events || []) if (e.seq > st.last) { st.events.push(e); st.last = e.seq; }
+        Object.assign(st, { err: '', loaded: true, next: j.next ?? st.next, source: j.source || null, complete: !!j.complete });
+      } else st.err = r.status === 401 ? 'this link is from an earlier run' : r.status === 404 ? 'the dashboard server has no stream for this box' : 'the dashboard server answered HTTP ' + r.status;
+    } catch { st.err = 'the dashboard server is not answering'; }
+    st.busy = false;
+    if (S.st !== st) return;
+    const b = selBox();
+    // An active box is polled every 2 s. A finished one is read back to back while the server says the stream is not complete and `next` moved (a remote read returns a bounded amount), at most 20 times.
+    const more = b && !active(b) && !st.err && !st.complete && st.next > nextBefore && ++st.hops <= 20;
+    if (b && shown(b) && (active(b) || more)) st.timer = setTimeout(() => { st.timer = 0; if (S.st === st && shown(selBox())) streamPoll(st); }, more ? 0 : 2000);
+    if (before !== [st.events.length, st.source?.kind, st.source?.reason, st.err, st.loaded].join()) redo(); else if (b) updateBadge(b);
+  }
+
+  // Terminal tab of a coordinator: /api/pane every 3 s while the tab is showing.
+  function paneEnsure(b) {
+    if (b.kind !== 'coordinator' || S.tab !== 'terminal' || !visible(b) || S.paneT || S.paneBusy) return;
+    panePoll(b.id);
+  }
+  async function panePoll(id) {
+    S.paneBusy = true;
+    try {
+      const r = await fetch('/api/pane?t=' + enc(T) + '&box=' + enc(id), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      if (r.ok) {
+        const j = await r.json(), src = j.source, why = src?.reason; // a failed read is HTTP 200 with source.kind 'none'
+        S.pane = { box: id, lines: (j.lines || []).map(str), loaded: true, source: j.source ? { ...j.source, fetchedAt: j.fetchedAt } : null,
+          err: src?.kind === 'none' ? (why === 'rate_limited' ? 'The terminal read is rate limited; trying again.' : 'Could not read the terminal (' + (NONE[why]?.[0] || why || 'unknown reason') + '); trying again.') : '' };
+      }
+      else S.pane = { box: id, lines: [], err: r.status === 404 ? 'No terminal to show: the coordinator machine is not running.' : 'The dashboard server answered HTTP ' + r.status + '; trying again.' };
+    } catch { S.pane = { box: id, lines: [], err: 'The dashboard server is not answering; trying again.' }; }
+    S.paneBusy = false;
+    S.paneT = setTimeout(() => { S.paneT = 0; const b = selBox(); if (b && b.id === id) paneEnsure(b); }, 3000);
+    redo();
   }
 
   function fleetView(boxes) {
     const g = h('div', { class: 'fleet' });
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
-      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); S.from = 'fleet'; select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
+      const tile = (b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); S.from = 'fleet'; select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
-        h('span', { class: 'd', text: b.description || label(b) }),
-        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b)))));
+        h('span', { class: 'd', text: b.title || b.description || label(b) }),
+        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b));
+      g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map(tile)));
+      for (const c of list) if (S.kids[c.id]) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(S.kids[c.id].length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, S.kids[c.id].map(tile)));
     }
     return g;
   }
@@ -444,6 +681,10 @@
       return;
     }
     const boxes = [...d.boxes].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt || 0) - (a.startedAt || 0));
+    // Workers nest under their coordinator when it is in the list; everything else is top level.
+    const ids = new Set(boxes.map((b) => b.id)); S.kids = {};
+    for (const b of boxes) if (b.parent && b.parent !== b.id && ids.has(b.parent)) (S.kids[b.parent] ||= []).push(b);
+    const roots = boxes.filter((b) => !(b.parent && b.parent !== b.id && ids.has(b.parent)));
     setTitle(boxes.length ? summary(boxes) : undefined);
     if (!boxes.length) {
       put($('summary'));
@@ -453,14 +694,14 @@
         h('code', { text: 'cloudy-cloud' }), h('p', { style: 'margin-top:12px;font-size:13px', text: 'Or look around first with sample data:' }), h('code', { text: 'cloudy-cloud dashboard --demo' }))) && had) main.querySelector('h2').focus();
       return;
     }
-    if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(boxes)[0][1][0].id;
+    if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(roots)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', boxes.map((b) => [b.id, b.status, b.description, needsYou(b), soon(b)])]);
+      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c)])])]);
       if (S.sigs.f !== f) {
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
-        main.replaceChildren(fleetView(boxes));
+        main.replaceChildren(fleetView(roots));
         tick(); // fill the live texts first, or they grow the tiles after the scroll is restored
         const nf = main.querySelector('.fleet'); nf.scrollTop = top;
         if (fid) nf.querySelector('[data-id="' + CSS.escape(fid) + '"]')?.focus({ preventScroll: true });
@@ -468,17 +709,20 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, boxes.map((b) => [b.id, b.status, b.description, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
-    if (S.sigs.r !== r) { S.sigs.r = r; railView(boxes); }
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.messages?.length, lm?.kind, lm?.text]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
+    streamEnsure(sb); paneEnsure(sb);
     tick();
   }
 
   function select(id, open) {
+    if (id !== S.sel) S.tab = 'activity';
     S.sel = id; S.sigs = {}; S.sticky = id;
+    const par = S.data?.boxes.find((b) => b.id === id)?.parent; if (par) S.collapsed.delete(par);
     if (open) $('main').classList.add('detail');
     // keep keyboard focus on the chosen card after the rail is rebuilt
     render();

@@ -64,7 +64,7 @@ test('Instabox requests are unchanged', async () => {
     listCalls.push(o);
     return [{ sandboxId: 'm1', name: 'box', state: 'running', startedAt: '2026-01-02T03:04:05Z', archiveAt: '2026-01-03T03:04:05Z', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' } }];
   } } } }));
-  record.dashboardList = { calls: listCalls, rows: rows.map(({ status, ...today }) => today) }; // `status` is new (the provider's mapped state); the recorded fields are today's
+  record.dashboardList = { calls: listCalls, rows: rows.map(({ status, labels, ...today }) => today) }; // `status` and `labels` are new (the provider's mapped state); the recorded fields are today's
 
   // ports (npx instabox argv)
   const argvs = [];

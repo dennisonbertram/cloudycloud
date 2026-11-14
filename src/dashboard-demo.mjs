@@ -13,7 +13,13 @@ const failedText = ['Subagent failed, exit code 1.',
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const lastPush = (msgs) => { const r = msgs.findLast((m) => m.kind === 'reply'), p = r && pushOf(r.text); return p ? { push: { ...p, t: r.t } } : {}; };
-  const box = (o) => ({ kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}` });
+  const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33']); // the demo coordinator's workers; the rest were started by this session
+  const box = (o) => ({
+    kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
+    title: o.description, titleSource: 'log', source: 'log', turns: o.messages.filter((m) => m.kind === 'out').length,
+    labels: { purpose: 'cloudy-cloud', role: 'worker', profile: o.profile ?? 'claude', parent: kids.has(o.id) ? 'fleet-main' : 'demo-session', agent: o.id, description: o.description },
+    ...(kids.has(o.id) && { parent: 'fleet-main' }), startedBy: kids.has(o.id) ? 'fleet-main' : 'this session',
+  });
   const boxes = [
     box({
       id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'],
@@ -73,7 +79,33 @@ export function demoState(now = Date.now()) {
       startedAt: ago(7 * H), lastActivity: ago(6.5 * H), stoppedAt: ago(6.5 * H),
       messages: [{ t: ago(7 * H), kind: 'out', text: 'Add a dark palette to tokens.css behind prefers-color-scheme.' }, { t: ago(6.6 * H), kind: 'reply', text: 'Added 24 tokens and a dark block.\n\nPushed to origin cloudy-cloud/3e5b7a60 at e4410aa. Fetch with: git fetch origin cloudy-cloud/3e5b7a60.\nModel: anthropic/claude-haiku-5\nTotal: 3 tool uses, 5.1k in / 1.2k out tokens, 1m 8s' }],
     }),
-    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
+    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
+  // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
+  boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
   return { now, demo: true, hasLog: true, machines: { ok: true }, boxes };
 }
+
+// Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so
+// every progress line becomes a tool call with a result and every reply becomes text plus a result line.
+export const demoStream = {
+  stream(id, turn) {
+    const box = demoState().boxes.find((b) => b.id === id && b.kind === 'agent');
+    let n = 0;
+    const msgs = (box?.messages ?? []).filter((m) => { if (m.kind === 'out') n++; return n === turn && m.kind !== 'out'; });
+    if (!msgs.length) return undefined;
+    const lines = [{ type: 'system', subtype: 'init', model: box.model, session_id: 'demo', tools: ['Bash', 'Read', 'Edit'], mcp_servers: (box.mcp ?? []).map((name) => ({ name, status: 'connected' })), timestamp: box.startedAt }];
+    msgs.forEach((m, i) => {
+      if (m.kind === 'progress') {
+        const [name, ...rest] = m.text.split(' '), arg = rest.join(' ');
+        lines.push({ type: 'assistant', timestamp: m.t, message: { content: [{ type: 'tool_use', id: `tu${i}`, name, input: name === 'Bash' ? { command: arg } : name === 'Grep' ? { pattern: arg } : { file_path: arg } }] } });
+        lines.push({ type: 'user', timestamp: m.t + 1500, message: { content: [{ type: 'tool_result', tool_use_id: `tu${i}`, content: `(demo output of ${m.text})` }] } });
+      } else {
+        lines.push({ type: 'assistant', timestamp: m.t, message: { content: [{ type: 'text', text: m.text }] } });
+        lines.push({ type: 'result', timestamp: m.t, subtype: m.error ? 'error' : 'success', is_error: !!m.error, result: m.text, total_cost_usd: 0.0214, duration_ms: 124_000, session_id: 'demo', usage: { input_tokens: 4100, cache_read_input_tokens: 37_000, output_tokens: 3100 } });
+      }
+    });
+    return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
+  },
+  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
+};
