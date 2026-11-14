@@ -39,7 +39,7 @@ const ACTIVE = ['queued', 'starting', 'running', 'idle'];
 
 // One list of boxes: every agent from the event log, with its live machine, plus live machines no agent explains
 // (coordinators, and agents from sessions that never wrote an event log). `owner` is this server's owner id.
-export function buildState({ events, machines, machineError, now = Date.now(), alive, provider, owner }) {
+export function buildState({ events, machines, machineError, now = Date.now(), alive, provider, owner, coordLogs = {} }) {
   const agents = foldAgents(events, { alive, now });
   const live = new Map((machines ?? []).map((m) => [m.id, m]));
   const byAgent = new Map((machines ?? []).filter((m) => m.labels?.agent).map((m) => [m.labels.agent, m]));
@@ -58,15 +58,30 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
   for (const m of machines ?? []) {
     if (used.has(m.id)) continue;
     const status = m.status ?? 'stopped', l = m.labels ?? {}, described = !!l.description, title = l.description || m.name || m.id;
-    boxes.push({ kind: l.role === 'coordinator' || m.role === 'coordinator' ? 'coordinator' : l.agent ? 'agent' : 'machine', id: m.name || m.id, machine: m.id, role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt,
+    boxes.push({ kind: l.role === 'coordinator' || m.role === 'coordinator' ? 'coordinator' : l.agent ? 'agent' : 'machine', id: l.agent || m.name || m.id, machine: m.id, role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt,
       description: title, title, titleSource: described ? 'label' : 'machine', ...(!described && { note: NO_TITLE }), labels: l, source: 'machine', startedByOwner: m.owner, messages: [] });
+  }
+  // A coordinator's own log (read from its machine) is the authority on its workers: fill live boxes, add the ones whose machine is gone.
+  for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordLogs[b.machine])) {
+    const all = [];
+    for (const w of coordLogs[c.machine]) {
+      const msgs = w.messages.map((m) => ({ ...m, agent: w.id }));
+      all.push(...msgs);
+      let b = boxes.find((x) => x !== c && (x.id === w.id || x.labels?.agent === w.id));
+      if (b && b.source !== 'machine') continue; // this session's own log knows it better
+      if (b) { delete b.note; Object.assign(b, { messages: w.messages, description: w.description ?? b.description, title: w.description ?? b.title, titleSource: w.description ? 'log' : b.titleSource, profile: w.profile, model: w.model, branch: w.branch, push: w.push, turns: w.messages.filter((m) => m.kind === 'out').length, source: 'coordinator-log' }); }
+      else boxes.push(b = { ...w, kind: 'agent', pid: undefined, status: w.status === 'failed' ? 'failed' : 'stopped', title: w.description, titleSource: 'log', source: 'coordinator-log', turns: w.messages.filter((m) => m.kind === 'out').length });
+      b.parent = c.id;
+      (c.children ??= []).push(b.id);
+    }
+    if (!c.messages.length) c.messages = all.sort((x, y) => x.t - y.t).slice(-300);
   }
   // Tree: a worker's `parent` label names a coordinator by its name label or owner id. A parent this session started is not unknown.
   const coords = boxes.filter((b) => b.kind === 'coordinator');
   for (const b of boxes) {
     const p = b.labels?.parent;
-    const c = p && coords.find((x) => x !== b && (x.labels?.name === p || x.labels?.owner === p || x.startedByOwner === p));
-    if (c) { b.parent = c.id; (c.children ??= []).push(b.id); } else if (p && p !== owner) b.parentUnknown = true;
+    const c = b.parent ? coords.find((x) => x.id === b.parent) : p && coords.find((x) => x !== b && (x.labels?.name === p || x.labels?.owner === p || x.startedByOwner === p));
+    if (c) { if (!b.parent) { b.parent = c.id; (c.children ??= []).push(b.id); } } else if (p && p !== owner) b.parentUnknown = true;
     const o = b.startedByOwner;
     b.startedBy = o && o === owner ? 'this session' : c ? (c.labels?.name || c.id) : o;
   }
@@ -129,7 +144,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     return st;
   }
   // Where the stream of one box and turn comes from: this laptop's copy, the box's machine, then the reader's cache.
-  async function resolve(box, n) {
+  async function resolve(box, n, boxes) {
     const agent = box.kind === 'agent' ? box.id : box.labels?.agent, rel = `stream/t${n}.jsonl`;
     const found = (kind, machine, path, fetchedAt, key, sig, raw) => ({ kind, machine, path, fetchedAt, ...parsed(key, sig, raw, n) });
     if (demo) { const raw = demo.stream(box.id, n); return raw ? found('local', undefined, `streams/${box.id}/t${n}.jsonl`, now(), `demo/${box.id}/${n}`, 0, () => raw) : { kind: 'none', reason: 'no_stream_yet' }; }
@@ -146,8 +161,18 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
         if (st.raw) return found('machine', box.machine, rel, st.fetchedAt, `${box.machine}/${rel}`, st.raw.length, () => st.raw);
       } catch (e) { reason = reasonOf(e); }
     }
-    const cached = box.machine && await reader.readCached(box.machine, rel).catch(() => null);
-    if (cached?.data) return found('cache', box.machine, rel, cached.fetchedAt, `cache/${box.machine}/${rel}`, cached.data.length, () => cached.data);
+    // A coordinator keeps its workers' streams under streams/<agent>/, even after the worker's machine is deleted.
+    const co = boxes.find((b) => b.id === box.parent && b.kind === 'coordinator'), crel = `streams/${agent}/t${n}.jsonl`;
+    if (co && isLive(co) && /^[0-9a-f]{8}$/.test(agent)) {
+      try {
+        const st = await fromMachine(reader, co.machine, crel);
+        if (st.raw) return found('coordinator', co.machine, crel, st.fetchedAt, `${co.machine}/${crel}`, st.raw.length, () => st.raw);
+      } catch (e) { if (reasonOf(e) === 'provider_error') reason = 'provider_error'; }
+    }
+    for (const [m, name] of [[box.machine, rel], [co?.machine, crel]]) {
+      const cached = m && await reader.readCached(m, name).catch(() => null);
+      if (cached?.data) return found('cache', m, name, cached.fetchedAt, `cache/${m}/${name}`, cached.data.length, () => cached.data);
+    }
     return { kind: 'none', reason, machine: box.machine };
   }
 
@@ -175,7 +200,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     if (url.pathname === '/api/stream' || url.pathname === '/api/pane') {
       const json = (code, body) => send(code, JSON.stringify(deepRedact(body)), 'application/json');
       try {
-        const q = url.searchParams, box = (await getState()).boxes?.find((b) => b.id === q.get('box'));
+        const q = url.searchParams, boxes = (await getState()).boxes ?? [], box = boxes.find((b) => b.id === q.get('box'));
         if (!box) return json(404, { error: 'unknown box' });
         if (url.pathname === '/api/pane') {
           if (box.kind !== 'coordinator' || !isLive(box)) return json(404, { error: 'unknown box' });
@@ -184,7 +209,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
         }
         const turn = q.get('turn') ?? String(box.turns || 1), from = q.get('from') ?? '0', one = q.get('event');
         if (!/^\d{1,4}$/.test(turn) || !/^\d{1,9}$/.test(from) || (one !== null && !/^\d{1,9}$/.test(one))) return json(404, { error: 'unknown box' });
-        const r = await resolve(box, Number(turn)), events = r.events ?? [];
+        const r = await resolve(box, Number(turn), boxes), events = r.events ?? [];
         const source = { kind: r.kind, machine: r.machine, path: r.path, fetchedAt: r.fetchedAt, bytes: r.raw === undefined ? undefined : Buffer.byteLength(r.raw), reason: r.reason };
         const next = events.length;
         let out = events.filter((e) => e.seq >= Number(from));
@@ -210,18 +235,41 @@ function consentedLiterals(env) {
 
 const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
 
-// Live state with a short cache so several open tabs do not each call the provider API.
-export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider } = {}) {
+const COORD_MS = 10_000;
+const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
+
+// Live state with a short cache so several open tabs do not each call the provider API. With `getReader`, each live
+// coordinator's own events.jsonl is also read from its machine (one chunk at a time, at most every 10 s, only while
+// something polls this function) and folded into the workers it started.
+export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider, getReader, now = Date.now } = {}) {
   let cached, at = 0;
+  const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
+  const pull = async (reader, m) => {
+    let st = logs.get(m.id);
+    if (!st) logs.set(m.id, st = { offset: 0, at: -Infinity, events: [] });
+    if (now() - st.at < COORD_MS && !st.behind) return; // read recently; while catching up a long log, only the reader's own interval applies
+    try {
+      const r = await reader.readTail(m.id, 'events.jsonl', st.offset);
+      if (r.source !== 'cache') st.at = now();
+      if (r.from !== st.offset) return;
+      if (st.offset === 0 && r.size > MAX_LOG) { st.offset = r.size - MAX_LOG; st.behind = true; return; } // the first line of the tail is cut off and skipped below
+      st.offset = r.next;
+      st.behind = r.data !== '' && r.size - r.next >= 4096; // an unfinished last line (under 4 KB) is not 'behind'
+      for (const l of r.data.split('\n')) try { const j = JSON.parse(l); if (j && typeof j === 'object') st.events.push(j); } catch { /* blank or cut line */ }
+    } catch { /* keep what was read; the next poll tries again */ }
+  };
   return async () => {
-    if (cached && Date.now() - at < cacheMs) return cached;
+    if (cached && now() - at < cacheMs) return cached;
     let machines, machineError;
     try {
       provider ??= await loadProvider(env);
       machines = await list(env, provider);
     } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
-    cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env) });
-    at = Date.now();
+    const coordLogs = {};
+    const reader = getReader && machines?.some((m) => m.labels?.role === 'coordinator') ? await getReader().catch(() => null) : null;
+    if (reader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) { await pull(reader, m); coordLogs[m.id] = foldAgents(logs.get(m.id).events, { alive: () => true, now: now() }); }
+    cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
+    at = now();
     return cached;
   };
 }
@@ -255,7 +303,7 @@ export async function main(argv = process.argv.slice(2)) {
   const literals = { [Symbol.iterator]: () => consentedLiterals(env)[Symbol.iterator]() };
   const getReader = async () => (reader ??= createMachineReader(await loadProvider(env), env, { literals }));
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
-  const server = await listen(createHandler({ token, html, getReader, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env) }), port);
+  const server = await listen(createHandler({ token, html, getReader, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env, { getReader }) }), port);
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);

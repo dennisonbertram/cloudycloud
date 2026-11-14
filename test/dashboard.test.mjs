@@ -9,6 +9,7 @@ import { buildState, createHandler, listen, liveState, listMachines } from '../s
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
+import { createMachineReader } from '../src/machine-read.mjs';
 
 const TOKEN = 'tok-123';
 const get = (port, path, host = `127.0.0.1:${port}`, method = 'GET') => new Promise((resolve, reject) => {
@@ -412,4 +413,50 @@ test('the demo serves a stream and a pane for its boxes through the same endpoin
   assert.equal(r.source.kind, 'local');
   assert.ok(r.events.some((e) => e.kind === 'tool_use') && r.events.some((e) => e.kind === 'tool_result'));
   assert.ok((await api(opts, '/api/pane?box=fleet-main')).json.lines.length > 3);
+});
+
+// ---- a coordinator's workers, from the coordinator machine's own log and streams ----
+test('a coordinator box is filled from its machine\'s events.jsonl and streams, and the reads are paced', async () => {
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
+  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'coord-m1', owner: 'o1' }, ttlSeconds: 600 });
+  await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'worker', parent: 'coord-m1', agent: 'aaaa1111', owner: 'o2' }, ttlSeconds: 600 });
+  const home = join(coord.dir, 'home/.config/cloudy-cloud');
+  mkdirSync(join(home, 'streams/aaaa1111'), { recursive: true });
+  writeFileSync(join(home, 'streams/aaaa1111/t1.jsonl'), SAMPLE);
+  const ev = [
+    { type: 'agent', id: 'aaaa1111', t: 1000, description: 'Worker one', profile: 'glm', role: 'worker', branch: 'cloudy-cloud/aaaa1111' },
+    { type: 'message', id: 'aaaa1111', t: 1001, text: 'do the thing' },
+    { type: 'reply', id: 'aaaa1111', t: 1002, text: 'done\nPushed to origin cloudy-cloud/aaaa1111 at 3fa9c01.' },
+    { type: 'agent', id: 'bbbb2222', t: 2000, description: 'Worker two', role: 'worker', branch: 'cloudy-cloud/bbbb2222' },
+    { type: 'machine', id: 'bbbb2222', t: 2001, machine: 'gone-1' },
+    { type: 'message', id: 'bbbb2222', t: 2002, text: 'use ANTHROPIC_API_KEY=sk-plantedkey12345678 here' },
+    { type: 'status', id: 'bbbb2222', t: 2003, status: 'running' },
+  ];
+  writeFileSync(join(home, 'events.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n{"cut');
+  const reader = createMachineReader(provider, env, { minIntervalMs: 0, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
+  const tails = [];
+  const counted = { ...reader, readTail: (m, name, from) => { tails.push([m, name, from]); return reader.readTail(m, name, from); } };
+  const empty = join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl');
+  const getState = liveState(env, { provider, file: empty, cacheMs: 0, getReader: async () => counted });
+  const s1 = await getState();
+  const w1 = s1.boxes.find((b) => b.id === 'aaaa1111'), w2 = s1.boxes.find((b) => b.id === 'bbbb2222'), co = s1.boxes.find((b) => b.kind === 'coordinator');
+  assert.deepEqual(w1.messages.map((m) => [m.kind, m.text.split('\n')[0]]), [['out', 'do the thing'], ['reply', 'done']]);
+  assert.deepEqual([w1.title, w1.profile, w1.push.sha, w1.parent], ['Worker one', 'glm', '3fa9c01', co.id]);
+  assert.deepEqual([w2.status, w2.source, w2.kind, w2.parent, w2.machineState], ['stopped', 'coordinator-log', 'agent', co.id, undefined]);
+  assert.deepEqual(co.children.sort(), ['aaaa1111', 'bbbb2222']);
+  assert.ok(co.messages.length === 3 && co.messages.every((m) => m.agent));
+  assert.doesNotMatch(JSON.stringify(s1), /sk-plantedkey/);
+  assert.deepEqual(tails.map((t) => t.slice(0, 2)), [[coord.id, 'events.jsonl']]);
+  await getState(); // within 10 s: no new read
+  assert.equal(tails.length, 1);
+  const s = await serve({ getState, getReader: async () => counted, streamsDir: mkdtempSync(join(tmpdir(), 'cc-sd-')) }), { port } = s.address();
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?box=aaaa1111&turn=1&t=${TOKEN}`)).body);
+    assert.equal(r.source.kind, 'coordinator');
+    assert.equal(r.source.machine, coord.id);
+    assert.ok(r.events.some((e) => e.kind === 'tool_use' && e.name === 'Bash'));
+    assert.deepEqual(tails.at(-1).slice(0, 2), [coord.id, 'streams/aaaa1111/t1.jsonl']);
+    const st = await get(port, `/api/state?t=${TOKEN}`);
+    assert.doesNotMatch(st.body, /sk-plantedkey/);
+  } finally { s.close(); }
 });

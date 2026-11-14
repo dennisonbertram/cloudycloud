@@ -56,7 +56,7 @@ Select a box to see:
 ## What it cannot show
 
 - **Sessions started before the event log existed.** Their agents have no history. If the machine is still running, it appears as a bare machine with no messages.
-- **A cloud coordinator's messages.** A cloud coordinator runs on its own machine, so its messages are not recorded on your computer. It appears as a machine, and its workers appear as machines without a session log. Nested coordinators log on their own machine too.
+- **A coordinator that is not running.** While a cloud coordinator's machine is running, the dashboard reads that machine's own event log and shows its workers with their prompts and replies, even for workers whose machines are already deleted (they appear as stopped, with the source "coordinator-log"). It reads at most one part of that log every 10 seconds, and only while the page is open. Once the coordinator's machine is deleted, nothing more can be read from it, and its workers appear only as far as their own machines or earlier cached copies show.
 - **Queued agents.** A queued agent is shown as *starting*.
 - **Ended sessions.** An agent from a session that has since ended is shown as stopped.
 
