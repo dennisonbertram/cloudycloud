@@ -359,7 +359,7 @@ export async function main(argv, deps = {}) {
     const code = CODES.includes(e?.code) ? e.code : classify(message);
     const g = guideObj(code, { message, secrets });
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
-    throw Object.assign(new Error(code !== 'unknown' ? guide(code, { message, secrets }) : message), { code: e?.code });
+    throw Object.assign(new Error(code !== 'unknown' ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code });
   }
 }
 

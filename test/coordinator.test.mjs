@@ -453,7 +453,8 @@ test('start fails and deletes the machine when the session screen shows a spend 
     return true;
   });
   assert.deepEqual(f.log.killed, ['m_new']);
-  assert.equal(f.log.out.length, 0, 'no success output');
+  assert.equal(f.log.out.length, 1, 'only the error object, no success output');
+  assert.ok(JSON.parse(f.log.out[0]).error, 'the one line is the --json error object');
   assert.ok(f.log.cmds.some((c) => /tmux capture-pane/.test(c)));
 });
 
