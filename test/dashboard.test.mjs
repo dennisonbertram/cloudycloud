@@ -210,7 +210,7 @@ test('listMachines maps the provider list, status included, and needs the key', 
   provider.machines.set('m2', { id: 'm2', name: 'other', labels: { purpose: 'else' }, state: 'running', status: 'running', startedAt: 6 });
   const rows = await listMachines({ FAKE_API_KEY: 'k' }, provider);
   assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
-  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
+  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
 });
 
@@ -229,4 +229,51 @@ test('/api/state for fixed events and machines is unchanged', () => {
   ]);
   const err = buildState({ events, machineError: { code: 'no_key', message: 'x' }, now: 1000, alive: () => true, provider: createFakeProvider() }).machines;
   assert.deepEqual(err, { ok: false, code: 'no_key', message: 'x', fix: 'Set FAKE_API_KEY.' });
+});
+
+test('listMachines returns control-stripped, redacted, capped string labels', async () => {
+  const provider = createFakeProvider();
+  provider.machines.set('m1', { id: 'm1', name: 'box', labels: { purpose: 'cloudy-cloud', description: '\x1b[31mred\x1b[0m sk-abcdefgh12345678', long: 'x'.repeat(500), n: 5 }, state: 'running', status: 'running', startedAt: 1 });
+  const [row] = await listMachines({ FAKE_API_KEY: 'k' }, provider);
+  assert.equal(row.labels.description, 'red [redacted]');
+  assert.equal(row.labels.long.length, 200);
+  assert.equal('n' in row.labels, false);
+});
+
+test('buildState gives real titles and a coordinator to worker tree from machine labels', () => {
+  const lab = (o) => ({ purpose: 'cloudy-cloud', ...o });
+  const machines = [
+    { id: 'mc', name: 'coord-box', role: 'coordinator', owner: 'o9', labels: lab({ role: 'coordinator', name: 'm1', owner: 'o9' }), state: 'running', status: 'running', startedAt: 1 },
+    { id: 'm1', name: 'sbx-one', owner: 'o8', labels: lab({ role: 'worker', profile: 'glm', parent: 'm1', agent: 'ab12cd34', description: 'Fix tests', owner: 'o8' }), state: 'running', status: 'running', startedAt: 2 },
+    { id: 'm2', name: 'sbx-two', owner: 'o8', labels: lab({ owner: 'o8' }), state: 'running', status: 'running', startedAt: 3 },
+    { id: 'm3', name: 'sbx-three', owner: 'o7', labels: lab({ parent: 'nobody', agent: 'ff00ff00', owner: 'o7' }), state: 'running', status: 'running', startedAt: 4 },
+  ];
+  const s = buildState({ events: [], machines, now: 1000, alive: () => true, owner: 'o7' });
+  const by = Object.fromEntries(s.boxes.map((b) => [b.machine, b]));
+  assert.equal(by.mc.kind, 'coordinator');
+  assert.equal(by.m1.title, 'Fix tests');
+  assert.equal(by.m1.titleSource, 'label');
+  assert.equal(by.m1.kind, 'agent');
+  assert.equal(by.m1.parent, by.mc.id);
+  assert.ok(by.mc.children.includes(by.m1.id));
+  assert.equal(by.m1.startedBy, 'm1');
+  assert.equal(by.m2.kind, 'machine');
+  assert.equal(by.m2.titleSource, 'machine');
+  assert.match(by.m2.note, /#48/);
+  assert.equal(by.m2.title, 'sbx-two');
+  assert.equal(by.m3.parentUnknown, true);
+  assert.equal(by.m3.startedBy, 'this session');
+  assert.ok(s.boxes.every((b) => b.description !== 'Machine without a session log'));
+});
+
+test('buildState joins an agent without a machine event to its machine by the agent label', () => {
+  const events = [{ type: 'agent', id: 'ab12cd34', t: 1, pid: 1, description: 'Logged title', branch: 'b' }, { type: 'message', id: 'ab12cd34', t: 2, text: 'go' }];
+  const machines = [{ id: 'm1', name: 'sbx', labels: { agent: 'ab12cd34', description: 'Label title' }, state: 'running', status: 'running', startedAt: 1 }];
+  const s = buildState({ events, machines, now: 1000, alive: () => true });
+  assert.equal(s.boxes.length, 1);
+  assert.equal(s.boxes[0].machine, 'm1');
+  assert.equal(s.boxes[0].machineState, 'running');
+  assert.equal(s.boxes[0].title, 'Logged title');
+  assert.equal(s.boxes[0].titleSource, 'log');
+  assert.equal(s.boxes[0].turns, 1);
 });
