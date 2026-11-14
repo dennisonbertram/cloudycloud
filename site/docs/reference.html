@@ -250,7 +250,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 </table>
 
 <h3 id="tool-cloud-agent-list">cloud_agent_list</h3>
-<p>Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only and takes no parameters.</p>
+<p>Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With <code>all: true</code> it instead lists every machine on the provider labelled <code>purpose=cloudy-cloud</code> (other sessions and coordinators included), grouped by its <code>parent</code> label. Each worker machine carries the labels <code>role</code>, <code>profile</code> (<code>claude</code> for the default), <code>parent</code>, <code>agent</code> and a short redacted <code>description</code>.</p>
 
 <h3 id="tool-cloud-agent-stop">cloud_agent_stop</h3>
 <p>Stops agents and deletes their sandboxes. It is safe to repeat, and safe to call with ids that do not exist. Stop agents when they are finished, because they stay open until stopped or idle for 60 minutes.</p>
@@ -308,13 +308,15 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code></td><td>24</td><td>The most Instabox command and file requests that run at once. Instabox's own limit is 32.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MAX_DEPTH</code></td><td>3</td><td>How many levels of coordinators can exist below your session. Starting a coordinator past this is refused. Workers do not add depth. Passed down to child coordinators.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code></td><td>200</td><td>How many agents one cloudy-cloud session may start. Passed down to child coordinators.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROXY_SECRETS</code></td><td>empty</td><td>Comma-separated names of Instabox secrets that hold your Claude token and provider keys, for example <code>CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY,OPENROUTER_API_KEY</code>. A worker that needs a listed key gets the secret by name, so no key value reaches its environment. A key not listed is still copied to the machine, and the agent reply says so. Has no effect on providers without proxy secrets.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_APT_PACKAGES</code></td><td>empty</td><td>Space-separated Debian package names (for example <code>ffmpeg postgresql-client</code>) that each worker installs with <code>sudo -n apt-get install</code> after its repo is set up. A name with other characters is refused when the agent starts.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_CHECK_SECONDS</code></td><td>60</td><td>Setup only: how long to wait for the test request that checks your Claude token.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_NO_ANIMATION</code></td><td>unset</td><td>Setup only: set to <code>1</code> to skip the animated banner. The banner is also skipped when <code>CI</code> is set or there is no terminal.</td></tr>
 <tr><td><code>MCP_TOOL_TIMEOUT</code></td><td>1800000</td><td>Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not.</td></tr>
 <tr><td><code>NO_COLOR</code>, <code>CLICOLOR=0</code>, <code>TERM=dumb</code></td><td>unset</td><td>Any of these turns off colour and the animated setup display. Output is plain text with the same messages.</td></tr>
 </tbody>
 </table>
-<div class="note"><p>You can set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, <code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, <code>CLOUDY_CLOUD_WORKER_HOURS</code>, <code>CLOUDY_CLOUD_MAX_DEPTH</code> and <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code> in the config file as well as in the environment.</p></div>
+<div class="note"><p>You can set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, <code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, <code>CLOUDY_CLOUD_WORKER_HOURS</code>, <code>CLOUDY_CLOUD_MAX_DEPTH</code>, <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>, <code>CLOUDY_CLOUD_PROXY_SECRETS</code> and <code>CLOUDY_CLOUD_APT_PACKAGES</code> in the config file as well as in the environment.</p></div>
 
 <h3 id="files">Files</h3>
 <table>

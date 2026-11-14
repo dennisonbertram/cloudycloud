@@ -49,6 +49,13 @@ test('missing Claude token only: still stops with install.sh message', () => {
   assert.equal(r.started, false);
 });
 
+test('a Claude secret named in CLOUDY_CLOUD_PROXY_SECRETS counts as set up, and the server is passed the setting', () => {
+  const r = run({ config: `INSTABOX_API_KEY=${IBK}\nCLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN\n`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.started, true);
+  assert.match(r.argv, /"CLOUDY_CLOUD_PROXY_SECRETS":"[^"]*"/);
+});
+
 test('keys present: claude starts with expected flags and no secret in argv', () => {
   const r = run({ config: full, cwd: repo('https://github.com/test/repo.git') });
   assert.equal(r.status, 0, r.stderr);
