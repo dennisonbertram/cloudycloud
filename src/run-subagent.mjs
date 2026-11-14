@@ -31,6 +31,8 @@ export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
 const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = guide('no_origin');
+// A real key was about to go to a machine whose provider keeps keys off machines.
+export const refused = (name) => new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`);
 const IDLE_MS = 60 * 60_000;
 const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
@@ -374,19 +376,13 @@ async function setup(a, ctx) {
     const keySecrets = [];
     if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
     else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
-    else if (keyName) {
-      envs[keyName] = env[keyName];
-      if (provider.caps.hasProxySecrets) {
-        a.notice = `\`${keyName}\` is copied to the worker machine; run \`cloudy-cloud setup\` to store it as an Instabox secret.`;
-        log(`${a.id}: ${a.notice}`);
-      }
-    }
+    else if (keyName && provider.caps.hasProxySecrets) throw refused(keyName); // never copy a real key to such a machine
+    else if (keyName) envs[keyName] = env[keyName]; // a provider without proxy secrets (self-hosted) keeps the env-file path
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
     if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
-    const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [], legacy: [] };
-    if (coord.legacy.length) log(`${a.id}: ${coord.legacy.map((k) => `\`${k}\``).join(', ')} copied to the coordinator machine; run \`cloudy-cloud setup\` to store ${coord.legacy.length > 1 ? 'them' : 'it'} as Instabox secrets.`);
-    if (coord.legacy.length) a.notice = [a.notice, `${coord.legacy.map((k) => `\`${k}\``).join(', ')} copied to the coordinator machine; run \`cloudy-cloud setup\` to store ${coord.legacy.length > 1 ? 'them' : 'it'} as Instabox secrets.`].filter(Boolean).join(' ');
+    const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [] };
+    if (coord.legacy?.length) throw refused(coord.legacy[0]);
     a.cancelQueue = () => ctx.queue.cancel(a);
     a.sandbox = await ctx.queue.create(a, () => {
       const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
@@ -618,7 +614,7 @@ export async function runSubagent(args, deps) {
   }
   let profile;
   if (profileName !== undefined) {
-    const r = resolveProfile(profileName, model, ctx.env);
+    const r = resolveProfile(profileName, model, ctx.env, { proxyOnly: hasProxySecrets });
     if (r.error) return fail(r.error);
     profile = r.ok;
   }

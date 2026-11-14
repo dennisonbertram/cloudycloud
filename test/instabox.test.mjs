@@ -182,13 +182,13 @@ test('run-subagent honours sandbox.home and scrubs the Instabox key', async () =
   };
   const deps = {
     createSandbox: async (envs) => { seenEnvs = envs; return sbx; }, provider: { ...createFakeProvider(), keyName: 'INSTABOX_API_KEY' }, open: new Map(),
-    env: { INSTABOX_API_KEY: KEY, ANTHROPIC_API_KEY: 'api-key-xyz' }, cwd: githubRepo(),
+    env: { INSTABOX_API_KEY: KEY, ANTHROPIC_API_KEY: 'api-key-xyz', CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY' }, cwd: githubRepo(),
   };
   const started = await runSubagent({ description: 'd', prompt: 'p' }, deps);
   const id = started.content[0].text.match(/agent_id: (\w+)/)[1];
   const r = await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, deps);
   assert.match(r.content[0].text, /status: failed/);
-  assert.deepEqual(seenEnvs, { ANTHROPIC_API_KEY: 'api-key-xyz' });
+  assert.deepEqual(seenEnvs, {}); // the key is a proxy secret, not an env value
   assert.ok(written.every((p) => p.startsWith('/data/home/')) && written.length);
   assert.ok(cmds.every((c) => !c.cmd.includes('/home/user') && !String(c.cwd).includes('/home/user')));
   assert.ok(!JSON.stringify(r).includes(KEY));

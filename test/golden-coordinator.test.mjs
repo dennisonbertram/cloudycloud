@@ -64,7 +64,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
     return Response.json({ machines: machines.map((m) => ({ id: m.sandboxId, name: m.name, state: m.state, metadata: m.metadata })) });
   };
   const out = [];
-  const env = { INSTABOX_API_KEY: KEY, CLAUDE_CODE_OAUTH_TOKEN: TOK, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
+  const env = { INSTABOX_API_KEY: KEY, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_CONFIG: join(dir, 'env'), ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
   return { calls, out, deps: { sdk, fetchFn, env, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner') } };
 }
 

@@ -334,7 +334,7 @@ migrate_key() {
   local v
   [ "${PROVIDER:-}" = instabox ] || return 1
   v=$(get_saved "$1"); [ -n "$v" ] || return 1
-  yn_yes "Move $1 into an Instabox secret (host $(secret_hosts "$1"))?" || { hint "Kept $1 in $(cfg). Workers that use it receive the real key."; return 1; }
+  yn_yes "Move $1 into an Instabox secret (host $(secret_hosts "$1"))?" || { hint "Kept $1 in $(cfg). On Instabox, workers that need it are refused until it is stored as a secret."; return 1; }
   if store_secret "$1" "$v"; then ok "Moved $1 into an Instabox secret" "workers see a placeholder"
   else warn "Could not store $1 as an Instabox secret; it stays in $(cfg)" "run $(rerun_cmd) again to retry"; return 1; fi
 }
@@ -919,6 +919,7 @@ setup_provider() { # setup_provider NAME LABEL WHERE
   keep_key "$name" "$key"
   ok "Saved the $label key" "$(mask "" "$key")"
   if is_proxied "$name"; then hint "Stored as an Instabox secret: worker machines see a placeholder, not the key."
+  elif [ "${PROVIDER:-}" = instabox ]; then hint "Not stored as a secret: workers that need this key are refused until you store it (run $(rerun_cmd) again)."
   else hint "Unlike GH_TOKEN, this key is stored on the worker machines that use it."; fi
 }
 

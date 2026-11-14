@@ -70,7 +70,8 @@ export function coordinatorKeys(env, provider, { single = false } = {}) {
 }
 
 // Returns { ok: profile } or { error: text }. `model` is the optional per-call model.
-export function resolveProfile(name, model, env = process.env) {
+// proxyOnly (a provider with proxy secrets): the key must be a proxy secret, a real value would be copied to the machine.
+export function resolveProfile(name, model, env = process.env, { proxyOnly = false } = {}) {
   if (typeof name !== 'string' || !NAME.test(name)) return { error: `invalid profile: must match ${NAME}` };
   let profiles;
   try { profiles = loadProfiles(env); } catch (e) { return { error: e.message }; }
@@ -86,6 +87,7 @@ export function resolveProfile(name, model, env = process.env) {
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
   if (!env[p.keyName] && !proxied) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
+  if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}` };
   return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName, proxied } };
 }
 
