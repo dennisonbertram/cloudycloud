@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { request } from 'node:http';
 import { buildState, createHandler, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
-import { demoState } from '../src/dashboard-demo.mjs';
+import { demoState, demoStream, demoPane } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const TOKEN = 'tok-123';
@@ -179,6 +179,9 @@ test('small-text colour tokens meet 4.5:1 in light and dark', () => {
   for (const [name, t] of [['light', light], ['dark', { ...light, ...dark }]])
     for (const fg of ['text-2', 'text-3', 't-running', 't-starting', 't-idle', 's-failed', 'accent'])
       for (const bg of ['page', 'surface']) assert.ok(ratio(t[fg], t[bg]) >= 4.5, `${name} --${fg} on --${bg}: ${ratio(t[fg], t[bg]).toFixed(2)}`);
+  // text that sits on a tinted background (warning and error rows)
+  for (const [name, t] of [['light', light], ['dark', { ...light, ...dark }]])
+    for (const [fg, bg] of [['warn-text', 'warn-bg'], ['s-failed', 'err-bg']]) assert.ok(ratio(t[fg], t[bg]) >= 4.5, `${name} --${fg} on --${bg}: ${ratio(t[fg], t[bg]).toFixed(2)}`);
 });
 
 test('a multi-byte token of the right character count is a 401, not a crash', async () => {
@@ -229,4 +232,31 @@ test('/api/state for fixed events and machines is unchanged', () => {
   ]);
   const err = buildState({ events, machineError: { code: 'no_key', message: 'x' }, now: 1000, alive: () => true, provider: createFakeProvider() }).machines;
   assert.deepEqual(err, { ok: false, code: 'no_key', message: 'x', fix: 'Set FAKE_API_KEY.' });
+});
+
+test('the page never assigns server data to innerHTML and fetches the stream with the token', () => {
+  const page = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  const script = page.slice(page.indexOf('<script>'));
+  const bad = [...script.matchAll(/\.innerHTML\s*=(?!=)\s*([^;\n]*)/g)].map((m) => m[1].trim()).filter((rhs) => !/^(['"`])[^'"`$]*\1$/.test(rhs));
+  assert.deepEqual(bad, [], 'innerHTML may only be set to a constant string');
+  assert.match(script, /\/api\/stream\?t=/);
+  assert.match(script, /\/api\/pane\?t=/);
+  assert.match(script, /aria-expanded/);
+  assert.match(script, /aria-live/);
+});
+
+test('demo data has a coordinator with two workers, a stream with tool calls, and a box with no stream', () => {
+  const d = demoState(), by = Object.fromEntries(d.boxes.map((b) => [b.id, b]));
+  const coord = d.boxes.find((b) => b.kind === 'coordinator' && b.children?.length >= 2);
+  assert.ok(coord, 'a coordinator with two children');
+  for (const id of coord.children) assert.equal(by[id].parent, coord.id);
+  const kinds = new Set();
+  for (const b of d.boxes) for (const e of demoStream(b.id, 1, 0, d.now).events) kinds.add(e.kind);
+  for (const k of ['text', 'tool_use', 'tool_result', 'retry', 'error', 'thinking', 'result']) assert.ok(kinds.has(k), k);
+  const r = demoStream('7c1e90ab', 1, 0, d.now);
+  assert.ok(r.events.find((e) => e.kind === 'tool_use' && e.truncated), 'a truncated tool_use');
+  assert.equal(demoStream('7c1e90ab', 1, r.next, d.now).events.length, 0);
+  assert.ok(d.boxes.some((b) => demoStream(b.id, 1, 0, d.now).source.kind === 'none'), 'a box whose stream source is none');
+  assert.ok(demoPane(coord.id).lines.length > 3);
+  assert.equal(demoPane('7c1e90ab'), null);
 });

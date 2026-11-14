@@ -1002,8 +1002,8 @@ This prints a link and opens it in your browser. The page is served from `127.0.
 
 The page has two views, switched at the top: **List** and **Fleet**.
 
-- **List** has the boxes in a left column and the selected box in a detail pane.
-- **Fleet** shows one tile per box, with its status, description, id and time since last activity. Select a tile to open it in the List view.
+- **List** has the boxes in a left column and the selected box in a detail pane. Workers started by a cloud coordinator are nested under it; use the arrow next to the coordinator, or the Left and Right arrow keys, to close or open them.
+- **Fleet** shows one tile per box, with its status, description, id and time since last activity, and a *Workers of* heading under each coordinator. Select a tile to open it in the List view.
 
 Boxes are grouped as **Needs you**, **Active** and **Finished**.
 
@@ -1017,12 +1017,15 @@ The top bar counts running, starting, idle and failed agents and those finished 
 
 Select a box to see:
 
-- **Status**, **Model** (or profile) and **Started**.
+- **Status**, **Model** (or profile), **Started**, **Role**, **Started by** (this session, or the coordinator that started it) and the **Machine**.
 - **MCP**: the names of the MCP servers the subagent has, when it has any.
 - **Branch**: the `cloudy-cloud/<id>` branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.
 - **Deletes**: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (`CLOUDY_CLOUD_WORKER_HOURS`, at most 24), which can be earlier.
 - **Open app**: for a running or idle agent, the command `cloudy-cloud open <id> <port>` with a copy button. See below.
-- **Activity**: a timeline of the task you sent, follow-up messages, progress steps, and the agent's replies.
+- **Activity**: a timeline of the task you sent, follow-up messages, and the agent's replies, with what the agent did between them. Each step has a time. The agent's text is a block. Each tool call shows its name and its input as sent, cut at 4 KB, with a *Show all* button. Each tool result is one line, in green or red, that you can expand. Retries and errors are highlighted. A *Thinking* step shows only its length unless `CLOUDY_CLOUD_STREAM_THINKING=1` was set when the agent ran. Each turn ends with a footer of tokens, cost and duration. When an agent has more than one turn, a *Turn* selector picks which one to read.
+- **Source badge**: next to the timeline, it says where those steps came from and how old they are: *live from machine* with the seconds since the last read, *from local log* (a copy kept on this computer), *cached copy* (the machine is deleted), or *unavailable* with the reason.
+- **Live tail**: while the selected agent is working, the page reads new steps every 2 seconds and shows *Working* with the time of the last step. It stops when you select another box or the tab is hidden. Other boxes are not read.
+- **Terminal** (cloud coordinators only): a read-only copy of the coordinator's tmux session, refreshed every 3 seconds while the tab is open. To work in it, run `cloudy-cloud coordinator attach <name>`; the tab has a copy button for the command.
 
 ### When something is wrong
 
@@ -1033,8 +1036,9 @@ Select a box to see:
 
 ## What it cannot show
 
-- **Sessions started before the event log existed.** Their agents have no history. If the machine is still running, it appears as a bare machine with no messages.
-- **A cloud coordinator's messages.** A cloud coordinator runs on its own machine, so its messages are not recorded on your computer. It appears as a machine, and its workers appear as machines without a session log. Nested coordinators log on their own machine too.
+- **Sessions started before the event log existed.** Their agents have no history. If the machine is still running, it appears as a machine with no messages and a note that it has no title.
+- **Machines started before stream capture existed, and machines deleted before any copy was kept.** The badge says *unavailable* and the timeline explains why, so it shows no tool calls. Only the messages in the session log appear.
+- **A cloud coordinator's own messages.** A cloud coordinator runs on its own machine, so its messages are not recorded on your computer. Its workers are listed under it, and the Terminal tab shows what is on its screen now, not its history. Nested coordinators log on their own machine too.
 - **Queued agents.** A queued agent is shown as *starting*.
 - **Ended sessions.** An agent from a session that has since ended is shown as stopped.
 
