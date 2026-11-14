@@ -325,7 +325,7 @@ test('coordinator snapshots: commit, inspect, create from the image without the 
   await assert.rejects(provider.getSnapshot(snap.id), (e) => e.code === 'not_found');
   await assert.rejects(provider.create({ image: snap.id, envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'not_found');
   await assert.rejects(provider.snapshot(src, { name: 'bad name; rm -rf /' }), /invalid snapshot name/);
-  await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.1.2'), /only deletes coordinator images/);
+  await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.1.3'), /only deletes coordinator images/);
 });
 
 test('GitHub token consent covers GH_TOKEN only: unrequested env secrets are never copied, requested MCP secrets are', async () => {

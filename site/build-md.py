@@ -250,7 +250,7 @@ def ld_blocks(slug):
     if slug == 'home':
         ld.append({"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud",
                    "description": DEFINITION, "applicationCategory": "DeveloperApplication",
-                   "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.2",
+                   "operatingSystem": "macOS, Linux", "softwareVersion": "0.1.3",
                    "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
                    "license": GH + "/blob/HEAD/LICENSE", "downloadUrl": NPM, "codeRepository": GH,
                    "url": BASE + "/", "isAccessibleForFree": True})
@@ -296,7 +296,7 @@ def main():
         out.write_text(f'# {title}\n\n> {desc}\n\nSource: {page_url(slug)}\n\n{body}\n')
     # llms.txt
     L = ['# Cloudy Cloud', '', f'> {DEFINITION}', '',
-         f'Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.1.2). '
+         f'Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.1.3). '
          f'Install and set up with `npx cloudycloud setup`. The code is at {GH}. '
          'You need an account with a cloud sandbox provider (Instabox is supported today), Claude credentials '
          '(a Claude subscription or an API key), a GitHub repo you can push to, and Node.js 20 or later. '

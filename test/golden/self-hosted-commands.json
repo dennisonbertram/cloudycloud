@@ -13,7 +13,7 @@
     "inspect",
     "--format",
     "{{index .Config.Labels \"cloudy-cloud.image\"}}",
-    "cloudy-cloud-worker:0.1.2"
+    "cloudy-cloud-worker:0.1.3"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -44,7 +44,7 @@
     "/run/secrets:mode=700,uid=1000,gid=1000",
     "--user",
     "worker",
-    "cloudy-cloud-worker:0.1.2",
+    "cloudy-cloud-worker:0.1.3",
     "timeout",
     "600s",
     "sleep",
