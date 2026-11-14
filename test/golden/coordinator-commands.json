@@ -251,7 +251,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> PATH=/data/home/cloudy-cloud/bin:$PATH /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
       },
       {
         "sdk": "commands.run",
@@ -387,7 +387,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> PATH=/data/home/cloudy-cloud/bin:$PATH /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
       },
       {
         "sdk": "commands.run",

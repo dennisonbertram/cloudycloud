@@ -416,7 +416,7 @@ test('start fails and deletes the machine when the session screen shows a spend 
 });
 
 test('start also fails on a login screen or an invalid key', async () => {
-  for (const pane of ['Select login method:', 'Invalid API key']) {
+  for (const pane of ['Select login method', 'Invalid API key \u00b7 Fix external API key']) {
     const f = fixture({ pane });
     await assert.rejects(main(START, f.deps), /Next: /, pane);
     assert.deepEqual(f.log.killed, ['m_new']);
@@ -444,7 +444,7 @@ test('start fails and deletes the machine when the session exits at once (captur
   f.deps.sdk.Sandbox.create = async (t, o) => {
     const sbx = await orig(t, o);
     const run = sbx.commands.run;
-    sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw new Error('no server running'); return run(cmd, ...r); };
+    sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw Object.assign(new Error("no server running on /tmp/tmux-0/default"), { exitCode: 1, stdout: '', stderr: 'no server running' }); return run(cmd, ...r); };
     return sbx;
   };
   await assert.rejects(main(START, f.deps), /exited right after[\s\S]*Next: /);
@@ -460,10 +460,50 @@ test('start --model puts the model on the tmux command line; a bad model is refu
   assert.equal(g.log.create.length, 0);
 });
 
-test('the coordinator session has cloudy-cloud on PATH (#46)', async () => {
+test('the coordinator session has cloudy-cloud on PATH, as one word even when PATH has spaces (#46)', async () => {
   const f = fixture();
   await main(START, f.deps);
-  assert.match(f.log.cmds.find((c) => /tmux new-session/.test(c)), /PATH=\/data\/home\/cloudy-cloud\/bin:\$PATH /);
+  const cmd = f.log.cmds.find((c) => /tmux new-session/.test(c));
+  // Run the command with tmux and env stubbed as shell functions: tmux evals its command word, env prints each argument in brackets.
+  const sh = spawnSync('sh', ['-c', `tmux() { [ "$1" = new-session ] && eval "$7"; }; env() { printf '[%s]' "$@"; }; ${cmd}`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/my dir/bin' } }).stdout;
+  assert.match(sh, /\[PATH=\/data\/home\/cloudy-cloud\/bin:\/usr\/bin:\/bin:\/my dir\/bin\]/);
+});
+
+const pane = (text, task) => {
+  const f = fixture({ pane: text });
+  return { f, run: () => main([...START, ...(task ? ['--task', task] : [])], f.deps) };
+};
+
+test('a task line shown on screen does not count as an error (#44 review)', async () => {
+  const task = 'Fix the Invalid API key error in our billing form';
+  const { f, run } = pane(`> ${task}\n  Fix the Invalid API key error in our billing form`, task);
+  await run();
+  assert.deepEqual(f.log.killed, []);
+  const g = pane('Fix the Invalid API key error in our billing form');
+  await g.run();
+  assert.deepEqual(g.f.log.killed, [], 'a message must be a whole Claude error, not a substring');
+});
+
+test('start fails on the real Claude 2.1.325 session-limit and sign-in messages', async () => {
+  for (const text of ["You've hit your session limit \u00b7 resets 3pm", 'Authentication required \u00b7 Sign in again to continue', 'Login expired \u00b7 Please run /login', 'Invalid API key \u00b7 Fix external API key', 'Not logged in \u00b7 Please run /login']) {
+    const { f, run } = pane(`  \u23bf  ${text}`);
+    await assert.rejects(run(), /Next: /, text);
+    assert.deepEqual(f.log.killed, ['m_new'], text);
+  }
+});
+
+test('a provider error while reading the screen keeps the machine and says the screen was not read', async () => {
+  for (const err of [Object.assign(new Error('429'), { code: 'rate_limited' }), Object.assign(new Error('x'), { code: 'transient' }), Object.assign(new Error('t'), { code: 'timeout' })]) {
+    const f = fixture();
+    const orig = f.deps.sdk.Sandbox.create;
+    f.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run; sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw err; return run(cmd, ...r); }; return sbx; };
+    await main([...START, '--json'], f.deps);
+    assert.deepEqual(f.log.killed, [], err.code);
+    const j = JSON.parse(f.log.out[0]);
+    assert.equal(j.started, true);
+    assert.equal(j.screenRead, false);
+    assert.match(j.attach, /tmux attach/);
+  }
 });
 
 test('toolRepoUrl in a checkout with no origin prints nothing on stderr (#44)', () => {
