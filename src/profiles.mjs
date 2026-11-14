@@ -61,7 +61,7 @@ export function resolveProfile(name, model, env = process.env) {
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
-  if (!env[p.keyName]) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: new URL(p.baseUrl).host })}` };
+  if (!env[p.keyName]) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName } };
 }
 

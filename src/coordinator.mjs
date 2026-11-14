@@ -13,7 +13,7 @@ import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
-import { guide, guideObj, classify } from './errors.mjs';
+import { guide, guideObj, classify, CODES } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
@@ -306,7 +306,7 @@ function validateArgs(cmd, args) {
   }
 }
 
-export async function main(argv, deps = {}) {
+async function run(argv, deps) {
   const [cmd, ...args] = argv;
   const commands = { image, start, attach, ls, stop, finish: (c, a) => finish(c, a, deps) };
   const isHelp = (a) => a === '--help' || a === '-h';
@@ -320,14 +320,23 @@ export async function main(argv, deps = {}) {
   if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) fail(c.provider.text.coordinatorRefusal);
   try { return await commands[cmd](c, args); } catch (e) {
     if (e?.code === 'no_key') fail(`${e.message} Run: cloudy-cloud setup`);
-    if (cmd === 'start') {
-      // Add the guidance for the failure; --json also prints it as an error object.
-      const code = classify(e?.message);
-      const g = guideObj(code, { message: redact(String(e?.message ?? e)) });
-      if (args.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
-      if (code !== 'unknown') throw new Error(guide(code, { message: e.message }));
-    }
     throw e;
+  }
+}
+
+// Every `start` failure (bad arguments, missing key, provider errors) gets guidance, scrubbed of exact configured
+// secret values; --json also prints it as one error object.
+export async function main(argv, deps = {}) {
+  try { return await run(argv, deps); } catch (e) {
+    if (argv[0] !== 'start') throw e;
+    const env = deps.env ?? loadEnv();
+    const secrets = Object.entries(env).filter(([k, v]) => /KEY|TOKEN|SECRET/i.test(k) && String(v ?? '').length >= 8).map(([, v]) => String(v));
+    const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
+    const message = clean(e?.message ?? e);
+    const code = CODES.includes(e?.code) ? e.code : classify(message);
+    const g = guideObj(code, { message, secrets });
+    if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
+    throw Object.assign(new Error(code !== 'unknown' ? guide(code, { message, secrets }) : message), { code: e?.code });
   }
 }
 

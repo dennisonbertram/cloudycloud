@@ -408,3 +408,36 @@ test('a provider that cannot give a coordinator its keys refuses image and start
   }
   assert.equal(provider.log.create.length, 0);
 });
+
+const jsonErr = (f) => { const lines = f.log.out.filter((s) => s.startsWith('{')); assert.equal(lines.length, 1, 'exactly one JSON object'); return JSON.parse(lines[0]).error; };
+
+test('start --json scrubs an exact configured key echoed by the provider, in stdout and the thrown message', async () => {
+  const f = fixture();
+  const OPAQUE = 'opaqueKEYvalue9f3a77c1d2';
+  f.deps.env.INSTABOX_API_KEY = OPAQUE;
+  f.deps.sdk.Sandbox.create = async () => { throw new Error(`bad request for key ${OPAQUE}`); };
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps), (e) => { assert.ok(!e.message.includes(OPAQUE)); return true; });
+  assert.ok(!f.log.out.join('\n').includes(OPAQUE));
+  assert.ok(jsonErr(f).code);
+});
+
+test('start --json prints one error object for argument errors and a missing key', async () => {
+  const f = fixture();
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--typo', 'x', '--json'], f.deps), /Unknown argument/);
+  const o = jsonErr(f);
+  assert.ok(o.code && o.whatHappened && o.likelyCause && o.nextStep && o.tellUser !== undefined || o.whatHappened);
+  assert.match(o.whatHappened, /Unknown argument/);
+  const g = fixture();
+  delete g.deps.env.INSTABOX_API_KEY;
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps), /setup/);
+  assert.match(jsonErr(g).whatHappened, /INSTABOX_API_KEY/);
+});
+
+test('start --json prefers a known error code over the message text', async () => {
+  for (const code of ['quota_exceeded', 'secret_missing']) {
+    const f = fixture();
+    f.deps.sdk.Sandbox.create = async () => { throw Object.assign(new Error('plain words'), { code }); };
+    await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps));
+    assert.equal(jsonErr(f).code, code);
+  }
+});

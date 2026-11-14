@@ -68,19 +68,19 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
-function helpers(env, literals, keyName) {
+function helpers(env, literals, keyName, tool) {
   const secrets = [...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
   const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
-  return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
+  return { scrub, ok, fail: (text) => ({ ...ok(/^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 export const startQueue = (env, provider) => createStartQueue({ perMin: Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || provider?.caps.startsPerMin || 25 });
-const ctxOf = (deps) => {
+const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
   deps.queue ??= startQueue(deps.env, deps.provider);
   deps.literals ??= new Set();
-  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName) };
+  return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp'
@@ -482,6 +482,7 @@ async function work(a, message, first, ctx, t) {
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
   const dead = first ? r.error : r.gone;
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : 'worker_error', { id: a.id })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
@@ -557,7 +558,7 @@ export async function cancelTask(taskId, deps) {
 
 // cloud_agent: returns at once; the sandbox starts in the background.
 export async function runSubagent(args, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent');
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
@@ -620,7 +621,7 @@ export async function runSubagent(args, deps) {
 
 // cloud_agent_message: returns at once; the turn runs in the background.
 export async function messageAgent({ agent_id: id, message } = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_message');
   const { fail, ok } = ctx;
   if (typeof message !== 'string' || !message) return fail('message is required');
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
@@ -644,7 +645,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
 const idList = (a) => [a.agent_ids ?? a.agent_id].flat().filter((x) => x !== undefined);
 
 export async function waitAgents(args = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_wait');
   const ids = idList(args), t = args.timeout_seconds;
   if (!Array.isArray(ids) || !ids.length || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be a non-empty array of strings');
   const secs = Math.min(typeof t === 'number' && t > 0 ? t : WAIT_DEFAULT_S, WAIT_MAX_S);
@@ -670,17 +671,17 @@ export async function waitAgents(args = {}, deps) {
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.
 export async function resultAgent(args = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_result');
   const id = idList(args)[0];
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
-  if (active(a) || !a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
-  return ctx.ok(`${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
+  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
 }
 
 // cloud_agent_list: read-only.
 export async function listAgents(_args, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
@@ -692,7 +693,7 @@ export async function listAgents(_args, deps) {
 
 // cloud_agent_stop: idempotent.
 export async function stopAgents(args = {}, deps) {
-  const ctx = ctxOf(deps);
+  const ctx = ctxOf(deps, 'cloud_agent_stop');
   const ids = idList(args);
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be an array of strings');
   const lines = await Promise.all(ids.map(async (id) => {

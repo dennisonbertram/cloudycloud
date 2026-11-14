@@ -1288,3 +1288,28 @@ test('the default create passes the role to the provider so a self-hosted coordi
   await x.wait([await x.start({ role: 'worker' })]);
   assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
 });
+
+test('cloud_agent_result returns the previous result while a follow-up turn runs', async () => {
+  const { start, wait, msg, deps, text } = await setup();
+  const id = await start({ prompt: 'hi' });
+  await wait([id]);
+  await msg(id, 'SLOW');
+  const r = text(await resultAgent({ agent_id: id }, deps));
+  assert.match(r, /hello/);
+  assert.match(r, /newer turn is running/);
+  await wait([id]);
+});
+
+test('argument errors and worker error results carry guidance and keep their ERROR prefix', async () => {
+  const { start, wait, deps, text } = await setup();
+  const a = await runSubagent({ description: 'd' }, deps);
+  assert.equal(a.isError, true);
+  assert.match(text(a), /prompt is required[\s\S]*Next step: .*cloud_agent/);
+  const b = await messageAgent({ agent_id: 'x' }, deps);
+  assert.match(text(b), /message is required[\s\S]*Next step: .*cloud_agent_message/);
+  const c = await waitAgents({ agent_ids: 'x'.repeat(0) || [] }, deps);
+  assert.match(text(c), /agent_ids must be[\s\S]*Next step: .*cloud_agent_wait/);
+  const id = await start({ prompt: 'FAIL' });
+  const w = await wait([id]);
+  assert.match(w, /ERROR: [\s\S]*Next step:/);
+});
