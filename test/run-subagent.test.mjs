@@ -1355,6 +1355,8 @@ test('the tee wrapper returns the harness exit code, and 1 when the exit file ca
   assert.equal(await go(teed('true', 2)), 0);
   await mkdir(join(home, '.config/cloudy-cloud/stream/t4.exit'), { recursive: true }); // writing the exit file now fails
   assert.equal(await go(teed('true', 4)), 1);
+});
+
 test('cloud_agent_result returns the previous result while a follow-up turn runs', async () => {
   const { start, wait, msg, deps, text } = await setup();
   const id = await start({ prompt: 'hi' });
