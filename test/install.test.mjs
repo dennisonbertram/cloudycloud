@@ -265,7 +265,8 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   const cl = claudeStub(claudeExtra);
   const cfgDir = tmp(); const cfg = join(cfgDir, 'env');
   if (saved) writeFileSync(cfg, saved, { mode: 0o600 });
-  const secrets = githubState === 'yes' ? '[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]}]' : '[]';
+  const claudeSecret = '{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]}';
+  const secrets = githubState === 'yes' ? `[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},${claudeSecret}]` : `[${claudeSecret}]`;
   writeFileSync(join(cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *secrets*) echo '${secrets}' ;;\n *) echo '[{"id":"o1","personal":true}]' ;;\nesac\n`);
   writeFileSync(join(cl, 'npm'), '#!/bin/sh\n[ "$1" = prefix ] && echo /nowhere\nexit 0\n');
   writeFileSync(join(cl, 'npx'), '#!/bin/sh\nexit 0\n');
@@ -637,7 +638,7 @@ test('npm package includes the file self-hosted setup reads (#41)', async () => 
 // ---- Instabox proxy secrets (#65) ----
 const PK = 'pk-1234567890abcdef';
 // A stub npx: logs argv (one line per call) and the stdin of every `secrets set`.
-function npxStub({ secrets = '[]' } = {}) {
+function npxStub({ secrets = '[{"name":"PARTICLE_API_KEY","hosts":["api.particle.ai"]}]' } = {}) {
   const cl = claudeStub();
   const log = join(cl, 'npx-argv'); const stdin = join(cl, 'npx-stdin');
   writeFileSync(join(cl, 'npx'), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"secrets set"*) cat >> "${stdin}" ;; esac\nexit 0\n`);
@@ -692,4 +693,29 @@ test('setup --check-only reports a proxied secret whose hosts miss a profile hos
   assert.match(bad.stdout, /npx --yes instabox@latest secrets set PARTICLE_API_KEY --host api\.particle\.ai/);
   const good = run(['api.particle.ai']);
   assert.equal(good.status, 0, good.stdout);
+});
+
+test('del_env keeps the file intact and fails when it cannot write the new copy', () => {
+  const dir = tmp(); const file = join(dir, 'env');
+  writeFileSync(file, 'A=1\nB=2\n', { mode: 0o600 });
+  const bin = stubDir(['grep'], { grep: '#!/bin/sh\nexit 2\n' });
+  const r = fn('del_env A', [], { CLOUDY_CLOUD_CONFIG: file, PATH: `${bin}:${process.env.PATH}` });
+  assert.notEqual(r.status, 0);
+  assert.equal(readFileSync(file, 'utf8'), 'A=1\nB=2\n');
+  assert.deepEqual(readdirSync(dir), ['env']);
+  const ok2 = fn('del_env A', [], { CLOUDY_CLOUD_CONFIG: file });
+  assert.equal(ok2.status, 0);
+  assert.equal(readFileSync(file, 'utf8'), 'B=2\n');
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+});
+
+test('a key is only deleted from the env file after the API-key org shows the secret; otherwise the line stays and setup warns', () => {
+  const s = npxStub({ secrets: '[]' }); // the secret went to another org: the runtime would not see it
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `PARTICLE_API_KEY=${PK}\nINSTABOX_API_KEY=${KEY}\n`, { mode: 0o600 });
+  const env = { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
+  const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; PROVIDER=instabox; setup_provider PARTICLE_API_KEY Particle.ai x`], env, steps: [['Move PARTICLE_API_KEY', 'y\n'], ['Replace it\\? \\[y/N\\]', 'n\n']] });
+  assert.match(r.text, /could not confirm|not visible|stays in/i);
+  assert.equal(readFileSync(cfg, 'utf8'), `PARTICLE_API_KEY=${PK}\nINSTABOX_API_KEY=${KEY}\n`);
+  assert.ok(!r.text.includes(PK));
 });

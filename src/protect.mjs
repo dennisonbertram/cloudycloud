@@ -61,22 +61,28 @@ export async function run(argv, deps = {}) {
     return 1;
   }
 
-  const list = gh(['api', `repos/${repo}/rulesets`]);
+  const list = gh(['api', '--paginate', '--slurp', `repos/${repo}/rulesets?per_page=100`]);
   if (list.status !== 0) {
     err(isPlan(list.stderr) ? NO_PLAN(repo) : `Could not list the rulesets of ${repo}: ${list.stderr.trim()}`);
     return 1;
   }
   const want = ['pull_request', 'non_fast_forward', 'deletion'];
-  for (const { id } of json(list) || []) {
+  const matches = (p) => p === '~DEFAULT_BRANCH' || p === '~ALL' || p === `refs/heads/${branch}`;
+  for (const { id } of (json(list) || []).flat()) {
     const rs = json(gh(['api', `repos/${repo}/rulesets/${id}`]));
-    const covers = rs?.conditions?.ref_name?.include?.some((p) => p === '~DEFAULT_BRANCH' || p === '~ALL' || p === `refs/heads/${branch}`);
-    if (rs?.enforcement === 'active' && rs.target === 'branch' && covers && !rs.bypass_actors?.length && want.every((t) => rs.rules?.some((r) => r.type === t))) {
+    const ref = rs?.conditions?.ref_name;
+    const covers = ref?.include?.some(matches) && !ref.exclude?.some(matches);
+    // GitHub leaves bypass_actors out when the caller cannot edit the ruleset, so an absent list proves nothing.
+    if (rs && !Array.isArray(rs.bypass_actors)) { out(`Ruleset "${rs.name}" does not count: GitHub did not show its bypass_actors to you, so it may let someone bypass.`); continue; }
+    if (rs?.enforcement === 'active' && rs.target === 'branch' && covers && !rs.bypass_actors.length && want.every((t) => rs.rules?.some((r) => r.type === t))) {
       out(`${branch} on ${repo} is already protected by ruleset "${rs.name}" (no bypass actors). Nothing changed.`);
       return 0;
     }
   }
   const classic = json(gh(['api', `repos/${repo}/branches/${branch}/protection`]));
-  if (classic?.enforce_admins?.enabled && classic.required_pull_request_reviews) {
+  const allow = classic?.required_pull_request_reviews?.bypass_pull_request_allowances;
+  if (classic?.enforce_admins?.enabled && classic.required_pull_request_reviews && !classic.allow_force_pushes?.enabled && !classic.allow_deletions?.enabled
+    && !['users', 'teams', 'apps'].some((k) => allow?.[k]?.length)) {
     out(`${branch} on ${repo} already has classic branch protection that applies to admins. Nothing changed.`);
     return 0;
   }

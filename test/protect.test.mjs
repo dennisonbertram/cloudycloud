@@ -17,7 +17,7 @@ function setup(routes, { yes = false, answer = true } = {}) {
     calls.push({ args, input });
     if (args[0] === 'auth') return routes.auth ?? { status: 0, stdout: '', stderr: '' };
     const method = args.includes('-X') ? args[args.indexOf('-X') + 1] : 'GET';
-    const path = args.find((a) => a.startsWith('repos/'));
+    const path = args.find((a) => a.startsWith('repos/'))?.split('?')[0];
     const r = routes[`${method} ${path}`];
     if (!r) return fail('gh: Not Found (HTTP 404)');
     return typeof r === 'function' ? r(input) : r;
@@ -136,4 +136,44 @@ test('no argument: uses the repo of the current folder', async () => {
   const s = setup({ 'GET repos/{owner}/{repo}': ok({ ...repo, full_name: R }), [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(equivalent) }, { yes: true });
   assert.equal(await s.run([]), 0);
   assert.match(s.out.join('\n'), /acme\/app/);
+});
+
+test('a ruleset that includes ~ALL but excludes the default branch does not protect it', async () => {
+  const ex = { ...equivalent, conditions: { ref_name: { include: ['~ALL'], exclude: ['refs/heads/main'] } } };
+  const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(ex), [`POST repos/${R}/rulesets`]: ok({ id: 9 }), [`GET repos/${R}/rulesets/9`]: ok(equivalent) }, { yes: true });
+  assert.equal(await s.run(), 0);
+  assert.equal(posts(s).length, 1);
+});
+
+test('a ruleset whose bypass_actors is hidden (omitted) does not count, and the output says so', async () => {
+  const { bypass_actors, ...hidden } = equivalent;
+  const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(hidden), [`POST repos/${R}/rulesets`]: ok({ id: 9 }), [`GET repos/${R}/rulesets/9`]: ok(equivalent) }, { yes: true });
+  assert.equal(await s.run(), 0);
+  assert.equal(posts(s).length, 1);
+  assert.match(s.out.join('\n'), /bypass_actors/);
+});
+
+test('classic protection that lets someone bypass, force push or delete is not protection', async () => {
+  const good = { enforce_admins: { enabled: true }, required_pull_request_reviews: {}, allow_force_pushes: { enabled: false }, allow_deletions: { enabled: false } };
+  const variants = [
+    { ...good, required_pull_request_reviews: { bypass_pull_request_allowances: { users: [{ login: 'me' }], teams: [], apps: [] } } },
+    { ...good, allow_force_pushes: { enabled: true } },
+    { ...good, allow_deletions: { enabled: true } },
+  ];
+  for (const classic of variants) {
+    const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([]), [`GET repos/${R}/branches/main/protection`]: ok(classic), [`POST repos/${R}/rulesets`]: ok({ id: 9 }), [`GET repos/${R}/rulesets/9`]: ok(equivalent) }, { yes: true });
+    assert.equal(await s.run(), 0);
+    assert.equal(posts(s).length, 1, JSON.stringify(classic));
+  }
+  const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([]), [`GET repos/${R}/branches/main/protection`]: ok(good) }, { yes: true });
+  assert.equal(await s.run(), 0);
+  assert.equal(posts(s).length, 0);
+});
+
+test('the ruleset list is paginated: an equivalent ruleset on a later page is found', async () => {
+  const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([[{ id: 1 }], [{ id: 7 }]]), [`GET repos/${R}/rulesets/1`]: ok({ ...equivalent, id: 1, enforcement: 'disabled' }), [`GET repos/${R}/rulesets/7`]: ok(equivalent) }, { yes: true });
+  assert.equal(await s.run(), 0);
+  assert.equal(posts(s).length, 0);
+  const list = s.calls.find((c) => c.args.some((a) => a.startsWith(`repos/${R}/rulesets?`)));
+  assert.ok(list.args.includes('--paginate') && list.args.includes('--slurp'));
 });

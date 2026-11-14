@@ -304,8 +304,19 @@ store_secret() {
   [ "${#args[@]}" -gt 0 ] || return 1
   npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty || return 1
   printf '%s' "$2" | npx --yes instabox@latest secrets set "$name" "${args[@]}" >/dev/null || return 1
+  # The runtime reads secrets in the org of INSTABOX_API_KEY; your login may point at another org or workspace
+  # (instabox secrets set uses --org, else your default workspace). Keep the env line unless the API-key org shows the secret.
+  secret_visible "$name" || { warn "$name is not visible to your Instabox API key (your login may use another org or workspace), so it is not treated as stored" "check with: npx --yes instabox@latest whoami" >&2; return 1; }
   if ! is_proxied "$name"; then cur=$(get_saved CLOUDY_CLOUD_PROXY_SECRETS); write_env CLOUDY_CLOUD_PROXY_SECRETS "${cur:+$cur,}$name" || return 1; fi
-  del_env "$name"
+  del_env "$name" || { warn "Stored $name, but could not remove its line from $(cfg)" "delete the $name= line yourself" >&2; return 1; }
+}
+
+# secret_visible NAME: the org of the saved Instabox API key lists NAME with all of its hosts.
+secret_visible() {
+  secrets_list | node -e '
+    const [name,...hosts]=process.argv.slice(1);let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
+    const a=Array.isArray(j)?j:(j.items||j.data||j.secrets||[]);
+    process.exit(a.some(x=>x&&x.name===name&&hosts.every(h=>(x.hosts||[]).includes(h)))?0:1)}catch{process.exit(1)}})' "$1" $(secret_hosts "$1")
 }
 
 # keep_key NAME VALUE: on Instabox, stores the key as a secret; if that fails (or on your own machine), saves it in the config instead.
@@ -514,11 +525,12 @@ strip_escapes() {
   printf '%s' "$v"
 }
 
-del_env() { # del_env NAME: removes NAME from the config file, if present
+del_env() { # del_env NAME: removes NAME from the config file, if present. Returns non-zero, leaving the file as it was, on any failure.
   local file t
   file=$(cfg); [ -f "$file" ] || return 0
   t="$file.tmp.$$"
-  ( umask 077; grep -v "^$1=" "$file" > "$t"; mv "$t" "$file" ) || rm -f "$t"
+  # grep exits 1 when no line is left, which is fine; 2 or more is an error.
+  ( umask 077; grep -v "^$1=" "$file" > "$t"; [ $? -le 1 ] && [ -f "$t" ] && mv "$t" "$file" ) || { rm -f "$t"; return 1; }
 }
 
 # preview VALUE: first 8 and last 4 characters only, and only for values long enough to hide the middle.
