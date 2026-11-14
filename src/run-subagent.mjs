@@ -69,9 +69,11 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
+// Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
+const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
+export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals];
 function helpers(env, literals, keyName) {
-  const secrets = [...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
-  const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
+  const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(text), isError: true }) };
 }
@@ -224,7 +226,8 @@ const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profil
 // Raw stream of every turn, kept on the machine (tee) next to meta.json; the laptop keeps a redacted copy (createLocalStream).
 // The harness exit code goes through a file because the pipe to tee hides it; `umask 077` only covers the stream files.
 const STREAM_DIR = '$HOME/.config/cloudy-cloud/stream';
-const teed = (cmd, n) => `D=${STREAM_DIR}; (umask 077; mkdir -p $D && : >> $D/t${n}.jsonl) && ({ ${cmd}; echo $? > $D/t${n}.exit; }) | tee -a $D/t${n}.jsonl; exit $(cat $D/t${n}.exit)`;
+// A missing or empty exit file (the write failed) exits 1, never tee's status.
+export const teed = (cmd, n) => `D=${STREAM_DIR}; (umask 077; mkdir -p $D && : >> $D/t${n}.jsonl) && ({ ${cmd}; echo $? > $D/t${n}.exit; }) | tee -a $D/t${n}.jsonl; s=$(cat $D/t${n}.exit 2>/dev/null); exit \${s:-1}`;
 // meta.json on the machine, best effort: the first write may fail before the folder exists; the one after the turn lands.
 async function writeMeta(a, ctx) {
   try {

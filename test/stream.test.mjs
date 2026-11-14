@@ -122,3 +122,22 @@ test('prune removes files older than 30 days, then the oldest until under the si
   assert.match(logs[0], /removed 1 file/);
   assert.ok(!existsSync(join(dir, 'd')));
 });
+
+test('keys are redacted too; the byte count is right for large lines; an unterminated line cannot grow without bound', async () => {
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { redactLine, createLocalStream } = await import('../src/stream.mjs');
+  assert.ok(!redactLine('{"sk-abcdefghijkl1234":1,"n":{"ghp_abcdefghijkl":2}}').includes('abcdefghijkl'));
+  const dir = mkdtempSync(join(tmpdir(), 'cc-cap2-'));
+  const line = `${JSON.stringify({ p: 'p'.repeat(120) })}\n`; // ~130 bytes
+  const w = createLocalStream(join(dir, 't.jsonl'), { cap: 200 });
+  w.write(line); w.write(line); w.end();
+  const size = readFileSync(join(dir, 't.jsonl')).length;
+  assert.ok(size <= 200 + 45, `file is ${size} bytes`); // one line plus the truncated note, not two lines
+  const w2 = createLocalStream(join(dir, 'u.jsonl'), { cap: 200 });
+  w2.write('x'.repeat(150)); w2.write('x'.repeat(150)); w2.write('x'.repeat(150));
+  w2.end();
+  assert.equal(readFileSync(join(dir, 'u.jsonl'), 'utf8'), '{"type":"cloudy-cloud","note":"truncated"}\n');
+  assert.ok(existsSync(join(dir, 'u.jsonl')));
+});

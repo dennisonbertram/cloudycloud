@@ -127,8 +127,69 @@ test('capturePane sends only tmux capture-pane and redacts the screen', async ()
   await chmod(join(sbx.dir, 'bin/tmux'), 0o755);
   const r = await reader.capturePane(sbx.id);
   assert.deepEqual(r.lines.slice(0, 2), ['pane line one', 'token [redacted]']);
-  assert.equal(await readFile(join(sbx.dir, 'tmux.log'), 'utf8'), 'capture-pane -p -t claude -S -200\n');
-  assert.equal(sbx.last, "tmux capture-pane -p -t claude -S -200 2>&1 || echo 'no tmux session named claude'");
+  assert.equal(await readFile(join(sbx.dir, 'tmux.log'), 'utf8'), 'capture-pane -p -J -t claude -S -200\n');
+  assert.equal(sbx.last, "tmux capture-pane -p -J -t claude -S -200 2>&1 || echo 'no tmux session named claude'");
   await reader.capturePane(sbx.id);
   assert.equal(runs(), 1);
+});
+
+test('only complete lines are returned and cached; an unfinished line waits, an oversize line is dropped', async () => {
+  const { reader, sbx, file, clock, cacheDir } = await setup();
+  await writeFile(file, `${L1}{"type":"x","secret":"abcdef`);
+  const a = await reader.readTail(sbx.id, 'stream/t1.jsonl', 0);
+  assert.equal(a.data, L1);
+  assert.equal(a.next, Buffer.byteLength(L1)); // stays at the start of the unfinished line
+  clock.t += 3000;
+  await appendFile(file, 'ghij"}\n');
+  const b = await reader.readTail(sbx.id, 'stream/t1.jsonl', a.next);
+  assert.equal(b.data, '{"type":"x","secret":"abcdefghij"}\n');
+  assert.equal(await readFile(join(cacheDir, sbx.id, 'stream/t1.jsonl'), 'utf8'), a.data + b.data);
+  // a single line longer than the 256 KB chunk: no fragments, a marker, and the rest of that line is skipped
+  clock.t += 3000;
+  await writeFile(file, `${'z'.repeat(300_000)}\n${L3}`);
+  const c = await reader.readTail(sbx.id, 'stream/t1.jsonl', 0);
+  assert.equal(c.data, '{"type":"cloudy-cloud","note":"truncated"}\n');
+  clock.t += 3000;
+  const d = await reader.readTail(sbx.id, 'stream/t1.jsonl', c.next);
+  assert.equal(d.data, L3);
+});
+
+test('MCP token values in the env and consented literals are redacted in tails, the cache and the pane', async () => {
+  const lits = new Set();
+  const { sbx, file, cacheDir, provider, env, clock } = await setup();
+  env.MCP_NOTION_TOKEN = 'mcpnotionvalue-777';
+  lits.add('ytoken-consented-1');
+  const reader = createMachineReader(provider, env, { now: () => clock.t, cacheDir, literals: lits });
+  await writeFile(file, `${JSON.stringify({ a: 'ytoken-consented-1', b: 'mcpnotionvalue-777' })}\n`);
+  const r = await reader.readTail(sbx.id, 'stream/t1.jsonl', 0);
+  const onDisk = await readFile(join(cacheDir, sbx.id, 'stream/t1.jsonl'), 'utf8');
+  for (const t of [r.data, onDisk]) assert.ok(!t.includes('ytoken-consented-1') && !t.includes('mcpnotionvalue-777'));
+  await writeFile(join(sbx.dir, 'bin/tmux'), '#!/bin/sh\necho "x ytoken-consented-1 y"\n');
+  await chmod(join(sbx.dir, 'bin/tmux'), 0o755);
+  clock.t += 3000;
+  assert.deepEqual((await reader.capturePane(sbx.id)).lines, ['x [redacted] y']);
+});
+
+test('the reader keeps few results and the disk cache stops at the cap; readCached reads only the tail', async () => {
+  const { reader, sbx, file, clock, cacheDir } = await setup({ cacheCap: 300 });
+  const big = (n) => `${JSON.stringify({ n, pad: 'p'.repeat(100) })}\n`;
+  await writeFile(file, big(1) + big(2));
+  const a = await reader.readTail(sbx.id, 'stream/t1.jsonl', 0);
+  clock.t += 3000;
+  await appendFile(file, big(3) + big(4));
+  await reader.readTail(sbx.id, 'stream/t1.jsonl', a.next);
+  const stored = await readFile(join(cacheDir, sbx.id, 'stream/t1.jsonl'), 'utf8');
+  assert.ok(Buffer.byteLength(stored) <= 300);
+  const c = await reader.readCached(sbx.id, 'stream/t1.jsonl', { maxBytes: 150 });
+  assert.ok(Buffer.byteLength(c.data) <= 150);
+  assert.ok(c.data.endsWith('\n') && c.data.startsWith('{')); // starts on a line boundary
+});
+
+test('concurrent reads of different files on one machine keep the 3 s interval', async () => {
+  const { reader, sbx, home, runs } = await setup();
+  await writeFile(join(home, 'stream/meta.json'), '{"a":1}\n');
+  const [a, b] = await Promise.all([reader.readTail(sbx.id, 'stream/t1.jsonl', 0), reader.readTail(sbx.id, 'stream/meta.json', 0)]);
+  assert.equal(runs(), 1);
+  assert.equal(a.data !== '' || b.data !== '', true);
+  assert.ok(a.data === '' || b.data === '');
 });

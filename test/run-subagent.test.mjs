@@ -1324,7 +1324,7 @@ test('the turn command tees the raw stream on the machine and keeps the exit cod
   const { start, wait, created } = await setup();
   await wait([await start()]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
-  assert.match(cmd, /tee -a \$D\/t1\.jsonl; exit \$\(cat \$D\/t1\.exit\)$/);
+  assert.match(cmd, /tee -a \$D\/t1\.jsonl; s=\$\(cat \$D\/t1\.exit 2>\/dev\/null\); exit \$\{s:-1\}$/);
   assert.ok(cmd.includes('D=$HOME/.config/cloudy-cloud/stream'));
   assert.ok(!cmd.includes(SECRET));
 });
@@ -1339,4 +1339,14 @@ test('the local copy stops at 20 MB with one truncated note', async () => {
   assert.deepEqual(JSON.parse(lines.at(-1)), { type: 'cloudy-cloud', note: 'truncated' });
   assert.equal(lines.filter((l) => l.includes('truncated')).length, 1);
   assert.ok(lines.length < 10);
+});
+
+test('the tee wrapper returns the harness exit code, and 1 when the exit file cannot be written', async () => {
+  const { teed } = await import('../src/run-subagent.mjs');
+  const home = await mkdtemp(join(tmpdir(), 'cc-tee-'));
+  const go = (cmd) => exec('sh', ['-c', cmd], { env: { ...process.env, HOME: home } }).then(() => 0, (e) => e.code);
+  assert.equal(await go(teed('sh -c "exit 3"', 1)), 3);
+  assert.equal(await go(teed('true', 2)), 0);
+  await mkdir(join(home, '.config/cloudy-cloud/stream/t4.exit'), { recursive: true }); // writing the exit file now fails
+  assert.equal(await go(teed('true', 4)), 1);
 });

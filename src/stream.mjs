@@ -101,7 +101,7 @@ export function normalise(source, { harness = 'claude', turn, from = 0, seq = 0,
 
 export const streamsDir = (env = process.env) => env.CLOUDY_CLOUD_STREAMS || process.env.CLOUDY_CLOUD_STREAMS || join(homedir(), '.config/cloudy-cloud/streams');
 
-const mapStrings = (v, f) => (typeof v === 'string' ? f(v) : Array.isArray(v) ? v.map((x) => mapStrings(x, f)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mapStrings(x, f)])) : v);
+const mapStrings = (v, f) => (typeof v === 'string' ? f(v) : Array.isArray(v) ? v.map((x) => mapStrings(x, f)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [f(k), mapStrings(x, f)])) : v);
 // One raw line, redacted. A JSON line is redacted string by string, so it stays valid JSON.
 export function redactLine(line, scrub = (s) => s) {
   const f = (s) => redactText(scrub(s));
@@ -111,22 +111,31 @@ export function redactLine(line, scrub = (s) => s) {
 // Returns { write(chunk), end() }: complete lines are appended redacted (folder 700, file 600). Never throws.
 // After `cap` bytes it writes one {"type":"cloudy-cloud","note":"truncated"} line and drops the rest.
 export function createLocalStream(file, { scrub, cap = 20 * 1024 * 1024 } = {}) {
-  let buf = '', bytes = 0, done = false, ready = false;
+  let buf = '', bytes, done = false;
   const append = (text) => {
     try {
-      if (!ready) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); bytes = (() => { try { return statSync(file).size; } catch { return 0; } })(); ready = true; }
+      if (bytes === undefined) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); bytes = (() => { try { return statSync(file).size; } catch { return 0; } })(); }
       appendFileSync(file, text, { mode: 0o600 });
+      bytes += Buffer.byteLength(text);
     } catch { /* storing the stream is best effort */ }
   };
+  const stop = () => { done = true; buf = ''; append('{"type":"cloudy-cloud","note":"truncated"}\n'); };
   const line = (l) => {
     if (done || !l.trim()) return;
     const out = `${redactLine(l, scrub)}\n`;
-    if (bytes + Buffer.byteLength(out) > cap) { done = true; append('{"type":"cloudy-cloud","note":"truncated"}\n'); return; }
-    bytes += Buffer.byteLength(out);
+    if (bytes === undefined) append(''); // learn the size of an existing file first
+    if (bytes + Buffer.byteLength(out) > cap) return stop();
     append(out);
   };
   return {
-    write(chunk) { buf += chunk; const parts = buf.split('\n'); buf = parts.pop(); parts.forEach(line); },
+    write(chunk) {
+      if (done) return;
+      buf += chunk;
+      const parts = buf.split('\n');
+      buf = parts.pop();
+      parts.forEach(line);
+      if (buf.length > cap) stop(); // one unterminated line past the cap: drop it
+    },
     end() { line(buf); buf = ''; },
   };
 }
