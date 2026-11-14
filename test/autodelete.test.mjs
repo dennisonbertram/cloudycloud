@@ -47,7 +47,7 @@ test('coordinator start: default 24 h deadline, --max-hours applied, over 24 ref
   const mk = () => {
     const { log, sdk } = fx();
     const cfg = join(mkdtempSync(join(tmpdir(), 'cc-ad-')), 'env');
-    const env = { INSTABOX_API_KEY: KEY, CLAUDE_CODE_OAUTH_TOKEN: 't', CLOUDY_CLOUD_CONFIG: cfg, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
+    const env = { INSTABOX_API_KEY: KEY, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_CONFIG: cfg, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
     sdk.Sandbox.create = async (template, opts) => {
       await opts.fetch('https://api.instabox.sh/v1/machines', { method: 'POST', body: '{}' });
       return { sandboxId: 'm', getInfo: async () => ({ name: 'coord-boss' }), kill: async () => {},

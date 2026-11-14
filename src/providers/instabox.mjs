@@ -106,8 +106,10 @@ export function createProvider(env, deps = {}) {
   const sliceMs = deps.sliceMs ?? WAIT_SLICE_MS;
   const rawSandboxes = new WeakMap(); // wrapped sandbox -> SDK sandbox, for snapshot()
   const apiKey = () => {
-    if (!env[KEY_NAME]) throw Object.assign(new Error(`${KEY_NAME} is not set.`), { code: 'no_key' });
-    return env[KEY_NAME];
+    // A coordinator holds the key as the proxy secret CLOUDY_CLOUD_INSTABOX_API_KEY (Instabox reserves the INSTABOX_ prefix).
+    const key = env[KEY_NAME] || env.CLOUDY_CLOUD_INSTABOX_API_KEY;
+    if (!key) throw Object.assign(new Error(`${KEY_NAME} is not set.`), { code: 'no_key' });
+    return key;
   };
   const loadSdk = async () => deps.sdk ?? (await import('@insforge/instabox-sdk'));
   // tries = 1 for coordinator sandboxes ({ retry: false }): a single attempt, as before the adapter.

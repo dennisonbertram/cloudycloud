@@ -290,6 +290,7 @@ secret_hosts() {
     CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY) echo api.anthropic.com ;;
     PARTICLE_API_KEY) echo api.particle.ai ;;
     OPENROUTER_API_KEY) echo openrouter.ai ;;
+    CLOUDY_CLOUD_INSTABOX_API_KEY) echo api.instabox.sh ;;
     *) return 1 ;;
   esac
 }
@@ -333,7 +334,7 @@ migrate_key() {
   local v
   [ "${PROVIDER:-}" = instabox ] || return 1
   v=$(get_saved "$1"); [ -n "$v" ] || return 1
-  yn_yes "Move $1 into an Instabox secret (host $(secret_hosts "$1"))?" || { hint "Kept $1 in $(cfg). Workers that use it receive the real key."; return 1; }
+  yn_yes "Move $1 into an Instabox secret (host $(secret_hosts "$1"))?" || { hint "Kept $1 in $(cfg). On Instabox, workers that need it are refused until it is stored as a secret."; return 1; }
   if store_secret "$1" "$v"; then ok "Moved $1 into an Instabox secret" "workers see a placeholder"
   else warn "Could not store $1 as an Instabox secret; it stays in $(cfg)" "run $(rerun_cmd) again to retry"; return 1; fi
 }
@@ -705,6 +706,7 @@ setup_instabox() {
     write_env INSTABOX_API_KEY "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
     STATUS_INSTABOX="OK ($(mask ibk_ "$key"))"
     ok "Saved the Instabox key" "$(mask ibk_ "$key")"
+    INSTABOX_KEY_CHANGED=1
     return
   done
   if [ -n "$saved" ]; then warn "Stopped the Instabox step after 3 tries. Your saved key is unchanged. Run $(rerun_cmd) again to retry."
@@ -775,6 +777,18 @@ setup_claude() {
   done
   if [ -n "$saved" ]; then warn "Stopped the Claude step after 3 tries. Your saved token is unchanged. Run $(rerun_cmd) again to retry."
   else warn "Stopped the Claude step after 3 tries. No token is saved. Run $(rerun_cmd) again to retry."; fi
+}
+
+# Cloud coordinators start workers, so their machine needs the Instabox key. Instabox reserves the INSTABOX_ prefix, so the
+# coordinator's copy is the secret CLOUDY_CLOUD_INSTABOX_API_KEY (host api.instabox.sh): an extra copy of your key's value.
+# Your laptop keeps using the real INSTABOX_API_KEY. The value goes on stdin, never on a command line.
+store_coordinator_key() {
+  local name=CLOUDY_CLOUD_INSTABOX_API_KEY key
+  # A key saved in this run (INSTABOX_KEY_CHANGED) replaces the stored copy, so rotating the key does not leave the old one.
+  [ -z "${INSTABOX_KEY_CHANGED:-}" ] && is_proxied "$name" && secret_visible "$name" && return 0
+  key=$(get_saved INSTABOX_API_KEY)
+  if [ -n "$key" ] && store_secret "$name" "$key"; then ok "Stored $name as an Instabox secret" "coordinators see a placeholder"
+  else warn "Could not store $name, so coordinator start will refuse to run" "run $(rerun_cmd) again to retry"; return 1; fi
 }
 
 # Removes the image machine so nothing keeps running, or says how to.
@@ -905,6 +919,7 @@ setup_provider() { # setup_provider NAME LABEL WHERE
   keep_key "$name" "$key"
   ok "Saved the $label key" "$(mask "" "$key")"
   if is_proxied "$name"; then hint "Stored as an Instabox secret: worker machines see a placeholder, not the key."
+  elif [ "${PROVIDER:-}" = instabox ]; then hint "Not stored as a secret: workers that need this key are refused until you store it (run $(rerun_cmd) again)."
   else hint "Unlike GH_TOKEN, this key is stored on the worker machines that use it."; fi
 }
 
@@ -985,6 +1000,7 @@ main() {
     step 2 "Instabox key"
     setup_instabox
     [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
+    store_coordinator_key || true # whether or not you build a coordinator image: nested coordinators need it too
   fi
   step 3 "Claude token"
   setup_claude

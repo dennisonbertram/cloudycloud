@@ -111,7 +111,7 @@ export async function fakeSandbox(github = currentGithub) {
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
 export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false } = {}) {
-  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [] };
+  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
   let n = 0;
@@ -127,6 +127,9 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
       const id = `fake-${++n}`, name = opts.name ?? `sbx-${n}`;
       const sbx = wrap(await fakeSandbox(), id, name);
       sbx.envs = opts.envs;
+      const write = sbx.files.write, run = sbx.commands.run;
+      sbx.files.write = (p, d) => { log.writes.push({ id, p, d: String(d) }); return write(p, d); };
+      sbx.commands.run = (cmd, o) => { log.cmds.push({ id, cmd }); return run(cmd, o); };
       machines.set(id, { id, name, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
       sandboxes.set(id, sbx);
       const kill = sbx.kill;

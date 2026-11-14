@@ -222,3 +222,9 @@ test('wire: port commands use the exact npx instabox argv and the key only in en
   assert.equal(calls[0][1].inherit, true);
   assert.ok(calls.every(([a, o]) => o.env.INSTABOX_API_KEY === KEY && !a.includes(KEY) && !a.includes('--public')));
 });
+
+test('a coordinator reads its API key from the CLOUDY_CLOUD_INSTABOX_API_KEY placeholder when INSTABOX_API_KEY is unset', async () => {
+  const { calls, sdk } = fakeSdk();
+  await createProvider({ CLOUDY_CLOUD_INSTABOX_API_KEY: 'ibsec_placeholder' }, { sdk }).list({}, { sdk: true });
+  assert.equal(calls.list[0].apiKey, 'ibsec_placeholder');
+});

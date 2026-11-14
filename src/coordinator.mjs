@@ -5,8 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, DEFAULT_PROVIDER_KEY } from './config.mjs';
-import { profileKeyNames } from './profiles.mjs';
+import { loadEnv, ownerFile } from './config.mjs';
+import { coordinatorKeys } from './profiles.mjs';
 import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi } from './ui.mjs';
@@ -136,13 +136,6 @@ async function image(c, args) {
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
-// What goes in the coordinator's own env file: the provider key (and the default provider's, which the machine loads), the Claude setup-token and the provider keys that
-// profiles use. ANTHROPIC_API_KEY stays, because a coordinator's workers fall back to it when there is no token.
-function keysFile(env, own, keyName) { // own: the provider's coordinatorEnv() ({ names, fixed }), if it has one
-  const names = new Set([...(own?.names ?? [keyName, DEFAULT_PROVIDER_KEY]), 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', ...profileKeyNames(env)]);
-  return `${[...(own?.fixed ?? []), ...Object.entries(env).filter(([k, v]) => v && names.has(k)).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`;
-}
-
 async function start(c, args) {
   const name = args[0];
   if (!name || !NAME_RE.test(name)) fail('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
@@ -167,14 +160,17 @@ async function start(c, args) {
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
+  // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
+  const keys = coordinatorKeys(c.env, c.provider);
+  if (keys.legacy.length) fail(`${keys.legacy[0]} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`);
   c.progress('Creating the coordinator machine...');
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
-    await sbx.files.write(`${dir}/env`, keysFile(c.env, c.provider.coordinatorEnv?.(c.env), c.provider.keyName)); // values never appear in a command string
+    await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
@@ -188,7 +184,9 @@ async function start(c, args) {
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
+    // a setup-token cannot start Remote Control and an env token beats the saved full login (code.claude.com/docs/en/remote-control).
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
     // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
     await c.sleep(5000);
     let pane = '';

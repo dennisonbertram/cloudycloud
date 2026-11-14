@@ -35,7 +35,8 @@ test('worker commands, files and env names are unchanged', async () => {
     calls.push({ op: 'createSandbox', envNames: Object.keys(envs).sort(), opts });
     return s;
   };
-  const deps = { createSandbox, provider: createFakeProvider(), open: new Map(), cwd: repo, env: { ANTHROPIC_API_KEY: 'sk-test-secret-123', GH_TOKEN: 'ghp_secret' } };
+  const deps = { createSandbox, // Records the by-value path (a provider without proxy secrets); a provider with proxy secrets refuses a real key (#68).
+  provider: createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open: new Map(), cwd: repo, env: { ANTHROPIC_API_KEY: 'sk-test-secret-123', GH_TOKEN: 'ghp_secret' } };
   const text = (r) => r.content[0].text;
   const id = text(await runSubagent({ description: 'd', prompt: 'hi' }, deps)).match(/agent_id: ([0-9a-f]{8})/)[1];
   await waitAgents({ agent_ids: [id], timeout_seconds: 120 }, deps);

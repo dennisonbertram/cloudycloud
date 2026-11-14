@@ -168,7 +168,7 @@
           "X-API-Key": "<API_KEY>",
           "Content-Type": "application/json"
         },
-        "body": "{\"secrets\":[\"GH_TOKEN\"]}"
+        "body": "{\"secrets\":[\"GH_TOKEN\",\"CLOUDY_CLOUD_INSTABOX_API_KEY\",\"CLAUDE_CODE_OAUTH_TOKEN\"]}"
       },
       {
         "http": "GET",
@@ -215,8 +215,7 @@
         "sdk": "files.write",
         "path": "/data/home/.config/cloudy-cloud/env",
         "envNames": [
-          "INSTABOX_API_KEY",
-          "CLAUDE_CODE_OAUTH_TOKEN"
+          "CLOUDY_CLOUD_PROXY_SECRETS"
         ]
       },
       {
@@ -251,7 +250,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
       },
       {
         "sdk": "commands.run",
@@ -309,7 +308,7 @@
           "X-API-Key": "<API_KEY>",
           "Content-Type": "application/json"
         },
-        "body": "{\"secrets\":[\"GH_TOKEN\"]}"
+        "body": "{\"secrets\":[\"GH_TOKEN\",\"CLOUDY_CLOUD_INSTABOX_API_KEY\",\"CLAUDE_CODE_OAUTH_TOKEN\"]}"
       },
       {
         "http": "GET",
@@ -356,8 +355,7 @@
         "sdk": "files.write",
         "path": "/data/home/.config/cloudy-cloud/env",
         "envNames": [
-          "INSTABOX_API_KEY",
-          "CLAUDE_CODE_OAUTH_TOKEN"
+          "CLOUDY_CLOUD_PROXY_SECRETS"
         ]
       },
       {
@@ -387,7 +385,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
       },
       {
         "sdk": "commands.run",

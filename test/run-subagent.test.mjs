@@ -33,7 +33,9 @@ async function setup(over = {}) {
   const created = [];
   const createSandbox = over.createSandbox ?? (async (envs) => { const s = await fakeSandbox(github); s.envs = envs; created.push(s); return s; });
   const open = new Map();
-  const deps = { createSandbox, provider: createFakeProvider(), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
+  // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
+  // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -45,6 +47,8 @@ async function setup(over = {}) {
   const rejectPushes = (on) => writeFile(join(bare, 'hooks', 'pre-receive'), on ? '#!/bin/sh\necho "remote: denied by test" >&2\nexit 1\n' : '#!/bin/sh\nexit 0\n').then(() => chmod(join(bare, 'hooks', 'pre-receive'), 0o755));
   return { repo, bare, github, created, open, deps, start, wait, msg, stop, text, remote, rejectPushes };
 }
+const proxyProvider = () => createFakeProvider();
+const PROXY_ENV = { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY' }; // the Claude key is a proxy secret, as on Instabox
 const refs = (repo) => sh(repo, 'git for-each-ref');
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -496,7 +500,7 @@ test('a push failure is reported; the agent stays idle and messageable', async (
 });
 
 test('a failed first push fails the agent with a clear, scrubbed message', async () => {
-  const { start, wait, rejectPushes, created } = await setup();
+  const { start, wait, rejectPushes, created } = await setup({ provider: proxyProvider(), env: PROXY_ENV });
   await rejectPushes(true);
   const r = await wait([await start()]);
   assert.match(r, /status: failed/);
@@ -541,7 +545,7 @@ test('secrets, including GH_TOKEN and GITHUB_TOKEN, are scrubbed from results', 
 test('task mode: a starting agent says "starting machine…"; the final line ends with a total; the status message hides secrets', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
-  const { deps, wait } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); }, asTask: true });
+  const { deps, wait } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); }, asTask: true, provider: proxyProvider(), env: PROXY_ENV });
   const t = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
   assert.equal(t.resultType, 'task');
   assert.equal(t.statusMessage, 'starting machine…');
@@ -619,7 +623,7 @@ test('three non-auth first-push failures give the attempts message without the t
 
 test('an auth failure on the first push gives the GH_TOKEN hint', async () => {
   const f = flakyFirstPush(9, 'remote: Permission to test/repo.git denied. fatal: 403');
-  const { start, wait } = await setup(f);
+  const { start, wait } = await setup({ ...f, provider: proxyProvider(), env: PROXY_ENV });
   const r = await wait([await start()]);
   assert.match(r, /status: failed/);
   assert.match(r, /GH_TOKEN.*RUNBOOK\.md, step 2\.4/s);
@@ -656,6 +660,7 @@ test('the safety push retries once', async () => {
 
 // ---- model profiles ----
 const PKEY = 'pk-particle-secret-999';
+const PROXY_ALL = 'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY,OPENROUTER_API_KEY';
 const pEnv = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-1', GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: PKEY, OPENROUTER_API_KEY: 'or-secret-777', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
 // Gateway commands are faked (no uvx or curl here); everything else runs in the fake sandbox. health: 'ok' or a log text.
 async function profileSetup(health = 'ok', env = pEnv) {
@@ -781,6 +786,7 @@ async function withTool(x) {
   return { tool, sha: await sh(tool, 'git rev-parse HEAD') };
 }
 // STRIPE_API_KEY stands for any *_API_KEY in the shell that no profile uses.
+const COORD_ALL = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY';
 const LONG_ENV = { ANTHROPIC_API_KEY: SECRET, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok-1', INSTABOX_API_KEY: 'ib-key-1', PARTICLE_API_KEY: 'part-key-1', GH_TOKEN: 'ghp_secret', STRIPE_API_KEY: 'stripe-key-1', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
 
 test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, installs it, writes the env file without keys in commands, and runs the launcher', async () => {
@@ -1005,7 +1011,8 @@ async function mcpSetup(servers, over = {}) {
   const file = join(dir, 'mcp.json');
   await writeFile(file, typeof servers === 'string' ? servers : JSON.stringify({ mcpServers: servers }));
   const opts = [];
-  const s = await profileSetup('ok', { ...pEnv, CLOUDY_CLOUD_MCP: file });
+  const s = await profileSetup('ok', { ...pEnv, CLOUDY_CLOUD_MCP: file, ...(over.proxy && { CLOUDY_CLOUD_PROXY_SECRETS: PROXY_ALL }) });
+  if (over.proxy) s.deps.provider = proxyProvider(); // a provider with proxy secrets: tokens go as secrets, not as consented values
   if (over.events) s.deps.events = over.events;
   const inner = s.deps.createSandbox;
   s.deps.createSandbox = (envs, o) => { opts.push(o); return inner(envs, o); };
@@ -1026,11 +1033,11 @@ test('a plain worker without mcp.json runs the same claude command (now inside t
 });
 
 test('a worker with an mcp.json server gets the file, the flags, the secret, the footer and the event', async () => {
-  const { start, wait, sandboxes, opts } = await mcpSetup(X);
+  const { start, wait, sandboxes, opts } = await mcpSetup(X, { proxy: true });
   const id = await start({});
   const r = await wait([id]);
   const sbx = sandboxes[0], home = '/home/user';
-  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.deepEqual(opts[0].secrets, ['CLAUDE_CODE_OAUTH_TOKEN', 'MCP_X_TOKEN']);
   assert.equal(sbx.written[`${home}/.config/cloudy-cloud/mcp.json`], JSON.stringify({ mcpServers: X }, null, 2));
   assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/.config/cloudy-cloud/mcp.json`)));
   assert.match(claudeCmd(sbx), /--verbose --mcp-config \/home\/user\/\.config\/cloudy-cloud\/mcp\.json --strict-mcp-config /);
@@ -1040,7 +1047,7 @@ test('a worker with an mcp.json server gets the file, the flags, the secret, the
 
 test('the agent event lists the MCP server names only', async () => {
   const events = [];
-  const { start, wait } = await mcpSetup(X, { events: (e) => events.push(e) });
+  const { start, wait } = await mcpSetup(X, { proxy: true, events: (e) => events.push(e) });
   await wait([await start({})]);
   assert.deepEqual(events.find((e) => e.type === 'agent').mcp, ['x']);
 });
@@ -1055,14 +1062,14 @@ test('a rejected server is named with its reason in the footer and not delivered
 test('a pi worker gets its mcp.json in the agent dir, the secrets, and the footer; SSE is skipped', async () => {
   const servers = { ...X, s: { type: 'sse', url: 'https://s.example.com/sse' }, npxone: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'] } };
   const ev = [];
-  const { start, wait, sandboxes, opts } = await mcpSetup(servers, { events: (e) => ev.push(e) });
+  const { start, wait, sandboxes, opts } = await mcpSetup(servers, { proxy: true, events: (e) => ev.push(e) });
   const r = await wait([await start({ profile: 'pi-glm' })]);
   const sbx = sandboxes[0], home = '/home/user';
   assert.equal(sbx.written[`${home}/pi-agent/mcp.json`], mcpConfigText({ x: servers.x, npxone: servers.npxone }));
   assert.ok(sbx.cmds.some((c) => c.includes('umask 077') && c.includes(`: > ${home}/pi-agent/mcp.json`)));
   assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/pi-agent/mcp.json`)));
   assert.ok(!sbx.writes.some((p) => p.includes('.config/cloudy-cloud/mcp.json')));
-  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.deepEqual(opts[0].secrets, ['PARTICLE_API_KEY', 'MCP_X_TOKEN']);
   assert.match(r, /MCP servers: x, npxone/);
   assert.match(r, /MCP servers skipped: s \(pi does not support the SSE transport\)/);
   assert.deepEqual(ev.find((e) => e.type === 'agent').mcp, ['x', 'npxone']);
@@ -1071,14 +1078,14 @@ test('a pi worker gets its mcp.json in the agent dir, the secrets, and the foote
 
 test('an omp worker gets its mcp.json (SSE kept) in omp-agent with the 600 sequence, and no key value anywhere', async () => {
   const servers = { ...X, s: { type: 'sse', url: 'https://s.example.com/sse' } };
-  const { start, wait, sandboxes, opts } = await mcpSetup(servers);
+  const { start, wait, sandboxes, opts } = await mcpSetup(servers, { proxy: true });
   const r = await wait([await start({ profile: 'omp-glm' })]);
   const sbx = sandboxes[0], home = '/home/user';
   assert.equal(sbx.written[`${home}/omp-agent/mcp.json`], mcpConfigText(servers));
   assert.ok(sbx.cmds.some((c) => c.includes('umask 077') && c.includes('chmod 700') && c.includes(`: > ${home}/omp-agent/mcp.json`)));
   assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/omp-agent/mcp.json`)));
   assert.ok(!sbx.writes.some((p) => p.includes('.config/cloudy-cloud/mcp.json')));
-  assert.deepEqual(opts[0].secrets, ['MCP_X_TOKEN']);
+  assert.deepEqual(opts[0].secrets, ['PARTICLE_API_KEY', 'MCP_X_TOKEN']);
   assert.match(r, /MCP servers: x, s/);
   assert.ok(!/skipped/.test(r));
   assert.ok(!(await ompLog(sbx)).includes('mcp'), 'the omp command is unchanged');
@@ -1145,8 +1152,8 @@ test('a coordinator gets mcp.json next to its env file and passes it to the laun
   const dir = await mkdtemp(join(tmpdir(), 'cc-mcp-'));
   const file = join(dir, 'mcp.json');
   await writeFile(file, JSON.stringify({ mcpServers: X }));
-  const x = await setup();
-  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_MCP: file };
+  const x = await setup({ provider: proxyProvider() });
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_MCP: file, CLOUDY_CLOUD_PROXY_SECRETS: COORD_ALL };
   await withTool(x);
   await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
   const s = x.created[0], home = join(s.dir, 'home');
@@ -1215,13 +1222,13 @@ test('consent does not reach the workers of a coordinator: the file a coordinato
 
 test('the core creates machines through provider.create, with names only in envs', async () => {
   const provider = createFakeProvider();
-  const x = await setup({ createSandbox: undefined, provider, owner: 'o1' });
+  const x = await setup({ createSandbox: undefined, provider, owner: 'o1', env: PROXY_ENV });
   const id = await x.start();
   assert.match(await x.wait([id]), /status: idle/);
   assert.equal(provider.log.create.length, 1);
   const { envs, ...rest } = provider.log.create[0];
-  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: [] });
-  assert.deepEqual(Object.keys(envs), ['ANTHROPIC_API_KEY']);
+  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: ['ANTHROPIC_API_KEY'] });
+  assert.deepEqual(Object.keys(envs), []); // the key goes as a secret name, never as a value
 });
 
 test('a provider without proxy secrets is refused before any machine starts', async () => {
@@ -1243,7 +1250,7 @@ test('a provider without proxy secrets but with consent runs, and every reply sa
 });
 
 test('with proxy secrets the reply has no token line', async () => {
-  const x = await setup();
+  const x = await setup({ provider: proxyProvider(), env: PROXY_ENV });
   assert.ok(!(await x.wait([await x.start({})])).includes('GitHub token:'));
 });
 
@@ -1284,7 +1291,7 @@ test('the default create passes the role to the provider so a self-hosted coordi
   const calls = [];
   const provider = createFakeProvider();
   provider.create = async (o) => { calls.push(o); throw new Error('stop here'); };
-  const x = await setup({ createSandbox: null, provider });
+  const x = await setup({ createSandbox: null, provider, env: PROXY_ENV });
   await x.wait([await x.start({ role: 'coordinator' })]);
   await x.wait([await x.start({ role: 'worker' })]);
   assert.deepEqual(calls.map((c) => c.role), ['coordinator', undefined]); // a worker's create args stay as before
@@ -1294,7 +1301,7 @@ test('the default create passes the role to the provider so a self-hosted coordi
 const PROXIED = 'PARTICLE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY';
 for (const [profile, key] of [['glm', 'PARTICLE_API_KEY'], ['pi-glm', 'PARTICLE_API_KEY'], ['omp-glm', 'PARTICLE_API_KEY'], ['openrouter', 'OPENROUTER_API_KEY'], [undefined, 'CLAUDE_CODE_OAUTH_TOKEN']]) {
   test(`proxy secrets: a ${profile ?? 'default'} worker gets ${key} as a secret name, not an env value`, async () => {
-    const { deps, start, wait } = await setup();
+    const { deps, start, wait } = await setup({ provider: proxyProvider() });
     delete deps.createSandbox;
     deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: PROXIED };
     await wait([await start({ profile, ...(profile === 'openrouter' && { model: 'deepseek/deepseek-chat' }) })]);
@@ -1304,16 +1311,15 @@ for (const [profile, key] of [['glm', 'PARTICLE_API_KEY'], ['pi-glm', 'PARTICLE_
   });
 }
 
-test('a key value in env still works, with one warning line naming the key', async () => {
-  const { deps, start, wait } = await setup();
+test('a key value in env that is not a proxy secret is refused on a provider with proxy secrets (#68)', async () => {
+  const { deps, start, wait } = await setup({ provider: proxyProvider() });
   delete deps.createSandbox;
   deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-legacy-value' };
-  const r = await wait([await start({ profile: 'pi-glm' })]);
-  const c = deps.provider.log.create[0];
-  assert.equal(c.envs.PARTICLE_API_KEY, 'pk-legacy-value');
-  assert.ok(!c.secrets.includes('PARTICLE_API_KEY'));
-  assert.match(r, /`PARTICLE_API_KEY` is copied to the worker machine; run `cloudy-cloud setup` to store it as an Instabox secret\./);
-  assert.ok(!r.includes('pk-legacy-value'));
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /keeps keys off machines/);
+  assert.ok(!r.content[0].text.includes('pk-legacy-value'));
+  assert.equal(deps.provider.log.create.length, 0);
 });
 
 test('a provider without proxy secrets ignores CLOUDY_CLOUD_PROXY_SECRETS and keeps the env value', async () => {
@@ -1327,10 +1333,10 @@ test('a provider without proxy secrets ignores CLOUDY_CLOUD_PROXY_SECRETS and ke
 
 // ---- #48: labels and the agent tree ----
 test('a worker is labelled with role, profile, parent and agent', async () => {
-  const { deps, start, wait } = await setup();
+  const { deps, start, wait } = await setup({ provider: proxyProvider() });
   delete deps.createSandbox;
   deps.owner = 'owner123';
-  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-secret-value' };
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-secret-value', CLOUDY_CLOUD_PROXY_SECRETS: 'PARTICLE_API_KEY' };
   const id = await start({ profile: 'pi-deepseek', description: 'Fix the login bug: it has spaces & a token pk-secret-value' });
   await wait([id]);
   const l = deps.provider.log.create[0].labels;
@@ -1363,7 +1369,7 @@ test('cloud_agent_list all:true groups every cloudy-cloud machine under its pare
 test('CLOUDY_CLOUD_APT_PACKAGES installs the packages with one apt command; without it no apt command runs', async () => {
   for (const [pkgs, expected] of [['ffmpeg postgresql-client', 1], [undefined, 0]]) {
     const cmds = [];
-    const { deps, start, wait } = await setup({ createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; } });
+    const { deps, start, wait } = await setup({ createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; }, provider: proxyProvider() });
     deps.env = { GH_TOKEN: 'ghp_secret', ...(pkgs && { CLOUDY_CLOUD_APT_PACKAGES: pkgs }) };
     await wait([await start()]);
     const apt = cmds.filter((c) => /apt-get/.test(c));
@@ -1508,4 +1514,29 @@ test('argument errors and worker error results carry guidance and keep their ERR
   const id = await start({ prompt: 'FAIL' });
   const w = await wait([id]);
   assert.match(w, /ERROR: [\s\S]*Next step:/);
+});
+
+// ---- #67: a coordinator gets the Instabox key, the Claude token and provider keys as proxy secrets; its env file holds names only ----
+const COORD_PROXIED = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY';
+test('a nested coordinator gets its keys as secret names and its env file has no key value', async () => {
+  const x = await setup({ provider: proxyProvider() });
+  delete x.deps.createSandbox;
+  x.deps.env = { INSTABOX_API_KEY: 'ib-key-1', GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: COORD_PROXIED, CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const c = x.deps.provider.log.create[0];
+  for (const n of ['CLOUDY_CLOUD_INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'PARTICLE_API_KEY']) assert.ok(c.secrets.includes(n), `${n} in ${c.secrets}`);
+  const w = x.deps.provider.log.writes.find((f) => f.p.endsWith('.config/cloudy-cloud/env'));
+  assert.match(w.d, new RegExp(`^CLOUDY_CLOUD_PROXY_SECRETS=${COORD_PROXIED}$`, 'm'));
+  assert.doesNotMatch(w.d, /ib-key-1|^(INSTABOX_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|PARTICLE_API_KEY|CLOUDY_CLOUD_INSTABOX_API_KEY)=/m);
+});
+
+test('a nested coordinator whose key is not a proxy secret is refused and creates no machine (#68)', async () => {
+  const x = await setup({ provider: proxyProvider() });
+  delete x.deps.createSandbox;
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY' }; // INSTABOX_API_KEY has no secret
+  await withTool(x);
+  const r = await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  assert.match(r, /keeps keys off machines/);
+  assert.equal(x.deps.provider.log.create.length, 0);
 });

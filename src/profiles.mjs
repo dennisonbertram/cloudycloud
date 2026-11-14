@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PROVIDER_KEY, proxySecrets } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets } from './config.mjs';
 import { guide } from './errors.mjs';
 
 const PARTICLE = 'https://api.particle.ai/v1';
@@ -46,8 +46,32 @@ export function profileKeyNames(env = process.env) {
   return [...new Set([...Object.values(BUILTIN), ...Object.values(user)].map((p) => p?.keyName).filter((k) => typeof k === 'string' && PROVIDER_KEY.test(k)))];
 }
 
+// Instabox reserves names starting with INSTABOX_, so a coordinator's copy of the Instabox key is the secret
+// CLOUDY_CLOUD_INSTABOX_API_KEY; the instabox provider reads it when INSTABOX_API_KEY is unset.
+export const COORDINATOR_KEY_SECRET = 'CLOUDY_CLOUD_INSTABOX_API_KEY';
+
+// What a coordinator's machine gets: { secrets: names attached as proxy secrets, lines: env-file lines (settings and, on a
+// provider without proxy secrets, key values), legacy: key names that would be written as real values on a provider with proxy
+// secrets }. `single`: only one Claude credential (a nested coordinator), else both are kept (coordinator start).
+export function coordinatorKeys(env, provider, { single = false } = {}) {
+  const own = provider.coordinatorEnv?.(env);
+  const proxied = provider.caps.hasProxySecrets ? proxySecrets(env) : new Set();
+  const claude = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].filter((k) => env[k] || proxied.has(k));
+  const keys = [...new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(single ? claude.slice(0, 1) : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']), ...profileKeyNames(env).filter((k) => !single || k !== 'ANTHROPIC_API_KEY')])];
+  const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [];
+  if (!own && proxied.has(COORDINATOR_KEY_SECRET)) secrets.push(COORDINATOR_KEY_SECRET);
+  for (const k of [...(own?.names ?? []), ...keys, 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES']) {
+    const isKey = keys.includes(k);
+    if (isKey && proxied.has(COORDINATOR_KEY_SECRET) && k === DEFAULT_PROVIDER_KEY) continue; // the secret stands in for it
+    if (isKey && proxied.has(k)) secrets.push(k);
+    else if (env[k]) { lines.push(`${k}=${env[k]}`); if (isKey && provider.caps.hasProxySecrets) legacy.push(k); }
+  }
+  return { secrets: [...new Set(secrets)], lines, legacy };
+}
+
 // Returns { ok: profile } or { error: text }. `model` is the optional per-call model.
-export function resolveProfile(name, model, env = process.env) {
+// proxyOnly (a provider with proxy secrets): the key must be a proxy secret, a real value would be copied to the machine.
+export function resolveProfile(name, model, env = process.env, { proxyOnly = false } = {}) {
   if (typeof name !== 'string' || !NAME.test(name)) return { error: `invalid profile: must match ${NAME}` };
   let profiles;
   try { profiles = loadProfiles(env); } catch (e) { return { error: e.message }; }
@@ -63,6 +87,7 @@ export function resolveProfile(name, model, env = process.env) {
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
   if (!env[p.keyName] && !proxied) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
+  if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName, proxied } };
 }
 
