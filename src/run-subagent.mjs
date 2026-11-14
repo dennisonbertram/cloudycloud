@@ -15,11 +15,13 @@ import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
+import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
+import { redact } from './events.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+export const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 
 // Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
 export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
@@ -68,9 +70,11 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
+// Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
+const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
+export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals];
 function helpers(env, literals, keyName, tool) {
-  const secrets = [...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k))].map((k) => env[k]).filter(Boolean);
-  const scrub = (s) => [...secrets, ...literals].reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
+  const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
   return { scrub, ok, fail: (text) => ({ ...ok(/^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
 }
@@ -220,6 +224,19 @@ function mcpFooter(a, t) {
 const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: on your machine ${a.tokenOnBox} (you allowed it)` : '';
 const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${tokenLine(a)}${mcpFooter(a, t)}`;
 
+// Raw stream of every turn, kept on the machine (tee) next to meta.json; the laptop keeps a redacted copy (createLocalStream).
+// The harness exit code goes through a file because the pipe to tee hides it; `umask 077` only covers the stream files.
+const STREAM_DIR = '$HOME/.config/cloudy-cloud/stream';
+// A missing or empty exit file (the write failed) exits 1, never tee's status.
+export const teed = (cmd, n) => `D=${STREAM_DIR}; (umask 077; mkdir -p $D && : >> $D/t${n}.jsonl) && ({ ${cmd}; echo $? > $D/t${n}.exit; }) | tee -a $D/t${n}.jsonl; s=$(cat $D/t${n}.exit 2>/dev/null); exit \${s:-1}`;
+// meta.json on the machine, best effort: the first write may fail before the folder exists; the one after the turn lands.
+async function writeMeta(a, ctx) {
+  try {
+    const meta = { agent: a.id, description: redact(ctx.scrub(a.description)).slice(0, 200), role: a.role, profile: a.profile?.name, model: a.profile ? a.profile.model : a.model, parent: ctx.owner, branch: `cloudy-cloud/${a.id}`, turns: a.turnMeta };
+    await a.sandbox.files.write(`${a.home}/.config/cloudy-cloud/stream/meta.json`, `${JSON.stringify(meta)}\n`);
+  } catch { /* meta is best effort */ }
+}
+
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   try {
@@ -239,15 +256,22 @@ async function turn(a, message, ctx, t) {
   // pi reads the prompt from stdin (docs: "Piped stdin: prepend its contents to the first prompt") and resumes with --session <id>.
   const piCmd = `PI_CODING_AGENT_DIR=${a.home}/pi-agent PATH=${a.home}/.local/bin:$PATH pi --mode json --provider ${PI_PROVIDER} --model ${a.profile?.model} ${a.sessionId ? `--session ${a.sessionId} ` : ''}--append-system-prompt '${hint}' < ${a.home}/prompt.txt`;
   let stdout, failure;
+  (a.turnMeta ??= []).push(t.meta = { n: t.n, startedAt: Date.now() });
+  if (!a.pruned) { a.pruned = true; pruneStreams(streamsDir(ctx.env)); }
+  await writeMeta(a, ctx);
+  const local = createLocalStream(join(streamsDir(ctx.env), a.id, `t${t.n}.jsonl`), { scrub });
   try {
     const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
-    stdout = (await a.sandbox.commands.run(ompCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), {
-      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+    stdout = (await a.sandbox.commands.run(teed(ompCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
+      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
   }
   t.progress.end();
+  local.end();
+  Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
+  await writeMeta(a, ctx);
   const { where, failed } = await safetyPush(a, ctx);
 
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };

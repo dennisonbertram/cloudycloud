@@ -1,4 +1,4 @@
-// `cloudy-cloud dashboard [--demo] [--port N] [--no-open]`: a read-only web page on 127.0.0.1 that shows the cloud
+// `cloudy-cloud dashboard [--demo] [--port N] [--no-open] [--prune]`: a read-only web page on 127.0.0.1 that shows the cloud
 // boxes (agents and coordinators) and the messages between your session and them.
 // Data: the local event log (see events.mjs) plus the live machine list from the provider. Keys stay on the server side.
 import { createServer } from 'node:http';
@@ -11,6 +11,7 @@ import { loadEnv } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { eventsFile, foldAgents, readEvents, redact } from './events.mjs';
 import { demoState } from './dashboard-demo.mjs';
+import { pruneStreams, streamsDir } from './stream.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_PORT = 4477;
@@ -106,6 +107,11 @@ export function listen(handler, port = DEFAULT_PORT) {
 export const openBrowser = (url) => execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], () => {}).on('error', () => {});
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv.includes('--prune')) { // delete stored agent streams older than 30 days, then the oldest until the folder is under 1 GB
+    const dir = streamsDir(), r = pruneStreams(dir);
+    console.log(`Pruned ${dir}: removed ${r.removed} file${r.removed === 1 ? '' : 's'} (${Math.round(r.freed / 1024)} KB).`);
+    return;
+  }
   const demo = argv.includes('--demo');
   const pi = argv.indexOf('--port');
   const port = pi >= 0 ? Number(argv[pi + 1]) : DEFAULT_PORT;

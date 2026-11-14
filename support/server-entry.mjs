@@ -18,7 +18,7 @@ const createSandbox = async () => {
   });
   return {
     home: '/home/user',
-    files: { write: async (_p, d) => { prompt = String(d); } },
+    files: { write: async (p, d) => { if (p.endsWith('prompt.txt')) prompt = String(d); } }, // meta.json writes must not replace the prompt
     kill: async () => { dead.abort(); },
     commands: {
       async run(cmd, { onStdout, signal } = {}) {
