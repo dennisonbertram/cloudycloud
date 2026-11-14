@@ -492,7 +492,7 @@ async function work(a, message, first, ctx, t) {
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
-    if (first && a.notice) r = { ...r, text: `${a.notice}\n\n${r.text}` };
+    if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
