@@ -60,7 +60,7 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
 
   await t.test('setup checks the box, builds the image and saves the settings', async () => {
     const out = sink();
-    const answers = `root@127.0.0.1\n${join(dir, 'key')}\n2\ny\n${TOKEN}\n`;
+    const answers = `root@127.0.0.1\n${join(dir, 'key')}\n2\ny\n${TOKEN}\ny\n`; // ... allow the token, then coordinators
     const code = await runSetup({ env, input: Readable.from([answers]), out });
     assert.equal(code, 0, out.text);
     assert.ok(!out.text.includes(TOKEN));
@@ -69,6 +69,8 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
     assert.equal(saved.CLOUDY_CLOUD_CONTAINER_RUNTIME, 'docker');
     assert.match(saved.CLOUDY_CLOUD_CONTAINER_BIN, /^\/.*docker$/);
     assert.equal(saved.CLOUDY_CLOUD_SELF_HOSTED_SLOTS, '2');
+    assert.equal(saved.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS, 'yes');
+    assert.equal(saved.CLOUDY_CLOUD_DOCKER_SOCKET, '/var/run/docker.sock');
     assert.ok(Number(saved.CLOUDY_CLOUD_SELF_HOSTED_CPUS) >= 1 && /^\d+m$/.test(saved.CLOUDY_CLOUD_SELF_HOSTED_MEMORY));
     const d = sink();
     assert.equal(await runDoctor({ env: saved, out: d }), 0, d.text);
@@ -121,6 +123,31 @@ test('self-hosted end to end over ssh to a Docker box', { skip: !ON && 'set CLOU
     await p.delete(c.id);
     await p.deleteSnapshot(snap.id);
     await assert.rejects(p.getSnapshot(snap.id), (e) => e.code === 'not_found');
+  });
+
+  await t.test('a coordinator container starts a sibling worker through the Docker socket (local transport, no ssh key)', async () => {
+    const c = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: OWNER, role: 'coordinator' }, ttlSeconds: 600, neverSuspend: true });
+    const mounts = JSON.parse(docker('inspect', '--format', '{{json .Mounts}}', c.id));
+    assert.deepEqual(mounts.filter((m) => m.Destination === '/var/run/docker.sock').length, 1);
+    const w = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: OWNER }, ttlSeconds: 600 });
+    assert.ok(!JSON.parse(docker('inspect', '--format', '{{json .Mounts}}', w.id)).some((m) => m.Destination === '/var/run/docker.sock'), 'worker got the socket');
+    await p.delete(w.id);
+    assert.match((await c.commands.run('docker version --format "{{.Client.Version}}"')).stdout, /^\d+\./); // the docker CLI is in the image and reaches the daemon
+    // Run the real adapter in local mode inside the coordinator: copy this checkout's src and package.json there.
+    await c.commands.run('mkdir -p /tmp/cc');
+    docker('cp', new URL('../src', import.meta.url).pathname, `${c.id}:/tmp/cc/src`);
+    docker('cp', new URL('../package.json', import.meta.url).pathname, `${c.id}:/tmp/cc/package.json`);
+    const script = `import('/tmp/cc/src/providers/self-hosted.mjs').then(async (m) => { const p = m.createProvider(process.env);
+      const s = await p.create({ envs: {}, labels: { purpose: 'cloudy-cloud', owner: process.env.IT_OWNER }, ttlSeconds: 300 });
+      console.log('SIBLING ' + s.id + ' ' + (await s.commands.run('echo from-sibling')).stdout.trim() + ' ' + (await p.list({ owner: process.env.IT_OWNER })).length);
+    })`;
+    const out = (await c.commands.run(`cd /tmp/cc && IT_OWNER=${OWNER} CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1 CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes CLOUDY_CLOUD_DOCKER_SOCKET=/var/run/docker.sock CLOUDY_CLOUD_CONTAINER_BIN=docker CLOUDY_CLOUD_SELF_HOSTED_SLOTS=5 node -e "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, { timeoutMs: 120_000 })).stdout;
+    const [, sibling, said, count] = out.match(/SIBLING (cc-\w+) (\S+) (\d+)/);
+    assert.equal(said, 'from-sibling');
+    assert.equal(count, '2'); // the coordinator and its sibling, both counted by label
+    assert.ok(docker('ps', '--filter', `label=cloudy-cloud.owner=${OWNER}`, '--format', '{{.Names}}').split('\n').includes(sibling), 'sibling visible on the box');
+    await p.delete(sibling);
+    await p.delete(c.id);
   });
 
   await t.test('close stops the ssh master and removes the private /tmp/cc-ssh-* dir', async () => {

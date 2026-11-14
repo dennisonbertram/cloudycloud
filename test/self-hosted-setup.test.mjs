@@ -318,3 +318,26 @@ test('setup: saved values are the defaults on a second run; Enter keeps the save
   assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`GH_TOKEN=${FAKE_TOKEN}\n`));
   assert.match(readFileSync(g.cfg, 'utf8'), /SSH_HOST=me@mac-studio/);
 });
+
+test('setup: allowing coordinators saves the consent and the Docker socket; the question names the risk (#41)', () => {
+  const g = rig(mac());
+  const r = g.run(['setup'], `me@mac-studio\n\n\nn\ny\n`);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.out, /Coordinators on me@mac-studio can start containers through Docker, which gives them full control of Docker on that machine\. Allow\? \[y\/N\]/);
+  const saved = lines(g.cfg).join('\n');
+  assert.match(saved, /CLOUDY_CLOUD_DOCKER_SOCKET=\/var\/run\/docker\.sock\n/); // inside the Mac's container VM
+  assert.match(saved, /CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes/);
+  const loaded = loadEnv({ CLOUDY_CLOUD_CONFIG: g.cfg });
+  assert.equal(loaded.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS, 'yes');
+});
+
+test('setup: a Linux box with a rootless socket saves that path; No saves nothing and removes an old consent', () => {
+  const lin = rig({ ...mac(), 'uname -s': { out: 'Linux\n' }, 'sysctl -n': { out: '', code: 1 }, 'nproc': { out: '8\n17179869184\n' }, 'context inspect': { out: 'unix:///run/user/1000/docker.sock\n' } });
+  assert.equal(lin.run(['setup'], `me@box\n\n\nn\ny\n`).code, 0);
+  assert.match(lines(lin.cfg).join('\n'), /CLOUDY_CLOUD_DOCKER_SOCKET=\/run\/user\/1000\/docker\.sock/);
+  const g = rig(mac(), { env: 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes\nCLOUDY_CLOUD_DOCKER_SOCKET=/var/run/docker.sock\n' });
+  const r = g.run(['setup'], `me@mac-studio\n\n\nn\nn\n`);
+  assert.equal(r.code, 0, r.text);
+  assert.ok(!/COORDINATORS|DOCKER_SOCKET/.test(readFileSync(g.cfg, 'utf8')));
+  assert.match(r.out, /coordinators stay off|Coordinators: not allowed/i);
+});

@@ -47,11 +47,12 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
     if (daemonDown) return done(1, '', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
     const opt = (n) => (rest.includes(n) ? rest[rest.indexOf(n) + 1] : undefined);
     const find = (n) => table.get(n) ?? [...table.values()].find((c) => c.Id.startsWith(n));
+    if (cmd === 'run' && rest.includes('--entrypoint')) return done(0, '998\n'); // the gid probe: stat of the mounted socket
     if (cmd === 'run') {
       const labels = {};
       rest.forEach((a, i) => { if (a === '--label') { const [k, ...v] = rest[i + 1].split('='); labels[k] = v.join('='); } });
       const name = opt('--name');
-      table.set(name, { Id: randomBytes(32).toString('hex'), Name: `/${name}`, Config: { Labels: labels }, State: { Status: 'running', StartedAt: new Date().toISOString() }, NetworkSettings: { IPAddress: `172.17.0.${table.size + 2}` } });
+      table.set(name, { Args: rest, Id: randomBytes(32).toString('hex'), Name: `/${name}`, Config: { Labels: labels }, State: { Status: 'running', StartedAt: new Date().toISOString() }, NetworkSettings: { IPAddress: `172.17.0.${table.size + 2}` } });
       return done(0, `${table.get(name).Id}\n`);
     }
     if (cmd === 'ps') return done(0, [...table.values()].filter((c) => 'cloudy-cloud.purpose' in c.Config.Labels).map((c) => c.Id.slice(0, 12)).join('\n') + '\n');
@@ -343,7 +344,80 @@ test('two concurrent creates with one free slot: one starts, the other gets quot
   assert.equal(box.table.size, 1);
 });
 
-test('the self-hosted provider refuses coordinators with a next step (no SSH key on the coordinator container)', () => {
-  const { provider } = make();
-  assert.match(provider.text.coordinatorRefusal, /not supported on the self-hosted provider.*cloud_agent.*CLOUDY_CLOUD_PROVIDER=instabox/);
+const SOCK = '/run/user/1000/docker.sock';
+const coordEnv = { CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_DOCKER_SOCKET: SOCK };
+const mkCoord = (p) => mk(p, { image: 'x', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'coordinator' }, neverSuspend: true });
+
+test('coordinators stay refused without the consent, with a next step; consent lifts the refusal (#41)', async () => {
+  const off = make();
+  assert.match(off.provider.text.coordinatorRefusal, /not allowed.*cloudy-cloud setup --provider self-hosted/s);
+  await assert.rejects(mkCoord(off.provider), /setup --provider self-hosted/);
+  assert.equal(off.box.table.size, 0);
+  const on = make(coordEnv);
+  assert.equal(on.provider.text.coordinatorRefusal, undefined);
+  assert.equal(on.provider.caps.hasSnapshots, true);
+});
+
+test('only a coordinator container gets the Docker socket, with the socket owner group; workers never do', async () => {
+  const { box, provider } = make(coordEnv);
+  await mk(provider);
+  await mkCoord(provider);
+  const [w, c] = [...box.table.values()].map((x) => x.Args);
+  for (const a of [w, c]) assert.ok(!a.includes('--privileged'));
+  assert.ok(!w.includes('-v') && !w.includes('--group-add'), 'worker got the socket');
+  assert.equal(c[c.indexOf('-v') + 1], `${SOCK}:/var/run/docker.sock`);
+  assert.equal(c[c.indexOf('--group-add') + 1], '998');
+  assert.ok(box.log.some((a) => a.includes('--entrypoint') && a.includes('stat')), 'gid probe');
+});
+
+test('coordinatorEnv: the names a coordinator gets; no SSH host, key or port; token only with consent', () => {
+  const base = { ...ENV, ...coordEnv, CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2222', CLOUDY_CLOUD_SELF_HOSTED_CPUS: '2', CLOUDY_CLOUD_SELF_HOSTED_MEMORY: '4g',
+    CLOUDY_CLOUD_CONTAINER_RUNTIME: 'docker', CLAUDE_CODE_OAUTH_TOKEN: 'oauth', ANTHROPIC_API_KEY: 'ak', PARTICLE_API_KEY: 'pk', GH_TOKEN: 'ghp_x', INSTABOX_API_KEY: 'ib' };
+  const names = (e) => createProvider(e, { spawn: fakeBox().spawn }).coordinatorEnv(e).map((l) => l.split('=')[0]).sort();
+  assert.deepEqual(names(base), ['CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'CLOUDY_CLOUD_PROVIDER',
+    'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
+    'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'PARTICLE_API_KEY'].sort());
+  const t = { ...base, CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' };
+  assert.deepEqual(names(t).filter((n) => /TOKEN/.test(n) && n !== 'CLAUDE_CODE_OAUTH_TOKEN'), ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN']);
+  const lines = createProvider(base, { spawn: fakeBox().spawn }).coordinatorEnv(base);
+  assert.ok(lines.includes('CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1') && lines.includes('CLOUDY_CLOUD_PROVIDER=self-hosted'));
+  assert.ok(lines.includes(`CLOUDY_CLOUD_DOCKER_SOCKET=${SOCK}`));
+  assert.ok(!lines.join('\n').match(/SSH|me@box|ghp_x|INSTABOX|ANTHROPIC/));
+  const api = { ...base, CLAUDE_CODE_OAUTH_TOKEN: undefined };
+  assert.ok(createProvider(api, { spawn: fakeBox().spawn }).coordinatorEnv(api).includes('ANTHROPIC_API_KEY=ak'));
+});
+
+// The local transport: inside a coordinator container the same docker commands run through `sh -c` against the socket, no ssh.
+test('local mode runs the same command strings through sh, never ssh; slots count all containers by label', async () => {
+  const box = fakeBox();
+  const calls = [];
+  // Adapt the box's ssh-shaped fake: re-wrap the local `sh -c <cmd>` the way ssh.mjs would send it.
+  const spawn = (bin, args) => {
+    calls.push({ bin, args });
+    assert.equal(bin, 'sh');
+    assert.equal(args[0], '-c');
+    return box.spawn('ssh', [`sh -c "$(printf %s ${Buffer.from(args[1]).toString('base64')} | base64 -d)"`]);
+  };
+  const env = { CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_DOCKER_SOCKET: '/var/run/docker.sock', CLOUDY_CLOUD_CONTAINER_BIN: BIN, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '2',
+    CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', GH_TOKEN: 'ghp_L' };
+  const p = createProvider(env, { spawn });
+  assert.equal(p.keyName, 'CLOUDY_CLOUD_DOCKER_SOCKET'); // not the SSH host; the core's missing-key check and scrub use it
+  box.table.set('cc-laptop', { Id: 'a'.repeat(64), Name: '/cc-laptop', Config: { Labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' } }, State: { Status: 'running' } });
+  const s = await mk(p); // a sibling worker, next to the one the laptop started
+  assert.equal((await s.commands.run('echo hi')).stdout, 'hi\n');
+  await assert.rejects(mk(p), (e) => e.code === 'quota_exceeded'); // 2 slots: the laptop's container and this one
+  assert.equal((await p.list({})).length, 2);
+  await p.delete(s.id);
+  assert.ok(calls.length > 5 && calls.every((c) => c.bin === 'sh'));
+  assert.ok(!JSON.stringify(calls).includes('ssh '), 'no ssh in any command');
+  assert.match(p.text.ssh('cc-1', 'bash'), /^docker exec -it cc-1 bash$|exec -it cc-1 bash/);
+  await assert.rejects(p.forwardPort('cc-x', '3000'), /not available/);
+  assert.equal(p.text.coordinatorRefusal, undefined);
+});
+
+test('local mode: a missing docker CLI in the image says how to rebuild it', async () => {
+  const spawn = () => { const c = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill() {} });
+    c.stdin.on('end', () => { c.stderr.write('sh: 1: docker: not found'); c.emit('close', 127, null); }); return c; };
+  const p = createProvider({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_DOCKER_SOCKET: '/var/run/docker.sock' }, { spawn });
+  await assert.rejects(p.list({}), /docker CLI.*cloudy-cloud setup/s);
 });

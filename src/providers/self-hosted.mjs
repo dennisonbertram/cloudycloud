@@ -7,6 +7,8 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createSsh } from './ssh.mjs';
+import { createLocal } from './local.mjs';
+import { PROVIDER_KEY } from '../config.mjs';
 
 const PREFIX = 'cloudy-cloud.';
 const HOME = '/home/worker';
@@ -16,6 +18,7 @@ const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.met
 const GONE = /No such (container|object|image)/i;
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote
+const SOCK_IN = '/var/run/docker.sock'; // where a coordinator container sees the box's Docker socket
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createProvider(env = process.env, deps = {}) {
@@ -24,6 +27,10 @@ export function createProvider(env = process.env, deps = {}) {
   if (runtime !== 'docker' && runtime !== 'podman') throw new Error(`CLOUDY_CLOUD_CONTAINER_RUNTIME must be docker or podman, not "${runtime}"`);
   const bin = env.CLOUDY_CLOUD_CONTAINER_BIN || runtime;
   const host = env.CLOUDY_CLOUD_SSH_HOST;
+  // Inside a coordinator container (setup consent, #41): docker runs locally against the mounted socket, with no ssh and no key.
+  const local = env.CLOUDY_CLOUD_SELF_HOSTED_LOCAL === '1';
+  const coordsOk = env.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
+  const sock = env.CLOUDY_CLOUD_DOCKER_SOCKET || SOCK_IN; // the path on the box (inside the container VM on a Mac)
   const slots = Number(env.CLOUDY_CLOUD_SELF_HOSTED_SLOTS) || 2;
   const cpus = env.CLOUDY_CLOUD_SELF_HOSTED_CPUS || '2';
   const memory = env.CLOUDY_CLOUD_SELF_HOSTED_MEMORY || '4g';
@@ -33,13 +40,14 @@ export function createProvider(env = process.env, deps = {}) {
 
   let ssh;
   let reserved = 0; // creates in this process that passed the slot check but whose container is not running yet
-  const getSsh = () => (ssh ??= deps.ssh ?? createSsh(env, { spawn }));
+  const getSsh = () => (ssh ??= deps.ssh ?? (local ? createLocal({ spawn }) : createSsh(env, { spawn }))); // either transport: run(cmd, opts), close()
 
   // Run `<bin> ...args` on the host. Docker daemon errors become `transient` with a doctor hint.
   async function docker(args, opts = {}) {
     try { return await getSsh().run([q(bin), ...args.map(q)].join(' '), opts); } catch (e) {
       if (/Cannot connect to the (Docker|Podman) daemon|connect to podman/i.test(`${e.stderr ?? ''}${e.message}`))
-        throw fail('transient', `${runtime} is not running on ${host}. Check it with: cloudy-cloud doctor`);
+        throw fail('transient', `${runtime} is not running on ${host ?? 'the box'}. Check it with: cloudy-cloud doctor`);
+      if (local && e.exitCode === 127) throw new Error(`The docker CLI is missing in this coordinator's image. On your computer run: cloudy-cloud setup --provider self-hosted (it rebuilds the worker image), then cloudy-cloud coordinator image.`);
       throw e;
     }
   }
@@ -84,7 +92,7 @@ export function createProvider(env = process.env, deps = {}) {
 
   const api = {
     name: 'self-hosted',
-    keyName: 'CLOUDY_CLOUD_SSH_HOST',
+    keyName: local ? 'CLOUDY_CLOUD_DOCKER_SOCKET' : 'CLOUDY_CLOUD_SSH_HOST', // a coordinator has no SSH host; the socket path is its "key" (not secret)
     caps: {
       hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
@@ -115,6 +123,16 @@ export function createProvider(env = process.env, deps = {}) {
           if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
         }
 
+        // A coordinator (and only a coordinator) gets the box's Docker socket, so it can start its workers as siblings. The socket's
+        // group is added to the worker user; on Docker Desktop and OrbStack it is root (gid 0), on Linux usually docker.
+        let socket = [];
+        if (labels.role === 'coordinator') {
+          if (!coordsOk) throw new Error(api.text.coordinatorRefusal);
+          const gid = (await docker(['run', '--rm', '--entrypoint', 'stat', '-v', `${sock}:${SOCK_IN}`, img, '-c', '%g', SOCK_IN])).stdout.trim();
+          if (!/^\d+$/.test(gid)) throw new Error(`Could not read the group of the Docker socket ${sock} on ${host ?? 'the box'}. Run: cloudy-cloud doctor`);
+          socket = ['-v', `${sock}:${SOCK_IN}`, '--group-add', gid];
+        }
+
         id = `cc-${randomBytes(6).toString('hex')}`;
         ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
         const now = Date.now();
@@ -124,7 +142,7 @@ export function createProvider(env = process.env, deps = {}) {
           return ['--label', `${PREFIX}${k}=${v}`];
         });
         await docker(['run', '-d', '--rm', '--name', id, '--hostname', id, ...label, '--cpus', cpus, '--memory', memory, '--pids-limit', '2048',
-          '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
+          '--tmpfs', '/run/secrets:mode=700,uid=1000,gid=1000', ...socket, '--user', 'worker', img, 'timeout', `${ttl}s`, 'sleep', 'infinity']);
       } finally { reserved--; }
       const sb = sandbox(id, name ?? id);
       try {
@@ -197,8 +215,9 @@ export function createProvider(env = process.env, deps = {}) {
     // container IP, this works with Docker Desktop on a Mac, whose container network is not routable from the host.
     // ponytail: one ssh session per connection on the shared master (MaxSessions 10); fine for a browser on a dev server.
     async forwardPort(id, localRemote, { signal } = {}) {
-      const [local, remote = local] = String(localRemote).split(':');
-      if (!/^\d+$/.test(local) || !/^\d+$/.test(remote)) throw new Error(`port must be a number or local:remote, not "${localRemote}"`);
+      if (local) throw new Error('cloudy-cloud open is not available from a coordinator; run it on your own computer.');
+      const [lport, remote = lport] = String(localRemote).split(':');
+      if (!/^\d+$/.test(lport) || !/^\d+$/.test(remote)) throw new Error(`port must be a number or local:remote, not "${localRemote}"`);
       await api.connect(id);
       const bridge = `const s=require('net').connect(${remote},'127.0.0.1');process.stdin.pipe(s).pipe(process.stdout);s.on('error',(e)=>{console.error(e.message);process.exit(1)})`;
       const argv = getSsh().argvFor([bin, 'exec', '-i', id, 'node', '-e', bridge].map(q).join(' '));
@@ -215,7 +234,7 @@ export function createProvider(env = process.env, deps = {}) {
           child.on('close', () => sock.end());
         });
         server.on('error', reject);
-        server.listen(Number(local), '127.0.0.1');
+        server.listen(Number(lport), '127.0.0.1');
         signal?.addEventListener('abort', () => server.close(() => resolve(0)), { once: true });
       });
     },
@@ -224,14 +243,30 @@ export function createProvider(env = process.env, deps = {}) {
 
     localMachineName: (hostname) => (hostname.startsWith('cc-') ? hostname : ''),
 
+    // Names for the env file of a coordinator container (src/run-subagent.mjs installCoordinator, src/coordinator.mjs). Local mode, the
+    // socket and the settings that size the box go in; the SSH host, key and port never do, so no SSH key leaves the laptop.
+    // GH_TOKEN goes in only with the token consent, as for workers.
+    coordinatorEnv(e = env) {
+      const names = ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
+        ...(consented ? ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN'] : []), e.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY',
+        ...Object.keys(e).filter((k) => PROVIDER_KEY.test(k) && !['ANTHROPIC_API_KEY', 'INSTABOX_API_KEY'].includes(k))];
+      return [
+        'CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes',
+        `CLOUDY_CLOUD_DOCKER_SOCKET=${sock}`, `CLOUDY_CLOUD_CONTAINER_BIN=${runtime}`, // the CLI inside the container is on PATH, not at the box's path
+        ...names.filter((k) => e[k]).map((k) => `${k}=${e[k]}`),
+      ];
+    },
+
     text: {
-      ssh: (machine, cmd) => `ssh${sshOpts().map((o) => ` ${o}`).join('')} -t ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} exec -it ${machine} ${cmd || 'bash'}`,
-      listMachines: `ssh${sshOpts().map((o) => ` ${o}`).join('')} ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} ps --filter label=${PREFIX}purpose`,
+      ssh: (machine, cmd) => (local ? `${bin} exec -it ${machine} ${cmd || 'bash'}`
+        : `ssh${sshOpts().map((o) => ` ${o}`).join('')} -t ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} exec -it ${machine} ${cmd || 'bash'}`),
+      listMachines: local ? `${bin} ps --filter label=${PREFIX}purpose`
+        : `ssh${sshOpts().map((o) => ` ${o}`).join('')} ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} ps --filter label=${PREFIX}purpose`,
       noKeyFix: 'Set CLOUDY_CLOUD_SSH_HOST=user@host in ~/.config/cloudy-cloud/env or run: cloudy-cloud setup',
       apiFix: `Check that ${host ?? 'the host'} is reachable: cloudy-cloud doctor`,
-      hostLabel: String(host ?? '').split('@').pop(), // the full user@host is the key value, which the core scrubs
-      // A coordinator's own cloudy-cloud would need the SSH key to this host, and that key file is not on the coordinator's container.
-      coordinatorRefusal: `Coordinators are not supported on the self-hosted provider yet: a coordinator's workers would start on ${host ?? 'your machine'}, and the SSH key to it is not on the coordinator container (cloudy-cloud never copies it). Start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox to use coordinators.`,
+      hostLabel: local ? 'the Docker host' : String(host ?? '').split('@').pop(), // the full user@host is the key value, which the core scrubs
+      // A coordinator's containers need the box's Docker socket, which gives them full control of Docker there: setup asks once.
+      ...(!coordsOk && { coordinatorRefusal: `Coordinators on ${host ?? 'your machine'} are not allowed yet: a coordinator starts its workers through the Docker socket on that machine, which gives it full control of Docker there. To allow it, run: cloudy-cloud setup --provider self-hosted and answer yes to the coordinators question. Until then start workers directly from your own session with cloud_agent.` }),
       githubTokenHelp: 'Allow the GitHub token on your machine and save one with write access: run cloudy-cloud setup --provider self-hosted and answer yes to the GitHub token question.',
     },
   };

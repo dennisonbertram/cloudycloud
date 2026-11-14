@@ -418,7 +418,8 @@ async function installCoordinator(a, ctx, envs) {
   const claudeKey = env.CLAUDE_CODE_OAUTH_TOKEN ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
   const keyName = ctx.provider.keyName;
   const names = [keyName, claudeKey, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) && k !== keyName && k !== 'ANTHROPIC_API_KEY')];
-  const lines = [...names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
+  // A provider may name its own coordinator env (self-hosted: local mode, no SSH key, #41); otherwise the keys below, as always.
+  const lines = [...(ctx.provider.coordinatorEnv?.(env) ?? names.filter((k) => env[k]).map((k) => `${k}=${env[k]}`)), `CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`];
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
   await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);

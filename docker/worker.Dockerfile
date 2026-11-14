@@ -17,6 +17,9 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_
  && npm install -g --no-audit --no-fund @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
  && npm cache clean --force
 
+# The docker CLI only (no daemon), for coordinators: they start their workers as siblings through the box's Docker socket.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
 # The base image's "node" user holds uid 1000; replace it with "worker".
 RUN userdel -r node && useradd -m -u 1000 -s /bin/bash worker
 

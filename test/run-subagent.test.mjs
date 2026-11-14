@@ -803,6 +803,16 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });
 
+test('a provider that defines coordinatorEnv decides the names in a coordinator env file; the depth lines are still added (#41)', async () => {
+  const x = await setup();
+  x.deps.env = { ...LONG_ENV };
+  x.deps.provider.coordinatorEnv = (env) => ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1', `CLAUDE_CODE_OAUTH_TOKEN=${env.CLAUDE_CODE_OAUTH_TOKEN}`];
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
+  const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
+  assert.equal(env, 'CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SELF_HOSTED_LOCAL=1\nCLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1\nCLOUDY_CLOUD_DEPTH=1\nCLOUDY_CLOUD_MAX_DEPTH=3\nCLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200\n');
+});
+
 test('a coordinator at max depth is refused before any sandbox; depth goes up by one', async () => {
   const x = await setup();
   await withTool(x);

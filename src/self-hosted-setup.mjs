@@ -274,6 +274,26 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
       del.push('CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN');
       ui.say('warn', 'GitHub token: not allowed, so workers cannot push to GitHub and will not start', `${SETUP_CMD} (run it again and answer y)`);
     }
+    // Coordinators start their workers through the box's Docker socket, which is full control of Docker there: ask once (#41).
+    if (f.kind !== 'docker') {
+      del.push('CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET');
+      ui.say('warn', 'Coordinators: not available with Podman yet', 'Use Docker on the machine to run coordinators there.');
+    } else {
+      ui.text(`  ? Allow coordinators on ${host}? [y/N]`);
+      ui.text('    A coordinator is a Claude session that starts its own subagents. It runs in a container on the machine and starts them through the Docker socket,');
+      ui.text('    so no SSH key is copied to it. That socket gives the coordinator full control of Docker on the machine (it can start any container).');
+      const coords = /^y/i.test(await inp.line(`  > Coordinators on ${host} can start containers through Docker, which gives them full control of Docker on that machine. Allow? [y/N]: `));
+      if (coords) {
+        // On a Mac the container VM always serves /var/run/docker.sock; on Linux use the active Docker context (rootless Docker differs).
+        const ctx = f.mac ? '' : (await probe(ssh, `${q(f.bin)} context inspect --format '{{.Endpoints.docker.Host}}'`)).stdout.trim();
+        set.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS = 'yes';
+        set.CLOUDY_CLOUD_DOCKER_SOCKET = ctx.startsWith('unix:///') ? ctx.slice(7) : '/var/run/docker.sock';
+        ui.say('ok', `Coordinators: allowed on ${host} (Docker socket ${set.CLOUDY_CLOUD_DOCKER_SOCKET})`);
+      } else {
+        del.push('CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET');
+        ui.say('warn', 'Coordinators: not allowed, so they stay off on this machine', `${SETUP_CMD} (run it again and answer y)`);
+      }
+    }
     saveEnv(file, set, del);
     ui.say('ok', `Saved the self-hosted settings to ${file}`);
     ui.text(`    ${slots} subagent${slots === 1 ? '' : 's'} at once on ${host}. Check the machine any time with: cloudy-cloud doctor`);

@@ -162,7 +162,7 @@ async function start(c, args) {
     const home = await installTool(sbx, c.root);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
-    await sbx.files.write(`${dir}/env`, keysFile(c.env, c.provider.keyName)); // values never appear in a command string
+    await sbx.files.write(`${dir}/env`, c.provider.coordinatorEnv ? `${c.provider.coordinatorEnv(c.env).join('\n')}\n` : keysFile(c.env, c.provider.keyName)); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
