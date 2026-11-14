@@ -18,7 +18,8 @@ Steps:
    ```sh
    cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branch BASE --task-file /tmp/brief-NAME.md --json
    ```
-   The JSON is `{name, machine, remoteControlName, attach}`. It begins on the task at once.
+   If `cloudy-cloud` is not found, run `"$CLOUDY_CLOUD_BIN"` instead (the launcher sets it). Add `--model opus` to choose the model. The command fails, and deletes the machine, if the session shows a spend limit or a prompt.
+   The JSON is `{name, machine, remoteControlName, attach, started}`. It begins on the task at once.
 5. **Tell the user** three things: the Remote Control session name (`remoteControlName`; they open claude.ai or the Claude app and pick that session), how to attach from a terminal (`attach`, or `cloudy-cloud coordinator attach NAME`), the deadline (the server deletes the machine at the time `coordinator start` prints; default 24 hours, set with `--max-hours`), and the stop command: `cloudy-cloud coordinator stop NAME`.
 6. **Do not stop it** unless the user asks. It deletes itself when it finishes (see Part C), or the server deletes it at the deadline, whichever is first. List coordinators with `cloudy-cloud coordinator ls`. Set `--max-hours` to the wall time in the brief plus a margin.
 
