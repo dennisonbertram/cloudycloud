@@ -1,14 +1,15 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
 import { buildState, createHandler, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
-import { demoState, demoStream, demoPane } from '../src/dashboard-demo.mjs';
+import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
+import { createMachineReader } from '../src/machine-read.mjs';
 
 const TOKEN = 'tok-123';
 const get = (port, path, host = `127.0.0.1:${port}`, method = 'GET') => new Promise((resolve, reject) => {
@@ -213,7 +214,7 @@ test('listMachines maps the provider list, status included, and needs the key', 
   provider.machines.set('m2', { id: 'm2', name: 'other', labels: { purpose: 'else' }, state: 'running', status: 'running', startedAt: 6 });
   const rows = await listMachines({ FAKE_API_KEY: 'k' }, provider);
   assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
-  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
+  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
 });
 
@@ -245,18 +246,233 @@ test('the page never assigns server data to innerHTML and fetches the stream wit
   assert.match(script, /aria-live/);
 });
 
-test('demo data has a coordinator with two workers, a stream with tool calls, and a box with no stream', () => {
+
+test('buildState gives real titles and a coordinator to worker tree from machine labels', () => {
+  const lab = (o) => ({ purpose: 'cloudy-cloud', ...o });
+  const machines = [
+    { id: 'mc', name: 'coord-box', role: 'coordinator', owner: 'o9', labels: lab({ role: 'coordinator', name: 'm1', owner: 'o9' }), state: 'running', status: 'running', startedAt: 1 },
+    { id: 'm1', name: 'sbx-one', owner: 'o8', labels: lab({ role: 'worker', profile: 'glm', parent: 'm1', agent: 'ab12cd34', description: 'Fix tests', owner: 'o8' }), state: 'running', status: 'running', startedAt: 2 },
+    { id: 'm2', name: 'sbx-two', owner: 'o8', labels: lab({ owner: 'o8' }), state: 'running', status: 'running', startedAt: 3 },
+    { id: 'm3', name: 'sbx-three', owner: 'o7', labels: lab({ parent: 'nobody', agent: 'ff00ff00', owner: 'o7' }), state: 'running', status: 'running', startedAt: 4 },
+  ];
+  const s = buildState({ events: [], machines, now: 1000, alive: () => true, owner: 'o7' });
+  const by = Object.fromEntries(s.boxes.map((b) => [b.machine, b]));
+  assert.equal(by.mc.kind, 'coordinator');
+  assert.equal(by.m1.title, 'Fix tests');
+  assert.equal(by.m1.titleSource, 'label');
+  assert.equal(by.m1.kind, 'agent');
+  assert.equal(by.m1.parent, by.mc.id);
+  assert.ok(by.mc.children.includes(by.m1.id));
+  assert.equal(by.m1.startedBy, 'm1');
+  assert.equal(by.m2.kind, 'machine');
+  assert.equal(by.m2.titleSource, 'machine');
+  assert.match(by.m2.note, /#48/);
+  assert.equal(by.m2.title, 'sbx-two');
+  assert.equal(by.m3.parentUnknown, true);
+  assert.equal(by.m3.startedBy, 'this session');
+  assert.ok(s.boxes.every((b) => b.description !== 'Machine without a session log'));
+});
+
+test('buildState joins an agent without a machine event to its machine by the agent label', () => {
+  const events = [{ type: 'agent', id: 'ab12cd34', t: 1, pid: 1, description: 'Logged title', branch: 'b' }, { type: 'message', id: 'ab12cd34', t: 2, text: 'go' }];
+  const machines = [{ id: 'm1', name: 'sbx', labels: { agent: 'ab12cd34', description: 'Label title' }, state: 'running', status: 'running', startedAt: 1 }];
+  const s = buildState({ events, machines, now: 1000, alive: () => true });
+  assert.equal(s.boxes.length, 1);
+  assert.equal(s.boxes[0].machine, 'm1');
+  assert.equal(s.boxes[0].machineState, 'running');
+  assert.equal(s.boxes[0].title, 'Logged title');
+  assert.equal(s.boxes[0].titleSource, 'log');
+  assert.equal(s.boxes[0].turns, 1);
+});
+
+// ---- /api/stream and /api/pane ----
+const SAMPLE = readFileSync(new URL('./fixtures/stream-json-sample.jsonl', import.meta.url), 'utf8');
+const fakeReader = (o = {}) => {
+  const calls = [];
+  return Object.assign(o, {
+    calls,
+    readTail: o.readTail ?? (async (m, name, from) => { calls.push(['tail', m, name, from]); return { data: SAMPLE.slice(from), from, next: SAMPLE.length, size: SAMPLE.length, fetchedAt: 5000 }; }),
+    readCached: o.readCached ?? (async () => null),
+    capturePane: o.capturePane ?? (async (m) => { calls.push(['pane', m]); return { lines: ['$ claude', 'working'], fetchedAt: 6000 }; }),
+  });
+};
+const streamEnv = (boxes, reader, extra = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-streams-'));
+  return { dir, reader, opts: { getState: async () => ({ boxes }), streamsDir: dir, getReader: async () => reader, now: () => 10_000, ...extra } };
+};
+const api = async (opts, path, host, method) => { const s = await serve(opts); try { const r = await get(s.address().port, `${path}${path.includes('?') ? '&' : '?'}t=${TOKEN}`, host, method); return { ...r, json: r.status === 200 || r.status === 404 ? JSON.parse(r.body) : undefined }; } finally { s.close(); } };
+const putLocal = (dir, box, n, text) => { mkdirSync(join(dir, box), { recursive: true }); writeFileSync(join(dir, box, `t${n}.jsonl`), text); };
+
+test('/api/stream serves the local stream file first, then only events after `from`', async () => {
+  const { dir, opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running', turns: 1 }], fakeReader());
+  putLocal(dir, 'a1', 1, SAMPLE);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`)).body);
+    assert.equal(r.source.kind, 'local');
+    assert.equal(r.source.path, 'streams/a1/t1.jsonl');
+    assert.ok(r.events.some((e) => e.kind === 'tool_use' && e.name === 'Bash'));
+    assert.ok(r.events.some((e) => e.kind === 'result' && e.costUsd > 0));
+    assert.equal(r.complete, true);
+    assert.equal(r.totals.tools, 2);
+    assert.ok(r.totals.costUsd > 0);
+    const more = JSON.parse((await get(port, `/api/stream?box=a1&turn=1&from=${r.next}&t=${TOKEN}`)).body);
+    assert.deepEqual(more.events, []);
+    assert.equal(more.next, r.next);
+  } finally { s.close(); }
+});
+
+test('/api/stream reads a live machine once and reuses it within 3 seconds', async () => {
+  const reader = fakeReader();
+  const { opts } = streamEnv([{ id: 'b1', kind: 'agent', status: 'running', machine: 'mb', machineState: 'running' }], reader);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const a = JSON.parse((await get(port, `/api/stream?box=b1&turn=1&t=${TOKEN}`)).body);
+    const b = JSON.parse((await get(port, `/api/stream?box=b1&turn=1&t=${TOKEN}`)).body);
+    assert.deepEqual(reader.calls, [['tail', 'mb', 'stream/t1.jsonl', 0]]);
+    assert.equal(a.source.kind, 'machine');
+    assert.equal(a.source.machine, 'mb');
+    assert.equal(a.source.fetchedAt, 5000);
+    assert.equal(b.events.length, a.events.length);
+    assert.equal(a.complete, true); // a result event was seen
+  } finally { s.close(); }
+});
+
+test('/api/stream falls back to the cache, then says why there is nothing', async () => {
+  const gone = Object.assign(new Error('gone'), { code: 'not_found' });
+  const box = { id: 'c1', kind: 'agent', status: 'stopped', machine: 'mc', machineState: 'running' };
+  const cached = fakeReader({ readTail: async () => { throw gone; }, readCached: async () => ({ data: SAMPLE, fetchedAt: 42 }) });
+  const r1 = (await api(streamEnv([box], cached).opts, '/api/stream?box=c1&turn=1')).json;
+  assert.equal(r1.source.kind, 'cache');
+  assert.equal(r1.source.fetchedAt, 42);
+  assert.ok(r1.events.length > 0);
+  const none = fakeReader({ readTail: async () => { throw gone; } });
+  assert.deepEqual((await api(streamEnv([box], none).opts, '/api/stream?box=c1&turn=1')).json.source, { kind: 'none', reason: 'machine_gone', machine: 'mc' });
+  const flaky = fakeReader({ readTail: async () => { throw Object.assign(new Error('x'), { code: 'transient' }); } });
+  assert.equal((await api(streamEnv([box], flaky).opts, '/api/stream?box=c1&turn=1')).json.source.reason, 'provider_error');
+  const nomachine = { id: 'd1', kind: 'agent', status: 'stopped' };
+  const r4 = (await api(streamEnv([nomachine], fakeReader()).opts, '/api/stream?box=d1&turn=1')).json;
+  assert.deepEqual([r4.source.kind, r4.source.reason, r4.events, r4.complete], ['none', 'no_stream_yet', [], true]);
+});
+
+test('/api/stream and /api/pane keep the token, host, method and box checks', async () => {
+  const { opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running' }], fakeReader());
+  for (const bad of ['../../etc', 'nope', '']) assert.equal((await api(opts, `/api/stream?box=${encodeURIComponent(bad)}&turn=1`)).status, 404, bad);
+  for (const q of ['turn=1e9', 'turn=-1', 'turn=abc', 'turn=12345', 'from=-1', 'from=1.5']) assert.equal((await api(opts, `/api/stream?box=a1&${q}`)).status, 404, q);
+  assert.deepEqual((await api(opts, '/api/stream?box=../../etc&turn=1')).json, { error: 'unknown box' });
+  const s = await serve(opts), { port } = s.address();
+  try {
+    assert.equal((await get(port, '/api/stream?box=a1&turn=1')).status, 401);
+    assert.equal((await get(port, '/api/pane?box=a1')).status, 401);
+    assert.equal((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`, 'evil.example')).status, 403);
+    assert.equal((await get(port, `/api/stream?box=a1&turn=1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+    assert.equal((await get(port, `/api/pane?box=a1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+  } finally { s.close(); }
+});
+
+test('/api/pane returns the pane of a live coordinator and 404 for anything else', async () => {
+  const reader = fakeReader();
+  const { opts } = streamEnv([{ id: 'co', kind: 'coordinator', machine: 'mco', machineState: 'running', status: 'running' }, { id: 'w', kind: 'agent', machine: 'mw', machineState: 'running' }, { id: 'old', kind: 'coordinator', machine: 'mo', status: 'stopped' }], reader);
+  const ok = await api(opts, '/api/pane?box=co');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { lines: ['$ claude', 'working'], fetchedAt: 6000, source: { kind: 'machine', machine: 'mco' } });
+  assert.equal((await api(opts, '/api/pane?box=w')).status, 404);
+  assert.equal((await api(opts, '/api/pane?box=old')).status, 404);
+  assert.equal((await api(opts, '/api/pane?box=zzz')).status, 404);
+  const down = fakeReader({ capturePane: async () => { throw Object.assign(new Error('x'), { code: 'not_found' }); } });
+  const r = await api(streamEnv([{ id: 'co', kind: 'coordinator', machine: 'mco', machineState: 'running' }], down).opts, '/api/pane?box=co');
+  assert.deepEqual([r.status, r.json.lines, r.json.source.reason], [200, [], 'machine_gone']);
+});
+
+test('/api/stream never returns a key value, and event+full gives the whole redacted input', async () => {
+  const big = 'x'.repeat(6000);
+  const lines = [
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: `export ANTHROPIC_API_KEY=sk-abcdefghijklmnop1234 && echo ${big}` } }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'ANTHROPIC_API_KEY=sk-abcdefghijklmnop1234 and ghp_abcdefghijklmnop1234' }] } },
+  ].map((j) => JSON.stringify(j)).join('\n') + '\n';
+  const { dir, opts } = streamEnv([{ id: 'k1', kind: 'agent', status: 'running' }], fakeReader());
+  putLocal(dir, 'k1', 1, lines);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    const r = await get(port, `/api/stream?box=k1&turn=1&t=${TOKEN}`);
+    assert.doesNotMatch(r.body, /sk-abcdefghijklmnop|ghp_abcdefghij/);
+    const ev = JSON.parse(r.body).events.find((e) => e.kind === 'tool_use');
+    assert.equal(ev.truncated, true);
+    const f = await get(port, `/api/stream?box=k1&turn=1&event=${ev.seq}&full=1&t=${TOKEN}`);
+    assert.doesNotMatch(f.body, /sk-abcdefghijklmnop/);
+    const [full, ...rest] = JSON.parse(f.body).events;
+    assert.equal(rest.length, 0);
+    assert.ok(full.input.length > 6000 && full.input.includes(big));
+    assert.equal((await get(port, `/api/stream?box=k1&turn=1&event=99&full=1&t=${TOKEN}`)).status, 404);
+  } finally { s.close(); }
+});
+
+test('/api/state gives each box the turns it has, from its message events', () => {
+  const events = [{ type: 'agent', id: 'a1', t: 1, pid: 1 }, { type: 'message', id: 'a1', t: 2, text: 'one' }, { type: 'message', id: 'a1', t: 3, text: 'two' }];
+  assert.equal(buildState({ events, machines: [], alive: () => true }).boxes[0].turns, 2);
+});
+
+test('the demo serves a stream and a pane for its boxes through the same endpoints', async () => {
+  const demo = demoState(Date.now());
+  const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
+  const r = (await api(opts, '/api/stream?box=7c1e90ab&turn=1')).json;
+  assert.equal(r.source.kind, 'local');
+  assert.ok(r.events.some((e) => e.kind === 'tool_use') && r.events.some((e) => e.kind === 'tool_result'));
+  assert.ok((await api(opts, '/api/pane?box=fleet-main')).json.lines.length > 3);
+});
+
+// ---- a coordinator's workers, from the coordinator machine's own log and streams ----
+test('a coordinator box is filled from its machine\'s events.jsonl and streams, and the reads are paced', async () => {
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
+  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'coord-m1', owner: 'o1' }, ttlSeconds: 600 });
+  await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'worker', parent: 'coord-m1', agent: 'aaaa1111', owner: 'o2' }, ttlSeconds: 600 });
+  const home = join(coord.dir, 'home/.config/cloudy-cloud');
+  mkdirSync(join(home, 'streams/aaaa1111'), { recursive: true });
+  writeFileSync(join(home, 'streams/aaaa1111/t1.jsonl'), SAMPLE);
+  const ev = [
+    { type: 'agent', id: 'aaaa1111', t: 1000, description: 'Worker one', profile: 'glm', role: 'worker', branch: 'cloudy-cloud/aaaa1111' },
+    { type: 'message', id: 'aaaa1111', t: 1001, text: 'do the thing' },
+    { type: 'reply', id: 'aaaa1111', t: 1002, text: 'done\nPushed to origin cloudy-cloud/aaaa1111 at 3fa9c01.' },
+    { type: 'agent', id: 'bbbb2222', t: 2000, description: 'Worker two', role: 'worker', branch: 'cloudy-cloud/bbbb2222' },
+    { type: 'machine', id: 'bbbb2222', t: 2001, machine: 'gone-1' },
+    { type: 'message', id: 'bbbb2222', t: 2002, text: 'use ANTHROPIC_API_KEY=sk-plantedkey12345678 here' },
+    { type: 'status', id: 'bbbb2222', t: 2003, status: 'running' },
+  ];
+  writeFileSync(join(home, 'events.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n{"cut');
+  const reader = createMachineReader(provider, env, { minIntervalMs: 0, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
+  const tails = [];
+  const counted = { ...reader, readTail: (m, name, from) => { tails.push([m, name, from]); return reader.readTail(m, name, from); } };
+  const empty = join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl');
+  const getState = liveState(env, { provider, file: empty, cacheMs: 0, getReader: async () => counted });
+  const s1 = await getState();
+  const w1 = s1.boxes.find((b) => b.id === 'aaaa1111'), w2 = s1.boxes.find((b) => b.id === 'bbbb2222'), co = s1.boxes.find((b) => b.kind === 'coordinator');
+  assert.deepEqual(w1.messages.map((m) => [m.kind, m.text.split('\n')[0]]), [['out', 'do the thing'], ['reply', 'done']]);
+  assert.deepEqual([w1.title, w1.profile, w1.push.sha, w1.parent], ['Worker one', 'glm', '3fa9c01', co.id]);
+  assert.deepEqual([w2.status, w2.source, w2.kind, w2.parent, w2.machineState], ['stopped', 'coordinator-log', 'agent', co.id, undefined]);
+  assert.deepEqual(co.children.sort(), ['aaaa1111', 'bbbb2222']);
+  assert.ok(co.messages.length === 3 && co.messages.every((m) => m.agent));
+  assert.doesNotMatch(JSON.stringify(s1), /sk-plantedkey/);
+  assert.deepEqual(tails.map((t) => t.slice(0, 2)), [[coord.id, 'events.jsonl']]);
+  await getState(); // within 10 s: no new read
+  assert.equal(tails.length, 1);
+  const s = await serve({ getState, getReader: async () => counted, streamsDir: mkdtempSync(join(tmpdir(), 'cc-sd-')) }), { port } = s.address();
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?box=aaaa1111&turn=1&t=${TOKEN}`)).body);
+    assert.equal(r.source.kind, 'coordinator');
+    assert.equal(r.source.machine, coord.id);
+    assert.ok(r.events.some((e) => e.kind === 'tool_use' && e.name === 'Bash'));
+    assert.deepEqual(tails.at(-1).slice(0, 2), [coord.id, 'streams/aaaa1111/t1.jsonl']);
+    const st = await get(port, `/api/state?t=${TOKEN}`);
+    assert.doesNotMatch(st.body, /sk-plantedkey/);
+  } finally { s.close(); }
+});
+
+test('demo state has a coordinator with two workers, tool-call streams, and a box with no stream', () => {
   const d = demoState(), by = Object.fromEntries(d.boxes.map((b) => [b.id, b]));
   const coord = d.boxes.find((b) => b.kind === 'coordinator' && b.children?.length >= 2);
   assert.ok(coord, 'a coordinator with two children');
   for (const id of coord.children) assert.equal(by[id].parent, coord.id);
-  const kinds = new Set();
-  for (const b of d.boxes) for (const e of demoStream(b.id, 1, 0, d.now).events) kinds.add(e.kind);
-  for (const k of ['text', 'tool_use', 'tool_result', 'retry', 'error', 'thinking', 'result']) assert.ok(kinds.has(k), k);
-  const r = demoStream('7c1e90ab', 1, 0, d.now);
-  assert.ok(r.events.find((e) => e.kind === 'tool_use' && e.truncated), 'a truncated tool_use');
-  assert.equal(demoStream('7c1e90ab', 1, r.next, d.now).events.length, 0);
-  assert.ok(d.boxes.some((b) => demoStream(b.id, 1, 0, d.now).source.kind === 'none'), 'a box whose stream source is none');
-  assert.ok(demoPane(coord.id).lines.length > 3);
-  assert.equal(demoPane('7c1e90ab'), null);
+  const lines = demoStream.stream('b42f0d17', 1).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.ok(lines.some((l) => l.message?.content?.[0]?.type === 'tool_use') && lines.some((l) => l.message?.content?.[0]?.type === 'tool_result') && lines.some((l) => l.type === 'result'));
+  assert.ok(d.boxes.some((b) => demoStream.stream(b.id, 1) === undefined), 'a box with no stream');
 });

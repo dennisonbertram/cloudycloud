@@ -60,6 +60,7 @@ Select a box to see:
 
 - **Sessions started before the event log existed.** Their agents have no history. If the machine is still running, it appears as a machine with no messages and a note that it has no title.
 - **Machines started before stream capture existed, and machines deleted before any copy was kept.** The badge says *unavailable* and the timeline explains why, so it shows no tool calls. Only the messages in the session log appear.
+- **A coordinator that is not running.** While a cloud coordinator's machine is running, the dashboard reads that machine's own event log and shows its workers with their prompts and replies, even for workers whose machines are already deleted (they appear as stopped, with the source "coordinator-log"). It reads at most one part of that log every 10 seconds, and only while the page is open. Once the coordinator's machine is deleted, nothing more can be read from it, and its workers appear only as far as their own machines or earlier cached copies show.
 - **A cloud coordinator's own messages.** A cloud coordinator runs on its own machine, so its messages are not recorded on your computer. Its workers are listed under it, and the Terminal tab shows what is on its screen now, not its history. Nested coordinators log on their own machine too.
 - **Queued agents.** A queued agent is shown as *starting*.
 - **Ended sessions.** An agent from a session that has since ended is shown as stopped.
