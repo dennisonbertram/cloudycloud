@@ -20,7 +20,7 @@ import { redact } from './events.mjs';
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+export const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 
 // Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
 export const workerSeconds = (env, maxTtlSeconds = 86_400) => {
