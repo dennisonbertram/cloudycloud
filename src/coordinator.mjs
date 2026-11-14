@@ -23,7 +23,9 @@ const TASK_MAX = 100_000; // bytes
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
 // Lines on the session's screen that mean it is stuck or dead, not working.
-const BLOCKED = /hit your (?:monthly |weekly |5-hour )?(?:spend|usage) limit|usage limit reached|Select login method|Please run \/login|Invalid API key|Do you trust the files|trust this folder|New MCP server/i;
+const BLOCKED = /hit your (?:monthly |weekly |5-hour )?(?:spend|usage) limit|usage limit reached|Select login method|Please run \/login|Invalid API key/i;
+// Screens a person answers once by attaching; the session is fine, so the machine stays.
+const WAITING = /Do you trust the files|trust this folder|New MCP server|Enable Remote Control|Remote Control.*\(y\/n\)/i;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
@@ -162,6 +164,7 @@ async function start(c, args) {
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) fail('No coordinator image yet. Run: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) fail(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`);
+  let waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   c.progress('Creating the coordinator machine...');
   const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
@@ -189,20 +192,22 @@ async function start(c, args) {
     let pane = '';
     try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch { fail(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`); }
     const line = pane.split('\n').find((l) => BLOCKED.test(l));
+    if (!line) { const w = pane.split('\n').find((l) => WAITING.test(l)); if (w) waiting = redact(safeText(w.trim())); }
     if (line) fail(`The coordinator session started but is not working. Its screen shows: ${redact(safeText(line.trim()))}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true }));
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(waiting && { waiting }) }));
   if (c.ui.on) {
     const u = c.ui;
-    return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
+    const wait = waiting ? [u.warn('The session is waiting on a prompt', waiting), u.hint(`Run: cloudy-cloud coordinator attach ${name}, then accept the prompt.`), ''] : [];
+    return c.out([...wait, u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
       u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), '',
       u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
         ['Terminal', `cloudy-cloud coordinator attach ${name}`, `runs: ${c.ssh(machine, 'tmux attach -t claude')}`]]), '',
       u.hint('The first time, attach once and accept any trust or Remote Control prompts.'),
       u.hint(`Stop it earlier with: cloudy-cloud coordinator stop ${name}`)].join('\n'));
   }
-  c.out(`Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+  c.out((waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${c.ssh(machine, 'tmux attach -t claude')})\n\nThe first time, attach once and accept any trust or Remote Control prompts.\nStop it earlier with: cloudy-cloud coordinator stop ${name}`);
 }
 

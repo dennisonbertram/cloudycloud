@@ -415,12 +415,40 @@ test('start fails and deletes the machine when the session screen shows a spend 
   assert.ok(f.log.cmds.some((c) => /tmux capture-pane/.test(c)));
 });
 
-test('start also fails on a login, trust or MCP approval screen', async () => {
-  for (const pane of ['Select login method:', 'Do you trust the files in this folder?', 'New MCP server found in this project']) {
+test('start also fails on a login screen or an invalid key', async () => {
+  for (const pane of ['Select login method:', 'Invalid API key']) {
     const f = fixture({ pane });
     await assert.rejects(main(START, f.deps), /Next: /, pane);
     assert.deepEqual(f.log.killed, ['m_new']);
   }
+});
+
+test('start keeps the machine when the screen waits on a trust, MCP or Remote Control prompt, and says how to answer it', async () => {
+  for (const pane of ['Do you trust the files in this folder?', 'New MCP server found in this project', 'Enable Remote Control? (y/n)']) {
+    const f = fixture({ pane });
+    await main(START, f.deps);
+    assert.deepEqual(f.log.killed, [], pane);
+    const text = f.log.out.join('\n');
+    assert.match(text, /waiting on a prompt/);
+    assert.ok(text.includes(pane), text);
+    assert.match(text, /cloudy-cloud coordinator attach boss/);
+    const g = fixture({ pane });
+    await main([...START, '--json'], g.deps);
+    assert.deepEqual(JSON.parse(g.log.out[0]), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true, waiting: pane });
+  }
+});
+
+test('start fails and deletes the machine when the session exits at once (capture-pane fails)', async () => {
+  const f = fixture();
+  const orig = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => {
+    const sbx = await orig(t, o);
+    const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw new Error('no server running'); return run(cmd, ...r); };
+    return sbx;
+  };
+  await assert.rejects(main(START, f.deps), /exited right after[\s\S]*Next: /);
+  assert.deepEqual(f.log.killed, ['m_new']);
 });
 
 test('start --model puts the model on the tmux command line; a bad model is refused before any machine', async () => {
