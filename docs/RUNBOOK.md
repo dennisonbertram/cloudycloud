@@ -31,7 +31,7 @@ Run it in a terminal; it asks for keys, so it will not run from a pipe. It check
 | **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
 | **GitHub token** | Create a fine-grained token (section 2.3). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
-The first two are saved to `~/.config/cloudy-cloud/env`, which only your user account can read. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. After the first install, run `cloudy-cloud setup` at any time (it runs `install.sh` from the folder `cloudy-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
+The Instabox key is saved to `~/.config/cloudy-cloud/env`, which only your user account can read; it never leaves your laptop. The Claude token, the optional Particle.ai and OpenRouter keys, and the GitHub token are stored in Instabox as proxy secrets (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` for `api.anthropic.com`, `PARTICLE_API_KEY` for `api.particle.ai`, `OPENROUTER_API_KEY` for `openrouter.ai`, `GH_TOKEN` for GitHub), so a worker machine sees only a placeholder. Setup lists the stored names in `CLOUDY_CLOUD_PROXY_SECRETS` (comma-separated). Storing a secret needs your `instabox login` session; setup runs the login if needed and sends each key on stdin, never on a command line. If a secret cannot be stored, setup says so and keeps that key in the env file instead. After the first install, run `cloudy-cloud setup` at any time (it runs `install.sh` from the folder `cloudy-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
 
 `cloudy-cloud` runs from the folder you ran `install.sh` in, on whatever branch is checked out there. The final message of `install.sh` shows the folder and branch.
 
@@ -54,9 +54,24 @@ Subagents push their work to GitHub. Instabox stores the token and adds it only 
 - **Expiration:** your choice. Shorter limits the damage if it leaks.
 - `install.sh` runs `npx --yes instabox@latest login` if you are not signed in, then `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, and the Instabox tool asks for the token. The name must be exactly `GH_TOKEN`.
 
+#### Rotating keys and moving old ones
+
+- **Rotate a key:** run `cloudy-cloud setup`, answer yes to "Replace it?" and paste the new key. Machines that are already running keep the old value; only new machines get the new one.
+- **Keys already in the env file:** when setup finds a real `PARTICLE_API_KEY`, `OPENROUTER_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` line, it asks "Move NAME into an Instabox secret (host H)? [Y/n]". Yes stores it and deletes the line. No changes nothing, and workers that use that key keep receiving the real value.
+- **Edit a host list:** run `npx --yes instabox@latest secrets set NAME --host HOST ...` again and paste the key (a profile in `profiles.json` that points at a new host needs that host added to its key's secret).
+- **Check:** `cloudy-cloud setup --check-only` confirms every name in `CLOUDY_CLOUD_PROXY_SECRETS` exists in your Instabox org with the hosts your profiles use, and prints the fix command if not.
+
 ### 2.4 Protect your main branch
 
-In the repo on GitHub, open *Settings → Rules → Rulesets* and add a branch ruleset that blocks direct pushes to your main branch. Subagents run with permission checks off, and the token can push to any branch it reaches.
+Subagents run with permission checks off and push with your GitHub token, so they act as you. A ruleset that lets admins bypass also lets them bypass it. Run, in the repo:
+
+```sh
+cloudy-cloud protect            # or: cloudy-cloud protect owner/repo
+```
+
+It shows what it will do and asks first (`--yes` answers for you). It uses your own `gh` sign-in (you must be a repo admin) and creates a ruleset on the default branch: changes need a pull request (0 approvals), no force pushes, no deleting the branch, and no bypass actors. Running it again changes nothing if the branch is already protected. Afterwards your own direct pushes to the default branch are blocked too; changes go through pull requests.
+
+If it stops: run `gh auth login` when `gh` is not signed in; ask a repo admin to run it when you are not one; a private repo on a plan without rulesets needs GitHub Pro or Team, or classic branch protection with "Do not allow bypassing the above settings".
 
 ### 2.4 First run
 

@@ -221,7 +221,7 @@ Run it in a terminal. It asks for keys, so it does not work from a pipe. It chec
 | Claude token (`sk-ant-oat01-…`) | Run `claude setup-token` in another terminal, or press Enter at the Claude step and let the installer get it. Your own `claude` login is not changed. |
 | GitHub token | Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents set to read and write. The Instabox command-line tool asks for it. |
 
-The Instabox key and Claude token are saved in `~/.config/cloudy-cloud/env`. The folder has mode 700 and the file is readable only by your user. The GitHub token is stored in Instabox as the secret `GH_TOKEN`. A subagent's machine only gets a placeholder, never the token.
+The Instabox key is saved in `~/.config/cloudy-cloud/env` and stays on your computer. The folder has mode 700 and the file is readable only by your user. The Claude token, the provider keys and the GitHub token are stored in Instabox as proxy secrets (for example `GH_TOKEN`), and setup lists their names in `CLOUDY_CLOUD_PROXY_SECRETS`. A subagent's machine only gets a placeholder, never the key. If setup finds a key already in the env file, it asks before moving it into a secret.
 
 Later, `cloudy-cloud setup` runs the installer again from any folder. It shows each saved key masked and asks before replacing it. Restart any open session to use new keys.
 
@@ -1459,7 +1459,7 @@ Your Claude Code session and the `cloudy-cloud` tool server run on your machine.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
-- **Provider keys** (for example Particle): these sit on the worker machines that use them. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+- **Provider keys** (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.
 

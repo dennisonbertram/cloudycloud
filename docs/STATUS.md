@@ -15,7 +15,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 
 | Part | Where | What it does |
 | --- | --- | --- |
-| Installer | `install.sh` | Checks prerequisites and asks for each key with a one-line note on where to get it: Instabox, Claude token, GitHub token (stored as an Instabox proxy secret), and optional Particle or OpenRouter keys. It checks keys before saving, saves them at mode 600 and shows them masked. |
+| Installer | `install.sh` | Checks prerequisites and asks for each key with a one-line note on where to get it: Instabox, Claude token, GitHub token, and optional Particle or OpenRouter keys. It checks keys before saving. The Instabox key stays in the env file (mode 600); the others are stored as Instabox proxy secrets with a host list and listed in `CLOUDY_CLOUD_PROXY_SECRETS`. Keys already in the env file are moved after a yes. Shown masked. |
 | Launcher | `bin/cloudy-cloud` | Starts Claude Code with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `cloudy-cloud setup` and offers to run it. It warns about folders that aren't repos or have no GitHub origin. |
 | Cloud tools (MCP server) | `src/server.mjs`, `src/mcp.mjs` | `cloud_agent`, `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list` and `cloud_agent_stop`. On terminal sessions they run as **MCP tasks**: footer count, live progress in `/tasks`, stop with `x`, automatic completion. |
 | Agent lifecycle | `src/run-subagent.mjs` | Snapshot upload, branch setup, push retries, the after-each-task safety push, follow-ups through `--resume`, a 60-minute idle stop, depth and per-session limits. |
@@ -66,7 +66,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 
 - **Self-hosted live check:** run setup, one worker that pushes, a follow-up, `open`, stop, and a killed-session cleanup on the real Mac Studio, then move the row above to "Proven live". Also try a coordinator (`coordinator image`, `--save`, `start`) there.
 - **agent-drive access for workers:** not built. It needs a `delegate` credential and a dedicated drive.
-- **Particle key:** it sits on worker machines; moving it into an Instabox proxy secret needs the user to run `npx instabox@latest secrets set PARTICLE_API_KEY --host api.particle.ai`.
+- **Particle key:** setup now stores it as an Instabox proxy secret (host `api.particle.ai`) and offers to move an existing env-file key. Covered by stub tests only; not yet proven live end to end (issue #63 spike, #65).
 - **MCP proxy secrets for pi and omp:** the live checks used a server with no token, so the `MCP_<NAME>_TOKEN` proxy path is still not proven live for any harness.
 - **The `omp` harness:** a follow-up resuming the omp session, `sse` servers on omp, and the model line (omp reports only the requested id, so the footer says "not confirmed by the provider") have not been run live.
 - **The `pi` harness:** fixtures were synthetic, but the live run passed. There's no per-command time limit setting for `pi`.

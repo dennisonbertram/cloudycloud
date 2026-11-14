@@ -37,7 +37,7 @@ npx -y cloudycloud setup
 | Claude token (`sk-ant-oat01-...`) | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
 | GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents set to read and write. It is stored in Instabox as the secret `GH_TOKEN`. |
 
-Setup also has optional steps for model provider keys (Particle.ai, OpenRouter). The Instabox key and the Claude token are saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600). Run `cloudy-cloud setup` again from any folder to change a key.
+Setup also has optional steps for model provider keys (Particle.ai, OpenRouter). The Instabox key is saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600) and stays on your computer. The Claude token and the provider keys are stored as Instabox proxy secrets, so worker machines see a placeholder; setup asks before moving keys that are already in the env file. Run `cloudy-cloud setup` again from any folder to change a key.
 
 ![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/setup.jpg)
 
@@ -246,7 +246,7 @@ See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troublesho
 - Subagents see only files tracked by git. They cannot see your settings or agents in `~/.claude/agents`. They get MCP servers only if you copy them with `cloudy-cloud mcp add`, and only remote `https` servers on public hosts and `npx` or `uvx` servers can be copied (see [MCP servers](#mcp-servers)).
 - An ordinary subagent's own subagents run inside the same machine, not on new ones. Only coordinators start new machines.
 - Tested on macOS.
-- Two items are still open: the Particle.ai key sits on worker machines that use it (moving it into an Instabox proxy secret is planned), and agent-drive access for workers is not built. See [docs/STATUS.md](docs/STATUS.md) for what has been proven live.
+- Two items are still open: the Particle.ai proxy secret is covered by stub tests but not yet proven live end to end, and agent-drive access for workers is not built. See [docs/STATUS.md](docs/STATUS.md) for what has been proven live.
 - Task mode (`/tasks`) does not work in the VS Code extension, the desktop app, or `claude -p`. There Claude uses `cloud_agent_wait`.
 - Coordinators (nested and cloud) need a git clone install for now.
 - Problems? See [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html) and [docs/RUNBOOK.md](docs/RUNBOOK.md).

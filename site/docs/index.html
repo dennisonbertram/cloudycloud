@@ -105,7 +105,7 @@ cd cloudycloud
 <tr><td>GitHub token</td><td>Create a <a href="https://github.com/settings/personal-access-tokens/new">fine-grained token</a> limited to the repos you will use, with Contents set to read and write. The Instabox command-line tool asks for it.</td></tr>
 </tbody>
 </table>
-<p>The Instabox key and Claude token are saved in <code>~/.config/cloudy-cloud/env</code>. The folder has mode 700 and the file is readable only by your user. The GitHub token is stored in Instabox as the secret <code>GH_TOKEN</code>. A subagent's machine only gets a placeholder, never the token.</p>
+<p>The Instabox key is saved in <code>~/.config/cloudy-cloud/env</code> and stays on your computer. The folder has mode 700 and the file is readable only by your user. The Claude token, the provider keys and the GitHub token are stored in Instabox as proxy secrets (for example <code>GH_TOKEN</code>), and setup lists their names in <code>CLOUDY_CLOUD_PROXY_SECRETS</code>. A subagent's machine only gets a placeholder, never the key. If setup finds a key already in the env file, it asks before moving it into a secret.</p>
 <p>Later, <code>cloudy-cloud setup</code> runs the installer again from any folder. It shows each saved key masked and asks before replacing it. Restart any open session to use new keys.</p>
 <div class="warn"><p>Subagents can push to any branch your GitHub token reaches. Add a branch ruleset that blocks direct pushes to your main branch (GitHub: Settings, Rules, Rulesets).</p></div>
 

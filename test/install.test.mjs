@@ -278,6 +278,7 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
 }
 const P_IB = ['Paste it', null]; // placeholders, built per test
 const tail = [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const MOVE = ['Move CLAUDE_CODE_OAUTH_TOKEN into', 'n\n']; // saved Claude token in the env file: decline moving it, so the old flow is unchanged
 const savedBoth = `INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`;
 
 test('pty: a two-line paste gives the full token; live check runs; token is not in argv', () => {
@@ -288,7 +289,8 @@ test('pty: a two-line paste gives the full token; live check runs; token is not 
   assert.match(r.text, /Claude token works/);
   assert.match(r.text, /this uses a very small amount of Claude usage/);
   const cfg = readFileSync(g.cfg, 'utf8');
-  assert.ok(cfg.includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`), r.text);
+  assert.ok(!cfg.includes(TOKEN), r.text); // the token went to an Instabox secret, not the env file
+  assert.ok(cfg.includes('CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n'));
   assert.ok(cfg.includes(`INSTABOX_API_KEY=${KEY}\n`));
   assert.ok(cfg.includes('CLOUDY_CLOUD_TOKEN_ACCOUNT=me@example.com'));
   assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
@@ -302,7 +304,7 @@ test('pty: pasted export lines and quoted values work', () => {
   const g = rig();
   const r = g.run([['Paste it', `"${KEY}"\n`], ['Enter, or paste', `export CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`], ...tail]);
   assert.equal(r.code, 0, r.text);
-  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+  assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n/);
   assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`INSTABOX_API_KEY=${KEY}\\n`));
 });
 
@@ -310,7 +312,7 @@ test('pty: a bracketed-paste-wrapped value works', () => {
   const g = rig();
   const r = g.run([['Paste it', `${ESC}[200~${KEY}${ESC}[201~\n`], ['Enter, or paste', `${ESC}[200~${TOKEN}${ESC}[201~\n`], ...tail]);
   assert.equal(r.code, 0, r.text);
-  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+  assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n/);
 });
 
 test('pty: leftover input cannot answer a [y/N] question', () => {
@@ -331,7 +333,7 @@ test('pty: a short token says it is cut off, asks no [y/N], and saves nothing', 
 test('pty: three bad tries stop the step cleanly and keep the saved token', () => {
   const g = rig({ saved: savedBoth });
   const bad = TOKEN.slice(0, 90);
-  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', bad + '\n'], ['Paste the token', bad + '\n'], ['Paste the token', bad + '\n'], ...tail]);
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], MOVE, ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', bad + '\n'], ['Paste the token', bad + '\n'], ['Paste the token', bad + '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Stopped the Claude step after 3 tries\. Your saved token is unchanged\. Run .* again to retry\./);
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -339,7 +341,7 @@ test('pty: three bad tries stop the step cleanly and keep the saved token', () =
 
 test('pty: Enter keeps the saved token', () => {
   const g = rig({ saved: savedBoth });
-  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', '\n'], ['Paste the token', '\n'], ...tail]);
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], MOVE, ['Replace it\\? \\[y/N\\]', 'y\n'], ['Enter, or paste', '\n'], ['Paste the token', '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Kept the saved token/);
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -359,7 +361,7 @@ test('pty: pressing Enter gets the token from claude setup-token, with no copyin
   const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', '\n'], ...tail]);
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Claude token works/);
-  assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`));
+  assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n/);
   assert.deepEqual(readdirSync(g.tdir).filter((f) => !f.startsWith('.')), []);
 });
 
@@ -372,7 +374,7 @@ function uiRig(opts, env = {}) {
   for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
   return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [WHERE, ...steps], ...extra }) };
 }
-const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
 const NOANIM = { CLOUDY_CLOUD_NO_ANIMATION: '1' };
 
 test('piped output has no escape sequences and uses ASCII marks', () => {
@@ -460,7 +462,7 @@ test('animation: Ctrl-C restores the cursor and echo', () => {
 
 test('animation: a key pressed during it skips it and does not reach the first prompt', () => {
   const g = uiRig({ saved: savedBoth });
-  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -630,4 +632,64 @@ test('npm package includes the file self-hosted setup reads (#41)', async () => 
   const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' }));
   const files = out[0].files.map((f) => f.path);
   for (const f of ['docker/worker.Dockerfile', 'src/self-hosted-setup.mjs', 'bin/cloudy-cloud', 'install.sh']) assert.ok(files.includes(f), `${f} missing from the npm package`);
+});
+
+// ---- Instabox proxy secrets (#65) ----
+const PK = 'pk-1234567890abcdef';
+// A stub npx: logs argv (one line per call) and the stdin of every `secrets set`.
+function npxStub({ secrets = '[]' } = {}) {
+  const cl = claudeStub();
+  const log = join(cl, 'npx-argv'); const stdin = join(cl, 'npx-stdin');
+  writeFileSync(join(cl, 'npx'), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"secrets set"*) cat >> "${stdin}" ;; esac\nexit 0\n`);
+  writeFileSync(join(cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in *secrets*) echo '${secrets}' ;; *) echo '[{"id":"o1","personal":true}]' ;; esac\n`);
+  for (const n of ['npx', 'curl']) chmodSync(join(cl, n), 0o755);
+  return { cl, log, stdin, path: `${cl}:${process.env.PATH}` };
+}
+const calls = (s) => (existsSync(s.log) ? readFileSync(s.log, 'utf8') : '');
+const provCmd = (secretLine = '') => `. "${script}"; PROVIDER=instabox; read_secret() { printf -v "$1" '%s' "${PK}"; }; setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai`;
+
+test('setup_provider stores a pasted key as an Instabox secret with its host, key on stdin only', () => {
+  const s = npxStub();
+  const cfg = join(tmp(), 'env');
+  const r = spawnSync('/bin/bash', ['-c', provCmd()], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(calls(s), /secrets set PARTICLE_API_KEY --host api\.particle\.ai\n/);
+  assert.equal(readFileSync(s.stdin, 'utf8'), PK);
+  assert.ok(!calls(s).includes(PK), 'key in argv');
+  assert.equal(readFileSync(cfg, 'utf8'), 'CLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY\n');
+  assert.ok(!(r.stdout + r.stderr).includes(PK));
+});
+
+test('pty: an env-file key is moved into a secret on yes; on no the line stays and nothing is stored', () => {
+  for (const answer of ['y', 'n']) {
+    const s = npxStub();
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, `OTHER=keep\nPARTICLE_API_KEY=${PK}\n`, { mode: 0o600 });
+    const env = { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
+    const r = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; PROVIDER=instabox; setup_provider PARTICLE_API_KEY Particle.ai x`], env, steps: [['Move PARTICLE_API_KEY into an Instabox secret \\(host api\\.particle\\.ai\\)\\? \\[Y/n\\]', `${answer}\n`], ['Replace it\\? \\[y/N\\]', 'n\n']] });
+    assert.ok(!r.text.includes(PK));
+    if (answer === 'y') {
+      assert.match(calls(s), /secrets set PARTICLE_API_KEY --host api\.particle\.ai/);
+      assert.equal(readFileSync(s.stdin, 'utf8'), PK);
+      assert.equal(readFileSync(cfg, 'utf8'), 'OTHER=keep\nCLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY\n');
+    } else {
+      assert.ok(!/secrets set/.test(calls(s)));
+      assert.equal(readFileSync(cfg, 'utf8'), `OTHER=keep\nPARTICLE_API_KEY=${PK}\n`);
+    }
+  }
+});
+
+test('setup --check-only reports a proxied secret whose hosts miss a profile host, with the fix command', () => {
+  const run = (hosts) => {
+    const s = npxStub({ secrets: JSON.stringify([{ name: 'PARTICLE_API_KEY', hosts }]) });
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, 'CLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY\nINSTABOX_API_KEY=' + KEY + '\n', { mode: 0o600 });
+    return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  };
+  const bad = run(['example.com']);
+  assert.equal(bad.status, 1, bad.stdout);
+  assert.match(bad.stdout, /PARTICLE_API_KEY.*api\.particle\.ai/);
+  assert.match(bad.stdout, /npx --yes instabox@latest secrets set PARTICLE_API_KEY --host api\.particle\.ai/);
+  const good = run(['api.particle.ai']);
+  assert.equal(good.status, 0, good.stdout);
 });
