@@ -145,6 +145,22 @@ test('a ruleset that includes ~ALL but excludes the default branch does not prot
   assert.equal(posts(s).length, 1);
 });
 
+for (const pat of ['refs/heads/**', 'refs/heads/ma*', 'refs/heads/*']) {
+  test(`a ruleset that excludes the default branch with ${pat} does not protect it`, async () => {
+    const ex = { ...equivalent, conditions: { ref_name: { include: ['~ALL'], exclude: [pat] } } };
+    const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(ex), [`POST repos/${R}/rulesets`]: ok({ id: 9 }), [`GET repos/${R}/rulesets/9`]: ok(equivalent) }, { yes: true });
+    assert.equal(await s.run(), 0);
+    assert.equal(posts(s).length, 1);
+  });
+}
+
+test('a ruleset that excludes only refs/heads/release/* still protects the default branch', async () => {
+  const ex = { ...equivalent, conditions: { ref_name: { include: ['~ALL'], exclude: ['refs/heads/release/*'] } } };
+  const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(ex) }, { yes: true });
+  assert.equal(await s.run(), 0);
+  assert.equal(posts(s).length, 0);
+});
+
 test('a ruleset whose bypass_actors is hidden (omitted) does not count, and the output says so', async () => {
   const { bypass_actors, ...hidden } = equivalent;
   const s = setup({ [`GET repos/${R}`]: ok(repo), [`GET repos/${R}/rulesets`]: ok([{ id: 7 }]), [`GET repos/${R}/rulesets/7`]: ok(hidden), [`POST repos/${R}/rulesets`]: ok({ id: 9 }), [`GET repos/${R}/rulesets/9`]: ok(equivalent) }, { yes: true });

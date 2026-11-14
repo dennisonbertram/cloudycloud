@@ -67,7 +67,12 @@ export async function run(argv, deps = {}) {
     return 1;
   }
   const want = ['pull_request', 'non_fast_forward', 'deletion'];
-  const matches = (p) => p === '~DEFAULT_BRANCH' || p === '~ALL' || p === `refs/heads/${branch}`;
+  const matches = (p) => p === '~DEFAULT_BRANCH' || p === '~ALL' || globMatch(p, `refs/heads/${branch}`);
+  // fnmatch-style: ** crosses "/", * stays inside one path segment, ? is one non-"/" character.
+  function globMatch(pattern, ref) {
+    const re = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*|\*|\?/g, (t) => (t === '**' ? '.*' : t === '*' ? '[^/]*' : '[^/]'));
+    return new RegExp(`^${re}$`).test(ref);
+  }
   for (const { id } of (json(list) || []).flat()) {
     const rs = json(gh(['api', `repos/${repo}/rulesets/${id}`]));
     const ref = rs?.conditions?.ref_name;
