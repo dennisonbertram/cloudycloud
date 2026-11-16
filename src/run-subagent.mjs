@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
-import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
+import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
 import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
@@ -602,6 +602,7 @@ export async function cancelTask(taskId, deps) {
 
 // cloud_agent: returns at once; the sandbox starts in the background.
 export async function runSubagent(args, deps) {
+  deps.refreshEnv?.(); // keys added to the env file since startup apply to this agent
   const ctx = ctxOf(deps, 'cloud_agent');
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
@@ -644,8 +645,10 @@ export async function runSubagent(args, deps) {
   if (role === 'coordinator') {
     const toolRoot = deps.toolRoot ?? TOOL_ROOT;
     try {
-      await git(toolRoot, 'rev-parse', 'HEAD');
-      tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
+      if (ownsRepo(toolRoot)) {
+        await git(toolRoot, 'rev-parse', 'HEAD');
+        tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
+      } else tool = { root: toolRoot, origin: '' }; // an npm install: toolBundle packs its files into a temporary repo
     } catch (e) {
       return fail(`A coordinator needs cloudy-cloud's own folder (${toolRoot}) to be a git checkout, so it can be sent to the sandbox: ${e.message}`);
     }

@@ -16,7 +16,7 @@ A key is missing from `~/.config/cloudy-cloud/env`. In a terminal, `cloudy-cloud
 cloudy-cloud setup
 ```
 
-If you changed a key but the session still uses the old one, restart `cloudy-cloud`. It reads keys once, at start.
+If you changed a key but the session still uses the old one, restart `cloudy-cloud`. Provider keys and `CLOUDY_CLOUD_PROXY_SECRETS` are re-read from the env file before each new subagent, but the Instabox key is read once, at start.
 
 ### The installer rejects a key
 
@@ -28,6 +28,17 @@ If you changed a key but the session still uses the old one, restart `cloudy-clo
 ### "malformed API key" or 401 from Instabox
 
 The Instabox key is wrong or revoked. Run `cloudy-cloud setup`, replace the key, and restart `cloudy-cloud`.
+
+### `npm install -g cloudycloud` fails with EEXIST
+
+The package was renamed from `cloudy-cloud` to `cloudycloud`. The old package can leave a `cloudy-cloud` link in npm's global `bin` folder that points nowhere, and npm refuses to install over it. The error names the file, for example `EEXIST: file already exists, symlink ... /bin/cloudy-cloud`. Remove that file, then install again:
+
+```
+rm <the path shown in the error>
+npm install -g cloudycloud
+```
+
+`cloudy-cloud setup` finds this link and offers to remove it for you.
 
 ### No git repository, or no github.com origin
 
@@ -68,14 +79,6 @@ If you see `rate_limited` after 5 tries, lower `CLOUDY_CLOUD_STARTS_PER_MIN` and
 ### An agent was stopped for being idle
 
 An agent with nothing to do is stopped after 60 minutes and its machine is deleted. A message to it then returns `Agent <id> is not open. It may have been stopped, been idle for 60 minutes, or never existed.` A single task is also stopped after 29 minutes. Start a new subagent from the branch the old one pushed.
-
-### Error messages with "Next step"
-
-Every `cloud_agent` tool error has the same shape: `What happened`, `Likely cause`, `Next step` (an exact tool call or command) and, when only you can fix it, `Tell the user`. The agent follows the next step and tells you the last line. If an error is not recognised, the text shows the original message and says to call `cloud_agent_list`. `coordinator start --json` prints the same fields as an `error` object on failure.
-
-### Missing, unapplied or mis-hosted secrets
-
-`The Instabox secret NAME is not in your org`: run `cloudy-cloud setup`, or `printf %s "$KEY" | npx --yes instabox@latest secrets set NAME --host <host>`. The hosts are `api.anthropic.com` (Claude token), `api.particle.ai` (`PARTICLE_API_KEY`), `openrouter.ai` (`OPENROUTER_API_KEY`) and `api.instabox.sh` (Instabox key). If Instabox did not apply a secret within 60 seconds, retry, then run `npx instabox@latest secrets show <machine>`.
 
 ### "This session has already started N agents"
 
@@ -135,7 +138,7 @@ Your Claude Code session and the `cloudy-cloud` tool server run on your machine.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 - **Provider keys** (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
-Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.
+Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under `.github/workflows`), and Actions read (so subagents can see CI results).
 
 ### The dashboard is local only
 
