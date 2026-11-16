@@ -3,7 +3,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { loadProvider } from './providers/index.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { loadEnv, ownerFile } from './config.mjs';
+import { envRefresher, loadEnv, ownerFile } from './config.mjs';
 import { killAll } from './run-subagent.mjs';
 import { buildServer } from './mcp.mjs';
 import { startReaper } from './reaper.mjs';
@@ -12,7 +12,7 @@ import { createEventLog } from './events.mjs';
 const owner = randomUUID().slice(0, 12);
 const env = loadEnv();
 const provider = await loadProvider(env, { owner }).catch((e) => { console.error(e.message); process.exit(1); });
-const deps = { provider, owner, env, open: new Map(), tasks: new Map(), events: createEventLog(env, owner) };
+const deps = { provider, owner, env, refreshEnv: envRefresher(env), open: new Map(), tasks: new Map(), events: createEventLog(env, owner) };
 
 try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(ownerFile(env), `${owner}\n`); } catch { /* only `coordinator finish` reads it */ }
 

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -32,6 +32,23 @@ export function loadEnv(env = process.env) {
     if (e.code !== 'ENOENT') throw e;
   }
   return { ...saved, ...Object.fromEntries(Object.entries(env).filter(([, v]) => v)) };
+}
+
+// Returns a function that re-reads the env file into `env` (the object the server shares) when the file's mtime changed,
+// so a key added after startup applies to the next agent. Keys deleted from the file are removed; real environment values stay.
+export function envRefresher(env, base = process.env) {
+  const file = base.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env');
+  const stamp = () => { try { return statSync(file).mtimeMs; } catch { return 0; } };
+  let seen = stamp(), fromFile = Object.keys(loadEnv(base)).filter((k) => !base[k]);
+  return () => {
+    const now = stamp();
+    if (now === seen) return;
+    seen = now;
+    const fresh = loadEnv(base);
+    for (const k of fromFile) if (!(k in fresh)) delete env[k];
+    fromFile = Object.keys(fresh).filter((k) => !base[k]);
+    Object.assign(env, fresh);
+  };
 }
 
 // The server writes its owner id here, so `coordinator finish` can tell which running machines are its workers.
