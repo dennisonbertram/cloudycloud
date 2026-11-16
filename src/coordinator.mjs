@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir, hostname as osHostname } from 'node:os';
@@ -13,6 +13,11 @@ import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
+import { paneState } from './pane-state.mjs';
+import { FIRST_RUN_SCRIPT } from './first-run.mjs';
+import { secretValues } from './run-subagent.mjs';
+import { consentedLiterals } from './mcpsync.mjs';
+export { FIRST_RUN_SCRIPT };
 import { guide, guideObj, classify, CODES, SECRET_HOSTS, setCmd } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
@@ -23,11 +28,6 @@ const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
-// Lines on the session's screen that mean it is stuck or dead, not working.
-const LEAD = String.raw`^[\s│|●⎿>*·⏺✗✖!-]*`; // box, bullet and prompt marks Claude Code draws before a message
-const BLOCKED = new RegExp(`${LEAD}(?:You've hit your [\\w -]*limit|Authentication required \u00b7|Login expired \u00b7|Invalid API key \u00b7|Not logged in \u00b7|Credit balance is too low|Select login method)`, 'i');
-// Screens a person answers once by attaching; the session is fine, so the machine stays.
-const WAITING = new RegExp(`${LEAD}(?:.*Do you trust the files|.*trust this folder|New MCP server found|Enable Remote Control|.*Remote Control.*\\(y/n\\))`, 'i');
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
@@ -72,14 +72,6 @@ const find = async (provider, role, name) =>
   (await provider.list({ role, ...(name && { name }) }, { sdk: true })).filter((m) => m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
-// Marks Claude Code's first-run screens as done in ~/.claude.json and trusts ~/repo. Keys found live on a coordinator.
-const MARK_FIRST_RUN_DONE = `const fs=require('fs'),f=process.env.HOME+'/.claude.json';
-const j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{};
-Object.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'dark',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});
-const p=process.env.HOME+'/repo';j.projects=j.projects||{};
-j.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
-fs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});`;
-
 async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
@@ -182,7 +174,7 @@ async function start(c, args) {
     c.progress('Starting the Claude session...');
     // Claude Code shows first-run screens (theme, login method, trust, notices) that nobody can answer on an unattended
     // machine, and they block Remote Control. The login itself is in the snapshot; mark the rest done.
-    await sbx.commands.run(`node -e ${q(MARK_FIRST_RUN_DONE)}`);
+    await sbx.commands.run(`node -e ${q(FIRST_RUN_SCRIPT)}`);
     // Give the coordinator's Claude the fleet skill from this laptop, so it matches the instructions the local Claude has.
     const skillDir = join(c.root, 'skills', 'cloud-fleet');
     for (const f of readdirSync(skillDir)) await sbx.files.write(`${home}/.claude/skills/cloud-fleet/${f}`, readFileSync(join(skillDir, f)));
@@ -201,11 +193,16 @@ async function start(c, args) {
       screenRead = false;
     }
     // The task is typed into the session, so its own lines can be on screen; they are not errors.
-    const mine = (l) => { const t = l.trim(); return t.length > 3 && (task ?? '').includes(t); };
-    const find = (re) => pane.split('\n').find((l) => !mine(l) && re.test(l));
-    const line = find(BLOCKED);
-    if (!line) { const w = find(WAITING); if (w) waiting = redact(safeText(w.trim())); }
-    if (line) fail(`The coordinator session started but is not working. Its screen shows: ${redact(safeText(line.trim()))}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
+    const st = paneState(pane, task ?? '');
+    const line = st.blocked;
+    if (!line && st.waiting) waiting = st.waiting;
+    if (line) {
+      // The code comes from the matched line, never from words in this message (classify would read "spend limit" as the cause).
+      const [code, cause, next] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`]
+        : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`]
+        : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`];
+      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { code });
+    }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   if (!args.includes('--json') && skipNote) c.out(skipNote);
@@ -230,6 +227,29 @@ async function attach(c, args) {
   c.out(c.ssh(mach(m), 'tmux attach -t claude'));
 }
 
+// Reads a coordinator's screen once, read-only. waiting is the prompt line a person must answer ('' if none);
+// read is false when the screen could not be read (machine not running, network, no tmux session).
+async function screenOf(c, m) {
+  if (m.state && m.state !== 'running') return { read: false, waiting: '' };
+  try {
+    const sbx = await c.provider.connect(m.id, { retry: false });
+    const raw = (await sbx.commands.run('tmux capture-pane -t claude -p', { timeoutMs: 15_000 })).stdout ?? '';
+    // Exact key values (and consented MCP tokens) are removed first; paneState then removes key-shaped text.
+    const pane = secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw);
+    const st = paneState(pane);
+    return { read: true, waiting: st.waiting || st.blocked };
+  } catch { return { read: false, waiting: '' }; }
+}
+const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
+
+async function status(c, args) {
+  const [m] = await find(c.provider, 'coordinator', args[0]);
+  if (!m) fail(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`);
+  const r = await screenOf(c, m), attach = c.ssh(mach(m), 'tmux attach -t claude'), name = args[0], state = safeText(m.state ?? '') || 'unknown';
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: mach(m), state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), attach }));
+  c.out([`Coordinator ${name} on machine ${mach(m)}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
+}
+
 async function ls(c) {
   const rows = await find(c.provider, 'coordinator');
   if (!rows.length) {
@@ -243,17 +263,24 @@ async function ls(c) {
   const when = (v) => { const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : 'unknown'; };
   const data = rows.map((m) => ({ name: clean(m.labels?.name) || 'unnamed', state: clean(m.state) || 'unknown', created: when(m.startedAt), machine: clean(mach(m)) || 'unknown',
     deleteAt: m.deleteAt ? clean(m.deleteAt) : '' }));
+  // One pane read per coordinator, at most a few at a time so a long list cannot flood the provider.
+  const screens = new Array(rows.length), cap = Math.min(4, c.provider.caps?.maxConcurrentCalls || 4);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(cap, rows.length) }, async () => { while (next < rows.length) { const i = next++; screens[i] = await screenOf(c, rows[i]); } }));
+  data.forEach((d, i) => { d.screen = data[i].state === 'running' ? screenText(screens[i]) : '-'; }); // only a running session has a screen to read
   if (c.ui.on) {
     const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
     const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), d.machine,
       d.deleteAt ? [[u.rel(d.deleteAt)], [`  ${d.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [['never', u.col.dim]]]);
-    const table = u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES'], cells);
+    const noted = data.some((d) => d.screen !== '-'); // a column only when some screen needs a look
+    if (noted) cells.forEach((row, i) => row.push([[data[i].screen, data[i].screen.startsWith('waiting') ? u.col.warn : u.col.dim]]));
+    const table = u.table(['NAME', 'STATE', 'STARTED', 'MACHINE', 'DELETES', ...(noted ? ['SCREEN'] : [])], cells);
     // A window too narrow for the table gets one short block per coordinator instead of wrapped columns.
     if (!table.split('\n').some((l) => l.replace(/\x1b\[[0-9;]*m/g, '').length > u.width)) return c.out(table);
-    return c.out(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`].join('\n')).join('\n\n'));
+    return c.out(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${d.screen}`] : [])].join('\n')).join('\n\n'));
   }
-  c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES'].join('\t'));
-  for (const d of data) c.out([d.name, d.state, d.created, d.machine, d.deleteAt || 'never'].join('\t'));
+  c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES', 'WAITING'].join('\t'));
+  for (const d of data) c.out([d.name, d.state, d.created, d.machine, d.deleteAt || 'never', d.screen].join('\t'));
 }
 
 async function stop(c, args) {
@@ -317,6 +344,7 @@ const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hou
 function validateArgs(cmd, args) {
   const bad = (message) => fail(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`);
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
+  if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
   if (!NAME_RE.test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
@@ -335,12 +363,12 @@ function validateArgs(cmd, args) {
 
 async function run(argv, deps) {
   const [cmd, ...args] = argv;
-  const commands = { image, start, attach, ls, stop, finish: (c, a) => finish(c, a, deps) };
+  const commands = { image, start, attach, ls, status, stop, finish: (c, a) => finish(c, a, deps) };
   const isHelp = (a) => a === '--help' || a === '-h';
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
+  if (!Object.hasOwn(commands, cmd)) fail('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help');
   validateArgs(cmd, args);
   const c = await context(deps);
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) fail(`Provider ${c.provider.name} has no snapshots, which coordinators need.`);

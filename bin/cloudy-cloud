@@ -161,7 +161,7 @@ prompt='Workers can run Claude or open models: for a non-Claude model use the pr
 
 # On a coordinator machine (set by `coordinator start`) the keys are placeholders that Instabox swaps for the real values.
 if [ -n "${CLOUDY_CLOUD_COORDINATOR:-}" ]; then
-  prompt="$prompt This session is a cloud coordinator. This machine holds placeholders for the Instabox key, the Claude token and the provider API keys, not the real keys; Instabox swaps a placeholder for the real key only in requests to that key's own host. Never print, share, commit or send a placeholder anywhere, never read ~/.config/cloudy-cloud/env into a message or a file, and never pass a placeholder to workers except through cloudy-cloud itself, which starts workers for you."
+  prompt="$prompt This session is a cloud coordinator and its permission checks are off, so no prompt will appear; never wait for one. This machine holds placeholders for the Instabox key, the Claude token and the provider API keys, not the real keys; Instabox swaps a placeholder for the real key only in requests to that key's own host. Never print, share, commit or send a placeholder anywhere, never read ~/.config/cloudy-cloud/env into a message or a file, and never pass a placeholder to workers except through cloudy-cloud itself, which starts workers for you."
   if [ -n "${CLOUDY_CLOUD_DELETE_AT:-}" ]; then
     prompt="$prompt Your machine is deleted by the server at $CLOUDY_CLOUD_DELETE_AT; push your work well before then. When your work is done, do these steps in order: stop every worker with cloud_agent_stop, push your branches, write your report, then run ~/cloudy-cloud/bin/cloudy-cloud coordinator finish. It refuses while work is unpushed or workers are running, and otherwise deletes this machine. Do not run it until the report is pushed."
   fi
@@ -178,4 +178,7 @@ export CLOUDY_CLOUD_BIN="$root/bin/cloudy-cloud"
 # An unattended coordinator cannot answer "New MCP server found in this project"; only the servers above are used there.
 strict=
 [ -z "${CLOUDY_CLOUD_COORDINATOR:-}" ] || strict=--strict-mcp-config
-exec claude --mcp-config "$mcp" ${strict:+"$strict"} --settings "$settings" --append-system-prompt "$prompt" "$@"
+# Nobody can answer a permission prompt there (#88), so checks are off like for workers. The deny list in --settings still applies.
+bypass=
+[ -z "${CLOUDY_CLOUD_COORDINATOR:-}" ] || bypass=--dangerously-skip-permissions
+exec claude --mcp-config "$mcp" ${strict:+"$strict"} ${bypass:+"$bypass"} --settings "$settings" --append-system-prompt "$prompt" "$@"

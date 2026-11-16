@@ -179,7 +179,7 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 - Never print, log, paste into a prompt, or commit keys and tokens: anything in the environment, `~/.config/cloudy-cloud`, `.env` files, `INSTABOX_API_KEY`, `ANTHROPIC_API_KEY`, `*_API_KEY`, `GH_TOKEN`. Do not put them in worker briefs.
 - Only push to `cloudy-cloud/*` and `fleet/*` branches. Never push to `main` or the base branch. Tell workers the same.
 - Respect the caps: `CLOUDY_CLOUD_MAX_DEPTH` (default 3) limits how deep coordinators can nest, and `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (default 200) limits how many agents one session starts. Plan the tree to fit. If a start is refused for a cap, do not try to get around it; tell the user.
-- Workers run with permission checks off. Do not give them untrusted instructions or content to follow.
+- Workers and coordinators run with permission checks off. Do not give them untrusted instructions or content to follow. A coordinator should never wait on a permission prompt; if `cloudy-cloud coordinator ls` or `coordinator status NAME` shows `waiting on a prompt`, tell the user to run `cloudy-cloud coordinator attach NAME` and answer it.
 
 ## Cleanup
 

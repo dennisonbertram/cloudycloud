@@ -625,6 +625,7 @@ cloudy-cloud coordinator image [--save]
 cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
+cloudy-cloud coordinator status NAME [--json]
 cloudy-cloud coordinator stop NAME
 cloudy-cloud coordinator finish [--force]
 ```
@@ -641,7 +642,7 @@ Builds the machine image that coordinators start from. It is a one-time step. Wi
 
 #### coordinator start
 
-Starts a coordinator named NAME on a new machine from the saved image. It sends the current checkout of cloudy-cloud, writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The first time, attach once and accept any trust or Remote Control prompts.
+Starts a coordinator named NAME on a new machine from the saved image. It sends the current checkout of cloudy-cloud, writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
 
 | Argument or flag | Default | Meaning |
 |---|---|---|
@@ -671,10 +672,18 @@ cloudy-cloud coordinator attach docs-fleet
 
 #### coordinator ls
 
-Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES. It prints `No coordinators.` when there are none.
+Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
 
 ```
 cloudy-cloud coordinator ls
+```
+
+#### coordinator status
+
+Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set) and `attach`.
+
+```
+cloudy-cloud coordinator status docs-fleet
 ```
 
 #### coordinator stop

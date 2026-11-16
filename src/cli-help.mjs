@@ -15,7 +15,8 @@ const guides = {
     ['--json', 'Print the result as JSON (includes started: true)'],
   ], 'Run "image" and "image --save" once first. Stop the coordinator when you are done.'],
   attach: ['Print the SSH command for a coordinator.', 'attach NAME', [], 'Run the printed command to connect.'],
-  ls: ['List your cloud coordinators.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, or "No coordinators.".'],
+  ls: ['List your cloud coordinators and whether one waits on a prompt.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, WAITING, or "No coordinators.". It reads each running coordinator\'s screen once.'],
+  status: ['Show one coordinator: state, the prompt it waits on (if any) and the attach command.', 'status NAME [--json]', [], 'Read-only. Reads the screen once. A coordinator runs with permission checks off, so a waiting prompt is unexpected: attach and answer it.'],
   stop: ['Delete one coordinator machine.', 'stop NAME', [], 'Its workers are cleaned up separately; check for remaining machines afterwards.'],
   finish: ['Run on a coordinator machine by the coordinator: check nothing is lost, then delete this machine.', 'finish [--force]', [
     ['--force', 'Skip the git and worker checks'],
