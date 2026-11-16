@@ -121,10 +121,11 @@ test('cloudy-cloud setup and --setup run install.sh from any folder', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-setup-'));
   for (const n of ['git', 'npm', 'curl', 'claude']) { writeFileSync(join(dir, n), '#!/bin/sh\nexit 0\n'); chmodSync(join(dir, n), 0o755); }
   for (const flag of ['setup', '--setup']) {
-    // --check-only is passed through to install.sh, which prints its step line and exits 0
+    // --check-only is passed through to install.sh, which runs every check; with no keys saved it ends in a failed verdict
     const r = spawnSync('/bin/sh', [launcher, flag, '--check-only'], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir }, encoding: 'utf8' });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /\[1\/4\] Tools/);
+    assert.match(r.stdout, /Check failed/);
   }
 });
 

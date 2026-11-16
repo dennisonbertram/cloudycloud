@@ -365,6 +365,47 @@ check_proxy_secrets() {
   return $rc
 }
 
+# check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
+# Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
+check_setup() {
+  local fix fails=0 code state host
+  fix="run $(rerun_cmd)"
+  step 2 "Provider"
+  if [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" = self-hosted ]; then
+    host=$(get_saved CLOUDY_CLOUD_SSH_HOST)
+    if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine" "$fix"; fails=1; fi
+  else
+    local key; key=$(get_saved INSTABOX_API_KEY); key=${key:-${INSTABOX_API_KEY:-}}
+    if [ -z "$key" ]; then bad "No Instabox key is saved" "$fix"; fails=1
+    else
+      code=$(http_code "$key")
+      case $code in
+        200) ok "Instabox key works" ;;
+        401|403) bad "Instabox rejected the saved key (HTTP $code)" "$fix"; fails=1 ;;
+        *) warn "Could not check the Instabox key" "no answer from the Instabox API" ;;
+      esac
+    fi
+  fi
+  step 3 "Claude token"
+  if [ -n "$(get_saved CLAUDE_CODE_OAUTH_TOKEN)" ] || [ -n "$(get_saved ANTHROPIC_API_KEY)" ] || is_proxied CLAUDE_CODE_OAUTH_TOKEN || is_proxied ANTHROPIC_API_KEY || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]; then
+    ok "A Claude credential is saved"
+  else bad "No Claude token is saved, so subagents cannot sign in" "$fix"; fails=1; fi
+  step 4 "GitHub token, secrets and coordinators"
+  if [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" != self-hosted ]; then
+    state=$(gh_secret_state)
+    case $state in
+      yes) ok "GH_TOKEN is stored in Instabox" ;;
+      no) bad "GH_TOKEN is not stored in Instabox, so subagents cannot push" "$fix"; fails=1 ;;
+      *) warn "Could not confirm GH_TOKEN" "check with: npx --yes instabox@latest secrets ls" ;;
+    esac
+    if [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then ok "Coordinator image is saved"; else hint "No coordinator image is set up (optional)."; fi
+  fi
+  check_proxy_secrets || fails=1
+  echo
+  if [ "$fails" = 0 ]; then ok "Check passed: nothing needs fixing"; else bad "Check failed: fix the items above" "$fix"; fi
+  return "$fails"
+}
+
 # clean_paste TEXT: prints TEXT without whitespace, control characters and terminal escape sequences
 # (including the bracketed-paste markers ESC[200~ and ESC[201~).
 clean_paste() {
@@ -430,6 +471,7 @@ install_global() {
           "npm cannot install over it. Replacing it removes only that link and package."
         if yn "Replace it (npm rm -g cloudy-cloud, then npm install -g cloudycloud)?"; then
           spin_start "Replacing the old cloudy-cloud command"
+          [ -e "$bin" ] || rm -f "$bin" # a link to a package that is gone: npm rm would not remove it
           out=$(npm rm -g cloudy-cloud 2>&1 >/dev/null); rc=$?
           [ "$rc" -ne 0 ] || { out=$(npm install -g cloudycloud 2>&1 >/dev/null); rc=$?; }
           spin_stop
@@ -885,7 +927,8 @@ setup_github() {
   fi
   ask "GitHub token" "Subagents push their branches with it. Instabox stores it;" "subagent machines only see a placeholder." \
     "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new" \
-    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, read and write." \
+    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, Pull requests and Workflows read and write; Actions read." \
+    "(Workflows lets a subagent push .github/workflows; Actions lets it see CI.)" \
     "Next, the Instabox CLI signs you in (if needed) and asks for the token." "Nothing shows as you paste."
   # The token goes from the terminal straight to the Instabox CLI; this script never sees it.
   npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty
@@ -968,7 +1011,7 @@ main() {
   [ "${1:-}" = --check-only ] || banner
   step 1 Tools
   check_prereqs || exit 1
-  if [ "${1:-}" = --check-only ]; then check_proxy_secrets; exit $?; fi
+  if [ "${1:-}" = --check-only ]; then check_setup; exit $?; fi
   ok "git, node, npm, curl and claude are installed"
 
   local root branch sha log

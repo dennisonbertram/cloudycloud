@@ -85,7 +85,8 @@ test('--check-only rejects old Node and passes with everything present', () => {
   assert.match(r1.stdout, /found v18\.2\.0/);
   const good = stubDir(all, { node: nodeStub });
   const r2 = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: good } });
-  assert.equal(r2.status, 0, r2.stdout);
+  assert.equal(r2.status, 1, r2.stdout); // tools pass; no keys are saved, so the verdict fails
+  assert.match(r2.stdout, /git, node|\[1\/4\] Tools[\s\S]*Check failed/);
 });
 
 test('CLOUDY_CLOUD_CONFIG is honoured and the default is under HOME', () => {
@@ -682,9 +683,9 @@ test('pty: an env-file key is moved into a secret on yes; on no the line stays a
 
 test('setup --check-only reports a proxied secret whose hosts miss a profile host, with the fix command', () => {
   const run = (hosts) => {
-    const s = npxStub({ secrets: JSON.stringify([{ name: 'PARTICLE_API_KEY', hosts }]) });
+    const s = npxStub({ secrets: JSON.stringify([{ name: 'PARTICLE_API_KEY', hosts }, { name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]) });
     const cfg = join(tmp(), 'env');
-    writeFileSync(cfg, 'CLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY\nINSTABOX_API_KEY=' + KEY + '\n', { mode: 0o600 });
+    writeFileSync(cfg, 'CLOUDY_CLOUD_PROXY_SECRETS=PARTICLE_API_KEY\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\nINSTABOX_API_KEY=' + KEY + '\n', { mode: 0o600 });
     return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
   };
   const bad = run(['example.com']);
@@ -750,4 +751,20 @@ test('pty: declining the coordinator image still stores the coordinator secret',
   assert.match(readFileSync(log, 'utf8'), /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY --host api\.instabox\.sh/);
   assert.equal(readFileSync(stdin, 'utf8'), KEY);
   assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROXY_SECRETS=.*CLOUDY_CLOUD_INSTABOX_API_KEY/);
+});
+
+test('setup --check-only runs every check and ends with a verdict', () => {
+  const run = (cfgText, secrets) => {
+    const s = npxStub({ secrets });
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, cfgText, { mode: 0o600 });
+    return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  };
+  const empty = run('', '[]');
+  assert.equal(empty.status, 1, empty.stdout);
+  for (const re of [/\[2\/4\]/, /No Instabox key is saved/, /No Claude token is saved/, /GH_TOKEN is not stored/, /Check failed/]) assert.match(empty.stdout, re);
+  const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
+  const good = run(`INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n`, gh);
+  assert.equal(good.status, 0, good.stdout);
+  assert.match(good.stdout, /Check passed/);
 });
