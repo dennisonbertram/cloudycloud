@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -243,6 +243,22 @@ test('coordinators: skipped on N; full flow signs in on the machine, saves, and 
   assert.match(calls, /npx --yes instabox@latest ssh img-1 -- -t claude auth login/);
   assert.match(calls, /coordinator image --save/);
   assert.match(readFileSync(cfg, 'utf8'), /CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=coord@example\.com/);
+});
+
+// The coordinator step of main, run on an npm-style root (inside node_modules, no .git) with a git stub that logs its calls.
+test('coordinators from an npm install: the step is offered, never says it needs a clone, and makes no git call', () => {
+  const s = coordStub();
+  const root = join(s.dir, 'node_modules/cloudycloud');
+  mkdirSync(join(s.dir, 'node_modules'), { recursive: true });
+  renameSync(s.root, root);
+  writeFileSync(join(s.dir, 'git'), `#!/bin/sh\necho "git $@" >> "${s.dir}/gitcalls"\n`);
+  chmodSync(join(s.dir, 'git'), 0o755);
+  const cfg = join(tmp(), 'env');
+  const r = fn(`PROVIDER=instabox; yn() { echo "ASKED: $1"; return 0; }; offer_coordinators "$1"; echo "$STATUS_COORD"`, [root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
+  assert.match(r.stdout, /ASKED: Set up cloud coordinators/);
+  assert.match(r.stdout, /ready \(coord@example\.com\)/);
+  assert.doesNotMatch(r.stdout + r.stderr, /needs a git clone|from a clone/);
+  assert.ok(!existsSync(join(s.dir, 'gitcalls')), 'no git call on the package root');
 });
 
 test('coordinators: a failed sign-in removes the image machine and says how to retry', () => {

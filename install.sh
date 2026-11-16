@@ -905,6 +905,9 @@ setup_coordinators() {
   ok "Coordinator image saved" "${acct:+$acct, }$SPIN_T"
 }
 
+# Cloud coordinators are for Instabox only. They work from a clone or an npm install alike.
+offer_coordinators() { [ "$PROVIDER" = self-hosted ] || setup_coordinators "$1"; }
+
 # Prints the JSON list of the org's secrets (nothing if the org lookup fails).
 secrets_list() { # optional $1: the key to use (default: the saved one)
   local key orgs id
@@ -1065,14 +1068,7 @@ main() {
   STATUS_GH=${GH_RESULT:-"not confirmed"}
   setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
-  if [ "$PROVIDER" = self-hosted ]; then
-    :
-  elif from_npm "$root"; then
-    STATUS_COORD="needs a git clone"
-    hint "Cloud coordinators ship cloudy-cloud from a git checkout, so set them up from a clone: ./install.sh"
-  else
-    setup_coordinators "$root"
-  fi
+  offer_coordinators "$root"
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
