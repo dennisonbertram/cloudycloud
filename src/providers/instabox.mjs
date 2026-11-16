@@ -67,7 +67,7 @@ export const withDeleteAfter = (seconds, fetchFn = fetch, extra) => (url, init =
 const TEMPLATES = { android: 'android', omarchy: 'omarchy', gpu: 'gpu', macos: 'macos' };
 const KINDS = ['linux', ...Object.keys(TEMPLATES)];
 // Instabox error codes that have their own guidance.
-const CODE_MAP = { template_not_allowed: 'machine_not_on_plan', template_limit: 'machine_gpu_limit', permission_denied: 'display_forbidden' };
+const CODE_MAP = { template_not_allowed: 'machine_not_on_plan', template_limit: 'machine_gpu_limit' };
 
 // Seconds a worker or nested coordinator machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
 export const workerSeconds = (env) => {
@@ -256,7 +256,7 @@ export function createProvider(env, deps = {}) {
           ...(name ? { apiKey: key, name, ...(envs && { envs }), ...lifetime, metadata: labels } : { apiKey: key, envs, metadata: labels, ...lifetime }),
           fetch: withDeleteAfter(ttlSeconds, fetchFn, extra),
         });
-      } catch (e) { throw kindName !== 'linux' && e?.status === 503 && !e.code ? Object.assign(e, { code: 'machine_no_capacity' }) : normalize(e); }
+      } catch (e) { throw e?.code === 'no_capacity' || (kindName !== 'linux' && e?.status === 503 && !e.code) ? Object.assign(e, { code: 'machine_no_capacity' }) : normalize(e); }
       try {
         await attachSecrets(sbx.sandboxId, key, fetchFn, secrets, deps.timing);
       } catch (e) {
@@ -271,16 +271,18 @@ export function createProvider(env, deps = {}) {
       return sandbox;
     },
 
-    // Desktop calls on a machine without a working desktop (omarchy, linux) fail in many ways; those become desktop_unavailable.
+    // A desktop that cannot run (omarchy: no xdotool, no X server) becomes desktop_unavailable; a 403 permission_denied here becomes display_forbidden.
     async desktop(id, fn) {
       const { Sandbox } = await loadSdk();
       try {
         const sbx = await Sandbox.connect(id, { apiKey: apiKey() });
         return await callWith(MAX_429_TRIES)(() => fn(sbx.desktop));
       } catch (e) {
-        const n = normalize(e);
-        if (['rate_limited', 'not_found', 'transient', 'no_key', 'display_forbidden'].includes(n?.code)) throw n;
-        throw Object.assign(n ?? new Error('desktop failed'), { code: 'desktop_unavailable' });
+        // Only a desktop that cannot run (its script exited non-zero, or it did not start) is desktop_unavailable;
+        // auth, quota, capacity and network errors keep their own codes.
+        if (e?.status === 403 && e.code === 'permission_denied') throw Object.assign(e, { code: 'display_forbidden' });
+        if (e?.code === 'command_exit' || e?.code === 'desktop_not_running') throw Object.assign(e, { code: 'desktop_unavailable' });
+        throw normalize(e);
       }
     },
     async displayLink(id, { control = false, ttlSeconds } = {}) {

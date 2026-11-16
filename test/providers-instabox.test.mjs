@@ -277,6 +277,8 @@ test('kinds: create errors map to the machine_* codes', async () => {
     [{ status: 403, code: 'template_not_allowed' }, 'machine_not_on_plan'],
     [{ status: 403, code: 'template_limit' }, 'machine_gpu_limit'],
     [{ status: 503 }, 'machine_no_capacity'],
+    [{ status: 503, code: 'no_capacity' }, 'machine_no_capacity'], // SDK-shaped: the SDK always sets code
+    [{ status: 0, code: 'no_capacity' }, 'machine_no_capacity'], // a failed async create
   ];
   for (const [err, want] of cases) {
     const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw Object.assign(new Error('x'), err); } } }, fetchFn: fakeFetch().f, timing });
@@ -327,11 +329,29 @@ test('displayLink starts a desktop that is not running; revoke and screenshot ca
 });
 
 test('omarchy desktop failures become desktop_unavailable; 403 permission_denied becomes display_forbidden', async () => {
-  const bad = Object.assign(new Error('xdotool: command not found'), { exitCode: 127 });
+  const bad = Object.assign(new Error('command exited with code 127: xdotool: command not found'), { code: 'command_exit', exitCode: 127 });
   const a = mk({ desktop: { status: () => { throw bad; } } });
   await assert.rejects(a.p.displayLink('m-1'), (e) => e.code === 'desktop_unavailable');
-  const b = mk({ desktop: { shot: new Error("unable to open X server ':1'") } });
+  const b = mk({ desktop: { shot: Object.assign(new Error("command exited with code 1: unable to open X server ':1'"), { code: 'command_exit', exitCode: 1 }) } });
   await assert.rejects(b.p.screenshot('m-1'), (e) => e.code === 'desktop_unavailable');
   const c = mk({ desktop: { stream: Object.assign(new Error('no'), { status: 403, code: 'permission_denied' }) } });
   await assert.rejects(c.p.displayLink('m-1'), (e) => e.code === 'display_forbidden');
+});
+
+test('desktop errors that are not the desktop failing keep their own codes', async () => {
+  for (const [err, want] of [[{ status: 401, code: 'invalid_key' }, 'invalid_key'], [{ status: 403, code: 'missing_scope' }, 'missing_scope'],
+    [{ status: 429, code: 'quota_exceeded' }, 'quota_exceeded'], [{ status: 503, code: 'host_unavailable' }, 'host_unavailable'],
+    [{ status: 404 }, 'not_found'], [{ status: 502 }, 'transient']]) {
+    const { p } = mk({ desktop: { status: () => { throw Object.assign(new Error('x'), err); } } });
+    await assert.rejects(p.displayLink('m-1'), (e) => e.code === want, want);
+  }
+  const { p } = mk({ desktop: { status: () => { throw Object.assign(new Error('x'), { status: 0, code: 'desktop_not_running' }); } } });
+  await assert.rejects(p.displayLink('m-1'), (e) => e.code === 'desktop_unavailable');
+});
+
+test('permission_denied keeps its own code outside the display calls', async () => {
+  const denied = () => Object.assign(new Error('no'), { status: 403, code: 'permission_denied' });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw denied(); }, connect: async () => { throw denied(); } } }, fetchFn: fakeFetch().f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'permission_denied');
+  await assert.rejects(p.connect('m-1'), (e) => e.code === 'permission_denied');
 });
