@@ -796,3 +796,20 @@ test('start --json gives each fatal screen its own code and Tell the user line; 
     if (code === 'coordinator_login_expired') assert.match(e.nextStep, /coordinator image.*claude auth login.*coordinator image --save/s);
   }
 });
+
+test('an npm install takes the git identity from global config, not from the repo the caller is standing in', async () => {
+  const sh = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+  const here = mkdtempSync(join(tmpdir(), 'cc-here-'));
+  sh(here, 'init', '-q'); sh(here, 'config', 'user.name', 'Local Person'); sh(here, 'config', 'user.email', 'local@example.com');
+  const pkg = mkdtempSync(join(tmpdir(), 'cc-pkg-')); // not a git repo
+  writeFileSync(join(pkg, 'package.json'), '{"name":"cloudycloud","files":[]}');
+  const gcfg = join(mkdtempSync(join(tmpdir(), 'cc-gcfg-')), 'config');
+  writeFileSync(gcfg, '[user]\n\tname = Global Person\n\temail = global@example.com\n');
+  const f = fixture();
+  const saved = { cwd: process.cwd(), g: process.env.GIT_CONFIG_GLOBAL };
+  process.chdir(here); process.env.GIT_CONFIG_GLOBAL = gcfg;
+  try { await main(['image'], { ...f.deps, root: pkg }); } finally { process.chdir(saved.cwd); if (saved.g === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved.g; }
+  const cmd = f.log.cmds.find((c) => c.includes('git config --global user.name'));
+  assert.ok(cmd.includes('Global Person (coordinator)') && cmd.includes('global@example.com'), cmd);
+  assert.ok(!/Local Person|local@example\.com/.test(cmd), cmd);
+});
