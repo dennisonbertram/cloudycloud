@@ -1021,7 +1021,8 @@ main() {
     provider_arg=$2; shift 2
   fi
   if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
-    echo "install.sh asks for keys, so run it in a terminal: ./install.sh"; exit 1
+    case $0 in */node_modules/*) echo "Setup asks for keys, so run it in a terminal: cloudy-cloud setup" ;;
+      *) echo "install.sh asks for keys, so run it in a terminal: ./install.sh" ;; esac; exit 1
   fi
   trap 'cleanup_capture; ui_cleanup; stty echo 2>/dev/null' EXIT
   trap 'exit 130' INT TERM
