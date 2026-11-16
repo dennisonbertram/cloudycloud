@@ -5,7 +5,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { main, toolRepoUrl } from '../src/coordinator.mjs';
+import { main, toolRepoUrl, FIRST_RUN_SCRIPT } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -673,5 +673,126 @@ test('guidance labels mid-line are not treated as guidance; multiline fields kee
     f.deps.sdk = { get Sandbox() { throw new Error(msg); } };
     await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
     check(JSON.parse(f.log.out.at(-1)).error);
+  }
+});
+
+test('the first-run script pre-answers the bypass confirmation and the folder trust, and keeps existing settings (#88)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-firstrun-'));
+  execFileSync('mkdir', ['-p', join(home, '.claude')]);
+  writeFileSync(join(home, '.claude/settings.json'), JSON.stringify({ theme: 'x', permissions: { deny: ['Agent'] } }));
+  execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: home } });
+  const s = JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8'));
+  assert.equal(s.skipDangerousModePermissionPrompt, true);
+  assert.deepEqual([s.theme, s.permissions], ['x', { deny: ['Agent'] }]);
+  const j = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+  assert.equal(j.projects[join(home, 'repo')].hasTrustDialogAccepted, true);
+});
+
+test('start pre-answers the bypass confirmation before Claude starts (#88)', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const prep = f.log.cmds.findIndex((c) => c.includes('skipDangerousModePermissionPrompt'));
+  assert.ok(prep > -1 && prep < f.log.cmds.findIndex((c) => /tmux new-session/.test(c)));
+});
+
+const WAIT_LINE = 'Do you want to read /data/tmp/claude-1000/brief.md?';
+const stuck = () => fixture({ pane: `some output\n\u2502 ${WAIT_LINE}\n\u276f 1. Yes`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { role: 'coordinator', name: 'a' } }] });
+
+test('a permission prompt on the screen counts as waiting; ordinary output does not (#88)', async () => {
+  const f = fixture({ pane: 'Do you want to proceed?\n\u276f 1. Yes\n  2. No' });
+  await main(START, f.deps);
+  assert.match(f.log.out.join('\n'), /waiting on a prompt/);
+  const g = fixture({ pane: 'Bypass Permissions mode\n 2. Yes, I accept' });
+  await main(START, g.deps);
+  assert.match(g.log.out.join('\n'), /waiting on a prompt/);
+});
+
+test('ls adds a WAITING column with the prompt line, and says "screen not read" when the pane read fails (#88)', async () => {
+  const f = stuck();
+  await main(['ls'], f.deps);
+  const [head, row] = f.log.out;
+  assert.match(head, /\tWAITING$/);
+  assert.ok(row.endsWith(`\twaiting on a prompt: ${WAIT_LINE}`), row);
+  assert.equal(f.log.cmds.filter((c) => /capture-pane/.test(c)).length, 1, 'one pane read per coordinator');
+  const g = fixture({ pane: 'working', machines: f.machines });
+  await main(['ls'], g.deps);
+  assert.ok(g.log.out[1].endsWith('\t-'), g.log.out[1]);
+  const h = fixture({ machines: f.machines });
+  const orig = h.deps.sdk.Sandbox.connect;
+  h.deps.sdk.Sandbox.connect = async (id) => { const s = await orig(id); s.commands.run = async () => { throw new Error('network'); }; return s; };
+  await main(['ls'], h.deps);
+  assert.ok(h.log.out[1].endsWith('\tscreen not read'), h.log.out[1]);
+});
+
+test('status NAME prints state, the waiting line and the attach command; --json gives the same fields; it never writes (#88)', async () => {
+  const f = stuck();
+  await main(['status', 'a'], f.deps);
+  const text = f.log.out.join('\n');
+  assert.match(text, /running/);
+  assert.match(text, new RegExp(`waiting on a prompt: ${WAIT_LINE.replace(/[?.]/g, '\\$&')}`));
+  assert.match(text, /tmux attach -t claude/);
+  const g = stuck();
+  await main(['status', 'a', '--json'], g.deps);
+  const j = JSON.parse(g.log.out[0]);
+  assert.deepEqual([j.name, j.state, j.waiting, j.screenRead, j.attach], ['a', 'running', WAIT_LINE, true, 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude']);
+  assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane/.test(c) && c !== '/data/home'), [], 'only the pane read runs');
+  await assert.rejects(main(['status', 'zzz'], f.deps), /No coordinator named zzz/);
+  await assert.rejects(main(['status'], f.deps), /cloudy-cloud coordinator status/);
+});
+
+test('a transcript line "Do you want to ..." without option lines is not waiting; the real prompt with options is (#88)', async () => {
+  const f = fixture({ pane: '\u23fa Do you want to refactor this?\nsome answer' });
+  await main(START, f.deps);
+  assert.doesNotMatch(f.log.out.join('\n'), /waiting on a prompt/);
+});
+
+test('ls and status remove an exact configured key value from the pane text (#88)', async () => {
+  const f = fixture({ pane: `\u2502 Do you want to read opaque-secret-9876543210?\n\u276f 1. Yes`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.env.CLOUDY_CLOUD_TEST_API_KEY = 'opaque-secret-9876543210';
+  await main(['ls'], f.deps);
+  await main(['status', 'a', '--json'], f.deps);
+  assert.doesNotMatch(f.log.out.join('\n'), /opaque-secret-9876543210/);
+  assert.match(f.log.out.join('\n'), /\[redacted\]/);
+});
+
+test('ls reads at most four panes at a time, one per coordinator (#88)', async () => {
+  const machines = Array.from({ length: 10 }, (_, i) => ({ sandboxId: `m${i}`, name: `coord-${i}`, state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: `c${i}` } }));
+  const f = fixture({ machines });
+  let live = 0, peak = 0, reads = 0;
+  const orig = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 5)); const s = await orig(id); const run = s.commands.run; s.commands.run = async (...a) => { reads++; try { return await run(...a); } finally { live--; } }; return s; };
+  await main(['ls'], f.deps);
+  assert.equal(reads, 10);
+  assert.ok(peak <= 4, `peak ${peak}`);
+});
+
+test('the first-run script treats a malformed, null or array settings file as empty and keeps a .bak (#88)', () => {
+  for (const bad of ['{not json', 'null', '[1,2]']) {
+    const home = mkdtempSync(join(tmpdir(), 'cc-firstrun-'));
+    execFileSync('mkdir', ['-p', join(home, '.claude')]);
+    writeFileSync(join(home, '.claude/settings.json'), bad);
+    execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: home } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8')), { skipDangerousModePermissionPrompt: true }, bad);
+    assert.equal(readFileSync(join(home, '.claude/settings.json.bak'), 'utf8'), bad);
+  }
+});
+
+test('start --json gives each fatal screen its own code and Tell the user line; a login screen never says spend limit (#88)', async () => {
+  const cases = [
+    ['Login expired · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Not logged in · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Authentication required · Sign in again', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Select login method', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ["You've hit your session limit · resets 3pm", 'spend_limit', /spend limit/],
+    ['Invalid API key · Fix external API key', 'coordinator_invalid_key', /API key/],
+  ];
+  for (const [text, code, tell] of cases) {
+    const g = fixture({ pane: `  ⎿  ${text}` });
+    await assert.rejects(main([...START, '--json'], g.deps));
+    const e = JSON.parse(g.log.out[0]).error;
+    assert.equal(e.code, code, text);
+    assert.match(e.tellUser, tell, text);
+    if (code !== 'spend_limit') assert.doesNotMatch(JSON.stringify(e), /spend limit/i, text);
+    if (code === 'coordinator_login_expired') assert.match(e.nextStep, /coordinator image.*claude auth login.*coordinator image --save/s);
   }
 });

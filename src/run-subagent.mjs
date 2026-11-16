@@ -17,6 +17,7 @@ import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
 import { redact } from './events.mjs';
+import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -460,6 +461,7 @@ async function installCoordinator(a, ctx, envs) {
   await a.sandbox.files.write(`${a.home}/cloudy-cloud.bundle`, b.data);
   await sh(toolInstallCmd(b, `${a.home}/cloudy-cloud.bundle`, a.tool.origin));
   await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
+  await sh(`node -e '${FIRST_RUN_SCRIPT.replaceAll("'", "'\\''")}'`); // no bypass confirmation or folder-trust dialog can wait there (#88)
   await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS were attached at create time; the file holds their names and the settings only.
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
