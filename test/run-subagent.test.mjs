@@ -1591,7 +1591,7 @@ test('machine android creates an android machine, labels it and shows it in the 
   assert.equal(provider.log.create[0].kind.name, 'android');
   assert.equal(provider.log.create[0].labels.kind, 'android');
   assert.match((await listAgents({}, deps)).content[0].text, /machine android/);
-  assert.ok(provider.log.cmds.some((c) => /command -v git gh node claude/.test(c.cmd)));
+  assert.ok(provider.log.cmds.some((c) => /command -v "\$t"/.test(c.cmd)));
 });
 
 test('no machine argument: kind linux, no kind label, no preflight, no machine in the list', async () => {
@@ -1623,23 +1623,54 @@ test('gpu without consent is refused with the price and the env line; with conse
   assert.equal(r.isError, true);
 });
 
-test('a machine missing agent tools fails with machine_missing_tools and the machine is deleted', async () => {
+// Runs the real preflight command in bash, with PATH holding only `have` as executables and `shellOnly` as functions.
+const probeProvider = (have, shellOnly = []) => {
   const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
   const create = provider.create;
-  let sbx;
+  provider.sbx = [];
   provider.create = async (o) => {
-    sbx = await create(o);
+    const sbx = await create(o); provider.sbx.push(sbx);
     const run = sbx.commands.run;
-    sbx.commands.run = (cmd, o2) => (/command -v/.test(cmd) ? Promise.reject(Object.assign(new Error('exit'), { exitCode: 1, stdout: '/usr/bin/git\n/usr/bin/gh\n/usr/bin/node\n' })) : run(cmd, o2));
+    sbx.commands.run = async (cmd, o2) => {
+      if (!/command -v/.test(cmd)) return run(cmd, o2);
+      const bin = await mkdtemp(join(tmpdir(), 'cc-probe-'));
+      for (const t of have) { await writeFile(join(bin, t), '#!/bin/sh\n'); await chmod(join(bin, t), 0o755); }
+      const fns = shellOnly.map((t) => `${t}() { :; }; `).join('');
+      const { stdout } = await promisify(execFile)('/bin/bash', ['-c', fns + cmd], { env: { PATH: bin } });
+      return { stdout, stderr: '', exitCode: 0 };
+    };
     return sbx;
   };
+  return provider;
+};
+for (const [name, have, fns, lacks] of [
+  ['gh missing while claude is present', ['git', 'node', 'claude'], [], 'gh'],
+  ['gh only an alias-like shell function', ['git', 'node', 'claude'], ['gh'], 'gh'],
+]) {
+  test(`a machine with ${name} fails with machine_missing_tools naming ${lacks} and the machine is deleted`, async () => {
+    const provider = probeProvider(have, fns);
+    const { start, wait } = await kindSetup({ provider });
+    const r = await wait([await start({ machine: 'omarchy' })]);
+    assert.match(r, /status: failed/);
+    assert.match(r, /lacks tools the agent needs \(gh\)/);
+    assert.equal(provider.sbx[0].killed, true);
+  });
+}
+
+test('a machine with all four tools passes the preflight', async () => {
+  const provider = probeProvider(['git', 'gh', 'node', 'claude']);
   const { start, wait } = await kindSetup({ provider });
-  const id = await start({ machine: 'omarchy' });
-  const r = await wait([id]);
-  assert.match(r, /status: failed/);
-  assert.match(r, /lacks tools the agent needs \(claude\)/);
-  assert.match(r, /omarchy/);
-  assert.equal(sbx.killed, true);
+  assert.doesNotMatch(await wait([await start({ machine: 'omarchy' })]), /machine_missing_tools|lacks tools/);
+});
+
+test('task mode shows the price of an expensive machine at start and in the completion result', async () => {
+  const { deps, wait, provider } = await kindSetup({ asTask: true, env: { CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'gpu' } });
+  const t = await runSubagent({ description: 'd', prompt: 'hi', machine: 'gpu:l4' }, deps);
+  assert.match(t.statusMessage, /\$0\.765 per GPU-hour.*cloud_agent_stop/);
+  await wait([t.taskId.split('-')[1]]);
+  assert.match(getTask(t.taskId, deps).result.content[0].text, /\$0\.765 per GPU-hour/);
+  const d = await kindSetup({ asTask: true });
+  assert.doesNotMatch((await runSubagent({ description: 'd', prompt: 'hi' }, d.deps)).statusMessage, /GPU-hour/);
 });
 
 test('apt packages are refused on omarchy and macos before any sandbox', async () => {

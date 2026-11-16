@@ -61,7 +61,7 @@ export function coordinatorKeys(env, provider, { single = false } = {}) {
   const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [], skipped = [];
   const required = new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(claude.some((k) => proxied.has(k)) ? [] : claude)]);
   if (!own && proxied.has(COORDINATOR_KEY_SECRET)) secrets.push(COORDINATOR_KEY_SECRET);
-  for (const k of [...(own?.names ?? []), ...keys, 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES']) {
+  for (const k of [...(own?.names ?? []), ...keys, 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS']) { // the last: a nested cloud_agent sees the same consent
     const isKey = keys.includes(k);
     if (isKey && proxied.has(COORDINATOR_KEY_SECRET) && k === DEFAULT_PROVIDER_KEY) continue; // the secret stands in for it
     if (isKey && proxied.has(k)) secrets.push(k);

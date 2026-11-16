@@ -427,6 +427,13 @@ test('the coordinator env file carries the proxy secret names and apt package li
   assert.match(w.d, /^CLOUDY_CLOUD_APT_PACKAGES=ffmpeg$/m);
 });
 
+test('the coordinator env file carries the machine-kind consent, so its nested cloud_agent matches the laptop', async () => {
+  const f = fixture();
+  f.deps.env = { ...f.deps.env, CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'gpu' };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.match(f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env').d, /^CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu$/m);
+});
+
 const jsonErr = (f) => { const lines = f.log.out.filter((s) => s.startsWith('{')); assert.equal(lines.length, 1, 'exactly one JSON object'); return JSON.parse(lines[0]).error; };
 
 test('start --json scrubs an exact configured key echoed by the provider, in stdout and the thrown message', async () => {

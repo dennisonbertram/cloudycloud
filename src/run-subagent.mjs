@@ -329,11 +329,12 @@ const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.ro
 // Only the linux image is known to carry the agent tools; any other kind must prove it before work starts.
 async function checkTools(a) {
   const names = ['git', 'gh', 'node', ...(harnessOf(a) === 'claude' ? ['claude'] : [])];
-  try { await a.sandbox.commands.run(`command -v ${names.join(' ')}`, { cwd: a.home, timeoutMs: SETUP_MS }); } catch (e) {
-    const found = String(e?.stdout ?? '').split('\n').map((l) => l.trim().split('/').pop());
-    const missing = names.filter((n) => !found.includes(n));
-    throw Object.assign(new Error(`${a.kind.label} machine lacks ${missing.join(', ')}`), { guideText: guide('machine_missing_tools', { kind: a.kind.label, tools: (missing.length ? missing : names).join(', ') }) });
-  }
+  // Each tool is checked alone and must resolve to an executable file: one aggregate exit status, aliases and functions all hide a missing tool.
+  const probe = `for t in ${names.join(' ')}; do p=$(command -v "$t" 2>/dev/null); case "$p" in /*) [ -x "$p" ] || echo "$t";; *) echo "$t";; esac; done`;
+  let out;
+  try { out = (await a.sandbox.commands.run(probe, { cwd: a.home, timeoutMs: SETUP_MS })).stdout; } catch (e) { out = e?.stdout; }
+  const missing = String(out ?? '').split('\n').map((l) => l.trim()).filter((l) => names.includes(l));
+  if (missing.length) throw Object.assign(new Error(`${a.kind.label} machine lacks ${missing.join(', ')}`), { guideText: guide('machine_missing_tools', { kind: a.kind.label, tools: missing.join(', ') }) });
 }
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
@@ -479,7 +480,6 @@ async function installCoordinator(a, ctx, envs) {
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const { lines } = coordinatorKeys(env, ctx.provider, { single: true });
-  if (env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS) lines.push(`CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=${env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS}`); // a nested cloud_agent sees the same consent
   lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -568,9 +568,10 @@ function statusOf(t, ctx) {
 const iso = (ms) => new Date(ms).toISOString();
 
 // What cloud_agent and cloud_agent_message answer with in task mode.
+const priceNote = (t) => (EXPENSIVE.includes(t.agent.kind?.name) ? `${PRICE[t.agent.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : '');
 function taskAnswer(t, ctx) {
   return {
-    resultType: 'task', taskId: t.id, status: 'working', statusMessage: statusOf(t, ctx),
+    resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), priceNote(t)].filter(Boolean).join(' '),
     createdAt: iso(t.createdAt), lastUpdatedAt: iso(Date.now()), ttlMs: null, pollIntervalMs: POLL_MS,
   };
 }
@@ -587,7 +588,7 @@ export function getTask(taskId, deps) {
   if (t.status === 'working') v.pollIntervalMs = POLL_MS;
   else t.result.reported = true;
   // Claude needs the agent id for cloud_agent_message and cloud_agent_stop, and the task result is all it sees.
-  const text = `agent_id: ${t.agent.id} (turn ${t.n})\n\n${t.result?.text}`;
+  const text = `agent_id: ${t.agent.id} (turn ${t.n})\n${priceNote(t) ? `${priceNote(t)}\n` : ''}\n${t.result?.text}`;
   if (t.status === 'completed') v.result = { content: [{ type: 'text', text }] };
   if (t.status === 'failed') v.error = { code: -32000, message: text, data: null };
   return v;
