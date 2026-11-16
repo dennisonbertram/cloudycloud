@@ -6,7 +6,7 @@ export const EXPENSIVE = ['gpu', 'macos']; // refused until CLOUDY_CLOUD_ALLOW_M
 // Price lines shown when asking for consent. Source: https://instabox.sh/docs/account/pricing.md
 export const PRICE = {
   gpu: 'GPU machines cost from $0.765 per GPU-hour (L4) to $4.17 per GPU-hour (H100)',
-  macos: 'Mac machines cost from $0.45 per hour (M2) to $1.25 per hour (M4 Pro) with a 24-hour minimum of $10.80 to $30.00',
+  macos: 'Mac machines cost $0.45 to $1.25 per hour by model, with a 24-hour minimum lease (the API reported $0.85 per hour and a $20.40 minimum on 2026-11-15)',
 };
 
 export const FORMS = 'linux, android, omarchy, gpu[:TYPE[:COUNT]] (COUNT 1-8), macos[:MODEL]';

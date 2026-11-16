@@ -260,7 +260,12 @@ export function createProvider(env = process.env, deps = {}) {
       };
     },
 
-    shellArgv: (id, cmd) => [...(local ? [bin] : ['ssh', ...sshOpts(), '-t', host ?? '<CLOUDY_CLOUD_SSH_HOST>', bin]), 'exec', '-it', id, 'bash', ...(cmd ? ['-lc', cmd.join(' ')] : [])],
+    // cmd is quoted once for the container's bash -lc; over ssh the whole remote command is one string, quoted again for the host shell.
+    shellArgv(id, cmd) {
+      const inner = [bin, 'exec', '-it', id, 'bash', ...(cmd?.length ? ['-lc', cmd.map(q).join(' ')] : ['-l'])];
+      if (local) return inner;
+      return ['ssh', ...sshOpts(), '-t', host ?? '<CLOUDY_CLOUD_SSH_HOST>', cmd?.length ? inner.map(q).join(' ') : inner.join(' ')];
+    },
     async displayLink() { throw noDisplay(); },
     async revokeDisplayLinks() { throw noDisplay(); },
     async screenshot() { throw noDisplay(); },

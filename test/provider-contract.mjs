@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes'];
 const create = (p, labels, extra = {}) => p.create({ image: 'agent-browser', envs: {}, labels, ttlSeconds: 3600, ...extra });
 
-export function contractSuite(name, makeProvider) {
+// kindsSkip: a reason to skip the kinds check explicitly (shown as skipped) for an adapter that does not have the caps yet.
+export function contractSuite(name, makeProvider, { kindsSkip } = {}) {
   test(`${name}: provider has a name, key name, caps and the full method set`, () => {
     const p = makeProvider({ withKey: true });
     assert.ok(p.name && p.keyName);
@@ -16,10 +17,9 @@ export function contractSuite(name, makeProvider) {
     for (const t of ['listMachines', 'noKeyFix', 'apiFix', 'githubTokenHelp']) assert.equal(typeof p.text[t], 'string', t);
   });
 
-  // Providers that declare machineKinds (the fake and self-hosted today; Instabox joins in #93) must honour the kinds contract.
-  test(`${name}: kinds, shell and display follow the caps`, async () => {
+  test(`${name}: kinds, shell and display follow the caps`, { skip: kindsSkip }, async () => {
     const p = makeProvider({ withKey: true });
-    if (!p.caps.machineKinds) return;
+    assert.ok(p.caps.machineKinds, 'caps.machineKinds');
     assert.ok(Array.isArray(p.caps.machineKinds) && p.caps.machineKinds.includes('linux'));
     assert.equal(typeof p.caps.hasShell, 'boolean');
     assert.equal(typeof p.caps.hasDisplay, 'boolean');

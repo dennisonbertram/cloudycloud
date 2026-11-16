@@ -57,5 +57,8 @@ test('#92 machine codes exist; consent names the price and the env line; each na
   assert.match(t, /\$0\.765 per GPU-hour/);
   assert.match(t, /CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu,macos/);
   assert.match(t, /~\/\.config\/cloudy-cloud\/env/);
+  const mt = guide('machine_missing_tools', { kind: 'android', tools: 'tmux' });
+  assert.match(mt.match(/Next step: (.+)/)[1], /machine "linux".*CLOUDY_CLOUD_APT_PACKAGES/);
+  assert.doesNotMatch(mt, /cloudy-cloud shell/);
   assert.match(guide('machine_kind_unsupported', { provider: 'self-hosted', kinds: 'linux' }), /self-hosted.*linux/s);
 });

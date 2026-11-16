@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { spawn as realSpawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { spawn as realSpawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -147,12 +147,31 @@ test('#92 caps: linux only, a shell, no display; other kinds and display are ref
   for (const m of ['displayLink', 'revokeDisplayLinks', 'screenshot']) await assert.rejects(provider[m]('cc-1', {}), (e) => e.code === 'display_unsupported', m);
 });
 
-test('#92 shellArgv: remote ssh form and local docker form', () => {
+test('#92 shellArgv: no command opens an interactive login shell; [] counts as no command', () => {
   const r = make({ CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2200' }).provider;
-  assert.deepEqual(r.shellArgv('cc-1'), ['ssh', '-i', '/k', '-p', '2200', '-t', 'me@box', BIN, 'exec', '-it', 'cc-1', 'bash']);
-  assert.deepEqual(r.shellArgv('cc-1', ['ls', '-la']), ['ssh', '-i', '/k', '-p', '2200', '-t', 'me@box', BIN, 'exec', '-it', 'cc-1', 'bash', '-lc', 'ls -la']);
+  assert.deepEqual(r.shellArgv('cc-1'), ['ssh', '-i', '/k', '-p', '2200', '-t', 'me@box', `${BIN} exec -it cc-1 bash -l`]);
+  assert.deepEqual(r.shellArgv('cc-1', []), r.shellArgv('cc-1'));
   const l = make({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1' }).provider;
-  assert.deepEqual(l.shellArgv('cc-1', ['ls']), [BIN, 'exec', '-it', 'cc-1', 'bash', '-lc', 'ls']);
+  assert.deepEqual(l.shellArgv('cc-1', []), [BIN, 'exec', '-it', 'cc-1', 'bash', '-l']);
+});
+
+test('#92 shellArgv: every argument is quoted for each shell layer; nothing is injected', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shellargv-'));
+  const docker = join(dir, 'docker'); // drops "exec -it <id>" and runs the rest, like the container's shell would
+  writeFileSync(docker, '#!/bin/sh\nshift 3\nexec "$@"\n', { mode: 0o755 });
+  const cmd = ['printf', '%s|', 'safe; printf HOST_INJECTED', "it's", 'two words', '$(echo SUB)'];
+  const want = 'safe; printf HOST_INJECTED|it\'s|two words|$(echo SUB)|';
+  try {
+    const l = make({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_CONTAINER_BIN: docker }).provider;
+    const la = l.shellArgv('cc-1', cmd);
+    assert.equal(la.slice(0, 5).join(' '), `${docker} exec -it cc-1 bash`);
+    assert.equal(spawnSync(la[0], la.slice(1), { encoding: 'utf8' }).stdout, want);
+    const r = make({ CLOUDY_CLOUD_SSH_PORT: '2200', CLOUDY_CLOUD_CONTAINER_BIN: docker }).provider;
+    const ra = r.shellArgv('cc-1', cmd);
+    assert.deepEqual(ra.slice(0, 5), ['ssh', '-p', '2200', '-t', 'me@box']);
+    assert.equal(ra.length, 6, 'ssh gets the remote command as one string');
+    assert.equal(spawnSync('sh', ['-c', ra[5]], { encoding: 'utf8' }).stdout, want); // what the ssh host's shell does with it
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 600, ...extra });
