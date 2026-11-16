@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes'];
 const create = (p, labels, extra = {}) => p.create({ image: 'agent-browser', envs: {}, labels, ttlSeconds: 3600, ...extra });
 
-export function contractSuite(name, makeProvider) {
+// kindsSkip: a reason to skip the kinds check explicitly (shown as skipped) for an adapter that does not have the caps yet.
+export function contractSuite(name, makeProvider, { kindsSkip } = {}) {
   test(`${name}: provider has a name, key name, caps and the full method set`, () => {
     const p = makeProvider({ withKey: true });
     assert.ok(p.name && p.keyName);
@@ -14,6 +15,19 @@ export function contractSuite(name, makeProvider) {
       assert.equal(typeof p[m], 'function', m);
     for (const t of ['ssh']) assert.equal(typeof p.text[t], 'function');
     for (const t of ['listMachines', 'noKeyFix', 'apiFix', 'githubTokenHelp']) assert.equal(typeof p.text[t], 'string', t);
+  });
+
+  test(`${name}: kinds, shell and display follow the caps`, { skip: kindsSkip }, async () => {
+    const p = makeProvider({ withKey: true });
+    assert.ok(p.caps.machineKinds, 'caps.machineKinds');
+    assert.ok(Array.isArray(p.caps.machineKinds) && p.caps.machineKinds.includes('linux'));
+    assert.equal(typeof p.caps.hasShell, 'boolean');
+    assert.equal(typeof p.caps.hasDisplay, 'boolean');
+    for (const m of ['shellArgv', 'displayLink', 'revokeDisplayLinks', 'screenshot']) assert.equal(typeof p[m], 'function', m);
+    if (p.caps.hasShell) assert.ok(p.shellArgv('m1').every((a) => typeof a === 'string'));
+    const bad = ['linux', 'android', 'omarchy', 'gpu', 'macos'].find((k) => !p.caps.machineKinds.includes(k));
+    if (bad) await assert.rejects(create(p, {}, { kind: { name: bad } }), (e) => e.code === 'machine_kind_unsupported');
+    if (!p.caps.hasDisplay) await assert.rejects(p.displayLink('m1', {}), (e) => e.code === 'display_unsupported');
   });
 
   test(`${name}: create returns a Sandbox`, async () => {

@@ -13,6 +13,9 @@
  * @property {number} startsPerMin       default for CLOUDY_CLOUD_STARTS_PER_MIN
  * @property {number} maxConcurrentCalls default for CLOUDY_CLOUD_MAX_INSTABOX_CALLS
  * @property {number} uploadMaxBytes
+ * @property {string[]} machineKinds     kind names (see src/machine.mjs KINDS) create accepts; always includes 'linux'
+ * @property {boolean} hasShell          shellArgv works
+ * @property {boolean} hasDisplay        displayLink, revokeDisplayLinks and screenshot work
  */
 
 /**
@@ -29,12 +32,13 @@
 
 /**
  * Errors thrown by a provider carry a normalised `code`: rate_limited (+ retryAfterSeconds), quota_exceeded,
- * not_found, no_key or transient.
+ * not_found, no_key or transient, plus machine_kind_unsupported, display_unsupported,
+ * display_forbidden, desktop_unavailable, machine_* (see src/errors.mjs). displayLink starts the desktop when it is not running.
  * @typedef {object} Provider
  * @property {string} name
  * @property {string} keyName            environment variable that holds the API key
  * @property {Caps} caps
- * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean, retry?: boolean }) => Promise<Sandbox>} create
+ * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean, retry?: boolean, kind?: { name: string, gpu?: string, model?: string } }) => Promise<Sandbox>} create   kind absent means linux
  * @property {(id: string, o?: { retry?: boolean }) => Promise<Sandbox>} connect
  * @property {(labels?: Record<string, string>, opts?: { sdk?: boolean, onError?: (e: Error) => void }) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, archiveAt?: number, deleteAt?: string }>>} list
  * @property {(id: string, opts?: { sdk?: boolean, retries?: number, log?: (line: string) => void }) => Promise<void>} delete   a 404 counts as deleted
@@ -43,6 +47,10 @@
  * @property {(id: string, localRemote: string) => Promise<number>} forwardPort   resolves the exit code
  * @property {(id: string, port: string) => Promise<{ url: string }>} publishPort
  * @property {(id: string, port: string) => Promise<number>} unpublishPort
+ * @property {(id: string, cmd?: string[]) => string[]} shellArgv   argv that opens an interactive shell on the machine, or runs cmd
+ * @property {(id: string, o?: { control?: boolean, ttlSeconds?: number }) => Promise<{ url: string, expiresAt: Date|string }>} displayLink   a desktop link; starts the desktop when it is not running
+ * @property {(id: string) => Promise<void>} revokeDisplayLinks
+ * @property {(id: string) => Promise<Uint8Array>} screenshot   PNG bytes
  * @property {(hostname: string) => string} localMachineName   machine name for the host this runs on, or ''
  * @property {{ ssh(machine: string, cmd: string): string, listMachines: string, noKeyFix: string, apiFix: string, githubTokenHelp: string }} text
  */

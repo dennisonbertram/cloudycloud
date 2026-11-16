@@ -48,3 +48,17 @@ test('#66 secret codes fill their placeholders and never print a key', () => {
   assert.match(guide('key_on_machine_refused', {}), /cloudy-cloud setup/);
   assert.match(guide('secret_set_needs_login', {}), /instabox@latest login/);
 });
+
+test('#92 machine codes exist; consent names the price and the env line; each names a command', () => {
+  const NEW = ['machine_kind_unknown', 'machine_kind_unsupported', 'machine_needs_consent', 'machine_not_on_plan', 'machine_no_capacity', 'machine_gpu_limit', 'machine_missing_tools', 'machine_not_running', 'shell_unsupported', 'display_unsupported', 'display_forbidden', 'desktop_unavailable'];
+  for (const c of NEW) assert.ok(CODES.includes(c), c);
+  for (const c of ['machine_needs_consent', 'machine_not_on_plan', 'machine_gpu_limit', 'display_forbidden']) assert.ok(HUMAN_CODES.includes(c), c);
+  const t = guide('machine_needs_consent', { kind: 'gpu:l4', price: '$0.765 per GPU-hour' });
+  assert.match(t, /\$0\.765 per GPU-hour/);
+  assert.match(t, /CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu,macos/);
+  assert.match(t, /~\/\.config\/cloudy-cloud\/env/);
+  const mt = guide('machine_missing_tools', { kind: 'android', tools: 'tmux' });
+  assert.match(mt.match(/Next step: (.+)/)[1], /machine "linux".*CLOUDY_CLOUD_APT_PACKAGES/);
+  assert.doesNotMatch(mt, /cloudy-cloud shell/);
+  assert.match(guide('machine_kind_unsupported', { provider: 'self-hosted', kinds: 'linux' }), /self-hosted.*linux/s);
+});
