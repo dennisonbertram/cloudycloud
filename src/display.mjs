@@ -2,12 +2,13 @@
 // The link is a bearer token: it goes to stdout only, never to the event log, a file or stderr.
 import { fileURLToPath } from 'node:url';
 import { writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { loadEnv } from './config.mjs';
 import { eventsFile, readEvents } from './events.mjs';
 import { listMachines } from './dashboard.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { ID_RE, ID_ERR, resolveTarget } from './open.mjs';
-import { guide } from './errors.mjs';
+import { guide, CODES } from './errors.mjs';
 
 export const USAGE = `Usage: cloudy-cloud display <agent-id-or-machine> [--control] [--ttl SECONDS]
        cloudy-cloud display <agent-id-or-machine> --screenshot FILE
@@ -54,7 +55,9 @@ export async function run(argv, deps = {}) {
     }
     const events = (deps.events ?? (() => readEvents(eventsFile(env))))();
     let machine;
-    try { machine = resolveTarget(a.id, { machines, events, alive: deps.alive }); } catch (e) {
+    // --unshare must work on a stopped or suspended machine, so treat every listed machine as running for the lookup.
+    const row = machines.find((m) => m.id === a.id || m.name === a.id);
+    try { machine = resolveTarget(a.id, { machines: a.unshare ? machines.map((m) => ({ ...m, status: 'running' })) : machines, events, alive: deps.alive }); } catch (e) {
       if (/is not running/.test(e.message)) fail(`${e.message}\n${guide('machine_not_running', { id: a.id })}`);
       throw e;
     }
@@ -62,8 +65,10 @@ export async function run(argv, deps = {}) {
     // Provider errors with a display code get that code's plain next step; the raw message never carries the link.
     const call = async (fn) => {
       try { return await fn(); } catch (e) {
+        // Never print the provider's own text: it can carry the link. Use the guide for its code, or a fixed message.
         if (['desktop_unavailable', 'display_forbidden'].includes(e.code)) fail(guide(e.code, { kind: e.kind }));
-        fail(e.message);
+        if (CODES.includes(e.code) && e.code !== 'unknown') fail(guide(e.code, { provider: provider.name, id: a.id }));
+        fail(`${Name} could not complete the display request. Try again, or run: cloudy-cloud doctor`);
       }
     };
     if (a.unshare) {
@@ -73,19 +78,25 @@ export async function run(argv, deps = {}) {
     }
     if (a.screenshot) {
       const png = await call(() => provider.screenshot(machine));
-      await writeFile(a.screenshot, png);
+      // 'wx' creates the file exclusively: it refuses an existing file and any symlink, so nothing is overwritten.
+      try { await writeFile(a.screenshot, png, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0) }); } catch (e) {
+        fail(e.code === 'EEXIST' || e.code === 'ELOOP' ? `${a.screenshot} already exists (or is a symlink); choose a new file name.` : `Could not write ${a.screenshot} (${e.code ?? 'error'}).`);
+      }
       out(a.screenshot);
       return 0;
     }
     // The first desktop start can be slow (gpu installs one, about two minutes), so say so if it takes a while.
-    const timer = setTimeout(() => err('Starting the desktop; this can take about two minutes the first time.'), deps.slowMs ?? 5000);
+    let said = false;
+    const slow = () => said || (said = true, err('Starting the desktop; this can take about two minutes the first time.'));
+    if (row?.labels?.kind === 'gpu') slow();
+    const timer = setTimeout(slow, deps.slowMs ?? 5000);
     let r;
     try { r = await call(() => provider.displayLink(machine, { control: a.control, ttlSeconds: a.ttl })); } finally { clearTimeout(timer); }
     out(r.url);
-    err(`Anyone with the link can ${a.control ? 'view and control' : 'view'} the screen until it expires (${new Date(r.expiresAt).toISOString()}). Revoke it with: cloudy-cloud display ${a.id} --unshare`);
+    err(`Anyone with the link can ${a.control ? 'view and control' : 'view'} the screen. The link stops working for new viewers at ${new Date(r.expiresAt).toISOString()}. To cut off anyone already connected, run: cloudy-cloud display ${a.id} --unshare`);
     return 0;
   } catch (e) {
-    err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud display: ${e.message}`);
+    err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud display: ${e.message.replace(/https?:\/\/\S*#\S*/g, '[link removed]')}`);
     return 1;
   }
 }

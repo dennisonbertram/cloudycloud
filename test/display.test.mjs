@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, run } from '../src/display.mjs';
@@ -46,7 +46,7 @@ test('prints only the URL on stdout; view-only by default; the link never reache
   assert.deepEqual(s.provider.log.display, [{ op: 'link', id: 'mach-aaa', control: false, ttlSeconds: 3600 }]);
   const e = s.err.join('\n');
   assert.ok(!e.includes(TOKEN) && !e.includes('fake.example'));
-  assert.match(e, /anyone with the link can view the screen until it expires/i);
+  assert.match(e, /anyone with the link can view the screen[\s\S]*stops working for new viewers at[\s\S]*cloudy-cloud display 7c1e90ab --unshare/i);
 });
 
 test('--control and --ttl are passed on, and the note says control', async () => {
@@ -100,4 +100,40 @@ test('errors name a code and a next step', async () => {
   s = setup();
   s.provider.screenshot = async () => { throw Object.assign(new Error('x'), { code: 'display_forbidden' }); };
   assert.equal(await run(['box-aaa', '--screenshot', join(tmpdir(), 'nope.png')], s.d), 1);
+});
+
+test('provider error text and any link in it never reach stderr', async () => {
+  for (const code of [undefined, 'display_forbidden']) {
+    const s = setup();
+    s.provider.displayLink = async () => { throw Object.assign(new Error('bad https://fake.example/desktop/m#SECRETTOK end'), { code }); };
+    assert.equal(await run(['box-aaa'], s.d), 1);
+    const e = s.err.join('\n');
+    assert.ok(!e.includes('SECRETTOK') && !e.includes('fake.example') && !e.includes('bad '));
+    assert.match(e, /display/i);
+  }
+});
+
+test('--screenshot refuses an existing file or symlink and leaves them unchanged', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'disp-')), f = join(dir, 'a.png'), t = join(dir, 'target'), l = join(dir, 'link.png');
+  await writeFile(f, 'keep'); await writeFile(t, 'keep'); await symlink(t, l);
+  for (const p of [f, l]) {
+    const s = setup();
+    assert.equal(await run(['box-aaa', '--screenshot', p], s.d), 1);
+    assert.match(s.err.join('\n'), /already exists/);
+  }
+  assert.equal(await readFile(f, 'utf8'), 'keep');
+  assert.equal(await readFile(t, 'utf8'), 'keep');
+});
+
+test('--unshare works on a stopped machine', async () => {
+  const s = setup();
+  assert.equal(await run(['box-bbb', '--unshare'], s.d), 0);
+  assert.deepEqual(s.provider.log.display, [{ op: 'revoke', id: 'mach-bbb' }]);
+});
+
+test('a gpu machine gets the two-minute note before the request', async () => {
+  const s = setup();
+  s.d.list = async () => [{ ...machines[0], labels: { kind: 'gpu' } }];
+  s.provider.displayLink = async () => { assert.match(s.err.join('\n'), /about two minutes/); return { url: 'https://x/#t', expiresAt: Date.now() + 1000 }; };
+  assert.equal(await run(['box-aaa'], s.d), 0);
 });
