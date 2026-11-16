@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ownsRepo, toolBundle, toolInstallCmd } from '../src/toolbundle.mjs';
@@ -80,4 +80,24 @@ test('toolRepoUrl on an npm-style copy prints nothing to stderr', () => {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { toolRepoUrl } from ${JSON.stringify(new URL('../src/coordinator.mjs', import.meta.url).href)}; console.log(JSON.stringify(toolRepoUrl(${JSON.stringify(pkg)})))`], { encoding: 'utf8' });
   assert.equal(r.stderr, '');
   assert.equal(r.stdout.trim(), '""');
+});
+
+test('an npm-style bundle ignores the user git config: commit signing on with no usable signer', () => {
+  const cfg = join(mkdtempSync(join(tmpdir(), 'cc-gpg-')), 'gitconfig');
+  writeFileSync(cfg, '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n');
+  const old = process.env.GIT_CONFIG_GLOBAL; process.env.GIT_CONFIG_GLOBAL = cfg;
+  try {
+    const pkg = pkgCopy(mkdtempSync(join(tmpdir(), 'cc-sign-')));
+    assert.equal(readFileSync(join(clones(toolBundle(pkg)), 'package.json'), 'utf8').includes('"files"'), true);
+  } finally { if (old === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = old; }
+});
+
+test('a failure while building the package repo leaves no temp dir behind', () => {
+  const t = mkdtempSync(join(tmpdir(), 'cc-leak-'));
+  const old = process.env.TMPDIR; process.env.TMPDIR = t;
+  try {
+    const pkg = mkdtempSync(join(t, 'nopkg-')); // no package.json, so building the repo throws
+    assert.throws(() => toolBundle(pkg));
+    assert.deepEqual(readdirSync(t).filter((n) => n.startsWith('cloudy-cloud-pkg-')), []);
+  } finally { if (old === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = old; }
 });

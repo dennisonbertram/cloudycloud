@@ -22,24 +22,22 @@ export function ownsRepo(root) {
   try { return realpathSync(git(root, 'rev-parse', '--show-toplevel')) === realpathSync(root); } catch { return false; }
 }
 
-// A throwaway git repo holding exactly the package's published files, for installs that are not a git checkout. Caller removes `dir`.
-function packageRepo(root) {
-  const dir = mkdtempSync(join(tmpdir(), 'cloudy-cloud-pkg-'));
+// A throwaway git repo holding exactly the package's published files, for installs that are not a git checkout. Fills `dir`; the caller removes it.
+function packageRepo(root, dir) {
   const files = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).files ?? [];
   for (const f of new Set([...files, 'package.json', 'README.md', 'LICENSE'])) {
     if (existsSync(join(root, f))) cpSync(join(root, f), join(dir, f), { recursive: true });
   }
   git(dir, 'init', '-q');
   git(dir, 'add', '-A', '-f');
-  git(dir, 'commit', '-q', '-m', 'cloudycloud package');
-  return dir;
+  git(dir, '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'cloudycloud package'); // not the user's signing or hooks
 }
 
 // HEAD plus uncommitted tracked edits (like the work-repo snapshot). Returns { data: Buffer, ref, sha }.
 export function toolBundle(root) {
   if (ownsRepo(root)) return bundleOf(root);
-  const dir = packageRepo(root);
-  try { return bundleOf(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+  const dir = mkdtempSync(join(tmpdir(), 'cloudy-cloud-pkg-'));
+  try { packageRepo(root, dir); return bundleOf(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 function bundleOf(root) {
