@@ -427,6 +427,13 @@ test('the coordinator env file carries the proxy secret names and apt package li
   assert.match(w.d, /^CLOUDY_CLOUD_APT_PACKAGES=ffmpeg$/m);
 });
 
+test('the coordinator env file carries the machine-kind consent, so its nested cloud_agent matches the laptop', async () => {
+  const f = fixture();
+  f.deps.env = { ...f.deps.env, CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'gpu' };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.match(f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env').d, /^CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu$/m);
+});
+
 const jsonErr = (f) => { const lines = f.log.out.filter((s) => s.startsWith('{')); assert.equal(lines.length, 1, 'exactly one JSON object'); return JSON.parse(lines[0]).error; };
 
 test('start --json scrubs an exact configured key echoed by the provider, in stdout and the thrown message', async () => {
@@ -795,4 +802,21 @@ test('start --json gives each fatal screen its own code and Tell the user line; 
     if (code !== 'spend_limit') assert.doesNotMatch(JSON.stringify(e), /spend limit/i, text);
     if (code === 'coordinator_login_expired') assert.match(e.nextStep, /coordinator image.*claude auth login.*coordinator image --save/s);
   }
+});
+
+test('an npm install takes the git identity from global config, not from the repo the caller is standing in', async () => {
+  const sh = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+  const here = mkdtempSync(join(tmpdir(), 'cc-here-'));
+  sh(here, 'init', '-q'); sh(here, 'config', 'user.name', 'Local Person'); sh(here, 'config', 'user.email', 'local@example.com');
+  const pkg = mkdtempSync(join(tmpdir(), 'cc-pkg-')); // not a git repo
+  writeFileSync(join(pkg, 'package.json'), '{"name":"cloudycloud","files":[]}');
+  const gcfg = join(mkdtempSync(join(tmpdir(), 'cc-gcfg-')), 'config');
+  writeFileSync(gcfg, '[user]\n\tname = Global Person\n\temail = global@example.com\n');
+  const f = fixture();
+  const saved = { cwd: process.cwd(), g: process.env.GIT_CONFIG_GLOBAL };
+  process.chdir(here); process.env.GIT_CONFIG_GLOBAL = gcfg;
+  try { await main(['image'], { ...f.deps, root: pkg }); } finally { process.chdir(saved.cwd); if (saved.g === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved.g; }
+  const cmd = f.log.cmds.find((c) => c.includes('git config --global user.name'));
+  assert.ok(cmd.includes('Global Person (coordinator)') && cmd.includes('global@example.com'), cmd);
+  assert.ok(!/Local Person|local@example\.com/.test(cmd), cmd);
 });

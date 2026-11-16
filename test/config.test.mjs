@@ -34,3 +34,9 @@ test('envRefresher applies keys added, changed or removed in the env file withou
   assert.equal(env.PARTICLE_API_KEY, undefined);
   assert.equal(env.GH_TOKEN, 'shell');
 });
+
+test('CLOUDY_CLOUD_ALLOW_MACHINE_KINDS is read from the env file', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu\n');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file }).CLOUDY_CLOUD_ALLOW_MACHINE_KINDS, 'gpu');
+});
