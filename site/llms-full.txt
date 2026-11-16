@@ -219,7 +219,7 @@ Run it in a terminal. It asks for keys, so it does not work from a pipe. It chec
 |---|---|
 | Instabox API key (`ibk_…`) | Create it at [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). The installer checks it with Instabox before saving. |
 | Claude token (`sk-ant-oat01-…`) | Run `claude setup-token` in another terminal, or press Enter at the Claude step and let the installer get it. Your own `claude` login is not changed. |
-| GitHub token | Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents set to read and write. The Instabox command-line tool asks for it. |
+| GitHub token | Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write, and Actions set to read. The Instabox command-line tool asks for it. |
 
 The Instabox key is saved in `~/.config/cloudy-cloud/env` and stays on your computer. The folder has mode 700 and the file is readable only by your user. The Claude token, the provider keys and the GitHub token are stored in Instabox as proxy secrets (for example `GH_TOKEN`), and setup lists their names in `CLOUDY_CLOUD_PROXY_SECRETS`. A subagent's machine only gets a placeholder, never the key. If setup finds a key already in the env file, it asks before moving it into a secret.
 
@@ -625,6 +625,7 @@ cloudy-cloud coordinator image [--save]
 cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
+cloudy-cloud coordinator status NAME [--json]
 cloudy-cloud coordinator stop NAME
 cloudy-cloud coordinator finish [--force]
 ```
@@ -641,7 +642,7 @@ Builds the machine image that coordinators start from. It is a one-time step. Wi
 
 #### coordinator start
 
-Starts a coordinator named NAME on a new machine from the saved image. It sends the current checkout of cloudy-cloud, writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The first time, attach once and accept any trust or Remote Control prompts.
+Starts a coordinator named NAME on a new machine from the saved image. It sends the current checkout of cloudy-cloud, writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
 
 | Argument or flag | Default | Meaning |
 |---|---|---|
@@ -671,10 +672,18 @@ cloudy-cloud coordinator attach docs-fleet
 
 #### coordinator ls
 
-Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES. It prints `No coordinators.` when there are none.
+Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
 
 ```
 cloudy-cloud coordinator ls
+```
+
+#### coordinator status
+
+Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set) and `attach`.
+
+```
+cloudy-cloud coordinator status docs-fleet
 ```
 
 #### coordinator stop
@@ -1365,7 +1374,7 @@ A key is missing from `~/.config/cloudy-cloud/env`. In a terminal, `cloudy-cloud
 cloudy-cloud setup
 ```
 
-If you changed a key but the session still uses the old one, restart `cloudy-cloud`. It reads keys once, at start.
+If you changed a key but the session still uses the old one, restart `cloudy-cloud`. Provider keys and `CLOUDY_CLOUD_PROXY_SECRETS` are re-read from the env file before each new subagent, but the Instabox key is read once, at start.
 
 ### The installer rejects a key
 
@@ -1377,6 +1386,17 @@ If you changed a key but the session still uses the old one, restart `cloudy-clo
 ### "malformed API key" or 401 from Instabox
 
 The Instabox key is wrong or revoked. Run `cloudy-cloud setup`, replace the key, and restart `cloudy-cloud`.
+
+### `npm install -g cloudycloud` fails with EEXIST
+
+The package was renamed from `cloudy-cloud` to `cloudycloud`. The old package can leave a `cloudy-cloud` link in npm's global `bin` folder that points nowhere, and npm refuses to install over it. The error names the file, for example `EEXIST: file already exists, symlink ... /bin/cloudy-cloud`. Remove that file, then install again:
+
+```
+rm <the path shown in the error>
+npm install -g cloudycloud
+```
+
+`cloudy-cloud setup` finds this link and offers to remove it for you.
 
 ### No git repository, or no github.com origin
 
@@ -1476,7 +1496,7 @@ Your Claude Code session and the `cloudy-cloud` tool server run on your machine.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 - **Provider keys** (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
-Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.
+Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under `.github/workflows`), and Actions read (so subagents can see CI results).
 
 ### The dashboard is local only
 

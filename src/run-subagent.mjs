@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
-import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
+import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
 import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
@@ -17,6 +17,7 @@ import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
 import { redact } from './events.mjs';
+import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -460,6 +461,7 @@ async function installCoordinator(a, ctx, envs) {
   await a.sandbox.files.write(`${a.home}/cloudy-cloud.bundle`, b.data);
   await sh(toolInstallCmd(b, `${a.home}/cloudy-cloud.bundle`, a.tool.origin));
   await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit
+  await sh(`node -e '${FIRST_RUN_SCRIPT.replaceAll("'", "'\\''")}'`); // no bypass confirmation or folder-trust dialog can wait there (#88)
   await sh('cd cloudy-cloud && npm install --no-audit --no-fund', INSTALL_MS).catch((e) => { throw new Error(`npm install failed in the sandbox: ${tail(e?.stderr ?? e?.message)}`); });
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS were attached at create time; the file holds their names and the settings only.
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
@@ -600,6 +602,7 @@ export async function cancelTask(taskId, deps) {
 
 // cloud_agent: returns at once; the sandbox starts in the background.
 export async function runSubagent(args, deps) {
+  deps.refreshEnv?.(); // keys added to the env file since startup apply to this agent
   const ctx = ctxOf(deps, 'cloud_agent');
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
@@ -642,8 +645,10 @@ export async function runSubagent(args, deps) {
   if (role === 'coordinator') {
     const toolRoot = deps.toolRoot ?? TOOL_ROOT;
     try {
-      await git(toolRoot, 'rev-parse', 'HEAD');
-      tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
+      if (ownsRepo(toolRoot)) {
+        await git(toolRoot, 'rev-parse', 'HEAD');
+        tool = { root: toolRoot, origin: githubUrl(await git(toolRoot, 'remote', 'get-url', 'origin').catch(() => '')) || '' };
+      } else tool = { root: toolRoot, origin: '' }; // an npm install: toolBundle packs its files into a temporary repo
     } catch (e) {
       return fail(`A coordinator needs cloudy-cloud's own folder (${toolRoot}) to be a git checkout, so it can be sent to the sandbox: ${e.message}`);
     }

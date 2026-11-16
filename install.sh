@@ -295,6 +295,9 @@ secret_hosts() {
   esac
 }
 
+# eff NAME: the value the runtime uses (loadEnv): the shell's when set, else the saved one.
+eff() { printf '%s' "${!1:-$(get_saved "$1")}"; }
+
 is_proxied() { case ",$(get_saved CLOUDY_CLOUD_PROXY_SECRETS)," in *",$1,"*) return 0 ;; esac; return 1; }
 
 # store_secret NAME VALUE: stores VALUE as an Instabox secret limited to NAME's hosts (the value goes on stdin, never argv),
@@ -340,12 +343,12 @@ migrate_key() {
 }
 
 # check_proxy_secrets: every name in CLOUDY_CLOUD_PROXY_SECRETS must exist in the org, with the hosts of the profiles that use it.
-check_proxy_secrets() {
+check_proxy_secrets() { # optional $1: the Instabox key
   local names n pairs=() root rc
-  names=$(get_saved CLOUDY_CLOUD_PROXY_SECRETS); [ -n "$names" ] || return 0
+  names=$(eff CLOUDY_CLOUD_PROXY_SECRETS); [ -n "$names" ] || return 0
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   for n in ${names//,/ }; do pairs+=("$n=$(secret_hosts "$n" 2>/dev/null)"); done
-  secrets_list | node --input-type=module -e '
+  secrets_list "${1:-}" | node --input-type=module -e '
     const root=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",async()=>{
     let list;try{const j=JSON.parse(s);list=Array.isArray(j)?j:(j.items||j.data||j.secrets||[])}catch{console.log("  Could not read your Instabox secrets. Check with: npx --yes instabox@latest secrets ls");process.exit(2)}
     let profiles={};try{profiles=(await import(root+"/src/profiles.mjs")).loadProfiles()}catch{}
@@ -363,6 +366,58 @@ check_proxy_secrets() {
     process.exit(bad)})' "$root" "${pairs[@]}"
   rc=$?
   return $rc
+}
+
+# check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
+# Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
+check_setup() {
+  local fix fails=0 code state host provider key
+  [ -z "${PREREQ_FAIL:-}" ] || fails=1
+  fix="run $(rerun_cmd)"
+  provider=$(eff CLOUDY_CLOUD_PROVIDER)
+  step 2 "Provider"
+  if [ "$provider" = self-hosted ]; then
+    host=$(eff CLOUDY_CLOUD_SSH_HOST)
+    if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine" "$fix"; fails=1; fi
+  else
+    key=$(eff INSTABOX_API_KEY)
+    if [ -z "$key" ]; then bad "No Instabox key is saved" "$fix"; fails=1
+    else
+      code=$(http_code "$key")
+      case $code in
+        200) ok "Instabox key works" ;;
+        401|403) bad "Instabox rejected the saved key (HTTP $code)" "$fix"; fails=1 ;;
+        *) warn "Could not check the Instabox key" "no answer from the Instabox API" ;;
+      esac
+    fi
+  fi
+  step 3 "Claude token"
+  local n name="" lit=""
+  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
+    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
+  done
+  if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in" "$fix"; fails=1
+  elif [ "$provider" != self-hosted ] && [ -n "$lit" ] && ! is_proxied "$name"; then
+    bad "$name is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
+  else ok "A Claude credential is saved"; fi
+  step 4 "GitHub token, secrets and coordinators"
+  if [ "$provider" = self-hosted ]; then
+    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push" "$fix"; fails=1
+    elif [ "$(eff CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX)" != yes ]; then bad "GH_TOKEN is not allowed on your own machine (CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX is not yes), so subagents cannot push" "$fix"; fails=1
+    else ok "GH_TOKEN is saved and allowed on your own machine"; fi
+  else
+    state=$(gh_secret_state "$key")
+    case $state in
+      yes) ok "GH_TOKEN is stored in Instabox" ;;
+      no) bad "GH_TOKEN is not stored in Instabox, so subagents cannot push" "$fix"; fails=1 ;;
+      *) warn "Could not confirm GH_TOKEN" "check with: npx --yes instabox@latest secrets ls" ;;
+    esac
+    if [ -n "$(eff CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then ok "Coordinator image is saved"; else hint "No coordinator image is set up (optional)."; fi
+    check_proxy_secrets "$key" || fails=1
+  fi
+  echo
+  if [ "$fails" = 0 ]; then ok "Check passed: nothing needs fixing"; else bad "Check failed: fix the items above" "$fix"; fi
+  return "$fails"
 }
 
 # clean_paste TEXT: prints TEXT without whitespace, control characters and terminal escape sequences
@@ -430,6 +485,7 @@ install_global() {
           "npm cannot install over it. Replacing it removes only that link and package."
         if yn "Replace it (npm rm -g cloudy-cloud, then npm install -g cloudycloud)?"; then
           spin_start "Replacing the old cloudy-cloud command"
+          [ -e "$bin" ] || rm -f "$bin" # a link to a package that is gone: npm rm would not remove it
           out=$(npm rm -g cloudy-cloud 2>&1 >/dev/null); rc=$?
           [ "$rc" -ne 0 ] || { out=$(npm install -g cloudycloud 2>&1 >/dev/null); rc=$?; }
           spin_stop
@@ -850,9 +906,9 @@ setup_coordinators() {
 }
 
 # Prints the JSON list of the org's secrets (nothing if the org lookup fails).
-secrets_list() {
+secrets_list() { # optional $1: the key to use (default: the saved one)
   local key orgs id
-  key=$(get_saved INSTABOX_API_KEY)
+  key=${1:-$(get_saved INSTABOX_API_KEY)}
   orgs=$(api_get "$key" /v1/orgs) || true
   id=$(printf '%s' "$orgs" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
@@ -862,8 +918,8 @@ secrets_list() {
 }
 
 # Prints yes, no, or unknown (the org lookup failed or has an unexpected shape).
-gh_secret_state() {
-  secrets_list | node -e '
+gh_secret_state() { # optional $1: the Instabox key
+  secrets_list "${1:-}" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);
     const a=Array.isArray(j)?j:(j.items||j.data||j.secrets||[]);
     console.log(a.some(x=>x.name==="GH_TOKEN"&&["github.com","api.github.com"].every(h=>(x.hosts||[]).includes(h)))?"yes":"no")}catch{console.log("unknown")}})'
@@ -885,7 +941,8 @@ setup_github() {
   fi
   ask "GitHub token" "Subagents push their branches with it. Instabox stores it;" "subagent machines only see a placeholder." \
     "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new" \
-    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, read and write." \
+    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, Pull requests and Workflows read and write; Actions read." \
+    "(Workflows lets a subagent push .github/workflows; Actions lets it see CI.)" \
     "Next, the Instabox CLI signs you in (if needed) and asks for the token." "Nothing shows as you paste."
   # The token goes from the terminal straight to the Instabox CLI; this script never sees it.
   npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty
@@ -967,8 +1024,8 @@ main() {
   trap 'exit 130' INT TERM
   [ "${1:-}" = --check-only ] || banner
   step 1 Tools
+  if [ "${1:-}" = --check-only ]; then check_prereqs || PREREQ_FAIL=1; check_setup; exit $?; fi
   check_prereqs || exit 1
-  if [ "${1:-}" = --check-only ]; then check_proxy_secrets; exit $?; fi
   ok "git, node, npm, curl and claude are installed"
 
   local root branch sha log

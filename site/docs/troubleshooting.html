@@ -80,7 +80,7 @@
 <h3 id="not-set-up">"cloudy-cloud is not set up yet"</h3>
 <p>A key is missing from <code>~/.config/cloudy-cloud/env</code>. In a terminal, <code>cloudy-cloud</code> asks <code>Run setup now? [Y/n]</code>. Without a terminal it exits with status 1. Run setup yourself:</p>
 <pre><code>cloudy-cloud setup</code></pre>
-<p>If you changed a key but the session still uses the old one, restart <code>cloudy-cloud</code>. It reads keys once, at start.</p>
+<p>If you changed a key but the session still uses the old one, restart <code>cloudy-cloud</code>. Provider keys and <code>CLOUDY_CLOUD_PROXY_SECRETS</code> are re-read from the env file before each new subagent, but the Instabox key is read once, at start.</p>
 
 <h3 id="key-rejected">The installer rejects a key</h3>
 <ul>
@@ -92,6 +92,12 @@
 
 <h3 id="instabox-401">"malformed API key" or 401 from Instabox</h3>
 <p>The Instabox key is wrong or revoked. Run <code>cloudy-cloud setup</code>, replace the key, and restart <code>cloudy-cloud</code>.</p>
+
+<h3 id="npm-eexist"><code>npm install -g cloudycloud</code> fails with EEXIST</h3>
+<p>The package was renamed from <code>cloudy-cloud</code> to <code>cloudycloud</code>. The old package can leave a <code>cloudy-cloud</code> link in npm's global <code>bin</code> folder that points nowhere, and npm refuses to install over it. The error names the file, for example <code>EEXIST: file already exists, symlink ... /bin/cloudy-cloud</code>. Remove that file, then install again:</p>
+<pre><code>rm &lt;the path shown in the error&gt;
+npm install -g cloudycloud</code></pre>
+<p><code>cloudy-cloud setup</code> finds this link and offers to remove it for you.</p>
 
 <h3 id="no-github-origin">No git repository, or no github.com origin</h3>
 <p>The launcher warns <code>This folder is not a git repository, so subagents can't start here.</code> or <code>This repo has no github.com origin, so subagents can't push their work.</code> Run <code>cloudy-cloud</code> from inside a repo and add an origin:</p>
@@ -167,7 +173,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <li><strong>MCP server tokens:</strong> only for servers you added with <code>cloudy-cloud mcp add</code>. The token stays in Instabox as <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without <code>--host</code>. With <code>--allow-literal</code> the real token is on the machine. See <a href="mcp.html">MCP servers for subagents</a>.</li>
 <li><strong>Provider keys</strong> (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See <a href="models.html">Models and keys</a>.</li>
 </ul>
-<p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write.</p>
+<p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under <code>.github/workflows</code>), and Actions read (so subagents can see CI results).</p>
 
 <h3 id="dashboard-local">The dashboard is local only</h3>
 <p>The dashboard is a read-only page on <code>127.0.0.1</code>. Requests without the random per-run token, or with another <code>Host</code> header, are refused. Keys never reach the browser.</p>
