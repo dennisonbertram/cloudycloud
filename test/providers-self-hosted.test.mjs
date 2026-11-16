@@ -139,6 +139,22 @@ function make(extraEnv = {}, boxOpts) {
 
 contractSuite('self-hosted', ({ withKey }) => createProvider(withKey ? ENV : { CLOUDY_CLOUD_CONTAINER_BIN: BIN }, { spawn: fakeBox().spawn }));
 
+test('#92 caps: linux only, a shell, no display; other kinds and display are refused', async () => {
+  const { provider, box } = make();
+  assert.deepEqual([provider.caps.machineKinds, provider.caps.hasShell, provider.caps.hasDisplay], [['linux'], true, false]);
+  await assert.rejects(provider.create({ image: 'x', envs: {}, labels: {}, ttlSeconds: 60, kind: { name: 'android' } }), (e) => e.code === 'machine_kind_unsupported');
+  assert.equal(box.log.length, 0, 'nothing reached the box');
+  for (const m of ['displayLink', 'revokeDisplayLinks', 'screenshot']) await assert.rejects(provider[m]('cc-1', {}), (e) => e.code === 'display_unsupported', m);
+});
+
+test('#92 shellArgv: remote ssh form and local docker form', () => {
+  const r = make({ CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2200' }).provider;
+  assert.deepEqual(r.shellArgv('cc-1'), ['ssh', '-i', '/k', '-p', '2200', '-t', 'me@box', BIN, 'exec', '-it', 'cc-1', 'bash']);
+  assert.deepEqual(r.shellArgv('cc-1', ['ls', '-la']), ['ssh', '-i', '/k', '-p', '2200', '-t', 'me@box', BIN, 'exec', '-it', 'cc-1', 'bash', '-lc', 'ls -la']);
+  const l = make({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1' }).provider;
+  assert.deepEqual(l.shellArgv('cc-1', ['ls']), [BIN, 'exec', '-it', 'cc-1', 'bash', '-lc', 'ls']);
+});
+
 const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 600, ...extra });
 
 test('golden: exact docker commands for create, run, write, list and delete; no secret in any argv or label', async () => {

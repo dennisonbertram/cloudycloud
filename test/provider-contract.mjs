@@ -16,6 +16,20 @@ export function contractSuite(name, makeProvider) {
     for (const t of ['listMachines', 'noKeyFix', 'apiFix', 'githubTokenHelp']) assert.equal(typeof p.text[t], 'string', t);
   });
 
+  // Providers that declare machineKinds (the fake and self-hosted today; Instabox joins in #93) must honour the kinds contract.
+  test(`${name}: kinds, shell and display follow the caps`, async () => {
+    const p = makeProvider({ withKey: true });
+    if (!p.caps.machineKinds) return;
+    assert.ok(Array.isArray(p.caps.machineKinds) && p.caps.machineKinds.includes('linux'));
+    assert.equal(typeof p.caps.hasShell, 'boolean');
+    assert.equal(typeof p.caps.hasDisplay, 'boolean');
+    for (const m of ['shellArgv', 'displayLink', 'revokeDisplayLinks', 'screenshot']) assert.equal(typeof p[m], 'function', m);
+    if (p.caps.hasShell) assert.ok(p.shellArgv('m1').every((a) => typeof a === 'string'));
+    const bad = ['linux', 'android', 'omarchy', 'gpu', 'macos'].find((k) => !p.caps.machineKinds.includes(k));
+    if (bad) await assert.rejects(create(p, {}, { kind: { name: bad } }), (e) => e.code === 'machine_kind_unsupported');
+    if (!p.caps.hasDisplay) await assert.rejects(p.displayLink('m1', {}), (e) => e.code === 'display_unsupported');
+  });
+
   test(`${name}: create returns a Sandbox`, async () => {
     const s = await create(makeProvider({ withKey: true }), { purpose: 'cloudy-cloud' });
     try {

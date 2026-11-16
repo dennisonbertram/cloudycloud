@@ -94,9 +94,11 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
+      machineKinds: ['linux'], hasShell: true, hasDisplay: false,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind }) {
+      if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `self-hosted runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`);
       getSsh();
       const vars = { ...envs };
       // The GitHub token consent (setup) covers GH_TOKEN only; it goes in like Instabox's GH_TOKEN secret. Any other secret is
@@ -258,6 +260,11 @@ export function createProvider(env = process.env, deps = {}) {
       };
     },
 
+    shellArgv: (id, cmd) => [...(local ? [bin] : ['ssh', ...sshOpts(), '-t', host ?? '<CLOUDY_CLOUD_SSH_HOST>', bin]), 'exec', '-it', id, 'bash', ...(cmd ? ['-lc', cmd.join(' ')] : [])],
+    async displayLink() { throw noDisplay(); },
+    async revokeDisplayLinks() { throw noDisplay(); },
+    async screenshot() { throw noDisplay(); },
+
     text: {
       ssh: (machine, cmd) => (local ? `${bin} exec -it ${machine} ${cmd || 'bash'}`
         : `ssh${sshOpts().map((o) => ` ${o}`).join('')} -t ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} exec -it ${machine} ${cmd || 'bash'}`),
@@ -271,6 +278,7 @@ export function createProvider(env = process.env, deps = {}) {
       githubTokenHelp: 'Allow the GitHub token on your machine and save one with write access: run cloudy-cloud setup --provider self-hosted and answer yes to the GitHub token question.',
     },
   };
+  function noDisplay() { return fail('display_unsupported', 'self-hosted machines have no desktop display. Use `cloudy-cloud shell`, or set CLOUDY_CLOUD_PROVIDER=instabox.'); }
   function sshOpts() {
     return [...(env.CLOUDY_CLOUD_SSH_KEY ? ['-i', env.CLOUDY_CLOUD_SSH_KEY] : []), ...(env.CLOUDY_CLOUD_SSH_PORT ? ['-p', env.CLOUDY_CLOUD_SSH_PORT] : [])];
   }

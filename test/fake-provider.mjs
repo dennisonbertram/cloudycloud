@@ -110,8 +110,8 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false } = {}) {
-  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'] } = {}) {
+  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
   let n = 0;
@@ -120,9 +120,11 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   return {
     name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
-      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760 },
+      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true },
     async create(opts) {
       needKey();
+      const k = opts.kind?.name ?? 'linux';
+      if (!machineKinds.includes(k)) throw Object.assign(new Error(`fake does not offer ${k} machines`), { code: 'machine_kind_unsupported' });
       log.create.push(opts);
       const id = `fake-${++n}`, name = opts.name ?? `sbx-${n}`;
       const sbx = wrap(await fakeSandbox(), id, name);
@@ -157,6 +159,10 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
     async forwardPort(id, localRemote) { log.ports.push({ op: 'forward', id, localRemote }); return 0; },
     async publishPort(id, port) { log.ports.push({ op: 'publish', id, port }); return { url: `https://fake.example/${id}/${port}` }; },
     async unpublishPort(id, port) { log.ports.push({ op: 'unpublish', id, port }); return 0; },
+    shellArgv: (id, cmd = []) => ['fake-ssh', id, ...cmd],
+    async displayLink(id, o = {}) { log.display.push({ op: 'link', id, ...o }); return { url: `https://fake.example/desktop/${id}#tok`, expiresAt: new Date(Date.now() + (o.ttlSeconds ?? 3600) * 1000) }; },
+    async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
+    async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
     localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),
     text: {
       ssh: (machine, cmd) => `fake ssh ${machine} -- ${cmd}`, listMachines: 'fake ls',
