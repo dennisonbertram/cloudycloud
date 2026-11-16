@@ -46,7 +46,7 @@ test('resolves an agent id and a machine name; passes argv through unchanged', a
 });
 
 test('no command opens an interactive shell', async () => {
-  const s = setup();
+  const s = setup(); s.d.isTTY = true;
   assert.equal(await run(['box-aaa'], s.d), 0);
   assert.deepEqual(s.spawned, [['fake-ssh', 'mach-aaa']]);
 });
@@ -74,4 +74,16 @@ test('unknown target and stopped machine give clear errors', async () => {
   assert.match(n.err.join('\n'), /is not running/);
   assert.match(n.err.join('\n'), /cloud_agent_list/);
   assert.equal(n.spawned.length, 0);
+});
+
+test('no command without a TTY is refused', async () => {
+  const s = setup(); s.d.isTTY = false;
+  assert.equal(await run(['box-aaa'], s.d), 1);
+  assert.match(s.err.join('\n'), /needs a terminal.*-- <command>/s);
+  assert.equal(s.spawned.length, 0);
+});
+
+test('any signal maps to 128 + its number', async () => {
+  const s = setup(); s.d.spawn = () => ({ status: null, signal: 'SIGALRM' });
+  assert.equal(await run(['7c1e90ab', '--', 'x'], s.d), 142);
 });

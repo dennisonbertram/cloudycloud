@@ -1,6 +1,7 @@
 // `cloudy-cloud shell <agent-id-or-machine> [-- cmd...]`: a shell on a cloud machine, for you and the local Claude session.
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { constants } from 'node:os';
 import { loadEnv } from './config.mjs';
 import { eventsFile, readEvents } from './events.mjs';
 import { listMachines } from './dashboard.mjs';
@@ -45,10 +46,12 @@ export async function run(argv, deps = {}) {
       throw e;
     }
     if (!provider.caps.hasShell) fail(guide('shell_unsupported', { provider: provider.name }));
+    const tty = deps.isTTY ?? !!process.stdin.isTTY;
+    if (!a.cmd && !tty) fail(`An interactive shell needs a terminal, and this has none. Pass a command instead: cloudy-cloud shell ${a.id} -- <command>`);
     const [bin, ...args] = provider.shellArgv(machine, a.cmd);
     const r = (deps.spawn ?? ((argv) => spawnSync(argv[0], argv.slice(1), { stdio: 'inherit' })))([bin, ...args]);
     if (r.error) fail(`Could not start ${bin} (${r.error.message}). Install it or run: cloudy-cloud doctor`);
-    return r.status ?? (r.signal ? 128 + (({ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 })[r.signal] ?? 0) : 1);
+    return r.status ?? (r.signal ? 128 + (constants.signals[r.signal] ?? 0) : 1);
   } catch (e) {
     err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud shell: ${e.message}`);
     return 1;

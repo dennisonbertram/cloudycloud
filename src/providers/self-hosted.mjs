@@ -261,10 +261,12 @@ export function createProvider(env = process.env, deps = {}) {
     },
 
     // cmd is quoted once for the container's bash -lc; over ssh the whole remote command is one string, quoted again for the host shell.
+    // A command gets no TTY (docker -i, ssh -T) so it also runs from a non-interactive caller; the no-command shell keeps -it / -t.
     shellArgv(id, cmd) {
-      const inner = [bin, 'exec', '-it', id, 'bash', ...(cmd?.length ? ['-lc', cmd.map(q).join(' ')] : ['-l'])];
+      const run = !!cmd?.length;
+      const inner = [bin, 'exec', run ? '-i' : '-it', id, 'bash', ...(run ? ['-lc', cmd.map(q).join(' ')] : ['-l'])];
       if (local) return inner;
-      return ['ssh', ...sshOpts(), '-t', host ?? '<CLOUDY_CLOUD_SSH_HOST>', cmd?.length ? inner.map(q).join(' ') : inner.join(' ')];
+      return ['ssh', ...sshOpts(), run ? '-T' : '-t', host ?? '<CLOUDY_CLOUD_SSH_HOST>', run ? inner.map(q).join(' ') : inner.join(' ')];
     },
     async displayLink() { throw noDisplay(); },
     async revokeDisplayLinks() { throw noDisplay(); },

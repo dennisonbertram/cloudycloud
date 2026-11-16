@@ -155,6 +155,14 @@ test('#92 shellArgv: no command opens an interactive login shell; [] counts as n
   assert.deepEqual(l.shellArgv('cc-1', []), [BIN, 'exec', '-it', 'cc-1', 'bash', '-l']);
 });
 
+test('#92 shellArgv: a command never asks for a TTY (docker -i, ssh -T); no command keeps -it / -t', () => {
+  const r = make({ CLOUDY_CLOUD_SSH_PORT: '2200' }).provider;
+  assert.equal(r.shellArgv('cc-1', ['ls']).includes('-t'), false);
+  assert.match(r.shellArgv('cc-1', ['ls'])[3], /^-T$/);
+  assert.match(r.shellArgv('cc-1', ['ls'])[5], /'exec' '-i' 'cc-1'/);
+  assert.equal(r.shellArgv('cc-1')[3], '-t');
+});
+
 test('#92 shellArgv: every argument is quoted for each shell layer; nothing is injected', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shellargv-'));
   const docker = join(dir, 'docker'); // drops "exec -it <id>" and runs the rest, like the container's shell would
@@ -164,11 +172,11 @@ test('#92 shellArgv: every argument is quoted for each shell layer; nothing is i
   try {
     const l = make({ CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_CONTAINER_BIN: docker }).provider;
     const la = l.shellArgv('cc-1', cmd);
-    assert.equal(la.slice(0, 5).join(' '), `${docker} exec -it cc-1 bash`);
+    assert.equal(la.slice(0, 5).join(' '), `${docker} exec -i cc-1 bash`); // no -t: a command must run without a TTY
     assert.equal(spawnSync(la[0], la.slice(1), { encoding: 'utf8' }).stdout, want);
     const r = make({ CLOUDY_CLOUD_SSH_PORT: '2200', CLOUDY_CLOUD_CONTAINER_BIN: docker }).provider;
     const ra = r.shellArgv('cc-1', cmd);
-    assert.deepEqual(ra.slice(0, 5), ['ssh', '-p', '2200', '-t', 'me@box']);
+    assert.deepEqual(ra.slice(0, 5), ['ssh', '-p', '2200', '-T', 'me@box']);
     assert.equal(ra.length, 6, 'ssh gets the remote command as one string');
     assert.equal(spawnSync('sh', ['-c', ra[5]], { encoding: 'utf8' }).stdout, want); // what the ssh host's shell does with it
   } finally { rmSync(dir, { recursive: true, force: true }); }
