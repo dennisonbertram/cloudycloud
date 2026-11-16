@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile } from './config.mjs';
 import { coordinatorKeys, loadProfiles } from './profiles.mjs';
-import { toolBundle, toolInstallCmd } from './toolbundle.mjs';
+import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi } from './ui.mjs';
 import { coordinatorHelp } from './cli-help.mjs';
@@ -46,6 +46,7 @@ function saveKey(file, name, value) {
 // The GitHub URL of cloudy-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
 export function toolRepoUrl(root) {
   let u;
+  if (!ownsRepo(root)) return ''; // an npm install has no repo of its own
   try { u = execFileSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; }
   const m = u.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+?)(?:\.git)?$/);
   const url = m ? `https://github.com/${m[1]}.git` : u;

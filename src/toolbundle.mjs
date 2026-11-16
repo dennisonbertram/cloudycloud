@@ -1,6 +1,6 @@
 // Ships the laptop's cloudy-cloud to a machine as a git bundle, so it runs exactly this version without it being pushed.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,8 +17,32 @@ export function retryIndexLock(fn, tries = 8) {
   }
 }
 
+// True when `root` is itself the top of a git checkout. An npm install is not: git would resolve to whatever repo encloses it (such as ~/.nvm).
+export function ownsRepo(root) {
+  try { return realpathSync(git(root, 'rev-parse', '--show-toplevel')) === realpathSync(root); } catch { return false; }
+}
+
+// A throwaway git repo holding exactly the package's published files, for installs that are not a git checkout. Caller removes `dir`.
+function packageRepo(root) {
+  const dir = mkdtempSync(join(tmpdir(), 'cloudy-cloud-pkg-'));
+  const files = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).files ?? [];
+  for (const f of new Set([...files, 'package.json', 'README.md', 'LICENSE'])) {
+    if (existsSync(join(root, f))) cpSync(join(root, f), join(dir, f), { recursive: true });
+  }
+  git(dir, 'init', '-q');
+  git(dir, 'add', '-A', '-f');
+  git(dir, 'commit', '-q', '-m', 'cloudycloud package');
+  return dir;
+}
+
 // HEAD plus uncommitted tracked edits (like the work-repo snapshot). Returns { data: Buffer, ref, sha }.
 export function toolBundle(root) {
+  if (ownsRepo(root)) return bundleOf(root);
+  const dir = packageRepo(root);
+  try { return bundleOf(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+function bundleOf(root) {
   const sha = retryIndexLock(() => git(root, 'stash', 'create')) || git(root, 'rev-parse', 'HEAD');
   const ref = `refs/cc-keep/tool-${randomUUID().slice(0, 8)}`; // temporary: only so `git bundle` can name the snapshot
   const dir = mkdtempSync(join(tmpdir(), 'cloudy-cloud-tool-'));
