@@ -54,4 +54,4 @@ function fakeInstabox() {
 contractSuite('instabox adapter', ({ withKey }) => {
   const { sdk, fetchFn } = fakeInstabox();
   return createProvider(withKey ? { INSTABOX_API_KEY: 'ibk_test' } : {}, { sdk, fetchFn, timing: { pollMs: 1, timeoutMs: 100 } });
-}, { kindsSkip: 'Instabox kinds, shell and display land in #93' });
+});

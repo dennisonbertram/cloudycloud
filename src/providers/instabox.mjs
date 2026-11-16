@@ -58,9 +58,16 @@ export const attachGithubToken = (id, apiKey, fetchFn, opts) => attachSecrets(id
 // The SDK (0.6.0) has no deleteAfterSeconds option, but Instabox accepts it in the create request. Instabox then deletes the
 // machine at that time in any state, even if every cloudy-cloud process has died. Pass this as the SDK's `fetch` option: it
 // adds the field to the POST /v1/machines body and leaves every other request alone.
-export const withDeleteAfter = (seconds, fetchFn = fetch) => (url, init = {}) =>
+// `extra` (gpu, model, acceptMinimumLease for non-linux kinds) goes into the same body; the SDK has no option for them.
+export const withDeleteAfter = (seconds, fetchFn = fetch, extra) => (url, init = {}) =>
   fetchFn(url, init.method === 'POST' && /\/v1\/machines\/?$/.test(String(url)) && typeof init.body === 'string'
-    ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body), deleteAfterSeconds: seconds }) } : init);
+    ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body), deleteAfterSeconds: seconds, ...extra }) } : init);
+
+// Template id per machine kind (linux keeps the requested image, agent-browser by default). Spike: docs/research/machine-kinds.md.
+const TEMPLATES = { android: 'android', omarchy: 'omarchy', gpu: 'gpu', macos: 'macos' };
+const KINDS = ['linux', ...Object.keys(TEMPLATES)];
+// Instabox error codes that have their own guidance.
+const CODE_MAP = { template_not_allowed: 'machine_not_on_plan', template_limit: 'machine_gpu_limit', permission_denied: 'display_forbidden' };
 
 // Seconds a worker or nested coordinator machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
 export const workerSeconds = (env) => {
@@ -76,7 +83,9 @@ const INSTABOX_CLI = ['npx', '--yes', 'instabox@latest'];
 
 // Give an SDK or HTTP error one of the provider's normalised codes. An error that already has a code keeps it.
 function normalize(e) {
-  if (!e || typeof e !== 'object' || e.code) return e;
+  if (!e || typeof e !== 'object') return e;
+  if (CODE_MAP[e.code]) return Object.assign(e, { instaboxCode: e.code, code: CODE_MAP[e.code] });
+  if (e.code) return e;
   if (e.status === 429) e.code = 'rate_limited';
   else if (e.status === 404) e.code = 'not_found';
   else if (e.status >= 500 || isTransientWaitError(e)) e.code = 'transient';
@@ -129,7 +138,7 @@ export function createProvider(env, deps = {}) {
     const sandbox = {
       id: sbx.sandboxId,
       ...(name !== undefined && { name }),
-      home: '/data/home',
+      home: '/data/home', // macOS replaces this with the machine's $HOME in create
       files: { write: (...a) => call(() => sbx.files.write(...a)), read: (...a) => call(() => sbx.files.read(...a)) },
       kill: () => sbx.kill(),
       // The server's machine name, fetched on demand (the coordinator asks after setup, as it did before the adapter).
@@ -227,11 +236,17 @@ export function createProvider(env, deps = {}) {
       startsPerMin: Number(env.CLOUDY_CLOUD_STARTS_PER_MIN) || 25,
       maxConcurrentCalls: Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24,
       uploadMaxBytes: 10 * 1024 * 1024,
+      machineKinds: KINDS, hasShell: true, hasDisplay: true,
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
-    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true } = {}) {
+    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind } = {}) {
       const key = apiKey();
+      const kindName = kind?.name ?? 'linux';
+      if (!KINDS.includes(kindName)) throw Object.assign(new Error(`Instabox has no ${kindName} machines`), { code: 'machine_kind_unsupported' });
+      if (kindName !== 'linux') image = TEMPLATES[kindName];
+      const extra = kindName === 'gpu' ? { gpu: kind.gpu ?? 'l4' }
+        : kindName === 'macos' ? { acceptMinimumLease: true, ...(kind.model && { model: kind.model }) } : undefined; // ponytail: macos `model` body field is a guess; unverified live
       const { Sandbox } = await loadSdk();
       let sbx;
       try {
@@ -239,17 +254,44 @@ export function createProvider(env, deps = {}) {
         // Key order is part of the recorded request (golden files): named machines are the coordinator's, the rest are workers or images.
         sbx = await Sandbox.create(image, {
           ...(name ? { apiKey: key, name, ...(envs && { envs }), ...lifetime, metadata: labels } : { apiKey: key, envs, metadata: labels, ...lifetime }),
-          fetch: withDeleteAfter(ttlSeconds, fetchFn),
+          fetch: withDeleteAfter(ttlSeconds, fetchFn, extra),
         });
-      } catch (e) { throw normalize(e); }
+      } catch (e) { throw kindName !== 'linux' && e?.status === 503 && !e.code ? Object.assign(e, { code: 'machine_no_capacity' }) : normalize(e); }
       try {
         await attachSecrets(sbx.sandboxId, key, fetchFn, secrets, deps.timing);
       } catch (e) {
         await sbx.kill().catch(() => {});
         throw e;
       }
-      return wrap(sbx, name, { retry, nameFromInfo: neverSuspend });
+      const sandbox = wrap(sbx, name, { retry, nameFromInfo: neverSuspend });
+      if (kindName === 'macos') {
+        const home = (await sandbox.commands.run('printf %s "$HOME"').catch(() => null))?.stdout?.trim();
+        if (home) sandbox.home = home;
+      }
+      return sandbox;
     },
+
+    // Desktop calls on a machine without a working desktop (omarchy, linux) fail in many ways; those become desktop_unavailable.
+    async desktop(id, fn) {
+      const { Sandbox } = await loadSdk();
+      try {
+        const sbx = await Sandbox.connect(id, { apiKey: apiKey() });
+        return await callWith(MAX_429_TRIES)(() => fn(sbx.desktop));
+      } catch (e) {
+        const n = normalize(e);
+        if (['rate_limited', 'not_found', 'transient', 'no_key', 'display_forbidden'].includes(n?.code)) throw n;
+        throw Object.assign(n ?? new Error('desktop failed'), { code: 'desktop_unavailable' });
+      }
+    },
+    async displayLink(id, { control = false, ttlSeconds } = {}) {
+      return this.desktop(id, async (d) => {
+        if (!(await d.status()).running) await d.start();
+        return d.streamUrl({ viewOnly: !control, ...(ttlSeconds && { ttlSeconds }) });
+      });
+    },
+    revokeDisplayLinks(id) { return this.desktop(id, (d) => d.revokeStreamUrls()); },
+    screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
+    shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', ...cmd] : [])],
 
     async connect(id, { retry = true } = {}) {
       const { Sandbox } = await loadSdk();
