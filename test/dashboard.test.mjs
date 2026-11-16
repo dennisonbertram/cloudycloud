@@ -664,7 +664,7 @@ test('page: full-text responses are cleared on agent or turn change and capped i
 
 test('a coordinator whose pane shows a waiting prompt gets `waiting` (redacted), read at most every 30 s, and a quiet pane clears it (#88)', async () => {
   const clock = { t: 100_000 }, { getState, reader } = await coordWithLog([{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }], clock);
-  let pane = ['working', '│ Do you want to read /data/tmp/claude-1000/x.md? sk-ant-oat01-LEAKYTOKEN0123'], reads = 0;
+  let pane = ['working', '│ Do you want to read /data/tmp/claude-1000/x.md? sk-ant-oat01-LEAKYTOKEN0123', '❯ 1. Yes'], reads = 0;
   reader.capturePane = async () => { reads++; return { lines: pane, fetchedAt: clock.t }; };
   const co = async () => (await getState()).boxes.find((b) => b.kind === 'coordinator');
   const first = await co();
@@ -682,4 +682,21 @@ test('the page lists a waiting coordinator under Needs you with its line and the
   assert.match(page, /needsYou = \(b\) => [^\n]*b\.waiting/);
   assert.match(page, /Waiting on a prompt/);
   assert.match(page, /coordinator attach/);
+});
+
+test('a fatal pane state reaches the box as waiting with fatal; the attach name is the label; a stopped coordinator drops the alert (#88)', async () => {
+  const clock = { t: 100_000 }, { getState, reader, env, provider } = await coordWithLog([{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }], clock);
+  reader.capturePane = async () => ({ lines: ['Not logged in \u00b7 Please run /login'], fetchedAt: clock.t });
+  const co = async () => (await getState()).boxes.find((b) => b.kind === 'coordinator');
+  const b = await co();
+  assert.deepEqual([b.waiting, b.fatal, b.labels.name], ['Not logged in \u00b7 Please run /login', true, 'cn']);
+  const page = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.match(page, /attach ' \+ \(b\.labels && b\.labels\.name \|\| b\.id\)/);
+  assert.match(page, /b\.fatal/);
+  const down = liveState(env, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, getReader: async () => reader, now: () => clock.t, list: async (e, p) => (await listMachines(e, p)).map((m) => ({ ...m, state: gone ? 'deleting' : m.state })) });
+  let gone = false;
+  assert.ok((await down()).boxes.find((x) => x.kind === 'coordinator').waiting);
+  gone = true; clock.t += 40_000;
+  const after = (await down()).boxes.find((x) => x.kind === 'coordinator');
+  assert.deepEqual([after.machineState, after.waiting], ['deleting', undefined]);
 });

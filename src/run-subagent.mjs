@@ -17,7 +17,7 @@ import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
 import { redact } from './events.mjs';
-import { FIRST_RUN_SCRIPT } from './coordinator.mjs';
+import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;

@@ -330,7 +330,7 @@
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
       h('div', { class: 'l1' }, kids && h('span', { class: 'chev', 'aria-hidden': 'true', title: open ? 'Hide workers' : 'Show workers', text: open ? '▾' : '▸', onclick: (e) => { e.stopPropagation(); setOpen(b.id, !open); } }), dot(b.status), h('span', { class: 'title', text: titleOf(b) }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
-      b.waiting && h('div', { class: 'l3 err' }, h('b', { text: 'Waiting on a prompt: ' }), b.waiting, ' · ', h('code', { text: 'cloudy-cloud coordinator attach ' + b.id })),
+      b.waiting && h('div', { class: 'l3 err' }, h('b', { text: b.fatal ? 'Not working: ' : 'Waiting on a prompt: ' }), b.waiting, b.fatal ? ' · sign in again or check the plan, then restart it · ' : ' · ', h('code', { text: 'cloudy-cloud coordinator attach ' + (b.labels && b.labels.name || b.id) })),
       a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
   }
@@ -710,7 +710,7 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);

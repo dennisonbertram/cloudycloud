@@ -699,7 +699,7 @@ const WAIT_LINE = 'Do you want to read /data/tmp/claude-1000/brief.md?';
 const stuck = () => fixture({ pane: `some output\n\u2502 ${WAIT_LINE}\n\u276f 1. Yes`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { role: 'coordinator', name: 'a' } }] });
 
 test('a permission prompt on the screen counts as waiting; ordinary output does not (#88)', async () => {
-  const f = fixture({ pane: `Do you want to proceed?` });
+  const f = fixture({ pane: 'Do you want to proceed?\n\u276f 1. Yes\n  2. No' });
   await main(START, f.deps);
   assert.match(f.log.out.join('\n'), /waiting on a prompt/);
   const g = fixture({ pane: 'Bypass Permissions mode\n 2. Yes, I accept' });
@@ -738,4 +738,41 @@ test('status NAME prints state, the waiting line and the attach command; --json 
   assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane/.test(c) && c !== '/data/home'), [], 'only the pane read runs');
   await assert.rejects(main(['status', 'zzz'], f.deps), /No coordinator named zzz/);
   await assert.rejects(main(['status'], f.deps), /cloudy-cloud coordinator status/);
+});
+
+test('a transcript line "Do you want to ..." without option lines is not waiting; the real prompt with options is (#88)', async () => {
+  const f = fixture({ pane: '\u23fa Do you want to refactor this?\nsome answer' });
+  await main(START, f.deps);
+  assert.doesNotMatch(f.log.out.join('\n'), /waiting on a prompt/);
+});
+
+test('ls and status remove an exact configured key value from the pane text (#88)', async () => {
+  const f = fixture({ pane: `\u2502 Do you want to read opaque-secret-9876543210?\n\u276f 1. Yes`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.env.CLOUDY_CLOUD_TEST_API_KEY = 'opaque-secret-9876543210';
+  await main(['ls'], f.deps);
+  await main(['status', 'a', '--json'], f.deps);
+  assert.doesNotMatch(f.log.out.join('\n'), /opaque-secret-9876543210/);
+  assert.match(f.log.out.join('\n'), /\[redacted\]/);
+});
+
+test('ls reads at most four panes at a time, one per coordinator (#88)', async () => {
+  const machines = Array.from({ length: 10 }, (_, i) => ({ sandboxId: `m${i}`, name: `coord-${i}`, state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: `c${i}` } }));
+  const f = fixture({ machines });
+  let live = 0, peak = 0, reads = 0;
+  const orig = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 5)); const s = await orig(id); const run = s.commands.run; s.commands.run = async (...a) => { reads++; try { return await run(...a); } finally { live--; } }; return s; };
+  await main(['ls'], f.deps);
+  assert.equal(reads, 10);
+  assert.ok(peak <= 4, `peak ${peak}`);
+});
+
+test('the first-run script treats a malformed, null or array settings file as empty and keeps a .bak (#88)', () => {
+  for (const bad of ['{not json', 'null', '[1,2]']) {
+    const home = mkdtempSync(join(tmpdir(), 'cc-firstrun-'));
+    execFileSync('mkdir', ['-p', join(home, '.claude')]);
+    writeFileSync(join(home, '.claude/settings.json'), bad);
+    execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: home } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8')), { skipDangerousModePermissionPrompt: true }, bad);
+    assert.equal(readFileSync(join(home, '.claude/settings.json.bak'), 'utf8'), bad);
+  }
 });

@@ -164,3 +164,12 @@ export function forHarness(mcp, harness) {
   const text = JSON.stringify(servers);
   return { ...mcp, servers, skipped, secrets: mcp.secrets?.filter((s) => text.includes(`\${${s}}`)), literal: mcp.literal?.filter((n) => n in servers) };
 }
+
+// Token values the user consented to put on machines (cloudyCloudAllowLiteral), as run-subagent.mjs scrubs them.
+export function consentedLiterals(env) {
+  try {
+    const servers = JSON.parse(readFileSync(mcpFile(env), 'utf8')).mcpServers ?? {};
+    return Object.values(servers).filter((e) => e?.cloudyCloudAllowLiteral === true).flatMap((e) => [['env', false], ['headers', true]].flatMap(([f, h]) => Object.entries(e[f] ?? {}).filter(([k, v]) => typeof v === 'string' && isLiteralSecret(k, v, h)).flatMap(([, v]) => [v, v.replace(/^Bearer /, '')]))).filter((t) => t.length >= 6);
+  } catch { return []; }
+}
+

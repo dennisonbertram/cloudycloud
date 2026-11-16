@@ -14,6 +14,10 @@ import { coordinatorHelp } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
 import { paneState } from './pane-state.mjs';
+import { FIRST_RUN_SCRIPT } from './first-run.mjs';
+import { secretValues } from './run-subagent.mjs';
+import { consentedLiterals } from './mcpsync.mjs';
+export { FIRST_RUN_SCRIPT };
 import { guide, guideObj, classify, CODES, SECRET_HOSTS, setCmd } from './errors.mjs';
 
 const TEMPLATE = 'agent-browser';
@@ -68,18 +72,6 @@ const find = async (provider, role, name) =>
   (await provider.list({ role, ...(name && { name }) }, { sdk: true })).filter((m) => m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
-// Marks Claude Code's first-run screens as done in ~/.claude.json, trusts ~/repo, and sets skipDangerousModePermissionPrompt in
-// ~/.claude/settings.json so the one-time bypass-mode confirmation never appears (#88). Keys found live on a coordinator.
-export const FIRST_RUN_SCRIPT = `const fs=require('fs'),f=process.env.HOME+'/.claude.json';
-const j=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{};
-Object.assign(j,{hasCompletedOnboarding:true,theme:j.theme||'dark',hasSeenAutoDefaultNotice:true,fullscreenUpsellSeenCount:Math.max(3,j.fullscreenUpsellSeenCount||0)});
-const p=process.env.HOME+'/repo';j.projects=j.projects||{};
-j.projects[p]={...(j.projects[p]||{}),hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
-fs.writeFileSync(f,JSON.stringify(j,null,2),{mode:0o600});
-const d=process.env.HOME+'/.claude',g=d+'/settings.json';fs.mkdirSync(d,{recursive:true});
-const u=fs.existsSync(g)?JSON.parse(fs.readFileSync(g,'utf8')):{};u.skipDangerousModePermissionPrompt=true;
-fs.writeFileSync(g,JSON.stringify(u,null,2),{mode:0o600});`;
-
 async function installTool(sbx, root) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
@@ -235,7 +227,9 @@ async function screenOf(c, m) {
   if (m.state && m.state !== 'running') return { read: false, waiting: '' };
   try {
     const sbx = await c.provider.connect(m.id, { retry: false });
-    const pane = (await sbx.commands.run('tmux capture-pane -t claude -p', { timeoutMs: 15_000 })).stdout ?? '';
+    const raw = (await sbx.commands.run('tmux capture-pane -t claude -p', { timeoutMs: 15_000 })).stdout ?? '';
+    // Exact key values (and consented MCP tokens) are removed first; paneState then removes key-shaped text.
+    const pane = secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw);
     const st = paneState(pane);
     return { read: true, waiting: st.waiting || st.blocked };
   } catch { return { read: false, waiting: '' }; }
@@ -263,8 +257,10 @@ async function ls(c) {
   const when = (v) => { const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : 'unknown'; };
   const data = rows.map((m) => ({ name: clean(m.labels?.name) || 'unnamed', state: clean(m.state) || 'unknown', created: when(m.startedAt), machine: clean(mach(m)) || 'unknown',
     deleteAt: m.deleteAt ? clean(m.deleteAt) : '' }));
-  // One pane read per coordinator, all at once.
-  const screens = await Promise.all(rows.map((m) => screenOf(c, m)));
+  // One pane read per coordinator, at most a few at a time so a long list cannot flood the provider.
+  const screens = new Array(rows.length), cap = Math.min(4, c.provider.caps?.maxConcurrentCalls || 4);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(cap, rows.length) }, async () => { while (next < rows.length) { const i = next++; screens[i] = await screenOf(c, rows[i]); } }));
   data.forEach((d, i) => { d.screen = data[i].state === 'running' ? screenText(screens[i]) : '-'; }); // only a running session has a screen to read
   if (c.ui.on) {
     const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
