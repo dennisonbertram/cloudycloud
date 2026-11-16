@@ -776,3 +776,23 @@ test('the first-run script treats a malformed, null or array settings file as em
     assert.equal(readFileSync(join(home, '.claude/settings.json.bak'), 'utf8'), bad);
   }
 });
+
+test('start --json gives each fatal screen its own code and Tell the user line; a login screen never says spend limit (#88)', async () => {
+  const cases = [
+    ['Login expired · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Not logged in · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Authentication required · Sign in again', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ['Select login method', 'coordinator_login_expired', /image's Claude sign-in expired/],
+    ["You've hit your session limit · resets 3pm", 'spend_limit', /spend limit/],
+    ['Invalid API key · Fix external API key', 'coordinator_invalid_key', /API key/],
+  ];
+  for (const [text, code, tell] of cases) {
+    const g = fixture({ pane: `  ⎿  ${text}` });
+    await assert.rejects(main([...START, '--json'], g.deps));
+    const e = JSON.parse(g.log.out[0]).error;
+    assert.equal(e.code, code, text);
+    assert.match(e.tellUser, tell, text);
+    if (code !== 'spend_limit') assert.doesNotMatch(JSON.stringify(e), /spend limit/i, text);
+    if (code === 'coordinator_login_expired') assert.match(e.nextStep, /coordinator image.*claude auth login.*coordinator image --save/s);
+  }
+});

@@ -196,7 +196,13 @@ async function start(c, args) {
     const st = paneState(pane, task ?? '');
     const line = st.blocked;
     if (!line && st.waiting) waiting = st.waiting;
-    if (line) fail(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: the saved Claude login has hit its spend limit, is signed out, or is waiting on a prompt.\nNext: check the plan at claude.ai, or sign in again with cloudy-cloud coordinator image and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again.`);
+    if (line) {
+      // The code comes from the matched line, never from words in this message (classify would read "spend limit" as the cause).
+      const [code, cause, next] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`]
+        : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`]
+        : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`];
+      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { code });
+    }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   if (!args.includes('--json') && skipNote) c.out(skipNote);
