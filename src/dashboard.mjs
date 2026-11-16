@@ -57,13 +57,13 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
     const gone = machines && a.machine && !m && ACTIVE.includes(a.status);
     const title = a.description || m?.labels?.description || m?.name;
     return { kind: (m?.labels?.role ?? a.role) === 'coordinator' ? 'coordinator' : 'agent', ...a, pid: undefined, machine: a.machine ?? m?.id, status: gone ? 'stopped' : a.status, machineState: m?.state, deadline: a.deadline ?? m?.archiveAt,
-      labels: m?.labels, title, titleSource: a.description ? 'log' : m?.labels?.description ? 'label' : 'machine', source: 'log', turns: turns.get(a.id), startedByOwner: m?.owner };
+      labels: m?.labels, machineKind: m?.labels?.kind || undefined, title, titleSource: a.description ? 'log' : m?.labels?.description ? 'label' : 'machine', source: 'log', turns: turns.get(a.id), startedByOwner: m?.owner };
   });
   for (const m of machines ?? []) {
     if (used.has(m.id)) continue;
     const status = m.status ?? 'stopped', l = m.labels ?? {}, described = !!l.description, title = l.description || m.name || m.id;
     boxes.push({ kind: l.role === 'coordinator' || m.role === 'coordinator' ? 'coordinator' : l.agent ? 'agent' : 'machine', id: l.agent || m.name || m.id, machine: m.id, role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt,
-      description: title, title, titleSource: described ? 'label' : 'machine', ...(!described && { note: NO_TITLE }), labels: l, source: 'machine', startedByOwner: m.owner, messages: [] });
+      description: title, title, machineKind: l.kind || undefined, titleSource: described ? 'label' : 'machine', ...(!described && { note: NO_TITLE }), labels: l, source: 'machine', startedByOwner: m.owner, messages: [] });
   }
   // A coordinator's own log (read from its machine) is the authority on its workers: fill live boxes, add the ones whose machine is gone.
   for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordLogs[b.machine])) {
@@ -94,7 +94,7 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
   }
   for (const b of boxes) delete b.startedByOwner;
   const error = machineError && { code: machineError.code ?? 'api', message: redact(machineError.message), fix: (machineError.code === 'no_key' ? provider?.text.noKeyFix : provider?.text.apiFix) ?? GENERIC_FIX };
-  return { now, hasLog: events.length > 0, machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
+  return { now, hasLog: events.length > 0, ...(provider?.caps && { caps: { hasShell: !!provider.caps.hasShell, hasDisplay: !!provider.caps.hasDisplay } }), machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
 }
 
 // Pattern redaction plus the exact secret values (`secrets`), on every string and every key.

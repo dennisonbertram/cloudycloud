@@ -700,3 +700,35 @@ test('a fatal pane state reaches the box as waiting with fatal; the attach name 
   const after = (await down()).boxes.find((x) => x.kind === 'coordinator');
   assert.deepEqual([after.machineState, after.waiting], ['deleting', undefined]);
 });
+
+test('boxes carry machineKind from the kind label (absent is linux), and state carries the provider caps', () => {
+  const m = (id, kind) => ({ id, name: id, labels: { agent: id, ...(kind && { kind }) }, state: 'running', status: 'running' });
+  const s = buildState({ events: [], machines: [m('a1', 'android'), m('g1', 'gpu:l4:2'), m('l1')], now: 1000, alive: () => true, provider: createFakeProvider() });
+  const by = (id) => s.boxes.find((b) => b.id === id);
+  assert.equal(by('a1').machineKind, 'android');
+  assert.equal(by('g1').machineKind, 'gpu:l4:2');
+  assert.equal(by('l1').machineKind, undefined);
+  assert.equal(typeof s.caps.hasShell, 'boolean');
+  assert.equal(typeof s.caps.hasDisplay, 'boolean');
+  assert.equal(buildState({ events: [], machines: [], now: 1000, alive: () => true }).caps, undefined);
+});
+
+test('demo has android and gpu boxes, and no linux demo box has a kind', () => {
+  const d = demoState(), by = (id) => d.boxes.find((b) => b.id === id);
+  assert.equal(by('c3d4e5f6').machineKind, 'android');
+  assert.match(by('d4e5f607').machineKind, /^gpu:l4/);
+  assert.equal(by('7c1e90ab').machineKind, undefined);
+  assert.deepEqual(d.caps, { hasShell: true, hasDisplay: true });
+});
+
+test('the page shows kind badges, shell and display command rows once each, hides display for omarchy and no-display providers, and has no link or token', () => {
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.equal(html.split('cloudy-cloud shell ').length - 1, 1);
+  assert.equal(html.split('cloudy-cloud display ').length - 1, 1);
+  assert.match(html, /machineKind/);
+  assert.match(html, /omarchy/);
+  assert.match(html, /caps\.hasDisplay/);
+  assert.doesNotMatch(html, /desktop\/stream/);
+  assert.doesNotMatch(html, /location\.hash|#token/);
+  assert.doesNotMatch(JSON.stringify(demoState()), /https?:\/\/[^\s"]*(display|desktop|stream)|[?#&]token=/i);
+});

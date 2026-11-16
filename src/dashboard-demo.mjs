@@ -17,7 +17,7 @@ export function demoState(now = Date.now()) {
   const box = (o) => ({
     kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
     title: o.description, titleSource: 'log', source: 'log', turns: o.messages.filter((m) => m.kind === 'out').length,
-    labels: { purpose: 'cloudy-cloud', role: 'worker', profile: o.profile ?? 'claude', parent: kids.has(o.id) ? 'fleet-main' : 'demo-session', agent: o.id, description: o.description },
+    labels: { purpose: 'cloudy-cloud', ...(o.machineKind && { kind: o.machineKind }), role: 'worker', profile: o.profile ?? 'claude', parent: kids.has(o.id) ? 'fleet-main' : 'demo-session', agent: o.id, description: o.description },
     ...(kids.has(o.id) && { parent: 'fleet-main' }), startedBy: kids.has(o.id) ? 'fleet-main' : 'this session',
   });
   const boxes = [
@@ -79,11 +79,21 @@ export function demoState(now = Date.now()) {
       startedAt: ago(7 * H), lastActivity: ago(6.5 * H), stoppedAt: ago(6.5 * H),
       messages: [{ t: ago(7 * H), kind: 'out', text: 'Add a dark palette to tokens.css behind prefers-color-scheme.' }, { t: ago(6.6 * H), kind: 'reply', text: 'Added 24 tokens and a dark block.\n\nPushed to origin cloudy-cloud/3e5b7a60 at e4410aa. Fetch with: git fetch origin cloudy-cloud/3e5b7a60.\nModel: anthropic/claude-haiku-5\nTotal: 3 tool uses, 5.1k in / 1.2k out tokens, 1m 8s' }],
     }),
+    box({
+      id: 'c3d4e5f6', description: 'Check the onboarding flow on a phone', status: 'running', model: 'claude-sonnet-5-5', machineKind: 'android',
+      startedAt: ago(25 * M), lastActivity: ago(40_000), deadline: ago(25 * M) + 8 * H,
+      messages: [{ t: ago(25 * M), kind: 'out', text: 'Install the debug APK on the Android machine and walk through onboarding. Report any screen that clips text.' }, { t: ago(40_000), kind: 'progress', text: 'Bash adb install app-debug.apk' }],
+    }),
+    box({
+      id: 'd4e5f607', description: 'Fine-tune the reranker on the new pairs', status: 'idle', model: 'claude-sonnet-5-5', machineKind: 'gpu:l4',
+      startedAt: ago(70 * M), lastActivity: ago(20 * M), idleSince: ago(20 * M), deadline: ago(20 * M) + H,
+      messages: [{ t: ago(70 * M), kind: 'out', text: 'Train the reranker for one epoch on data/pairs.jsonl and report eval loss.' }, { t: ago(20 * M), kind: 'reply', text: 'One epoch done. Eval loss 0.41, down from 0.58.\nModel: claude-sonnet-5-5\nTotal: 6 tool uses, 18.0k in / 2.0k out tokens, 41m 2s' }],
+    }),
     { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
   boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
-  return { now, demo: true, hasLog: true, machines: { ok: true }, boxes };
+  return { now, demo: true, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
 }
 
 // Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so
