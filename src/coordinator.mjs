@@ -79,7 +79,7 @@ async function installTool(sbx, root) {
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
   await run('gh auth setup-git'); // before the work-repo clone, so git uses the GH_TOKEN placeholder
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
-  const ident = (k, d) => { try { return execFileSync('git', ['-C', root, 'config', k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
+  const ident = (k, d) => { try { return execFileSync('git', [...(ownsRepo(root) ? ['-C', root] : []), 'config', k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
   // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
   const b = toolBundle(root);
