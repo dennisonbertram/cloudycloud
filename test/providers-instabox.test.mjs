@@ -228,3 +228,130 @@ test('a coordinator reads its API key from the CLOUDY_CLOUD_INSTABOX_API_KEY pla
   await createProvider({ CLOUDY_CLOUD_INSTABOX_API_KEY: 'ibsec_placeholder' }, { sdk }).list({}, { sdk: true });
   assert.equal(calls.list[0].apiKey, 'ibsec_placeholder');
 });
+
+// ---- machine kinds, shell and display (#93, #89) ----
+async function createKind(kind, extra = {}) {
+  const { sdk, calls } = fakeSdk();
+  let body;
+  const f = fakeFetch((url, init) => { body = init.body; return new Response('{}'); });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: f.f, timing });
+  const sbx = await p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 600, kind, ...extra });
+  const { image, opts } = calls.create[0];
+  await opts.fetch('https://api.instabox.sh/v1/machines', { method: 'POST', body: JSON.stringify({ image }) });
+  return { image, body: JSON.parse(body), sbx };
+}
+
+test('kinds: the default and an explicit linux kind send the same request (agent-browser, no extra fields)', async () => {
+  const a = await createKind(undefined), b = await createKind({ name: 'linux' });
+  assert.equal(a.image, 'agent-browser');
+  assert.deepEqual(a.body, { image: 'agent-browser', deleteAfterSeconds: 600 });
+  assert.deepEqual(b.body, a.body);
+});
+
+test('kinds: android, omarchy and gpu map to their template ids and gpu to the REST gpu field', async () => {
+  assert.equal((await createKind({ name: 'android' })).image, 'android');
+  assert.equal((await createKind({ name: 'omarchy' })).image, 'omarchy');
+  const g = await createKind({ name: 'gpu' });
+  assert.equal(g.image, 'gpu');
+  assert.equal(g.body.gpu, 'l4');
+  assert.equal((await createKind({ name: 'gpu', gpu: 'l4:2' })).body.gpu, 'l4:2');
+  assert.equal(g.body.deleteAfterSeconds, 600);
+});
+
+test('kinds: macos sends acceptMinimumLease and the model, and reads home from the machine', async () => {
+  const { sdk, calls } = fakeSdk();
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { ...sdk.Sandbox, create: async (i, o) => { calls.create.push({ image: i, opts: o }); return { sandboxId: 'mac-1', kill: async () => {}, files: {}, commands: { run: async (c) => ({ stdout: c.includes('$HOME') ? '/Users/admin' : '', stderr: '', exitCode: 0 }) } }; } } }, fetchFn: fakeFetch().f, timing });
+  const s = await p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 600, kind: { name: 'macos', model: 'm4' } });
+  assert.equal(calls.create[0].image, 'macos');
+  assert.equal(s.home, '/Users/admin');
+  let body;
+  const f2 = fakeFetch((u, i) => { if (i.method === 'POST') body = i.body; return new Response('{}'); });
+  const p2 = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async (i, o) => { await o.fetch('https://api.instabox.sh/v1/machines', { method: 'POST', body: '{}' }); return { sandboxId: 'm', kill: async () => {}, commands: { run: async () => ({ stdout: '/Users/x' }) } }; } } }, fetchFn: f2.f, timing });
+  await p2.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 600, kind: { name: 'macos', model: 'm4' } });
+  assert.equal(JSON.parse(body).acceptMinimumLease, true);
+  assert.equal(JSON.parse(body).model, 'm4');
+});
+
+test('kinds: create errors map to the machine_* codes', async () => {
+  const cases = [
+    [{ status: 403, code: 'template_not_allowed' }, 'machine_not_on_plan'],
+    [{ status: 403, code: 'template_limit' }, 'machine_gpu_limit'],
+    [{ status: 503 }, 'machine_no_capacity'],
+    [{ status: 503, code: 'no_capacity' }, 'machine_no_capacity'], // SDK-shaped: the SDK always sets code
+    [{ status: 0, code: 'no_capacity' }, 'machine_no_capacity'], // a failed async create
+  ];
+  for (const [err, want] of cases) {
+    const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw Object.assign(new Error('x'), err); } } }, fetchFn: fakeFetch().f, timing });
+    await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60, kind: { name: 'gpu' } }), (e) => e.code === want, want);
+  }
+  // a linux 503 stays transient
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw Object.assign(new Error('x'), { status: 503 }); } } }, fetchFn: fakeFetch().f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'transient');
+});
+
+test('shellArgv keeps every argument separate and the key out of argv', () => {
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, {});
+  assert.deepEqual(p.shellArgv('m1'), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1']);
+  assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', 'ls', '-la', 'a b']);
+  assert.equal(p.caps.hasShell, true);
+  assert.deepEqual(p.caps.machineKinds, ['linux', 'android', 'omarchy', 'gpu', 'macos']);
+});
+
+function desktopSdk({ desktop }) {
+  const log = [];
+  const d = {
+    status: async () => { log.push('status'); return desktop.status?.() ?? { installed: true, running: true }; },
+    start: async () => { log.push('start'); return desktop.start?.() ?? { installed: true, running: true }; },
+    streamUrl: async (o) => { log.push(['stream', o]); if (desktop.stream) throw desktop.stream; return { url: 'https://dashboard.instabox.sh/desktop/m-1#t', expiresAt: new Date(0) }; },
+    revokeStreamUrls: async () => { log.push('revoke'); },
+    screenshot: async () => { log.push('shot'); if (desktop.shot) throw desktop.shot; return new Uint8Array([1, 2]); },
+  };
+  return { log, sdk: { Sandbox: { connect: async () => ({ sandboxId: 'm-1', desktop: d }) } } };
+}
+const mk = (o) => { const x = desktopSdk(o); return { ...x, p: createProvider({ INSTABOX_API_KEY: KEY }, { sdk: x.sdk, fetchFn: fakeFetch().f, timing }) }; };
+
+test('displayLink: a running desktop gets a view-only link by default; control asks for a control link', async () => {
+  const { p, log } = mk({ desktop: {} });
+  const r = await p.displayLink('m-1', { ttlSeconds: 300 });
+  assert.equal(r.url, 'https://dashboard.instabox.sh/desktop/m-1#t');
+  assert.deepEqual(log, ['status', ['stream', { viewOnly: true, ttlSeconds: 300 }]]);
+  await p.displayLink('m-1', { control: true });
+  assert.equal(log.at(-1)[1].viewOnly, false);
+});
+
+test('displayLink starts a desktop that is not running; revoke and screenshot call the SDK', async () => {
+  const { p, log } = mk({ desktop: { status: () => ({ installed: false, running: false }) } });
+  await p.displayLink('m-1');
+  assert.deepEqual(log.slice(0, 2), ['status', 'start']);
+  await p.revokeDisplayLinks('m-1');
+  assert.deepEqual([...await p.screenshot('m-1')], [1, 2]);
+  assert.ok(log.includes('revoke') && log.includes('shot'));
+});
+
+test('omarchy desktop failures become desktop_unavailable; 403 permission_denied becomes display_forbidden', async () => {
+  const bad = Object.assign(new Error('command exited with code 127: xdotool: command not found'), { code: 'command_exit', exitCode: 127 });
+  const a = mk({ desktop: { status: () => { throw bad; } } });
+  await assert.rejects(a.p.displayLink('m-1'), (e) => e.code === 'desktop_unavailable');
+  const b = mk({ desktop: { shot: Object.assign(new Error("command exited with code 1: unable to open X server ':1'"), { code: 'command_exit', exitCode: 1 }) } });
+  await assert.rejects(b.p.screenshot('m-1'), (e) => e.code === 'desktop_unavailable');
+  const c = mk({ desktop: { stream: Object.assign(new Error('no'), { status: 403, code: 'permission_denied' }) } });
+  await assert.rejects(c.p.displayLink('m-1'), (e) => e.code === 'display_forbidden');
+});
+
+test('desktop errors that are not the desktop failing keep their own codes', async () => {
+  for (const [err, want] of [[{ status: 401, code: 'invalid_key' }, 'invalid_key'], [{ status: 403, code: 'missing_scope' }, 'missing_scope'],
+    [{ status: 429, code: 'quota_exceeded' }, 'quota_exceeded'], [{ status: 503, code: 'host_unavailable' }, 'host_unavailable'],
+    [{ status: 404 }, 'not_found'], [{ status: 502 }, 'transient']]) {
+    const { p } = mk({ desktop: { status: () => { throw Object.assign(new Error('x'), err); } } });
+    await assert.rejects(p.displayLink('m-1'), (e) => e.code === want, want);
+  }
+  const { p } = mk({ desktop: { status: () => { throw Object.assign(new Error('x'), { status: 0, code: 'desktop_not_running' }); } } });
+  await assert.rejects(p.displayLink('m-1'), (e) => e.code === 'desktop_unavailable');
+});
+
+test('permission_denied keeps its own code outside the display calls', async () => {
+  const denied = () => Object.assign(new Error('no'), { status: 403, code: 'permission_denied' });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw denied(); }, connect: async () => { throw denied(); } } }, fetchFn: fakeFetch().f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'permission_denied');
+  await assert.rejects(p.connect('m-1'), (e) => e.code === 'permission_denied');
+});
