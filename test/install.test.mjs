@@ -62,6 +62,16 @@ test('write_env is atomic, idempotent, private, and keeps other lines', () => {
   assert.equal(r.stdout + r.stderr, ''); // nothing printed
 });
 
+test('refuses without a terminal from an npm install, naming cloudy-cloud setup', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cc-npm-')), 'node_modules', 'cloudycloud');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'install.sh'), readFileSync(script));
+  const r = spawnSync('/bin/bash', [join(dir, 'install.sh')], { encoding: 'utf8', input: '' });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout + r.stderr, /run it in a terminal: cloudy-cloud setup/);
+  assert.doesNotMatch(r.stdout + r.stderr, /\.\/install\.sh/);
+});
+
 test('refuses without a terminal', () => {
   const r = spawnSync('/bin/bash', [script], { encoding: 'utf8', input: '' });
   assert.equal(r.status, 1);
