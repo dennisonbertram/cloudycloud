@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
+import { parseMachine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
@@ -322,13 +323,23 @@ const limitText = (e) => {
 // Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
 const labelValue = (v) => String(v ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 // What `cloud_agent_list {all: true}` and the dashboard read. The description is redacted first; owner and purpose are added by createSandbox.
-const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description) })
+const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, kind: a.kind.name === 'linux' ? '' : a.kind.label, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description) })
   .map(([k, v]) => [k, labelValue(v)]).filter(([, v]) => v));
+
+// Only the linux image is known to carry the agent tools; any other kind must prove it before work starts.
+async function checkTools(a) {
+  const names = ['git', 'gh', 'node', ...(harnessOf(a) === 'claude' ? ['claude'] : [])];
+  try { await a.sandbox.commands.run(`command -v ${names.join(' ')}`, { cwd: a.home, timeoutMs: SETUP_MS }); } catch (e) {
+    const found = String(e?.stdout ?? '').split('\n').map((l) => l.trim().split('/').pop());
+    const missing = names.filter((n) => !found.includes(n));
+    throw Object.assign(new Error(`${a.kind.label} machine lacks ${missing.join(', ')}`), { guideText: guide('machine_missing_tools', { kind: a.kind.label, tools: (missing.length ? missing : names).join(', ') }) });
+  }
+}
 
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role }, labels) => provider.create({ image: 'agent-browser', envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind }, labels) => provider.create({ image: 'agent-browser', kind: kind ?? parseMachine(), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }) })); // role is an option, not a label: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = `cloudy-cloud/${a.id}`;
@@ -389,12 +400,13 @@ async function setup(a, ctx) {
       const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
       a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
       const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-      return createSandbox(envs, { deleteAfterSeconds, ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }) }, machineLabels(a, ctx));
+      return createSandbox(envs, { deleteAfterSeconds, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }) }, machineLabels(a, ctx));
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);
+    if (a.kind.name !== 'linux') await checkTools(a);
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
     const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
@@ -467,6 +479,7 @@ async function installCoordinator(a, ctx, envs) {
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const { lines } = coordinatorKeys(env, ctx.provider, { single: true });
+  if (env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS) lines.push(`CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=${env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS}`); // a nested cloud_agent sees the same consent
   lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -521,7 +534,7 @@ async function work(a, message, first, ctx, t) {
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? guide(classify(e?.message), { message: e?.message }) };
+    r = { error: true, text: limitText(e) ?? e?.guideText ?? guide(classify(e?.message), { message: e?.message }) };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
@@ -624,6 +637,12 @@ export async function runSubagent(args, deps) {
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
   if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
+  const kind = parseMachine(args.machine);
+  if (kind.error) return fail(`${guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) })}\n${kind.error}`);
+  const offered = ctx.provider.caps.machineKinds ?? ['linux'];
+  if (!offered.includes(kind.name)) return fail(guide('machine_kind_unsupported', { provider: ctx.provider.name, kind: kind.name, kinds: offered.join(', ') }));
+  if (EXPENSIVE.includes(kind.name) && !String(ctx.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS ?? '').split(/[\s,]+/).includes(kind.name)) return fail(guide('machine_needs_consent', { kind: kind.name, price: PRICE[kind.name] }));
+  if (apt.list.length && ['omarchy', 'macos'].includes(kind.name)) return fail(`CLOUDY_CLOUD_APT_PACKAGES cannot be installed on a ${kind.name} machine (it has no apt-get). Call cloud_agent again with machine "linux" or "android", or clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
   let root;
@@ -655,19 +674,19 @@ export async function runSubagent(args, deps) {
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { role, kind, depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
-  a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
+  a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, prompt, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
@@ -726,7 +745,7 @@ async function allMachines({ provider }) {
   if (!rows.length) return 'No cloudy-cloud machines.';
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
-  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
 }
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.
@@ -746,7 +765,7 @@ export async function listAgents(args, deps) {
   if (args?.all === true) return ok(await allMachines(ctx));
   if (!open.size) return ok('No agents.');
   return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));

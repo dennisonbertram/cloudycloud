@@ -1228,7 +1228,7 @@ test('the core creates machines through provider.create, with names only in envs
   assert.match(await x.wait([id]), /status: idle/);
   assert.equal(provider.log.create.length, 1);
   const { envs, ...rest } = provider.log.create[0];
-  assert.deepEqual(rest, { image: 'agent-browser', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: ['ANTHROPIC_API_KEY'] });
+  assert.deepEqual(rest, { image: 'agent-browser', kind: { name: 'linux', label: 'linux' }, labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: ['ANTHROPIC_API_KEY'] });
   assert.deepEqual(Object.keys(envs), []); // the key goes as a secret name, never as a value
 });
 
@@ -1565,4 +1565,99 @@ test('a nested coordinator start reply names the keys that were not sent', async
   const t = (await runSubagent({ description: 'd', prompt: 'hi', role: 'coordinator' }, x.deps)).content[0].text;
   assert.match(t, /Not sent to the coordinator[^\n]*PARTICLE_API_KEY/);
   assert.ok(!t.includes('part-key-1'));
+});
+
+// ---- machine kinds (#94): the `machine` argument, consent, preflight, label, list ----
+const kindSetup = (over = {}) => {
+  const provider = over.provider ?? createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  return setup({ createSandbox: undefined, provider, ...over }).then((s) => ({ ...s, provider }));
+};
+
+test('an unknown machine string is rejected before any sandbox', async () => {
+  const { deps, provider } = await kindSetup();
+  for (const machine of ['windows', 'gpu:l4:9']) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', machine }, deps);
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /linux, android, omarchy, gpu\[:TYPE\[:COUNT\]\]/);
+  }
+  assert.equal(provider.log.create.length, 0);
+  assert.equal(deps.count?.started ?? 0, 0);
+});
+
+test('machine android creates an android machine, labels it and shows it in the list', async () => {
+  const { start, wait, deps, provider } = await kindSetup();
+  const id = await start({ machine: 'android' });
+  await wait([id]);
+  assert.equal(provider.log.create[0].kind.name, 'android');
+  assert.equal(provider.log.create[0].labels.kind, 'android');
+  assert.match((await listAgents({}, deps)).content[0].text, /machine android/);
+  assert.ok(provider.log.cmds.some((c) => /command -v git gh node claude/.test(c.cmd)));
+});
+
+test('no machine argument: kind linux, no kind label, no preflight, no machine in the list', async () => {
+  const { start, wait, deps, provider } = await kindSetup();
+  const id = await start();
+  await wait([id]);
+  assert.equal(provider.log.create[0].kind.name, 'linux');
+  assert.ok(!('kind' in provider.log.create[0].labels));
+  assert.ok(!provider.log.cmds.some((c) => /command -v/.test(c.cmd)));
+  assert.doesNotMatch((await listAgents({}, deps)).content[0].text, /machine /);
+});
+
+test('gpu without consent is refused with the price and the env line; with consent it starts and shows the cost', async () => {
+  const { deps, provider, text } = await kindSetup();
+  let r = await runSubagent({ description: 'd', prompt: 'hi', machine: 'gpu:l4' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /machine_needs_consent|\$0\.765/);
+  assert.match(text(r), /CLOUDY_CLOUD_ALLOW_MACHINE_KINDS/);
+  assert.equal(provider.log.create.length, 0);
+  deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'macos';
+  r = await runSubagent({ description: 'd', prompt: 'hi', machine: 'gpu' }, deps);
+  assert.equal(r.isError, true); // macos consent does not cover gpu
+  deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'gpu';
+  r = await runSubagent({ description: 'd', prompt: 'hi', machine: 'gpu:l4' }, deps);
+  assert.notEqual(r.isError, true);
+  assert.match(text(r), /\$0\.765 per GPU-hour/);
+  assert.match(text(r), /cloud_agent_stop/);
+  r = await runSubagent({ description: 'd', prompt: 'hi', machine: 'macos' }, deps);
+  assert.equal(r.isError, true);
+});
+
+test('a machine missing agent tools fails with machine_missing_tools and the machine is deleted', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create;
+  let sbx;
+  provider.create = async (o) => {
+    sbx = await create(o);
+    const run = sbx.commands.run;
+    sbx.commands.run = (cmd, o2) => (/command -v/.test(cmd) ? Promise.reject(Object.assign(new Error('exit'), { exitCode: 1, stdout: '/usr/bin/git\n/usr/bin/gh\n/usr/bin/node\n' })) : run(cmd, o2));
+    return sbx;
+  };
+  const { start, wait } = await kindSetup({ provider });
+  const id = await start({ machine: 'omarchy' });
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /lacks tools the agent needs \(claude\)/);
+  assert.match(r, /omarchy/);
+  assert.equal(sbx.killed, true);
+});
+
+test('apt packages are refused on omarchy and macos before any sandbox', async () => {
+  const provider = proxyProvider();
+  const { deps, text } = await kindSetup({ provider, env: { ...PROXY_ENV, CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg', CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'macos' } });
+  for (const machine of ['omarchy', 'macos']) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', machine }, deps);
+    assert.equal(r.isError, true);
+    assert.match(text(r), /CLOUDY_CLOUD_APT_PACKAGES/);
+  }
+  assert.equal(provider.log.create.length, 0);
+});
+
+test('a provider that offers only linux rejects machine android, naming the provider', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true, machineKinds: ['linux'] });
+  const { deps, text } = await kindSetup({ provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', machine: 'android' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /provider fake cannot start a android machine/);
+  assert.equal(provider.log.create.length, 0);
 });
