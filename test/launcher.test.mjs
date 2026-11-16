@@ -252,3 +252,11 @@ test('a coordinator runs Claude with permission checks off and keeps the deny li
   assert.match(r.argv, /"deny":\["Agent","Workflow"\]/);
   assert.match(r.argv, /permission checks are off/);
 });
+
+test('shell subcommand runs src/shell.mjs and help lists it', () => {
+  const h = spawnSync('/bin/sh', [launcher, '--help'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+  assert.match(h.stdout, /shell <agent> \[-- cmd\]/);
+  const r = spawnSync('/bin/sh', [launcher, 'shell'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir() } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Usage: cloudy-cloud shell/);
+});

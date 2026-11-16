@@ -22,6 +22,7 @@ Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness,
 
 - Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
 - If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
+- To look inside a worker's machine, run `cloudy-cloud shell <agent-id> -- <command>` from Bash; each argument after `--` reaches the machine unchanged, and the exit code is the remote one.
 - To prove a worker ran in the cloud, check its hostname starts with `instabox-sbx-`.
 
 ## Before using a repo

@@ -5,6 +5,9 @@ import { eventsFile, foldAgents, readEvents } from './events.mjs';
 import { listMachines } from './dashboard.mjs';
 import { loadProvider } from './providers/index.mjs';
 
+export const ID_RE = /^[A-Za-z0-9._-]+$/;
+export const ID_ERR = 'The id may only use letters, digits, dots, dashes and underscores (characters outside A-Z a-z 0-9 . _ - are not allowed).';
+
 export const USAGE = `Usage: cloudy-cloud open <agent-id-or-machine> <port> [--share]
        cloudy-cloud open <agent-id-or-machine> <port> --unshare
 Reach an app (for example a dev server) running on a cloud agent's machine.
@@ -25,7 +28,7 @@ export function parseArgs(argv) {
   if (bad) fail(`Unknown option ${bad}.\n${USAGE}`);
   const [id, port, ...extra] = pos;
   if (!id) fail(USAGE);
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) fail('The id may only use letters, digits, dots, dashes and underscores (characters outside A-Z a-z 0-9 . _ - are not allowed).');
+  if (!ID_RE.test(id)) fail(ID_ERR);
   if (!port || extra.length) fail(`Missing port. ${PORT_ERR}\n${USAGE}`);
   const parts = port.split(':');
   if (parts.length > 2 || !parts.every(validPort)) fail(`"${port}" is not a valid port. ${PORT_ERR}`);
