@@ -85,10 +85,12 @@ function helpers(env, literals, keyName, tool) {
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 // The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
 // q.learnPlan() reads the plan once (fire and forget from runSubagent); a failed read keeps the default.
-export const startQueue = (env, provider) => {
+export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
-  const q = createStartQueue({ perMin: pace });
+  const live = (me) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'starting')).length; // this server's other agents holding or creating a machine
+  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, ...opts });
+  q.plan = () => plan;
   q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
     if (!p) return;
     plan = p;
@@ -98,9 +100,11 @@ export const startQueue = (env, provider) => {
   }).catch(() => {}));
   return q;
 };
+// One shared queue per server, built the same way for every caller (buildServer and the tool handlers).
+export const sharedQueue = (deps) => (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
 const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
-  deps.queue ??= startQueue(deps.env, deps.provider);
+  sharedQueue(deps);
   deps.literals ??= new Set();
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
@@ -328,10 +332,12 @@ async function turn(a, message, ctx, t) {
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
 const BUNDLE_MARGIN = 1024 * 1024;
 
-const limitText = (e) => {
+const limitText = (e, plan, kind) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
-  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded')}\nProvider message: ${e?.message}`;
-  if (/rate_limited/.test(s)) return `${guide('rate_limited')}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
+  if (e?.code === 'machine_not_on_plan') return `${guide('machine_not_on_plan', { plan, kind })}\nProvider message: ${e?.message}`;
+  if (/concurrency_limit/.test(s)) return `${guide('concurrency_limit', { plan })}\nProvider message: ${e?.message}`;
+  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded', { plan })}\nProvider message: ${e?.message}`;
+  if (/rate_limited/.test(s)) return `${guide('rate_limited', { plan })}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
 };
 
 // Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
@@ -548,7 +554,7 @@ async function work(a, message, first, ctx, t) {
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
+    r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
@@ -569,7 +575,7 @@ function statusOf(t, ctx) {
   let m;
   if (t.status === 'working') {
     const a = t.agent, ahead = ctx.queue.ahead(a);
-    m = a.status === 'queued' ? `queued for a machine (${ahead === undefined ? 'waiting to retry' : `${ahead} ahead`})`
+    m = a.status === 'queued' ? (a.queueNote ?? `queued for a machine (${ahead === undefined ? 'waiting to retry' : `${ahead} ahead`})`)
       : a.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
   }
   else if (t.status === 'completed') m = statusLine(t.progress);

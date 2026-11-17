@@ -1,5 +1,5 @@
 import { Server, ProtocolError, ProtocolErrorCode, fromJsonSchema } from '@modelcontextprotocol/server';
-import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, startQueue } from './run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, sharedQueue } from './run-subagent.mjs';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
 const CAPABILITIES_META = 'io.modelcontextprotocol/clientCapabilities';
@@ -78,7 +78,7 @@ export function buildServer(deps) {
   deps.count ??= { started: 0 }; // agents started by this server, for the per-session cap
   // Each tool call gets a copy of deps, so anything shared between calls must exist before the copy is made.
   deps.tasks ??= new Map();
-  deps.queue ??= startQueue(deps.env, deps.provider);
+  sharedQueue(deps);
   deps.literals ??= new Set(); // tokens to redact, added when an agent starts and needed by every later call
   const server = new Server({ name: 'cloud', version: '0.1.4' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));

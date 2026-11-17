@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
-import { startQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { buildServer } from '../src/mcp.mjs';
+import { startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -1924,4 +1925,41 @@ test('#128 a provider-side size_not_allowed reads the plan for the tier and size
     assert.match(res, want);
     assert.match(res, /builder plan \(\$100\/month/);
   }
+});
+
+test('the soft wait counts this server\'s other live agents against the plan and shows a status; limit errors name the tier', async () => {
+  const provider = { ...createFakeProvider(), plan: async () => ({ tier: 'pro', specs: [], startsPerMinute: 30, maxRunning: 2, maxMachines: 500 }) };
+  const a = { status: 'starting' }; // the requester is in open as starting and must not count itself
+  const open = new Map([['a', a], ['b', { status: 'running' }], ['c', { status: 'idle' }], ['d', { status: 'queued' }]]);
+  let t = 0;
+  const q = startQueue({}, provider, () => open.values(), { now: () => t, sleep: async (ms) => { t += ms; if (t >= 15_000) open.get('b').status = 'stopped'; } });
+  await q.learnPlan();
+  const notes = [];
+  assert.equal(await q.create(new Proxy(a, { set: (o, k, v) => { if (k === 'queueNote') notes.push(v); o[k] = v; return true; } }), async () => 'up'), 'up');
+  assert.equal(notes[0], 'waiting for a free machine slot (2 running on the pro plan)');
+  // alone with maxRunning 1 and no other machines: no wait, no "0 running"
+  const solo = { status: 'starting' };
+  const q1 = startQueue({}, { ...provider, plan: async () => ({ tier: 'free', specs: [], startsPerMinute: 30, maxRunning: 1, maxMachines: 5 }) }, () => [solo].values(), { now: () => t, sleep: async () => { throw new Error('slept'); } });
+  await q1.learnPlan();
+  assert.equal(await q1.create(solo, async () => 'up'), 'up');
+});
+
+test('buildServer wires the live-agent count into its queue', async () => {
+  const provider = { ...createFakeProvider(), plan: async () => ({ tier: 'pro', specs: [], startsPerMinute: 30, maxRunning: 1, maxMachines: 5 }) };
+  const open = new Map([['b', { status: 'running' }]]);
+  const deps = { env: {}, provider, open };
+  buildServer(deps);
+  await deps.queue.learnPlan();
+  let t = 0;
+  const a = {};
+  const q = sharedQueue({ env: {}, provider, open }); // the factory buildServer uses
+  await q.learnPlan();
+  assert.ok(deps.queue.waiting && typeof q.ahead === 'function');
+  // the queue from buildServer counts the open agent: it must hold a create until b stops
+  const p = deps.queue.create(a, async () => 'up');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.match(a.queueNote ?? '', /1 running on the pro plan/);
+  open.get('b').status = 'stopped';
+  deps.queue.cancel(a);
+  await assert.rejects(p, /cancelled/);
 });
