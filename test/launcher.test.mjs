@@ -260,3 +260,11 @@ test('shell subcommand runs src/shell.mjs and help lists it', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Usage: cloudy-cloud shell/);
 });
+
+test('display subcommand runs src/display.mjs and help lists it', () => {
+  const h = spawnSync('/bin/sh', [launcher, '--help'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+  assert.match(h.stdout, /display <agent>/);
+  const r = spawnSync('/bin/sh', [launcher, 'display'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir() } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Usage: cloudy-cloud display/);
+});
