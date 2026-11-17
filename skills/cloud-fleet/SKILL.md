@@ -7,7 +7,7 @@ description: How to run fleets of cloudy-cloud subagents (Instabox cloud machine
 
 Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
-Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`.
+Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?, machine?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`.
 
 ## Choosing a worker's model
 
@@ -22,9 +22,27 @@ Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness,
 
 - Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
 - If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
-- To look inside a worker's machine, run `cloudy-cloud shell <agent-id> -- <command>` from Bash; each argument after `--` reaches the machine unchanged, and the exit code is the remote one.
-- To see a worker's desktop (android, omarchy, gpu, macos), run `cloudy-cloud display <agent-id>` from Bash: stdout is only a view-only link (`agent-browser open "$(cloudy-cloud display <agent-id>)"`), and `--screenshot FILE` writes a PNG instead. Never paste or save the link: anyone holding it sees the screen.
 - To prove a worker ran in the cloud, check its hostname starts with `instabox-sbx-`.
+
+## Choosing a worker's machine
+
+The default `linux` machine is right for almost everything. Pass `machine` only when the task needs something else.
+
+| Task | `machine` | Notes |
+| --- | --- | --- |
+| Run or test an Android app (`adb`, an emulator) | `android` | Its desktop starts in about 1 second. |
+| Training, inference, CUDA builds | `gpu` (or `gpu:TYPE`, `gpu:TYPE:COUNT`) | Costs from $0.765 per GPU-hour. Needs the user's consent. The first desktop start takes about 2 minutes. |
+| A Hyprland desktop app | `omarchy` | No display or screenshot; use `cloudy-cloud shell`. |
+| Xcode or other Mac builds | `macos` (or `macos:MODEL`) | $0.45 to $1.25 per hour, 24-hour minimum lease. Needs consent. Experimental, not run live. |
+
+`gpu` and `macos` are refused until the user lists them in `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` (in `~/.config/cloudy-cloud/env`, for example `gpu,macos`). If `cloud_agent` returns `machine_needs_consent`, nothing was started. Do not retry. Tell the user the kind and price from the error and ask them to add that line, then call `cloud_agent` again. Never edit that file yourself. If a result says the plan lacks the template, or the machine lacks a tool, relay its Next step; `machine: "linux"` is the fallback.
+
+## Seeing and reaching a worker
+
+- `cloudy-cloud shell <agent-id> -- <command>` runs a command on the worker's machine and returns its exit code.
+- `cloudy-cloud display <agent-id>` prints a view-only link to the desktop. Pass it to your browser tool (`agent-browser open "$(cloudy-cloud display <agent-id>)"`). Add `--control` only if you must click or type.
+- With no browser tool, run `cloudy-cloud display <agent-id> --screenshot shot.png` and read the PNG.
+- A display link is a secret: anyone holding it sees the screen. Never paste it into a PR, an issue, a report or a message. When done, run `cloudy-cloud display <agent-id> --unshare`.
 
 ## Before using a repo
 

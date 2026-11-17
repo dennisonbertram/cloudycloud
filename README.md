@@ -134,7 +134,7 @@ Setup asks for the SSH address (`user@host`), an optional SSH key, how many suba
 - **A Mac needs** Remote Login turned on, an SSH key, Docker Desktop or OrbStack running, and sleep turned off.
 - **The GitHub token** must be stored in each worker container while it runs. Setup asks for your consent once. Workers do not start without it.
 - **Coordinators:** `cloudy-cloud coordinator image` signs in once on a container and saves it with `docker commit --pause=true` as the image `cloudy-cloud-coordinator:<name>`. The image keeps the Claude login but not `/run/secrets`, which is a tmpfs, so no token is saved. `coordinator start` creates a container from that image. Coordinators on the self-hosted provider need one more consent in `cloudy-cloud setup --provider self-hosted` ("Coordinators on <host> can start containers through Docker, which gives them full control of Docker on that machine. Allow?"). A coordinator container then gets the machine's Docker socket and starts its workers as sibling containers, so no SSH key is copied onto it. They are covered by unit tests and the opt-in local test, but have not been run live on a real Mac Studio yet.
-- **Not supported:** `cloudy-cloud open --share`.
+- **Not supported:** `cloudy-cloud open --share`, `cloudy-cloud display` and machine kinds other than `linux`.
 
 Details are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-your-own-machine) and [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
 
@@ -151,6 +151,35 @@ This opens a read-only web page on your own machine (`127.0.0.1`) that lists eve
 ![Dashboard in fleet view with demo data: one card per subagent, grouped as Needs you, Active and Finished](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/dashboard-fleet.jpg)
 
 Both screenshots show demo data (`--demo`). Details: [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.html).
+
+### Kinds of machines
+
+`cloud_agent` takes an optional `machine` argument. The default, `linux`, is the standard machine. The others are Instabox templates for work that needs a device or a desktop. Your Instabox plan must include the template; if it does not, the call fails with a message that says so.
+
+| `machine` | What it is | Price | Consent needed | Display |
+| --- | --- | --- | --- | --- |
+| `linux` (default) | Standard machine | Your plan | no | no |
+| `android` | Android emulator with `adb`, for running or testing an Android app | Not checked | no | yes |
+| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 8) for training, inference and CUDA builds | $0.765 per GPU-hour (L4) to $4.17 (H100) | yes | yes |
+| `omarchy` | Omarchy Linux (Hyprland desktop) | Not checked | no | no (see below) |
+| `macos`, `macos:MODEL` | Mac (`m2`, `m2pro`, `m4`, `m4pro`) for Xcode builds. Experimental, not yet run live | $0.45 to $1.25 per hour by model, 24-hour minimum lease | yes | yes |
+
+Prices are Instabox's, from [instabox.sh/docs/account/pricing.md](https://instabox.sh/docs/account/pricing.md); check it before relying on a number. `gpu` and `macos` are refused until you name them in `~/.config/cloudy-cloud/env`, for example `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu,macos`. Without it the call starts nothing and tells Claude to ask you. Live facts (2026-11-15, one run each): the android desktop started in about 1 second; the first desktop start on a `gpu` machine took about 2 minutes; `omarchy` runs Hyprland, which the Instabox desktop API does not support yet, so `display` and `--screenshot` are refused there, while `shell` works. More: [docs/research/machine-kinds.md](docs/research/machine-kinds.md).
+
+### Looking inside a cloud machine
+
+`cloudy-cloud shell <agent-id-or-machine>` opens an interactive shell on the machine. `cloudy-cloud shell <agent-id-or-machine> -- <command>` runs one command, streams its output and exits with the command's exit code. Each argument after `--` reaches the machine unchanged. Do not put secrets in the command.
+
+`cloudy-cloud display <agent-id-or-machine>` prints a link to the machine's desktop (`android`, `gpu`, `macos`) and nothing else on stdout. The link is view-only and lasts 1 hour by default.
+
+| Flag | Meaning |
+| --- | --- |
+| `--control` | Let the viewer click and type. |
+| `--ttl SECONDS` | Link lifetime, 60 to 86400. |
+| `--screenshot FILE` | Write a PNG of the screen to a new file and print its path. Use it when there is no browser tool. |
+| `--unshare` | Cut off every display link for the machine, including viewers already connected. |
+
+Anyone with the link can see the screen, so treat it like a password: do not paste it into a PR, an issue, a report or a log. Open it in a browser tool, for example `agent-browser open "$(cloudy-cloud display <id>)"`. The first desktop start on a `gpu` machine takes about 2 minutes.
 
 ### Reaching an app on a cloud machine
 
@@ -212,6 +241,8 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
+| `cloudy-cloud shell <agent> [-- command]` | Opens a shell on a cloud machine, or runs one command there. |
+| `cloudy-cloud display <agent> [--control] [--ttl S] [--screenshot FILE] [--unshare]` | Prints a link to a machine's desktop, or saves a screenshot. |
 | `cloudy-cloud mcp add <name> [--allow-literal]` \| `ls` \| `rm <name>` | Chooses which of your MCP servers cloud subagents get. |
 | `cloudy-cloud coordinator ...` | Manages cloud coordinators: `image`, `start`, `attach`, `ls`, `stop`, `finish`. |
 | `cloudy-cloud --version` | Prints the version. |
