@@ -10,6 +10,7 @@ import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/e
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 import { createMachineReader } from '../src/machine-read.mjs';
+import { createLimiter } from '../src/limits.mjs';
 
 const TOKEN = 'tok-123';
 const get = (port, path, host = `127.0.0.1:${port}`, method = 'GET') => new Promise((resolve, reject) => {
@@ -767,4 +768,207 @@ test('the macOS Cost row prices the chosen model with its 24-hour minimum, and t
   assert.doesNotMatch(pro, /\$0\.45/);
   assert.match(costText({ machineKind: 'macos' }), /\$0\.45 to \$1\.25 per hour/);
   assert.match(html, /not verified on macOS yet/);
+});
+
+// ---- usage per running machine (#117) ----
+const usageEnv = (over = {}) => {
+  const clock = { t: 1_000_000 }, calls = [];
+  const machines = [{ id: 'm1', state: 'running', status: 'running', labels: {} }, { id: 'm2', state: 'running', status: 'running', labels: {} }, { id: 'm3', state: 'stopped', status: 'stopped', labels: {} }];
+  const series = (id) => [{ t: clock.t - 60_000, cpuPct: 5, cpuCount: 2, memUsed: 1, memTotal: 4 }, { t: clock.t - 20_000, cpuPct: id === 'm1' ? 77 : 12, cpuCount: 2, memUsed: 2, memTotal: 4, netIn: 9, netOut: 8 }];
+  const provider = { name: 'fake', keyName: 'FAKE_API_KEY', caps: { hasMetrics: true }, async metrics(id, o) { calls.push({ id, since: o.since }); return over.metrics ? over.metrics(id, o) : { samples: series(id), fetchedAt: clock.t }; } };
+  const getState = liveState({}, { list: async () => machines, provider: over.provider ?? provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl'), cacheMs: 0, now: () => clock.t });
+  return { clock, calls, getState, machines };
+};
+const fresh = async (getState) => { await getState(); await getState.settle(); return getState(); }; // one state build, the background reads, then the state with their result
+const boxOf = (s, m) => s.boxes.find((b) => b.machine === m);
+
+test('usage is read once per running machine per 30 s, from the newest sample, and never for a stopped machine', async () => {
+  const { clock, calls, getState } = usageEnv();
+  const s = await fresh(getState); await getState(); clock.t += 29_000; await fresh(getState);
+  assert.deepEqual(calls.map((c) => c.id).sort(), ['m1', 'm2']);
+  assert.equal(calls[0].since, 1_000_000 - 3_600_000);
+  const u = boxOf(s, 'm1').usage;
+  assert.deepEqual([u.cpuPct, u.cpuCount, u.memUsed, u.memTotal, u.netIn, u.netOut, u.at, u.fetchedAt, u.source], [77, 2, 2, 4, 9, 8, 1_000_000 - 20_000, 1_000_000, 'live']);
+  assert.equal(boxOf(s, 'm2').usage.cpuPct, 12);
+  assert.equal('usage' in boxOf(s, 'm3'), false);
+  clock.t += 2_000; await fresh(getState);
+  assert.equal(calls.length, 4);
+});
+
+test('at most 4 usage reads are in flight at once', async () => {
+  let now = 0, peak = 0;
+  const { getState, machines } = usageEnv({ metrics: async () => { now++; peak = Math.max(peak, now); await new Promise((r) => setTimeout(r, 5)); now--; return { samples: [], fetchedAt: 1 }; } });
+  for (let i = 0; i < 10; i++) machines.push({ id: `x${i}`, state: 'running', status: 'running', labels: {} });
+  await fresh(getState);
+  assert.equal(peak, 4);
+});
+
+test('a failed usage read shows the reason with its guide, keeps the last samples, and is not a zero', async () => {
+  let fail = false;
+  const { clock, getState, calls } = usageEnv({ metrics: async (id) => { if (fail) throw Object.assign(new Error('503 secret-detail'), { code: 'metrics_unavailable' }); return { samples: [{ t: 5, cpuPct: 40, cpuCount: 1, memUsed: 1, memTotal: 2 }], fetchedAt: 6 }; } });
+  assert.equal(boxOf(await fresh(getState), 'm1').usage.cpuPct, 40);
+  fail = true; clock.t += 31_000;
+  const u = boxOf(await fresh(getState), 'm1').usage;
+  assert.equal(u.error.code, 'metrics_unavailable');
+  assert.equal(typeof u.error.nextStep, 'string');
+  assert.equal(u.cpuPct, undefined);
+  assert.equal(calls.length, 4);
+  const kept = (await getState.metrics('m1'));
+  assert.equal(kept.samples.length, 1);
+  assert.equal(kept.error.code, 'metrics_unavailable');
+  fail = false; clock.t += 31_000;
+  assert.equal(boxOf(await fresh(getState), 'm1').usage.error, undefined);
+});
+
+test('a machine that is gone gives machine_gone without guide text; no samples gives no_samples_yet', async () => {
+  const { getState } = usageEnv({ metrics: async (id) => { if (id === 'm1') throw Object.assign(new Error('x'), { code: 'not_found' }); return { samples: [], fetchedAt: 7 }; } });
+  const s = await fresh(getState);
+  assert.deepEqual(boxOf(s, 'm1').usage, { error: { code: 'machine_gone' } });
+  assert.deepEqual(boxOf(s, 'm2').usage, { none: 'no_samples_yet', fetchedAt: 7 });
+});
+
+test('a provider without metrics says metrics_unsupported once and makes no calls', async () => {
+  let n = 0;
+  const { getState, clock } = usageEnv({ provider: { name: 'self-hosted', keyName: 'K', caps: { hasMetrics: false }, metrics: async () => { n++; } } });
+  const u = boxOf(await fresh(getState), 'm1').usage;
+  assert.equal(u.error.code, 'metrics_unsupported');
+  clock.t += 60_000; await getState();
+  assert.equal(n, 0);
+});
+
+test('a read that never finishes does not delay the state, is not started twice, and shows up once it lands', async () => {
+  const releases = []; let started = 0;
+  const { getState, clock } = usageEnv({ metrics: () => { started++; return new Promise((r) => { releases.push(() => r({ samples: [{ t: 9, cpuPct: 33, cpuCount: 1, memUsed: 1, memTotal: 2 }], fetchedAt: 10 })); }); } });
+  const t0 = Date.now();
+  const s1 = await getState(); clock.t += 1000; await getState(); clock.t += 40_000; await getState();
+  assert.ok(Date.now() - t0 < 200);
+  assert.deepEqual(boxOf(s1, 'm1').usage, { none: 'no_samples_yet', fetchedAt: null });
+  assert.equal(started, 2); // m1 and m2, once each, although the 30 s passed while they were still in flight
+  releases.forEach((f) => f()); await getState.settle();
+  assert.equal(boxOf(await getState(), 'm1').usage.cpuPct, 33);
+});
+
+test('a read that fails in the background is not an unhandled rejection', async () => {
+  const seen = []; const h = (e) => seen.push(e); process.on('unhandledRejection', h);
+  try {
+    const { getState } = usageEnv({ metrics: async () => { throw new Error('boom'); } });
+    await getState(); await getState.settle(); await new Promise((r) => setImmediate(r));
+  } finally { process.off('unhandledRejection', h); }
+  assert.deepEqual(seen, []);
+});
+
+test('/api/metrics gives a live box its samples, 404 for a stopped or unknown box, 401 without the token, and never a key', async () => {
+  const boxes = [{ id: 'a1', machine: 'm1', machineState: 'running', kind: 'agent' }, { id: 'b1', machine: 'm3', machineState: 'stopped', kind: 'agent' }];
+  const getMetrics = (m) => (m === 'm1' ? { samples: [{ t: 1, cpuPct: 3, note: 'sk-abcdefghijklmnop1234' }], fetchedAt: 9, source: 'live' } : undefined);
+  const { opts } = streamEnv(boxes, null, { getMetrics });
+  const ok = await api(opts, '/api/metrics?box=a1');
+  assert.equal(ok.status, 200);
+  assert.deepEqual([ok.json.box, ok.json.samples.length, ok.json.fetchedAt, ok.json.window, ok.json.source], ['a1', 1, 9, 3_600_000, 'live']);
+  assert.doesNotMatch(ok.body, /sk-abcdefghij/);
+  assert.equal((await api(opts, '/api/metrics?box=b1')).status, 404);
+  assert.equal((await api(opts, '/api/metrics?box=zzz')).status, 404);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    assert.equal((await get(port, '/api/metrics?box=a1')).status, 401);
+    assert.equal((await get(port, `/api/metrics?box=a1&t=${TOKEN}`, 'evil.example')).status, 403);
+    assert.equal((await get(port, `/api/metrics?box=a1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+  } finally { s.close(); }
+});
+
+test('the demo has usage for running boxes (one busy, one quiet) and a series at /api/metrics', async () => {
+  const demo = demoState(Date.now()), by = (id) => demo.boxes.find((b) => b.id === id);
+  assert.ok(by('7c1e90ab').usage.cpuPct > 60 && by('b42f0d17').usage.cpuPct < 15);
+  assert.equal('usage' in by('51d9ee02'), false);
+  assert.equal('usage' in by('a7716be4'), false);
+  const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
+  const r = (await api(opts, '/api/metrics?box=7c1e90ab')).json;
+  assert.equal(r.samples.length, 120);
+  assert.ok(r.samples.at(-1).t - r.samples[0].t >= 3_500_000 && r.samples.at(-1).t - r.samples[0].t <= 3_600_000);
+});
+
+// ---- usage read eligibility, timing and bounds (#117 review) ----
+const gated = () => { // m1, m2, x1..x3 running; metrics for the first four block until released, later ones answer at once
+  const held = [], seen = [];
+  const e = usageEnv({ metrics: (id) => { seen.push(id); const s = [{ t: 1_000_000 - 5000, cpuPct: 1, cpuCount: 1, memUsed: 1, memTotal: 2 }]; return held.length < 4 ? new Promise((r) => held.push(() => r({ samples: s, fetchedAt: 1 }))) : Promise.resolve({ samples: s, fetchedAt: 1 }); } });
+  for (const id of ['x1', 'x2', 'x3']) e.machines.push({ id, state: 'running', status: 'running', labels: {} });
+  return { ...e, held, seen };
+};
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('a read queued behind others is dropped when its machine left the running list meanwhile', async () => {
+  const { getState, machines, held, seen } = gated();
+  await getState(); await tick(); assert.equal(seen.length, 4);
+  machines.find((m) => m.id === 'x3').state = 'stopped'; await getState();
+  held.forEach((f) => f()); await getState.settle(); await tick();
+  assert.equal(seen.includes('x3'), false);
+});
+
+test('a read queued when the page stops polling is dropped', async () => {
+  const { getState, clock, held, seen } = gated();
+  await getState(); await tick(); clock.t += 600_000;
+  held.forEach((f) => f()); await getState.settle(); await tick();
+  assert.equal(seen.length, 4);
+});
+
+test('the 30 s interval counts from when the read starts, not when it was queued', async () => {
+  const { getState, clock, held, seen } = gated();
+  await getState(); await tick(); clock.t += 31_000; await getState(); // x3 still queued; the page keeps polling
+  held.forEach((f) => f()); await getState.settle(); await tick(); assert.equal(seen.filter((i) => i === 'x3').length, 1);
+  clock.t += 1_000; await getState(); await getState.settle();
+  assert.equal(seen.filter((i) => i === 'x3').length, 1); // started at +31 s, so not again at +32 s
+});
+
+test('stored samples are capped and limited to the last hour, also at response time', async () => {
+  const clock0 = 10_000_000;
+  const many = Array.from({ length: 400 }, (_, i) => ({ t: clock0 - (399 - i) * 5000, cpuPct: i, cpuCount: 1, memUsed: 1, memTotal: 2 }));
+  const old = [{ t: clock0 - 7_200_000, cpuPct: 99, cpuCount: 1, memUsed: 1, memTotal: 2 }, ...many];
+  let fail = false;
+  const { getState, clock } = usageEnv({ metrics: async () => { if (fail) throw Object.assign(new Error('x'), { code: 'metrics_unavailable' }); return { samples: old, fetchedAt: clock0 }; } });
+  clock.t = clock0;
+  const s = await fresh(getState);
+  const kept = getState.metrics('m1').samples;
+  assert.equal(kept.length, 150); assert.equal(kept.at(-1).cpuPct, 399); assert.ok(kept.every((x) => x.t >= clock0 - 3_600_000));
+  assert.equal(boxOf(s, 'm1').usage.cpuPct, 399);
+  fail = true; clock.t += 2 * 3_600_000; const s2 = await fresh(getState);
+  assert.equal(getState.metrics('m1').samples.length, 0); // nothing older than an hour is returned after a failed refresh
+  assert.equal(boxOf(s2, 'm1').usage.error.code, 'metrics_unavailable');
+});
+
+test('the demo series covers one hour', () => {
+  const s = demoStream.metrics('7c1e90ab').samples;
+  assert.equal(s.length, 120); assert.ok(s.at(-1).t - s[0].t <= 3_600_000);
+});
+
+// ---- provider slots, list order, restart within 30 s (#117 second review) ----
+const mkMachines = (...ids) => ids.map((id) => ({ id, state: 'running', status: 'running', labels: {} }));
+const stateWith = (list, provider, clock) => liveState({}, { list, provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl'), cacheMs: 0, now: () => clock.t });
+
+test('pending metrics reads never take every provider slot: a state build that needs a slot still completes', async () => {
+  const L = createLimiter(4), clock = { t: 1_000_000 }, calls = [];
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true, maxConcurrentCalls: 4 }, metrics: (id) => L.run(() => { calls.push(id); return new Promise(() => {}); }) };
+  const machines = mkMachines('a', 'b', 'c', 'd', 'e');
+  const getState = stateWith(() => L.run(async () => machines), provider, clock);
+  await getState(); await tick();
+  assert.ok(calls.length >= 1 && calls.length <= 3);
+  const done = await Promise.race([getState().then(() => true), new Promise((r) => setTimeout(() => r(false), 300))]);
+  assert.equal(done, true);
+});
+
+test('a list answer older than the one already applied does not start reads', async () => {
+  const clock = { t: 1_000_000 }, calls = []; let n = 0;
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true }, metrics: async (id) => { calls.push(id); return { samples: [], fetchedAt: 1 }; } };
+  const list = async () => (++n === 1 ? (await new Promise((r) => setTimeout(r, 30)), mkMachines('m1')) : [{ id: 'm1', state: 'stopped', status: 'stopped', labels: {} }]);
+  const getState = stateWith(list, provider, clock);
+  await Promise.all([getState(), getState()]); await getState.settle(); await tick();
+  assert.deepEqual(calls, []);
+});
+
+test('a machine that stops and resumes within 30 s is not read again at once', async () => {
+  const clock = { t: 1_000_000 }, calls = []; let state = 'running';
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true }, metrics: async (id) => { calls.push(id); return { samples: [], fetchedAt: 1 }; } };
+  const getState = stateWith(async () => [{ id: 'm1', state, status: state, labels: {} }], provider, clock);
+  await fresh(getState); state = 'stopped'; clock.t += 2000; await getState(); state = 'running'; clock.t += 2000; await fresh(getState);
+  assert.equal(calls.length, 1);
+  clock.t += 30_000; await fresh(getState);
+  assert.equal(calls.length, 2);
 });
