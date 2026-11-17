@@ -277,7 +277,7 @@ async function turn(a, message, ctx, t) {
   // A Claude worker starts with one merged MCP file and --strict-mcp-config, so a repo's .mcp.json is never loaded: the image's
   // servers except `instabox` (no sign-in on the box) plus the shared ones (#145). A coordinator keeps its own flags.
   const worker = !coord && harnessOf(a) === 'claude';
-  const merge = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json ${a.home}/.config/cloudy-cloud/mcp.json || echo '{"mcpServers":{}}' > $D/mcp.json;`;
+  const merge = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json ${a.home}/.config/cloudy-cloud/mcp.json || (umask 077; rm -f $D/mcp.json; echo '{"mcpServers":{}}' > $D/mcp.json);`;
   const cmd = [worker && merge, `${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     worker ? '--mcp-config $D/mcp.json --strict-mcp-config' : hasMcp(a) && harnessOf(a) === 'claude' && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,

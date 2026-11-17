@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeMcp, MERGE_MCP_SCRIPT } from '../src/worker-mcp.mjs';
@@ -40,4 +40,22 @@ test('the merge script works through bash -c: image + shared, a bad image file, 
     rmSync(join(home, '.claude.json'));
     assert.deepEqual(runMerge(home, join(home, 'missing.json')), { mcpServers: {} });
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('the merge script tightens an existing world-readable file to 0600 and replaces a stale config', () => {
+  const t = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  try {
+    const out = join(t, 'mcp.json');
+    writeFileSync(out, '{"mcpServers":{"stale":{"command":"old"}}}', { mode: 0o644 });
+    execFileSync('node', ['-e', MERGE_MCP_SCRIPT, out, join(t, 'missing.json')], { env: { PATH: process.env.PATH, HOME: t } });
+    assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), { mcpServers: {} });
+    assert.equal(statSync(out).mode & 0o777, 0o600);
+  } finally { rmSync(t, { recursive: true, force: true }); }
+});
+
+test('the merge script exits non-zero when it cannot write, so the shell fallback runs', () => {
+  const t = mkdtempSync(join(tmpdir(), 'cc-mcp-'));
+  try {
+    assert.throws(() => execFileSync('node', ['-e', MERGE_MCP_SCRIPT, join(t, 'no-such-dir', 'mcp.json'), join(t, 'x.json')], { env: { PATH: process.env.PATH, HOME: t }, stdio: 'ignore' }));
+  } finally { rmSync(t, { recursive: true, force: true }); }
 });
