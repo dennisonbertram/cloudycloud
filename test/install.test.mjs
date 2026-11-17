@@ -852,3 +852,111 @@ test('check-only uses the shell Instabox key over the saved one, like the runtim
   checkOnly(`INSTABOX_API_KEY=${SAVED}\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, {}, { stub });
   assert.match(readFileSync(seen, 'utf8'), new RegExp(SAVED));
 });
+
+// ---- Instabox usage alert emails (#138) ----
+const ALERTS_ON = '{"limits":{"usageAlertPercent":80,"overageAlert":true,"spendCapUSD":null}}';
+const alertsBody = (usageAlertPercent, overageAlert, spendCapUSD = null) => JSON.stringify({ limits: { usageAlertPercent, overageAlert, spendCapUSD } });
+// curl answers by URL: the -w probe 200, /v1/me an org, /v1/orgs/o1 the body in a file. npx logs every call;
+// "workspace alerts" exits `alertsExit` and, on 0, makes the next read return ALERTS_ON.
+function alertsRig({ body = ALERTS_ON, curlExit = 0, whoamiExit = 0, alertsExit = 0 } = {}) {
+  const cl = claudeStub();
+  const bodyFile = join(cl, 'orgbody'); const log = join(cl, 'npx-argv'); const curlArgv = join(cl, 'curl-argv');
+  writeFileSync(bodyFile, body);
+  writeFileSync(join(cl, 'curl'), `#!/bin/sh\necho "$@" >> "${curlArgv}"\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *"/v1/me"*) echo '{"org":{"id":"o1"}}' ;;\n *"/v1/orgs/o1/secrets"*) echo '[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]}]' ;;\n *"/v1/orgs/o1"*) [ ${curlExit} = 0 ] || exit ${curlExit}; cat "${bodyFile}" ;;\n *"/v1/orgs"*) echo '[{"id":"o1","personal":true}]' ;;\n *) echo '[]' ;;\nesac\n`);
+  writeFileSync(join(cl, 'npx'), `#!/bin/sh\necho "npx $@" >> "${log}"\ncase "$*" in\n *whoami*) exit ${whoamiExit} ;;\n *login*) exit 1 ;;\n *"workspace alerts"*) [ ${alertsExit} = 0 ] && cp /dev/null "${bodyFile}" && printf '%s' '${ALERTS_ON}' > "${bodyFile}"; exit ${alertsExit} ;;\nesac\nexit 0\n`);
+  for (const n of ['curl', 'npx']) chmodSync(join(cl, n), 0o755);
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, { mode: 0o600 });
+  const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
+  const npxCalls = () => (existsSync(log) ? readFileSync(log, 'utf8') : '');
+  const check = () => spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env });
+  const setup = (steps) => pty({ cmd: ['/bin/bash', '-c', `. "${script}"; setup_alerts; echo DONE`], env, steps });
+  return { check, setup, npxCalls, curlArgv: () => readFileSync(curlArgv, 'utf8') };
+}
+const FIX = 'npx --yes instabox@latest workspace alerts o1 --usage 80 --overage on';
+
+test('check-only: alerts on shows the real percent and the spend cap, exits without a prompt', () => {
+  const g = alertsRig({ body: alertsBody(90, true, 25) });
+  const r = g.check();
+  assert.match(r.stdout, /Instabox emails you at 90% of included usage and when usage goes beyond it \(pay as you go\)/);
+  assert.match(r.stdout, /spend cap: \$25/);
+  assert.match(r.stdout, /workspace spend-cap o1 <usd>/);
+  assert.ok(!/workspace alerts/.test(g.npxCalls()));
+  assert.ok(!g.curlArgv().includes(KEY), 'key in curl argv');
+});
+
+test('check-only: alerts off warns with the exact command and the check still passes the step', () => {
+  const g = alertsRig({ body: alertsBody(0, false) });
+  const r = g.check();
+  assert.match(r.stdout, /Instabox usage alert emails are off \(usage alert: off, overage alert: off\)/);
+  assert.ok(r.stdout.includes(FIX), r.stdout);
+  assert.ok(!/workspace alerts/.test(g.npxCalls()), 'check-only must not run the CLI');
+  assert.doesNotMatch(r.stdout, /\[x\] .*alert/i);
+});
+
+test('check-only: free tier, unreadable orgs, and key hygiene', () => {
+  assert.match(alertsRig({ body: '{"limits":{}}' }).check().stdout, /Usage alert emails apply to paid Instabox plans only/);
+  const g = alertsRig({ curlExit: 7 });
+  assert.match(g.check().stdout, /Could not read your Instabox usage alerts/);
+  assert.match(g.check().stdout, /npx --yes instabox@latest workspace alerts/);
+});
+
+test('check-only exits 0 when only the alerts are off', () => {
+  const r = alertsRig({ body: alertsBody(0, true) }).check();
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /alert emails are off/);
+  assert.match(r.stdout, /Check passed/);
+});
+
+test('setup_alerts: alerts on is shown and nothing is asked or run', () => {
+  const g = alertsRig();
+  const r = g.setup([]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Instabox emails you at 80% of included usage/);
+  assert.ok(!/Turn them on now/.test(r.text));
+  assert.ok(!/workspace alerts/.test(g.npxCalls()));
+});
+
+test('setup_alerts: typed y runs the CLI with the org, only for the setting that is off, and confirms', () => {
+  let g = alertsRig({ body: alertsBody(0, true) });
+  let r = g.setup([['Turn them on now\\? \\[y/N\\]', 'y\n']]);
+  assert.match(r.text, /usage alert off, overage alert on/);
+  assert.match(g.npxCalls(), /^npx --yes instabox@latest workspace alerts o1 --usage 80$/m);
+  assert.match(r.text, /Instabox will email you at 80% of included usage/);
+  g = alertsRig({ body: alertsBody(90, false) });
+  r = g.setup([['Turn them on now\\? \\[y/N\\]', 'y\n']]);
+  assert.match(g.npxCalls(), /^npx --yes instabox@latest workspace alerts o1 --overage on$/m);
+  assert.ok(!g.curlArgv().includes(KEY));
+  assert.ok(!g.npxCalls().includes(KEY));
+});
+
+test('setup_alerts: Enter or n runs nothing and prints the command', () => {
+  for (const answer of ['\n', 'n\n']) {
+    const g = alertsRig({ body: alertsBody(0, false) });
+    const r = g.setup([['Turn them on now\\? \\[y/N\\]', answer]]);
+    assert.equal(r.code, 0, r.text);
+    assert.ok(!/workspace alerts|whoami|login/.test(g.npxCalls()), g.npxCalls());
+    assert.ok(r.text.includes(FIX), r.text);
+  }
+});
+
+test('setup_alerts: no login session and a 403 each print one warning with the command, and setup goes on', () => {
+  for (const opt of [{ whoamiExit: 1 }, { alertsExit: 1 }]) {
+    const g = alertsRig({ body: alertsBody(0, true), ...opt });
+    const r = g.setup([['Turn them on now\\? \\[y/N\\]', 'y\n']]);
+    assert.equal(r.code, 0, r.text);
+    assert.equal((r.text.match(/Could not change the alerts/g) || []).length, 1, r.text);
+    assert.ok(r.text.includes(FIX), r.text);
+    assert.match(r.text, /DONE/);
+  }
+});
+
+test('setup_alerts: free tier says paid plans only and asks nothing; unreadable warns', () => {
+  let g = alertsRig({ body: '{"limits":{}}' });
+  let r = g.setup([]);
+  assert.match(r.text, /Usage alert emails apply to paid Instabox plans only/);
+  assert.ok(!/Turn them on now/.test(r.text));
+  g = alertsRig({ curlExit: 7 });
+  r = g.setup([]);
+  assert.match(r.text, /Could not read your Instabox usage alerts/);
+});

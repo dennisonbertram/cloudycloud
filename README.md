@@ -237,7 +237,7 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | Command | What it does |
 | --- | --- |
 | `cloudy-cloud` | Starts a Claude Code session with subagents on cloud machines. |
-| `cloudy-cloud setup [--check-only] [--provider instabox\|self-hosted]` | Checks your tools and saves your keys. `--check-only` only checks tools. `--provider` picks where subagents run without asking. |
+| `cloudy-cloud setup [--check-only] [--provider instabox\|self-hosted]` | Checks your tools and saves your keys. `--check-only` checks tools, keys and your Instabox usage alert emails, and changes nothing. Setup offers to turn the alert emails on (typed `y`). `--provider` picks where subagents run without asking. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
