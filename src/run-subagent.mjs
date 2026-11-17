@@ -85,11 +85,11 @@ function helpers(env, literals, keyName, tool) {
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 // The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
 // q.learnPlan() reads the plan once (fire and forget from runSubagent); a failed read keeps the default.
-export const startQueue = (env, provider, open) => {
+export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
-  const live = () => [...(open?.() ?? [])].filter((a) => a.status === 'running' || a.status === 'idle' || a.status === 'starting').length; // this server's agents holding a machine
-  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier });
+  const live = (me) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'starting')).length; // this server's other agents holding or creating a machine
+  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, ...opts });
   q.plan = () => plan;
   q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
     if (!p) return;
@@ -100,9 +100,11 @@ export const startQueue = (env, provider, open) => {
   }).catch(() => {}));
   return q;
 };
+// One shared queue per server, built the same way for every caller (buildServer and the tool handlers).
+export const sharedQueue = (deps) => (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
 const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
-  deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values());
+  sharedQueue(deps);
   deps.literals ??= new Set();
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
