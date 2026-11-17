@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS } from './limits.mjs';
-import { currentPlan, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
+import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
@@ -825,11 +825,11 @@ export async function resultAgent(args = {}, deps) {
 export async function listAgents(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
-  if (args?.all === true) return ok(await allMachines(ctx));
-  if (!open.size) return ok('No agents.');
+  const spend = usageLine(planSnapshot(ctx.provider)), tail = (t) => ok(spend ? `${t}\n${spend}` : t);
+  if (args?.all === true) return tail(await allMachines(ctx));
+  if (!open.size) return tail('No agents.');
   const usage = await usageOf([...open.values()], ctx);
   const seg = (a) => usage.get(a) ?? '';
-  const spend = usageLine(await currentPlan(ctx.provider));
   return ok([[...open.values()].map((a) => (
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +

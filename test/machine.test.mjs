@@ -69,5 +69,6 @@ test('#139 usageLine: under, over, no allowance, rounding, and null without read
   assert.equal(L({ costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42 }), 'Instabox this month: $66.03 used, $16.61 included, $49.42 beyond it (pay as you go)');
   assert.equal(L({ costUSD: 3.1, allowanceUSD: 0 }), 'Instabox this month: $3.10 used (pay as you go)');
   assert.equal(L({ costUSD: 0.005, allowanceUSD: 16.666 }), 'Instabox this month: $0.01 of $16.67 included used');
+  for (const bad of [undefined, null, '20', NaN, Infinity]) assert.equal(L({ costUSD: 3, allowanceUSD: bad }), null);
   for (const p of [null, undefined, {}, { usage: {} }, { usage: { costUSD: '3' } }, { usage: { costUSD: NaN } }]) assert.equal(usageLine(p), null);
 });

@@ -769,7 +769,7 @@
   }
 
   // Same sentence as usageLine in src/machine.mjs (a test keeps them equal); null when the figures are missing.
-  const usageSentence = (u) => { const n = (x) => typeof x === 'number' && isFinite(x), m = (x) => '$' + x.toFixed(2); if (!u || !n(u.costUSD)) return null; const inc = n(u.allowanceUSD) && u.allowanceUSD > 0 ? u.allowanceUSD : 0; return 'Instabox this month: ' + (!inc ? m(u.costUSD) + ' used (pay as you go)' : n(u.overageUSD) && u.overageUSD > 0 ? m(u.costUSD) + ' used, ' + m(inc) + ' included, ' + m(u.overageUSD) + ' beyond it (pay as you go)' : m(u.costUSD) + ' of ' + m(inc) + ' included used'); };
+  const usageSentence = (u) => { const n = (x) => typeof x === 'number' && isFinite(x), m = (x) => '$' + x.toFixed(2); if (!u || !n(u.costUSD)) return null; if (!n(u.allowanceUSD)) return null; const inc = u.allowanceUSD; return 'Instabox this month: ' + (!inc ? m(u.costUSD) + ' used (pay as you go)' : n(u.overageUSD) && u.overageUSD > 0 ? m(u.costUSD) + ' used, ' + m(inc) + ' included, ' + m(u.overageUSD) + ' beyond it (pay as you go)' : m(u.costUSD) + ' of ' + m(inc) + ' included used'); };
 
   // Counts for the top bar and the tab title; returns the two the title needs.
   function summary(boxes) {

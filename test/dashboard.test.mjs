@@ -9,6 +9,7 @@ import { buildState, createHandler, isQuiet, lazy, listen, liveState, listMachin
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
+import { planSnapshot, planSettled } from '../src/machine.mjs';
 import { createMachineReader } from '../src/machine-read.mjs';
 import { createLimiter } from '../src/limits.mjs';
 
@@ -1099,7 +1100,9 @@ test('the demo has one truly quiet running agent: under 3 % CPU and 1 KB/s for t
 test('#139 /api/state carries usage from the plan, refreshes a stale plan, and omits it otherwise', async () => {
   const state = async (plan) => {
     const provider = createFakeProvider({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { plan });
-    return { provider, s: await liveState({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0 })() };
+    const get = liveState({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0 });
+    await get(); await planSettled(provider); // the first state starts the background plan read
+    return { provider, s: await get() };
   };
   const u = { costUSD: 66.12, allowanceUSD: 16.61, overageUSD: 49.51, ratedUntil: '2026-11-17T10:00:00Z', creditRemainingUSD: 0, periodEnd: 'x' };
   const a = await state(() => ({ fetchedAt: Date.now(), usage: u }));
@@ -1110,12 +1113,24 @@ test('#139 /api/state carries usage from the plan, refreshes a stale plan, and o
   assert.equal(st.provider.log.planRefresh, 1);
 });
 
+test('#139 review: state() returns at once while plan() hangs, and a failing plan() is read once per 5 minutes', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { plan: () => new Promise(() => {}) });
+  const get = liveState({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0 });
+  const t0 = Date.now();
+  assert.ok(!('usage' in await get()) && Date.now() - t0 < 1000);
+  let calls = 0;
+  const bad = createFakeProvider({}, { plan: () => { calls++; throw new Error('x'); } });
+  const t = Date.now();
+  for (let i = 0; i < 3; i++) { planSnapshot(bad, t + i); await planSettled(bad); }
+  assert.equal(calls, 1);
+});
+
 test('#139 page: #summary appends the same sentence as the server formatter when state.usage is present; demo data has usage', async () => {
   const { usageLine } = await import('../src/machine.mjs');
   assert.match(PAGE, /usageSentence\(S\.data && S\.data\.usage\)/);
   const f = new Function(`${pageLine('const usageSentence')}\nreturn usageSentence;`)();
   for (const usage of [{ costUSD: 12.4, allowanceUSD: 20, overageUSD: 0 }, { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42 }, { costUSD: 3.1, allowanceUSD: 0 }, { costUSD: 0.005, allowanceUSD: 16.666 }]) assert.equal(f(usage), usageLine({ usage }));
-  for (const bad of [undefined, null, {}, { costUSD: 'x' }]) assert.equal(f(bad), null);
+  for (const bad of [undefined, null, {}, { costUSD: 'x' }, { costUSD: 3 }, { costUSD: 3, allowanceUSD: '20' }, { costUSD: 3, allowanceUSD: NaN }]) assert.equal(f(bad), null);
   const { demoState } = await import('../src/dashboard-demo.mjs');
   assert.ok(usageLine({ usage: demoState().usage }));
 });

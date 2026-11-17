@@ -63,8 +63,9 @@ const usd = (n) => '$' + n.toFixed(2);
 export function usageLine(plan) {
   const u = plan?.usage, num = (x) => typeof x === 'number' && Number.isFinite(x);
   if (!num(u?.costUSD)) return null;
-  const inc = num(u.allowanceUSD) && u.allowanceUSD > 0 ? u.allowanceUSD : 0;
-  if (!inc) return `Instabox this month: ${usd(u.costUSD)} used (pay as you go)`;
+  if (!num(u.allowanceUSD)) return null; // a missing or invalid allowance is unknown, not zero
+  const inc = u.allowanceUSD;
+  if (!(inc > 0)) return `Instabox this month: ${usd(u.costUSD)} used (pay as you go)`;
   if (num(u.overageUSD) && u.overageUSD > 0) return `Instabox this month: ${usd(u.costUSD)} used, ${usd(inc)} included, ${usd(u.overageUSD)} beyond it (pay as you go)`;
   return `Instabox this month: ${usd(u.costUSD)} of ${usd(inc)} included used`;
 }
@@ -76,3 +77,19 @@ export async function currentPlan(provider, now = Date.now()) {
     return p ?? null;
   } catch { return null; }
 }
+
+// Optional spend figures must never delay a status call: callers read the last snapshot at once and a background read refreshes it.
+// One read in flight per provider; the next try is 30 minutes after a success and 5 minutes after a failure (including no plan yet).
+const snaps = new WeakMap();
+export function planSnapshot(provider, now = Date.now()) {
+  if (!provider || typeof provider !== 'object') return null;
+  const s = snaps.get(provider) ?? {};
+  snaps.set(provider, s);
+  if (!s.inflight && (s.at == null || now - s.at > (s.ok ? 30 : 5) * 60_000)) {
+    s.at = now;
+    s.inflight = currentPlan(provider, now).then((p) => { if (p) s.plan = p; s.ok = !!p; }, () => { s.ok = false; }).finally(() => { s.inflight = null; });
+  }
+  return s.plan ?? null;
+}
+// Tests: wait for the background read of one provider.
+export const planSettled = (provider) => Promise.resolve(snaps.get(provider)?.inflight);
