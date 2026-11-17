@@ -1775,3 +1775,28 @@ test('list reads at most 4 machines at a time', async () => {
   await listAgents({}, deps);
   assert.equal(max, 4);
 });
+
+test('list does not read an agent that was stopped while it waited for a read slot', async () => {
+  const seen = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { deps, open } = await usageSetup(async (id) => { seen.push(id); await gate; return SAMPLE; });
+  const proto = [...open.values()][0];
+  for (let i = 0; i < 3; i++) open.set(`x${i}`, { ...proto, id: `x${i}`, sandbox: { id: `x${i}` } });
+  open.set('x3', { ...proto, id: 'x3', sandbox: { id: 'x3' } }); // the fifth agent counting the two from setup
+  const p = listAgents({}, deps);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(seen.length, 4);
+  open.get('x3').status = 'stopped';
+  release();
+  await p;
+  assert.ok(!seen.includes('x3'));
+  assert.equal(seen.length, 5); // the four first reads plus the fifth agent; the stopped sixth gets none
+});
+
+test('list puts the usage segment on the first line when the description has a newline', async () => {
+  const { deps, ids, open } = await usageSetup(async () => SAMPLE);
+  open.get(ids[0]).description = 'first\nsecond';
+  const out = text0(await listAgents({}, deps));
+  assert.match(out, new RegExp(`${ids[0]}  [^\\n]*first  cpu 12%  mem 1\\.9/8 GiB\\nsecond`));
+});

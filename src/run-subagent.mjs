@@ -767,22 +767,25 @@ export async function listAgents(args, deps) {
   if (args?.all === true) return ok(await allMachines(ctx));
   if (!open.size) return ok('No agents.');
   const usage = await usageOf([...open.values()], ctx);
-  return ok([...open.values()].map((a) =>
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}${usage.get(a) ?? ''}` +
+  const withUsage = (a, text) => { const u = usage.get(a); if (!u) return text; const i = text.indexOf('\n'); return i < 0 ? text + u : text.slice(0, i) + u + text.slice(i); };
+  return ok([...open.values()].map((a) => withUsage(a,
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
-    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
+    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'));
 }
 
 // Usage segment per running or idle agent, appended to the first line. Never throws; any failure or slowness reads "usage n/a".
 // At most 4 reads at once (the provider's own limiter paces the calls), 3 s in total. Stopped and queued agents are never touched.
 async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
   const out = new Map();
-  const todo = provider?.caps?.hasMetrics ? agents.filter((a) => a.sandbox?.id && (a.status === 'running' || a.status === 'idle')) : [];
+  const eligible = (a) => a.sandbox?.id && (a.status === 'running' || a.status === 'idle');
+  const todo = provider?.caps?.hasMetrics ? agents.filter(eligible) : [];
   for (const a of todo) out.set(a, '  usage n/a');
   let next = 0, timer;
   const read = async () => {
     for (let a; (a = todo[next++]);) {
+      if (!eligible(a)) { out.delete(a); continue; } // stopped while it waited for a slot: no call, no segment
       try {
         const { samples } = await provider.metrics(a.sandbox.id, { since: Date.now() - 120_000 });
         const s = samples?.at(-1);
