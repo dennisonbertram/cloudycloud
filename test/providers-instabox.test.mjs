@@ -1,6 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createProvider } from '../src/providers/instabox.mjs';
 import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
@@ -292,7 +293,7 @@ test('kinds: create errors map to the machine_* codes', async () => {
 test('shellArgv keeps every argument separate and the key out of argv', () => {
   const p = createProvider({ INSTABOX_API_KEY: KEY }, {});
   assert.deepEqual(p.shellArgv('m1'), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1']);
-  assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', 'ls', '-la', 'a b']);
+  assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', '-T', "'ls' '-la' 'a b'"]);
   assert.equal(p.caps.hasShell, true);
   assert.deepEqual(p.caps.machineKinds, ['linux', 'android', 'omarchy', 'gpu', 'macos']);
 });
@@ -354,4 +355,21 @@ test('permission_denied keeps its own code outside the display calls', async () 
   const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw denied(); }, connect: async () => { throw denied(); } } }, fetchFn: fakeFetch().f, timing });
   await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'permission_denied');
   await assert.rejects(p.connect('m-1'), (e) => e.code === 'permission_denied');
+});
+
+test('#89 shellArgv sends one quoted remote string that a shell parses back into the same arguments', () => {
+  const p = createProvider({ env: { INSTABOX_API_KEY: KEY } });
+  for (const cmd of [['sh', '-c', 'echo "a b" $(echo SUB); exit 7'], ['printf', '%s|', 'a b', "it's", 'x;y', '$HOME', '']]) {
+    const argv = p.shellArgv('m1', cmd);
+    assert.deepEqual(argv.slice(0, 6), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--']);
+    assert.equal(argv.length, 8);
+    assert.equal(argv[6], '-T');
+    const r = spawnSync('sh', ['-c', argv[7]], { encoding: 'utf8' });
+    const direct = spawnSync(cmd[0], cmd.slice(1), { encoding: 'utf8' });
+    assert.equal(r.stdout, direct.stdout);
+    assert.equal(r.status, direct.status);
+  }
+  const r = spawnSync('sh', ['-c', p.shellArgv('m1', ['sh', '-c', 'echo "a b" $(echo SUB); exit 7'])[7]], { encoding: 'utf8' });
+  assert.equal(r.stdout, 'a b SUB\n');
+  assert.equal(r.status, 7);
 });
