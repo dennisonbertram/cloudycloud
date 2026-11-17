@@ -275,6 +275,15 @@ yn() { # yn QUESTION: default no
   [[ $a == [yY]* ]]
 }
 
+yn_strict() { # yn_strict QUESTION: default no; only exactly y or yes (any case, trimmed) counts
+  local a
+  drain_tty
+  printf '  %s?%s %s%s%s %s[y/N]%s ' "$C_ACC" "$C_X" "$C_B" "$1" "$C_X" "$C_DIM" "$C_X" >&2
+  IFS= read -r a </dev/tty || a=""
+  a=${a#"${a%%[![:space:]]*}"}; a=${a%"${a##*[![:space:]]}"}
+  case $a in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
 yn_yes() { # yn_yes QUESTION: default yes
   local a
   drain_tty
@@ -371,7 +380,7 @@ check_proxy_secrets() { # optional $1: the Instabox key
 # check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
 # Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
 check_setup() {
-  local fix fails=0 code state host provider key st org pct ov cap
+  local fix fails=0 code state host provider key st org pct pset ov cap
   [ -z "${PREREQ_FAIL:-}" ] || fails=1
   fix="run $(rerun_cmd)"
   provider=$(eff CLOUDY_CLOUD_PROVIDER)
@@ -386,9 +395,9 @@ check_setup() {
       code=$(http_code "$key")
       case $code in
         200) ok "Instabox key works"
-          read -r st org pct ov cap <<<"$(alerts_state "$key")"
+          read -r st org pct pset ov cap <<<"$(alerts_state "$key")"
           alerts_report "$st" "$org" "$pct" "$ov" "$cap" ||
-            warn "Instabox usage alert emails are off (usage alert: $([ "$pct" -gt 0 ] && echo "$pct%" || echo off), overage alert: $ov)" "turn them on with $(rerun_cmd), or: ${ALERTS_FIX/ORG/$org}" ;;
+            warn "Instabox usage alert emails are off (usage alert: $([ "$pset" = yes ] && echo "$pct%" || echo off), overage alert: $ov, spend cap: $([ "$cap" = none ] && echo none || echo "\$$cap"))" "turn them on with $(rerun_cmd), or: ${ALERTS_FIX/ORG/$org}" ;;
         401|403) bad "Instabox rejected the saved key (HTTP $code)" "$fix"; fails=1 ;;
         *) warn "Could not check the Instabox key" "no answer from the Instabox API" ;;
       esac
@@ -931,7 +940,7 @@ gh_secret_state() { # optional $1: the Instabox key
     console.log(a.some(x=>x.name==="GH_TOKEN"&&["github.com","api.github.com"].every(h=>(x.hosts||[]).includes(h)))?"yes":"no")}catch{console.log("unknown")}})'
 }
 
-# alerts_state KEY: prints one line "STATE ORG PERCENT OVERAGE CAP" about the usage alert emails of the key's org (GET /v1/me, then GET /v1/orgs/ID).
+# alerts_state KEY: prints one line "STATE ORG PERCENT PCTSET OVERAGE CAP" about the usage alert emails of the key's org (GET /v1/me, then GET /v1/orgs/ID).
 # STATE is on, off (the percent is 0 or the overage email is off), none (no paid-plan fields: the free tier) or unknown (a request failed or did not parse).
 # OVERAGE is on or off. CAP is the spend cap in dollars, or none. Nothing is written.
 alerts_state() {
@@ -939,15 +948,15 @@ alerts_state() {
   me=$(api_get "$1" /v1/me) || true
   id=$(printf '%s' "$me" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).org||{}).id||"")}catch{console.log("")}})') || true
-  [[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "unknown - 0 off none"; return 0; }
+  [[ $id =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || { echo "unknown - 0 no off none"; return 0; }
   body=$(api_get "$1" "/v1/orgs/$id") || true
   printf '%s' "$body" | node -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const id=process.argv[1];try{const l=JSON.parse(s).limits;
     if(!l||typeof l!=="object")throw 0;
     const cap=typeof l.spendCapUSD==="number"?String(l.spendCapUSD):"none";
-    if(typeof l.usageAlertPercent!=="number")return console.log("none "+id+" 0 off "+cap);
+    if(typeof l.usageAlertPercent!=="number")return console.log("none "+id+" 0 no off "+cap);
     const p=l.usageAlertPercent,o=l.overageAlert===true;
-    console.log((p>0&&o?"on":"off")+" "+id+" "+p+" "+(o?"on":"off")+" "+cap)}catch{console.log("unknown "+id+" 0 off none")}})' "$id"
+    console.log((p>0&&o?"on":"off")+" "+id+" "+p+" "+(p>0?"yes":"no")+" "+(o?"on":"off")+" "+cap)}catch{console.log("unknown "+id+" 0 no off none")}})' -- "$id"
 }
 
 # alerts_report STATE ORG PERCENT OVERAGE CAP: prints the line for a state that needs no question (on, none, unknown) and returns 0; returns 1 for off.
@@ -967,24 +976,24 @@ ALERTS_FIX='npx --yes instabox@latest workspace alerts ORG --usage 80 --overage 
 
 # Shows the Instabox usage alert emails and, when one is off, asks once whether to turn them on through your instabox login.
 setup_alerts() {
-  local st org pct ov cap flags=() fix
+  local st org pct pset ov cap flags=() fix
   spin_start "Reading your Instabox usage alerts"
-  read -r st org pct ov cap <<<"$(alerts_state "$(get_saved INSTABOX_API_KEY)")"
+  read -r st org pct pset ov cap <<<"$(alerts_state "$(get_saved INSTABOX_API_KEY)")"
   spin_stop
   alerts_report "$st" "$org" "$pct" "$ov" "$cap" && return 0
   fix=${ALERTS_FIX/ORG/$org}
   ask "Instabox usage alert emails" \
     "Instabox can email the workspace's owner and admins at 80% of what the month includes," \
-    "and again when usage goes beyond it (pay as you go). Yours: usage alert $([ "$pct" -gt 0 ] && echo "$pct%" || echo off), overage alert $ov." \
+    "and again when usage goes beyond it (pay as you go). Yours: usage alert $([ "$pset" = yes ] && echo "$pct%" || echo off), overage alert $ov, spend cap $([ "$cap" = none ] && echo none || echo "\$$cap")." \
     "Saying yes changes your Instabox account through your instabox login."
-  yn "Turn them on now?" || { hint "Left as they are. Change them any time: $fix"; return 0; }
-  [ "$pct" -gt 0 ] || flags+=(--usage 80)
+  yn_strict "Turn them on now?" || { hint "Left as they are. Change them any time: $fix"; return 0; }
+  [ "$pset" = yes ] || flags+=(--usage 80)
   [ "$ov" = on ] || flags+=(--overage on)
   if npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty; then
     npx --yes instabox@latest workspace alerts "$org" "${flags[@]}" </dev/tty || true
   fi
   spin_start "Confirming"
-  read -r st org pct ov cap <<<"$(alerts_state "$(get_saved INSTABOX_API_KEY)")"
+  read -r st org pct pset ov cap <<<"$(alerts_state "$(get_saved INSTABOX_API_KEY)")"
   spin_stop
   if [ "$st" = on ]; then ok "Instabox will email you at $pct% of included usage and when usage goes beyond it"
   else warn "Could not change the alerts (your login may not be the workspace's owner or admin, or may point at another account)" "check with npx instabox@latest whoami, or set them at https://instabox.sh Billing, or: $fix"; fi

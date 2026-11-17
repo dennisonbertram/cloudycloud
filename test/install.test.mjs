@@ -858,11 +858,11 @@ const ALERTS_ON = '{"limits":{"usageAlertPercent":80,"overageAlert":true,"spendC
 const alertsBody = (usageAlertPercent, overageAlert, spendCapUSD = null) => JSON.stringify({ limits: { usageAlertPercent, overageAlert, spendCapUSD } });
 // curl answers by URL: the -w probe 200, /v1/me an org, /v1/orgs/o1 the body in a file. npx logs every call;
 // "workspace alerts" exits `alertsExit` and, on 0, makes the next read return ALERTS_ON.
-function alertsRig({ body = ALERTS_ON, curlExit = 0, whoamiExit = 0, alertsExit = 0 } = {}) {
+function alertsRig({ body = ALERTS_ON, curlExit = 0, whoamiExit = 0, alertsExit = 0, orgId = 'o1' } = {}) {
   const cl = claudeStub();
   const bodyFile = join(cl, 'orgbody'); const log = join(cl, 'npx-argv'); const curlArgv = join(cl, 'curl-argv');
   writeFileSync(bodyFile, body);
-  writeFileSync(join(cl, 'curl'), `#!/bin/sh\necho "$@" >> "${curlArgv}"\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *"/v1/me"*) echo '{"org":{"id":"o1"}}' ;;\n *"/v1/orgs/o1/secrets"*) echo '[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]}]' ;;\n *"/v1/orgs/o1"*) [ ${curlExit} = 0 ] || exit ${curlExit}; cat "${bodyFile}" ;;\n *"/v1/orgs"*) echo '[{"id":"o1","personal":true}]' ;;\n *) echo '[]' ;;\nesac\n`);
+  writeFileSync(join(cl, 'curl'), `#!/bin/sh\necho "$@" >> "${curlArgv}"\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *"/v1/me"*) echo '{"org":{"id":"${orgId}"}}' ;;\n *"/v1/orgs/o1/secrets"*) echo '[{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]}]' ;;\n *"/v1/orgs/o1"*) [ ${curlExit} = 0 ] || exit ${curlExit}; cat "${bodyFile}" ;;\n *"/v1/orgs"*) echo '[{"id":"o1","personal":true}]' ;;\n *) echo '[]' ;;\nesac\n`);
   writeFileSync(join(cl, 'npx'), `#!/bin/sh\necho "npx $@" >> "${log}"\ncase "$*" in\n *whoami*) exit ${whoamiExit} ;;\n *login*) exit 1 ;;\n *"workspace alerts"*) [ ${alertsExit} = 0 ] && cp /dev/null "${bodyFile}" && printf '%s' '${ALERTS_ON}' > "${bodyFile}"; exit ${alertsExit} ;;\nesac\nexit 0\n`);
   for (const n of ['curl', 'npx']) chmodSync(join(cl, n), 0o755);
   const cfg = join(tmp(), 'env');
@@ -888,7 +888,7 @@ test('check-only: alerts on shows the real percent and the spend cap, exits with
 test('check-only: alerts off warns with the exact command and the check still passes the step', () => {
   const g = alertsRig({ body: alertsBody(0, false) });
   const r = g.check();
-  assert.match(r.stdout, /Instabox usage alert emails are off \(usage alert: off, overage alert: off\)/);
+  assert.match(r.stdout, /Instabox usage alert emails are off \(usage alert: off, overage alert: off, spend cap: none\)/);
   assert.ok(r.stdout.includes(FIX), r.stdout);
   assert.ok(!/workspace alerts/.test(g.npxCalls()), 'check-only must not run the CLI');
   assert.doesNotMatch(r.stdout, /\[x\] .*alert/i);
@@ -959,4 +959,37 @@ test('setup_alerts: free tier says paid plans only and asks nothing; unreadable 
   g = alertsRig({ curlExit: 7 });
   r = g.setup([]);
   assert.match(r.text, /Could not read your Instabox usage alerts/);
+});
+
+test('setup_alerts: only exactly y or yes (any case) confirms; "yellow" changes nothing', () => {
+  let g = alertsRig({ body: alertsBody(0, false) });
+  let r = g.setup([['Turn them on now\\? \\[y/N\\]', 'yellow\n']]);
+  assert.ok(!/workspace alerts|whoami|login/.test(g.npxCalls()), g.npxCalls());
+  assert.ok(r.text.includes(FIX), r.text);
+  g = alertsRig({ body: alertsBody(0, false) });
+  g.setup([['Turn them on now\\? \\[y/N\\]', ' YES \n']]);
+  assert.match(g.npxCalls(), /workspace alerts o1 --usage 80 --overage on/);
+});
+
+test('a decimal alert percent counts as set: only --overage on runs, and 80.5% is shown', () => {
+  let g = alertsRig({ body: alertsBody(80.5, false) });
+  let r = g.setup([['Turn them on now\\? \\[y/N\\]', 'y\n']]);
+  assert.match(r.text, /usage alert 80\.5%, overage alert off/);
+  assert.match(g.npxCalls(), /^npx --yes instabox@latest workspace alerts o1 --overage on$/m);
+  assert.ok(!/--usage/.test(g.npxCalls()), g.npxCalls());
+  g = alertsRig({ body: alertsBody(80.5, false) });
+  assert.match(g.check().stdout, /usage alert: 80\.5%, overage alert: off/);
+});
+
+test('the spend cap is shown when alerts are off, in check-only and in setup', () => {
+  const g = alertsRig({ body: alertsBody(0, false, 25) });
+  assert.match(g.check().stdout, /spend cap: \$25/);
+  const r = g.setup([['Turn them on now\\? \\[y/N\\]', '\n']]);
+  assert.match(r.text, /spend cap \$25/);
+  assert.match(alertsRig({ body: alertsBody(0, false) }).check().stdout, /spend cap: none/);
+});
+
+test('an org id that starts with a hyphen is unknown, not a node option', () => {
+  const r = alertsRig({ orgId: '--version' }).check();
+  assert.match(r.stdout, /Could not read your Instabox usage alerts/);
 });
