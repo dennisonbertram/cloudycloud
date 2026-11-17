@@ -160,7 +160,7 @@ Both screenshots show demo data (`--demo`). Details: [Dashboard and app previews
 | --- | --- | --- | --- | --- |
 | `linux` (default) | Standard machine | Your plan | no | no |
 | `android` | Android emulator with `adb`, for running or testing an Android app | Not checked | no | yes |
-| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 8) for training, inference and CUDA builds | $0.765 per GPU-hour (L4) to $4.17 (H100) | yes | yes |
+| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 4 (Instabox's limit for an L4)) for training, inference and CUDA builds | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
 | `omarchy` | Omarchy Linux (Hyprland desktop) | Not checked | no | no (see below) |
 | `macos`, `macos:MODEL` | Mac (`m2`, `m2pro`, `m4`, `m4pro`) for Xcode builds. Experimental, not yet run live | $0.45 to $1.25 per hour by model, 24-hour minimum lease | yes | yes |
 
