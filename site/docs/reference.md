@@ -8,7 +8,7 @@ This page lists every `cloudy-cloud` command and flag, the five tools Claude use
 
 ## Command line
 
-These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `dashboard`, `open`, `coordinator`, `setup` or `--setup`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal` and `mcp rm NAME` run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Any other arguments start a Claude Code session.
+These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `dashboard`, `open`, `shell`, `display`, `coordinator`, `setup` or `--setup`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal` and `mcp rm NAME` run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Any other arguments start a Claude Code session.
 
 ### cloudy-cloud
 
@@ -114,6 +114,36 @@ Example:
 ```
 cloudy-cloud open 3f9a1c2e 5173
 ```
+
+### cloudy-cloud shell
+
+```
+cloudy-cloud shell <agent-id-or-machine> [-- command [args...]]
+```
+
+Opens an interactive login shell on a cloud machine. With `-- command` it runs that command, streams its output and exits with the command's exit code. Each argument after `--` reaches the machine unchanged. Do not put secrets in the command. The first argument works as in open, and the machine must be running. Without a command it needs a terminal.
+
+```
+cloudy-cloud shell 3f9a1c2e -- uname -a
+```
+
+### cloudy-cloud display
+
+```
+cloudy-cloud display <agent-id-or-machine> [--control] [--ttl SECONDS]
+cloudy-cloud display <agent-id-or-machine> --screenshot FILE
+cloudy-cloud display <agent-id-or-machine> --unshare
+```
+
+Prints a link to the desktop of an `android`, `gpu` or `macos` machine. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An `omarchy` machine has no display. The first desktop start on a `gpu` machine takes about 2 minutes.
+
+| Flag | Meaning |
+|---|---|
+| (none) | A view-only link that lasts 1 hour. |
+| `--control` | The viewer can click and type. |
+| `--ttl SECONDS` | Link lifetime, 60 to 86400. Not combined with `--screenshot` or `--unshare`. |
+| `--screenshot FILE` | Write a PNG of the screen to a new file (an existing file or symlink is refused) and print the path. |
+| `--unshare` | Revoke every display link for the machine, including viewers already connected. |
 
 ### cloudy-cloud coordinator
 
@@ -228,6 +258,7 @@ Starts a Claude subagent in a remote sandbox on the committed and tracked files 
 | `description` | string | yes | none | A short label for the task. |
 | `model` | string | no | the Claude default | A Claude model name, such as `haiku`. For a non-Claude model, use `profile` instead. It may contain only letters, digits and `. _ : -`. When `profile` is also set, `/` is allowed too. |
 | `profile` | string | no | Claude | Runs the worker on another model. Built in: `glm`, `deepseek`, `particle`, `pi-glm`, `pi-deepseek`, `pi-particle`, `omp-glm`, `omp-deepseek`, `omp-particle` and `openrouter`. You can add names in `profiles.json`. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 8), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
 | `role` | string, `worker` or `coordinator` | no | `worker` | A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3). A coordinator cannot use a `pi-` profile. |
 | `subagent_type` | string | no | none | The name of an agent to run, passed to Claude Code as `--agent`. It may contain only letters, digits and `. _ : -`. |
 
@@ -271,6 +302,20 @@ Stops agents and deletes their sandboxes. It is safe to repeat, and safe to call
 
 | Parameter | Type | Required | Default | Meaning |
 |---|---|---|---|---|
+## Kinds of machines
+
+The `machine` argument of cloud_agent picks the machine. Prices are Instabox's ([pricing](https://instabox.sh/docs/account/pricing.md)). Live facts are from one run on 2026-11-15.
+
+| machine | What it is | Price | Consent | Display |
+|---|---|---|---|---|
+| `linux` | The standard machine (default). | Your plan | no | no |
+| `android` | Android emulator with `adb`. Its desktop starts in about 1 second. | Not checked | no | yes |
+| `gpu` | NVIDIA GPU (one L4 by default). The first desktop start takes about 2 minutes. | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
+| `omarchy` | Omarchy Linux with a Hyprland desktop. `display` and `--screenshot` are refused; `shell` works. | Not checked | no | no |
+| `macos` | A Mac, for Xcode builds. Experimental, not yet run live. | $0.45 to $1.25 per hour, 24-hour minimum lease | yes | yes |
+
+See cloudy-cloud shell and cloudy-cloud display to look at a machine.
+
 | `agent_ids` | array of strings | yes | none | The agent ids to stop. |
 
 ### Limits that apply to the tools
@@ -292,6 +337,7 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLAUDE_CODE_OAUTH_TOKEN` | none | The long-lived token from `claude setup-token`. Cloud agents use it to sign in to Claude. |
 | `GH_TOKEN` | none | Your GitHub token. On a self-hosted machine it is read from the config file and placed in each worker container if you allowed that. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html#github-token). |
 | `ANTHROPIC_API_KEY` | none | An Anthropic API key, used by cloud agents when there is no Claude token. It is billed separately. |
+| `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` | none | Comma-separated machine kinds you allow although they cost much more: `gpu`, `macos`. Without it, `cloud_agent` refuses those kinds and starts nothing. |
 | `PARTICLE_API_KEY`, `OPENROUTER_API_KEY`, and any other name ending in `_API_KEY` | none | Provider keys for model profiles. A profile's `keyName` must name one of these. A worker that uses a profile receives that profile's key. |
 
 > Note: The launcher only checks the config file for the Claude token, not the environment, so save it there with `cloudy-cloud setup`. The Instabox key can come from either place.
