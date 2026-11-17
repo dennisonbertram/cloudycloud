@@ -327,7 +327,7 @@ async function turn(a, message, ctx, t) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed, pushed: where.startsWith('Pushed to') };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -545,6 +545,92 @@ async function startGateway(a, ctx) {
   }
 }
 
+// Autofix: after a pushed turn, the server opens the PR, waits for checks and starts fix turns until the PR is clean or the cap is hit.
+// Every gh call is a fixed command: only the branch (from the id) and numbers from gh's own JSON go in a command string.
+// Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
+const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,baseRefName,mergeable,author,reviews';
+const nap = (ms, t) => { let id; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done]).finally(() => clearTimeout(id)); };
+async function autofix(a, ctx, t) {
+  const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`;
+  const rounds = Number(ctx.env.CLOUDY_CLOUD_AUTOFIX_ROUNDS), cap = Number.isInteger(rounds) && rounds >= 0 ? Math.min(rounds, 10) : 3;
+  const poll = ctx.autofixPollMs ?? 20_000, grace = ctx.autofixGraceMs ?? 90_000, checksMs = ctx.autofixChecksMs ?? 25 * 60_000;
+  const halted = () => t.cancelled || t.status !== 'working' || a.status === 'stopped';
+  const late = () => a.deleteAt && Date.now() > a.deleteAt - AUTOFIX_MARGIN_MS;
+  let fixes = 0;
+  const say = (note) => { t.prefix = `autofix ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
+  const gh = async (cmd, ms = GH_MS) => {
+    try { return { ok: true, out: String((await a.sandbox.commands.run(`gh ${cmd}`, { cwd: `${a.home}/repo`, timeoutMs: ms, signal: t.abort.signal })).stdout ?? '') }; }
+    catch (e) { return { ok: false, out: String(e?.stdout ?? ''), err: tail(e?.stderr || e?.message) }; }
+  };
+  const view = async () => { const r = await gh(`pr view ${branch} --json ${PR_FIELDS}`); try { return { pr: JSON.parse(r.out) }; } catch { return { err: r.err || r.out }; } };
+  const hand = `Next step: open or fix the pull request by hand (git fetch origin ${branch}), or check that gh works on the machine with cloud_agent_message asking the agent to run \`gh auth status\`.`;
+  const stop = (why) => ({ text: scrub(`Autofix stopped: ${why}\n${hand}`) });
+  let { pr, err } = await view();
+  if (!pr) {
+    if (halted()) return { cancelled: true };
+    say('opening the pull request');
+    const c = await gh(`pr create --head ${branch} --fill`);
+    if (halted()) return { cancelled: true };
+    if (!c.ok) return stop(`gh could not create a pull request for ${branch}. gh said: ${c.err || tail(c.out)}`);
+    ({ pr, err } = await view());
+    if (!pr) return stop(`the pull request was created but gh could not read it back. gh said: ${err}`);
+  }
+  a.prUrl = pr.url;
+  const seen = new Set(), n = pr.number;
+  if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
+  const waitChecks = async () => {
+    const t0 = Date.now(), limit = Math.min(t0 + checksMs, a.deleteAt ? a.deleteAt - AUTOFIX_MARGIN_MS : Infinity);
+    for (;;) {
+      if (halted()) return { halted: true };
+      const r = await gh(`pr checks ${n} --json name,bucket,link`); // exits 8 while pending, 1 on a failure; the JSON is still on stdout
+      let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+      const none = /no checks reported/i.test(`${r.out}${r.err}`) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
+      if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
+      if (none && Date.now() - t0 >= grace) return { list: [] };
+      if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };
+      if (Date.now() >= limit) return { timeout: Math.round((Date.now() - t0) / 60_000) };
+      await nap(poll, t);
+    }
+  };
+  for (;;) {
+    say('waiting for checks');
+    const w = await waitChecks();
+    if (w.halted || halted()) return { cancelled: true };
+    if (w.error) return stop(`gh could not read the checks. gh said: ${w.error}`);
+    if (w.timeout !== undefined) return { text: scrub(`Autofix stopped: checks on ${pr.url} were still running after ${w.timeout} minutes${late() ? ` and the machine is deleted at ${new Date(a.deleteAt).toISOString()}` : ''}.\nNext step: check ${pr.url} later; send cloud_agent_message to agent ${a.id} if something fails.`) };
+    say('reading failures and review comments');
+    const problems = [];
+    const failed = w.list.filter((c) => c.bucket === 'fail');
+    const runs = [...new Set(failed.map((c) => /\/actions\/runs\/(\d+)/.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3);
+    const logs = new Map();
+    for (const id of runs) logs.set(id, tail((await gh(`run view ${id} --log-failed`, 120_000)).out));
+    for (const c of failed) {
+      const id = /\/actions\/runs\/(\d+)/.exec(c.link ?? '')?.[1];
+      problems.push(`Failed check "${String(c.name).slice(0, 100)}"${c.link ? ` (${c.link})` : ''}${id && logs.get(id) ? `. End of the failed log:\n${logs.get(id)}` : ''}`);
+      if (id) logs.delete(id); // one log per run
+    }
+    ({ pr } = { pr: (await view()).pr ?? pr });
+    const mine = pr.author?.login, fresh = [];
+    for (const r of pr.reviews ?? []) if (r.state === 'CHANGES_REQUESTED' && r.body && r.author?.login !== mine && !seen.has(r.id)) fresh.push([r.id, `Review by ${r.author?.login}: ${String(r.body).slice(0, 500)}`]);
+    let inline = []; try { inline = JSON.parse((await gh(`api 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100'`)).out); } catch { /* none readable */ }
+    for (const c of Array.isArray(inline) ? inline : []) if (c.user?.login !== mine && !seen.has(`c${c.id}`)) fresh.push([`c${c.id}`, `Comment by ${c.user?.login} on ${c.path}${c.line ? `:${c.line}` : ''}: ${String(c.body).slice(0, 500)}`]);
+    for (const [id, text] of fresh.slice(0, 10)) { seen.add(id); problems.push(text); }
+    if (pr.mergeable === 'CONFLICTING') problems.push(`Merge conflict with ${pr.baseRefName}. Run git fetch origin && git merge origin/${pr.baseRefName}, resolve the conflicts, commit and push.`);
+    if (!problems.length) return { text: `Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.` };
+    const list = problems.map((p) => `- ${p}`).join('\n');
+    if (fixes >= cap) return { text: scrub(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}\nNext step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`) };
+    if (late()) return { text: scrub(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}\nNext step: fix it by hand (git fetch origin ${branch}).`) };
+    fixes++;
+    say('worker is fixing');
+    t.note = '';
+    t.progress = PROGRESS[harnessOf(a)]();
+    const r = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
+    if (r.cancelled || halted()) return { cancelled: true };
+    if (r.gone) return { gone: true, text: r.text };
+    if (r.error || !r.pushed) return { text: scrub(`Autofix stopped: the fix turn ${r.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(r.text)}\nNext step: send cloud_agent_message to agent ${a.id}, or fix it by hand (git fetch origin ${branch}).`) };
+  }
+}
+
 // Background job for one turn. Never throws; records the outcome and wakes waiters.
 async function work(a, message, first, ctx, t) {
   let r;
@@ -555,6 +641,11 @@ async function work(a, message, first, ctx, t) {
     r = await turn(a, message, ctx, t);
     if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
+    if (a.autofix && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
+      const f = await autofix(a, ctx, t).catch((e) => ({ text: `Autofix stopped on an unexpected error: ${ctx.scrub(e?.message)}` }));
+      t.prefix = t.note = '';
+      r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
+    }
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
     r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
@@ -586,7 +677,7 @@ function statusOf(t, ctx) {
   if (t.status === 'working') {
     const a = t.agent, ahead = ctx.queue.ahead(a);
     m = a.status === 'queued' ? queuedText(a, ctx.queue)
-      : a.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
+      : a.status === 'starting' ? 'starting machine…' : `${t.prefix ?? ''}${t.note || statusLine(t.progress)}`;
   }
   else if (t.status === 'completed') m = statusLine(t.progress);
   else m = `${t.status}: ${t.result?.text ?? ''}`;
@@ -669,8 +760,10 @@ export async function runSubagent(args, deps) {
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
-  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker' } = args;
+  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
+  if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
+  if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v === undefined) continue;
@@ -737,7 +830,7 @@ export async function runSubagent(args, deps) {
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
