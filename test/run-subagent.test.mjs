@@ -1995,8 +1995,8 @@ test('#126 every queued agent shows why it waits, in list and wait', async () =>
   const queue = createStartQueue({ perMin: 100, sleep: () => new Promise(() => {}), maxRunning: () => 1, tierName: () => 'pro', liveCount: () => 1 });
   const { start, deps, text, wait } = await setup({ queue });
   const [, b, c] = [await start(), await start(), await start()];
-  await tick(100);
-  const l = text(await listAgents({}, deps));
+  let l; // under heavy load the third start can take longer than a fixed tick to reach the queue
+  for (let i = 0; i < 100 && !new RegExp(`${c}  queued`).test(l = text(await listAgents({}, deps))); i++) await tick(50);
   assert.match(l, new RegExp(`${c}  queued[^]*2 ahead[^]*waiting for a free machine slot \\(1 running on the pro plan\\)`));
   assert.match(await wait([b], 0.1), /waiting for a free machine slot/);
 });
