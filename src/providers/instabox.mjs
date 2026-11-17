@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { spawn as nodeSpawn } from 'node:child_process';
+import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { createLimiter } from '../limits.mjs';
@@ -82,12 +82,23 @@ const MAX_TTL_SECONDS = 86_400; // Instabox caps deleteAfterSeconds at 86400 s.
 const STATUS = { creating: 'starting', starting: 'starting', running: 'running', resuming: 'starting', stopping: 'stopped', stopped: 'stopped', suspending: 'stopped', suspended: 'stopped', deleting: 'stopped', deleted: 'stopped', error: 'failed' };
 const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine}${rest ? ` -- ${rest}` : ''}`;
 const NPX_CLI = ['npx', '--yes', 'instabox@latest'];
-// An executable `instabox` file on PATH is spawned directly (no npm registry round trip); otherwise npx.
+// The floor is the CLI version Cloudy Cloud is tested with; raise it when a newer CLI flag is needed.
+const MIN_INSTABOX_CLI = '0.8.289';
+const newEnough = (f) => {
+  try {
+    const v = /(\d+)\.(\d+)\.(\d+)/.exec(execFileSync(f, ['--version'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: process.env.PATH } }));
+    const min = MIN_INSTABOX_CLI.split('.').map(Number);
+    if (!v) return false;
+    for (let i = 0; i < 3; i++) if (Number(v[i + 1]) !== min[i]) return Number(v[i + 1]) > min[i];
+    return true;
+  } catch { return false; }
+};
+// An executable `instabox` file on PATH at or above the floor is spawned directly (no npm registry round trip); otherwise npx.
 const findInstabox = (PATH = '') => {
   for (const dir of PATH.split(delimiter)) {
     if (!dir) continue;
     const f = join(dir, 'instabox');
-    try { if (statSync(f).isFile()) { accessSync(f, constants.X_OK); return [f]; } } catch { /* next */ }
+    try { if (statSync(f).isFile()) { accessSync(f, constants.X_OK); if (newEnough(f)) return [f]; } } catch { /* next */ }
   }
   return NPX_CLI;
 };

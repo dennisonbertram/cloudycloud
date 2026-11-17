@@ -534,7 +534,7 @@ import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
 
-const binDir = (mode) => { const d = mkdtempSync(pjoin(tmpdir(), 'ibx-')); if (mode != null) { const f = pjoin(d, 'instabox'); writeFileSync(f, '#!/bin/sh\n'); chmodSync(f, mode); } return d; };
+const binDir = (mode, out = 'echo instabox 0.8.289+4f7b99c27') => { const d = mkdtempSync(pjoin(tmpdir(), 'ibx-')); if (mode != null) { const f = pjoin(d, 'instabox'); writeFileSync(f, `#!/bin/sh\n${out}\n`); chmodSync(f, mode); } return d; };
 const NPX = ['npx', '--yes', 'instabox@latest'];
 
 test('an executable instabox on the provider PATH is spawned directly, same args as npx', async () => {
@@ -563,4 +563,10 @@ test('the instabox lookup runs once per provider', () => {
   assert.deepEqual(p.shellArgv('m1'), [...NPX, 'ssh', 'm1']);
   env.PATH = binDir(0o755);
   assert.deepEqual(p.shellArgv('m1'), [...NPX, 'ssh', 'm1']);
+});
+
+test('the installed instabox is used only when its --version is at least 0.8.289', () => {
+  const argv0 = (out) => { const d = binDir(0o755, out); return [createProvider({ PATH: d }, {}).shellArgv('m1')[0], pjoin(d, 'instabox')]; };
+  for (const out of ['echo instabox 0.8.289+abc', 'echo instabox 0.9.0', 'echo instabox 0.10.1']) { const [a, bin] = argv0(out); assert.equal(a, bin, out); }
+  for (const out of ['echo instabox 0.8.87', 'echo instabox 0.8.288+x', 'echo not a version', 'exit 1']) assert.equal(argv0(out)[0], 'npx', out);
 });
