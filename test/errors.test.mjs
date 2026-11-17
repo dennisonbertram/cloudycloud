@@ -140,3 +140,13 @@ test('#126 one upgrade instruction names the next tier, where to find the worksp
     assert.doesNotMatch(t, /pro\|builder\|team/);
   }
 });
+
+test('#135 a size no plan offers never mentions upgrading, even when the plan could not be read; a size the plan lists is not called larger-than-any-plan', () => {
+  const none = guide('size_not_allowed', { size: '3x5', notOffered: true });
+  assert.doesNotMatch(none, /upgrade/i);
+  const on = guide('size_not_allowed', { size: '16x32', tier: 'builder', sizes: '2x4 16x32', onPlan: true });
+  assert.doesNotMatch(on, /upgrade|larger plan than any/i);
+  assert.match(on, /lists 16x32[\s\S]*refused it/);
+  assert.match(on, /smaller size or without size/);
+  assert.match(on, /https:\/\/instabox\.sh\/pricing/);
+});

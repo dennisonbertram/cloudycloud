@@ -603,7 +603,7 @@ function sizeGuide(size, planOrProvider, read) {
     const sorted = (plan?.specs ?? []).slice().sort((x, y) => x.vcpus - y.vcpus || x.memMiB - y.memMiB).map(sizeLabel);
     const p = offeredBy(size.label); // the lowest plan that lists exactly this size; none means no plan offers it
     const up = p && !(plan?.tier && TIERS.indexOf(p) <= TIERS.indexOf(plan.tier)) ? p : undefined; // suggest an upgrade only to a higher plan
-    return guide('size_not_allowed', { size: size.label, notOffered: !p, plan: up, fee: planFee(up), ...(sorted.length && { tier: plan.tier, sizes: sorted.join(' '), largest: sorted.at(-1) }) });
+    return guide('size_not_allowed', { size: size.label, notOffered: !p, plan: up, ...(p && !up && plan?.tier && { onPlan: true }), fee: planFee(up), ...(sorted.length && { tier: plan.tier, sizes: sorted.join(' '), largest: sorted.at(-1) }) });
   };
   if (!read) return build(planOrProvider);
   return (async () => {

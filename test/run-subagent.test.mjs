@@ -1999,3 +1999,13 @@ test('#126 every queued agent shows why it waits, in list and wait', async () =>
   assert.match(l, new RegExp(`${c}  queued[^]*2 ahead[^]*waiting for a free machine slot \\(1 running on the pro plan\\)`));
   assert.match(await wait([b], 0.1), /waiting for a free machine slot/);
 });
+
+test('#135 a provider-side size_not_allowed for a size the current plan lists says Instabox refused it and does not suggest an upgrade', async () => {
+  const s = await sizeSetup(() => ({ ...proPlan, tier: 'builder', specs: [...SPECS, { vcpus: 16, memMiB: 32768 }] }));
+  s.provider.create = async () => { throw Object.assign(new Error('not allowed'), { code: 'size_not_allowed' }); };
+  const id = s.text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, s.deps)).match(/agent_id: (\w+)/)[1];
+  await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, s.deps);
+  const res = s.text(await resultAgent({ agent_id: id }, s.deps));
+  assert.match(res, /refused/);
+  assert.doesNotMatch(res, /upgrade|larger plan than any/i);
+});

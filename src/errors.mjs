@@ -66,10 +66,11 @@ const T = {
   machine_no_capacity: (d) => [`Instabox has no free ${d.kind ?? 'machine'} capacity right now (HTTP 503).`, 'Capacity for this GPU type or Mac model is used up.', 'Wait a few minutes, then call cloud_agent again, or use another GPU type or Mac model (for example machine "gpu:l4").'],
   size_not_allowed: (d) => {
     const z = d.size ?? '?', t = d.tier ? `${d.tier} plan` : '';
-    return [d.notOffered ? `The size ${z} is not an Instabox size.` : `The size ${z} is not on your Instabox plan${d.tier ? ` (${d.tier})` : ''}.`,
-      d.notOffered ? `Instabox does not offer ${z} on any plan. It offers ${SIZES_BY_PLAN}.` : t ? `The ${t} doesn't include ${z}${d.plan ? `; the ${d.plan} plan does` : ''}.` : 'Likely the plan does not include it.',
-      d.sizes ? `Call cloud_agent again with one of: ${d.sizes}${d.plan ? ', or ask the user to upgrade' : ''}.` : 'Call cloud_agent again without size, or ask the user to upgrade.',
-      d.notOffered ? `Size ${z} does not exist, so no plan change helps; the agent should pick a listed size.`
+    return [d.onPlan ? `Instabox refused the size ${z}.` : d.notOffered ? `The size ${z} is not an Instabox size.` : `The size ${z} is not on your Instabox plan${d.tier ? ` (${d.tier})` : ''}.`,
+      d.onPlan ? `The ${t} lists ${z}, but Instabox refused it anyway.` : d.notOffered ? `Instabox does not offer ${z} on any plan. It offers ${SIZES_BY_PLAN}.` : t ? `The ${t} doesn't include ${z}${d.plan ? `; the ${d.plan} plan does` : ''}.` : 'Likely the plan does not include it.',
+      d.onPlan ? `Call cloud_agent again with a smaller size or without size${d.sizes ? ` (one of: ${d.sizes})` : ''}.` : d.sizes ? `Call cloud_agent again with one of: ${d.sizes}${d.plan && !d.notOffered ? ', or ask the user to upgrade' : ''}.` : `Call cloud_agent again without size${d.notOffered ? '' : ', or ask the user to upgrade'}.`,
+      d.onPlan ? `If it keeps happening, tell the user Instabox refused a size their plan includes (see https://instabox.sh/pricing or contact Instabox support); no plan change helps.`
+        : d.notOffered ? `Size ${z} does not exist, so no plan change helps; the agent should pick a listed size.`
         : `Size ${z} needs ${d.plan ? `the ${d.plan} plan${d.fee ? ` ($${d.fee}/month, which includes usage equal to the fee)` : ''} or higher. ${upgrade(d.tier, d.plan)} Pricing: https://instabox.sh/pricing.` : 'a larger plan than any listed; see https://instabox.sh/pricing'}${d.largest ? ` Or use ${d.largest}.` : ''}`];
   },
   machine_gpu_limit: () => ['The organisation has reached its limit of 8 GPUs (HTTP 403 template_limit).', 'Running GPU agents already use the 8 GPUs the API allows.', 'Call cloud_agent_list, then cloud_agent_stop on an idle GPU agent, then call cloud_agent again.', 'The 8-GPU limit of the organisation is reached; stop a GPU agent or ask Instabox for more.'],

@@ -130,3 +130,21 @@ test('the requesting agent is passed to liveCount so it can exclude itself', asy
   await q.create(a, async () => {});
   assert.ok(seen.length && seen.every((x) => x === a));
 });
+
+test('capacity wait: every waiting agent gets its note once, and the grant clears it with a starting event', async () => {
+  const c = clock();
+  let running = 1;
+  const evs = [];
+  const mk = (id) => ({ id, emit: (e) => evs.push({ id, t: evs.length + 1, ...e }) });
+  const [a, b] = [mk('a'), mk('b')];
+  const q = createStartQueue({ perMin: 99, now: c.now, sleep: async (ms) => { c.t += ms; if (c.t >= 10_000) running = 0; }, liveCount: () => running, maxRunning: () => 1, tierName: () => 'pro' });
+  await Promise.all([q.create(a, async () => {}), q.create(b, async () => {})]);
+  const notes = (id) => evs.filter((e) => e.id === id && e.status === 'queued').map((e) => e.note);
+  assert.deepEqual(notes('a'), ['waiting for a free machine slot (1 running on the pro plan)']);
+  assert.deepEqual(notes('b'), ['queued, 1 ahead: waiting for a free machine slot (1 running on the pro plan)']); // once, not once per poll
+  for (const id of ['a', 'b']) {
+    const last = evs.filter((e) => e.id === id).at(-1);
+    assert.equal(last.status, 'starting');
+    assert.equal(last.note, undefined);
+  }
+});
