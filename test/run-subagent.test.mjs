@@ -1030,7 +1030,7 @@ test('a plain worker without mcp.json runs the same claude command (now inside t
   const sbx = sandboxes[0];
   const inner = /\{ (.*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
   assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
-    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --mcp-config \'{"mcpServers":{}}\' --strict-mcp-config --append-system-prompt \'HINT\' < /home/user/prompt.txt');
+    'claude mcp remove instabox -s user >/dev/null 2>&1 || true; CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
@@ -1043,7 +1043,9 @@ test('a worker with an mcp.json server gets the file, the flags, the secret, the
   assert.deepEqual(opts[0].secrets, ['CLAUDE_CODE_OAUTH_TOKEN', 'MCP_X_TOKEN']);
   assert.equal(sbx.written[`${home}/.config/cloudy-cloud/mcp.json`], JSON.stringify({ mcpServers: X }, null, 2));
   assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/.config/cloudy-cloud/mcp.json`)));
-  assert.match(claudeCmd(sbx), /--verbose --mcp-config \/home\/user\/\.config\/cloudy-cloud\/mcp\.json --strict-mcp-config /);
+  assert.match(claudeCmd(sbx), /--verbose --mcp-config \/home\/user\/\.config\/cloudy-cloud\/mcp\.json --append-system-prompt/);
+  assert.match(claudeCmd(sbx), /claude mcp remove instabox -s user >\/dev\/null 2>&1 \|\| true; /);
+  assert.doesNotMatch(claudeCmd(sbx), /--strict-mcp-config/);
   assert.match(r, /MCP servers: x/);
   assert.ok(!JSON.stringify(sbx.envs).includes('MCP_'), 'no MCP value in the sandbox env');
 });
@@ -1147,7 +1149,8 @@ test('with no mcp.json at all the footer has no MCP line and no secrets are pass
   await rm(file);
   const r = await wait([await start({})]);
   assert.doesNotMatch(r, /MCP/);
-  assert.match(claudeCmd(sandboxes[0]), /--verbose --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config /); // an image-preconfigured server is never loaded (#145)
+  assert.ok(!claudeCmd(sandboxes[0]).includes('--mcp-config'));
+  assert.match(claudeCmd(sandboxes[0]), /claude mcp remove instabox -s user >\/dev\/null 2>&1 \|\| true; /);
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
 
