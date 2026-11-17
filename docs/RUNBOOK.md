@@ -226,7 +226,7 @@ Remote Control needs a full Claude login. A token from `claude setup-token` can 
 
 1. `cloudy-cloud coordinator image` creates a machine labelled `role=coordinator-image`, installs `cloudy-cloud` on it, and prints an SSH command.
 2. Run that SSH command, then `claude auth login` inside the machine, and finish the sign-in in your browser.
-3. `cloudy-cloud coordinator image --save` snapshots the machine, saves the snapshot id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine. A snapshot keeps the home folder, including the saved sign-in.
+3. `cloudy-cloud coordinator image --save` snapshots the machine, saves the snapshot id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine. A snapshot keeps the home folder, including the saved sign-in. A coordinator image built from a template dated 2026-11-01 or later carries the Instabox CLI at version 0.8.289 or later (Cloudy Cloud uses an installed `instabox` only at that version or newer, and otherwise runs `npx --yes instabox@latest`), so `cloudy-cloud shell` from the coordinator no longer downloads it; rebuild an older image with `cloudy-cloud coordinator image` to get this.
 
 ### 8.2 Commands
 

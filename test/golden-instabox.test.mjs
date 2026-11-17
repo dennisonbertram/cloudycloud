@@ -70,8 +70,8 @@ test('Instabox requests are unchanged', async () => {
   const argvs = [];
   const machines = [{ id: 'mach-aaa', name: 'box-aaa', state: 'running', status: 'running' }];
   const events = [{ t: 1, id: '7c1e90ab', type: 'agent', description: 'a' }, { t: 2, id: '7c1e90ab', type: 'machine', machine: 'mach-aaa' }];
-  const spawn = async (argv, o) => { argvs.push({ argv, inherit: !!o.inherit, envNames: Object.keys(o.env ?? {}) }); return { code: 0, stdout: '{"url":"https://x.example/"}' }; };
-  const env = { INSTABOX_API_KEY: KEY };
+  const spawn = async (argv, o) => { argvs.push({ argv, inherit: !!o.inherit, envNames: Object.keys(o.env ?? {}).filter((k) => k !== 'PATH') }); return { code: 0, stdout: '{"url":"https://x.example/"}' }; };
+  const env = { INSTABOX_API_KEY: KEY, PATH: '' };
   const d = { env, provider: createProvider(env, { spawn }), list: async () => machines, events: () => events, alive: () => true, out: () => {}, err: () => {} };
   for (const args of [['7c1e90ab', '8080:3000'], ['7c1e90ab', '3000', '--share'], ['7c1e90ab', '3000', '--unshare']]) assert.equal(await openRun(args, d), 0);
   record.ports = argvs;
