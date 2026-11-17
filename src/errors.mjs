@@ -52,6 +52,10 @@ const T = {
   display_unsupported: (d) => [`The provider ${d.provider ?? '<provider>'} has no desktop display.`, 'Only providers with remote desktops (Instabox) offer a display.', 'Open a shell with `cloudy-cloud shell` instead, or set CLOUDY_CLOUD_PROVIDER=instabox: run `cloudy-cloud setup`.'],
   display_forbidden: () => ['Instabox refused the display link (HTTP 403 permission_denied).', 'The Instabox key is a workspace key, which cannot open display links.', 'Run `cloudy-cloud display` with `--screenshot` to get a picture instead.', 'The Instabox key is a workspace key; use a personal key (run `cloudy-cloud setup`) or ask for a screenshot with `cloudy-cloud display --screenshot`.'],
   desktop_unavailable: (d) => [`The ${d.kind ?? 'linux'} machine has no desktop.`, 'linux, android and gpu machines have a screen (the first gpu start is slow); omarchy has none yet and macos is not verified.', 'Run `cloudy-cloud shell` to work in a terminal, or start a linux, android or gpu machine with cloud_agent.'],
+  // Usage numbers (#116).
+  metrics_unavailable: () => ['Instabox has no usage numbers for this machine right now (HTTP 503 metrics_unavailable).', 'Likely the metrics service is briefly down.', 'Do not retry in a loop. Call cloud_agent_list to see the agent; it keeps working without the numbers.', 'Instabox has no usage numbers right now; agents keep working.'],
+  metrics_forbidden: () => ['Instabox refused the usage numbers (HTTP 403 missing_scope).', 'The Instabox key lacks the machines:read scope.', 'Create a key with the machines:read scope at instabox.sh, then run `cloudy-cloud setup` and enter it.', 'The Instabox key cannot read usage numbers; create a key with machines:read at instabox.sh, then run `cloudy-cloud setup`.'],
+  metrics_unsupported: (d) => [`The provider ${d.provider ?? '<provider>'} has no usage numbers.`, 'Only Instabox reports CPU, memory and network use.', `Run \`cloudy-cloud shell ${d.id ?? '<id>'} -- top -bn1\` to see the machine load.`],
 };
 export const CODES = Object.keys(T);
 export const HUMAN_CODES = CODES.filter((c) => T[c]({})[3]);

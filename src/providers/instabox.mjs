@@ -227,6 +227,27 @@ export function createProvider(env, deps = {}) {
     throw normalize(last ?? new Error(`Delete of ${id} failed`));
   }
 
+  // Raw fetch: SDK 0.6.0 does not type the network and disk I/O fields. Goes through the same limiter and 429 retry as SDK calls.
+  async function fetchMetrics(id, { since } = {}) {
+    const t = now();
+    const from = Math.max(t - 86_400_000, since ?? t - 3_600_000);
+    const key = apiKey();
+    const body = await callWith(MAX_429_TRIES)(async () => {
+      const res = await fetchFn(`${API}/${encodeURIComponent(id)}/metrics?since=${new Date(from).toISOString()}`, { headers: { 'X-API-Key': key } });
+      if (res.ok) return res.json();
+      let j = {};
+      try { j = JSON.parse(await res.text()); } catch { /* not JSON */ }
+      const code = (j.error && typeof j.error === 'object' ? j.error : j).code;
+      const err = Object.assign(new Error(`Could not read metrics of ${id}: HTTP ${res.status}${code ? ` ${code}` : ''}`), { status: res.status });
+      if (res.status === 503 && code === 'metrics_unavailable') err.code = 'metrics_unavailable';
+      else if (res.status === 403 && code === 'missing_scope') err.code = 'metrics_forbidden';
+      throw err;
+    });
+    const samples = (body.metrics ?? []).map((m) => ({ t: +new Date(m.timestamp), cpuPct: m.cpuUsedPct, cpuCount: m.cpuCount, memUsed: m.memUsed, memTotal: m.memTotal,
+      netIn: m.netInBytesPerSec, netOut: m.netOutBytesPerSec, diskRead: m.diskReadBytesPerSec, diskWrite: m.diskWriteBytesPerSec }));
+    return { samples, fetchedAt: t };
+  }
+
   const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
 
   return {
@@ -238,7 +259,7 @@ export function createProvider(env, deps = {}) {
       startsPerMin: Number(env.CLOUDY_CLOUD_STARTS_PER_MIN) || 25,
       maxConcurrentCalls: Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24,
       uploadMaxBytes: 10 * 1024 * 1024,
-      machineKinds: KINDS, hasShell: true, hasDisplay: true,
+      machineKinds: KINDS, hasShell: true, hasDisplay: true, hasMetrics: true,
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
@@ -294,6 +315,7 @@ export function createProvider(env, deps = {}) {
       });
     },
     revokeDisplayLinks(id) { return this.desktop(id, (d) => d.revokeStreamUrls()); },
+    metrics: fetchMetrics,
     screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
     // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command.
     shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', '-T', cmd.map(shq).join(' ')] : [])],

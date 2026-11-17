@@ -57,6 +57,13 @@ export function contractSuite(name, makeProvider, { kindsSkip } = {}) {
     } finally { await a.kill(); await b.kill(); }
   });
 
+  test(`${name}: metrics follows caps.hasMetrics`, async () => {
+    const p = makeProvider({ withKey: true });
+    assert.equal(typeof p.metrics, 'function');
+    assert.equal(typeof p.caps.hasMetrics, 'boolean');
+    if (!p.caps.hasMetrics) await assert.rejects(p.metrics('m1'), (e) => e.code === 'metrics_unsupported');
+  });
+
   test(`${name}: delete of an unknown id resolves`, async () => {
     await makeProvider({ withKey: true }).delete('no-such-machine');
   });

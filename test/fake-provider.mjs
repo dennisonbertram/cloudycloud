@@ -111,7 +111,7 @@ export async function fakeSandbox(github = currentGithub) {
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
 export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'] } = {}) {
-  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
+  const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
   let n = 0;
@@ -120,7 +120,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   return {
     name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
-      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true },
+      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true },
     async create(opts) {
       needKey();
       const k = opts.kind?.name ?? 'linux';
@@ -161,6 +161,15 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
     async unpublishPort(id, port) { log.ports.push({ op: 'unpublish', id, port }); return 0; },
     shellArgv: (id, cmd = []) => ['fake-ssh', id, ...cmd],
     async displayLink(id, o = {}) { log.display.push({ op: 'link', id, ...o }); return { url: `https://fake.example/desktop/${id}#tok`, expiresAt: new Date(Date.now() + (o.ttlSeconds ?? 3600) * 1000) }; },
+    // Deterministic: 5 samples 30 s apart ending at `now`, oldest first; cpu climbs 10..50 %. The first has no network fields.
+    async metrics(id, { since = Date.now() - 3_600_000 } = {}) {
+      needKey();
+      log.metrics.push({ id, since });
+      const fetchedAt = Date.now();
+      const samples = [4, 3, 2, 1, 0].map((i) => ({ t: fetchedAt - i * 30_000, cpuPct: 50 - i * 10, cpuCount: 2, memUsed: 1e9 + i * 1e6, memTotal: 4e9,
+        ...(i < 4 && { netIn: 1000 * (5 - i), netOut: 500 * (5 - i), diskRead: 0, diskWrite: 2048 }) })).filter((s) => s.t >= since);
+      return { samples, fetchedAt };
+    },
     async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
     async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
     localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),
