@@ -1886,7 +1886,7 @@ test('#128 bad forms, gpu and macos, and providers without sizes are refused wit
     const r = await runSubagent({ description: 'd', prompt: 'hi', ...a }, deps);
     assert.equal(r.isError, true);
     assert.match(text(r), re);
-    assert.match(text(r), /call cloud_agent again/i);
+    if (a.size !== '8/16') assert.match(text(r), /call cloud_agent again/i);
   }
   assert.equal(provider.log.create.length, 0);
   const sh = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
@@ -1908,15 +1908,15 @@ test('#128 task mode shows the size cost at start and in the completion result, 
   assert.doesNotMatch((await runSubagent({ description: 'd', prompt: 'hi' }, d.deps)).statusMessage, /an hour/);
 });
 
-test('#128 a size that is not on the plan: 8x32 on pro names builder and its fee', async () => {
+test('#128 a size only a higher plan lists: 16x32 on pro names builder and its fee', async () => {
   const { deps, text } = await sizeSetup(proPlan);
-  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: '8x32' }, deps));
+  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, deps));
   assert.match(r, /builder plan \(\$100\/month/);
-  assert.doesNotMatch(r, /pro plan/);
+  assert.doesNotMatch(r, /needs the pro plan/);
 });
 
 test('#128 a provider-side size_not_allowed reads the plan for the tier and sizes; an unreadable plan gives the generic text', async () => {
-  for (const [plan, want] of [[(o, n) => (n === 1 ? { ...proPlan, specs: [...SPECS, { vcpus: 16, memMiB: 32768 }] } : proPlan), /\(pro\)[\s\S]*allows: 2x4 4x8 8x16/], [null, /Likely the plan does not include it/]]) {
+  for (const [plan, want] of [[(o, n) => (n === 1 ? { ...proPlan, specs: [...SPECS, { vcpus: 16, memMiB: 32768 }] } : proPlan), /\(pro\)[\s\S]*one of: 2x4 4x8 8x16/], [null, /Likely the plan does not include it/]]) {
     const s = await sizeSetup(plan);
     s.provider.create = async () => { throw Object.assign(new Error('not allowed'), { code: 'size_not_allowed' }); };
     const id = s.text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, s.deps)).match(/agent_id: (\w+)/)[1];
@@ -1962,4 +1962,50 @@ test('buildServer wires the live-agent count into its queue', async () => {
   open.get('b').status = 'stopped';
   deps.queue.cancel(a);
   await assert.rejects(p, /cancelled/);
+});
+
+// ---- plan UX (#135 #136 #126) ----
+test('#135 3x5 on pro says the size is not offered and does not suggest an upgrade', async () => {
+  const { deps, text } = await sizeSetup(proPlan);
+  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: '3x5' }, deps));
+  assert.match(r, /3x5 is not an Instabox size/);
+  assert.match(r, /2x4 4x8 8x16/);
+  assert.doesNotMatch(r, /workspace plan|needs the pro plan/);
+  const b = text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, deps));
+  assert.match(b, /Likely cause: The pro plan doesn't include 16x32/);
+  assert.match(b, /workspace plan <workspace> builder/);
+});
+
+test('#126 a malformed size gets one clear line without the generic filler', async () => {
+  const { deps, text } = await sizeSetup(proPlan);
+  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: 'big' }, deps));
+  assert.match(r, /VCPUSxGIB/);
+  assert.doesNotMatch(r, /What happened|not accepted/);
+});
+
+test('#126 an unreadable plan lets the size start and says it was not checked; the reply compares with the default', async () => {
+  const { deps, text } = await sizeSetup(null);
+  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, deps));
+  assert.match(r, /plan could not be read[^]*not checked[^]*may refuse/i);
+  assert.match(r, /default 4x8 costs about \$0\.034/);
+});
+
+test('#126 every queued agent shows why it waits, in list and wait', async () => {
+  const queue = createStartQueue({ perMin: 100, sleep: () => new Promise(() => {}), maxRunning: () => 1, tierName: () => 'pro', liveCount: () => 1 });
+  const { start, deps, text, wait } = await setup({ queue });
+  const [, b, c] = [await start(), await start(), await start()];
+  await tick(100);
+  const l = text(await listAgents({}, deps));
+  assert.match(l, new RegExp(`${c}  queued[^]*2 ahead[^]*waiting for a free machine slot \\(1 running on the pro plan\\)`));
+  assert.match(await wait([b], 0.1), /waiting for a free machine slot/);
+});
+
+test('#135 a provider-side size_not_allowed for a size the current plan lists says Instabox refused it and does not suggest an upgrade', async () => {
+  const s = await sizeSetup(() => ({ ...proPlan, tier: 'builder', specs: [...SPECS, { vcpus: 16, memMiB: 32768 }] }));
+  s.provider.create = async () => { throw Object.assign(new Error('not allowed'), { code: 'size_not_allowed' }); };
+  const id = s.text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, s.deps)).match(/agent_id: (\w+)/)[1];
+  await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, s.deps);
+  const res = s.text(await resultAgent({ agent_id: id }, s.deps));
+  assert.match(res, /refused/);
+  assert.doesNotMatch(res, /upgrade|larger plan than any/i);
 });

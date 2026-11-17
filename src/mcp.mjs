@@ -18,7 +18,7 @@ const tools = [
         profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, pi-glm, pi-deepseek, pi-particle, omp-glm, omp-deepseek, omp-particle, openrouter, or a name from profiles.json. Default: Claude.' },
         role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets cloudy-cloud installed and can start its own cloud agents (limited by CLOUDY_CLOUD_MAX_DEPTH, default 3).' },
         machine: { type: 'string', description: 'Optional kind of machine: linux (default), android, omarchy, gpu, gpu:TYPE, gpu:TYPE:COUNT, macos, macos:MODEL. gpu and macos cost much more and need CLOUDY_CLOUD_ALLOW_MACHINE_KINDS in the user\'s cloudy-cloud env file.' },
-        size: { type: 'string', description: 'Optional machine size as VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16. Must be one of the sizes your Instabox plan allows; the error lists them.' },
+        size: { type: 'string', description: 'Optional machine size as VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16. Sizes and cost an hour: 2x4 $0.017, 4x8 $0.034 (default), 8x16 $0.068 on every paid plan; builder adds 16x32 ($0.136); team adds 32x64 ($0.272). Your plan decides which are allowed; a size no plan lists is refused.' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },
       required: ['prompt', 'description'],
@@ -51,7 +51,7 @@ const tools = [
   },
   {
     name: 'cloud_agent_list',
-    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step), plus CPU and memory use of each running or idle machine, with the sample age (usage n/a (timeout|unavailable|none yet) when it cannot be read). Status idle means the turn finished and the agent waits for a message; it does not mean the machine does nothing. Stop agents you no longer need with cloud_agent_stop, especially quiet ones (under 3 % CPU for 10 minutes while running). With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
+    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step), plus CPU and memory use of each running or idle machine, with the sample age (usage n/a (timeout|unavailable|none yet) when it cannot be read). Status idle means the turn finished and the agent waits for a message; it does not mean the machine does nothing. Stop agents you no longer need with cloud_agent_stop, especially quiet ones (under 3 % CPU for 10 minutes while running). A queued agent shows why it waits (a free machine slot on your plan, or the start pace) and how many are ahead; do not start more agents while they wait. With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'List every cloudy-cloud machine from the provider, grouped by parent' } } },
     annotations: { readOnlyHint: true },
   },

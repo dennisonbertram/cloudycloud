@@ -88,6 +88,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
     } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {
       a.status = e.status;
+      a.queueNote = e.status === 'queued' ? e.note : undefined;
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
     } else if (e.type === 'message') { a.turns = (a.turns ?? 0) + 1; a.messages.push({ t: e.t, kind: 'out', text: e.text }); } // `turns` counts every message; `messages` keeps the last 300

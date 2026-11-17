@@ -53,3 +53,10 @@ test('#128 planFor needs both the vCPUs and the memory to fit; planFee gives the
   assert.equal(planFor(64, 131072), undefined);
   assert.deepEqual(['pro', 'builder', 'team', 'x'].map(planFee), [20, 100, 500, undefined]);
 });
+
+test('#135 offeredBy lists only exact plan sizes; sizeCostLine adds the default for comparison', async () => {
+  const { offeredBy, sizeCostLine } = await import('../src/machine.mjs');
+  assert.deepEqual(['2x4', '8x16', '16x32', '32x64', '3x5', '8x32'].map(offeredBy), ['pro', 'pro', 'builder', 'team', undefined, undefined]);
+  assert.match(sizeCostLine(8, 16), /\$0\.068 an hour[^]*default 4x8 costs about \$0\.034 an hour/);
+  assert.doesNotMatch(sizeCostLine(4, 8), /default/);
+});

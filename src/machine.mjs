@@ -46,4 +46,14 @@ export const SIZE_PRICE = (vcpus, gib) => `${vcpus}x${gib} costs about $${(vcpus
 // The smallest plan whose largest size holds both the vCPUs and the memory. Sizes: https://instabox.sh/docs/account/limits.md; fees (USD a month): pricing.md
 const PLANS = [['pro', 8, 16384, 20], ['builder', 16, 32768, 100], ['team', 32, 65536, 500]];
 export const planFor = (vcpus, memMiB = 0) => PLANS.find(([, v, m]) => vcpus <= v && memMiB <= m)?.[0];
+// Sizes each plan adds (limits.md): a plan offers its own and every lower plan's. offeredBy gives the lowest plan that lists exactly this size.
+const ADDS = { pro: ['2x4', '4x8', '8x16'], builder: ['16x32'], team: ['32x64'] };
+export const TIERS = ['free', 'pro', 'builder', 'team'];
+export const ALL_SIZES = Object.values(ADDS).flat();
+export const offeredBy = (label) => Object.keys(ADDS).find((p) => ADDS[p].includes(label));
+export const SIZES_BY_PLAN = `${ADDS.pro.join(' ')} (pro), ${ADDS.builder} (builder), ${ADDS.team} (team)`;
+const hourly = (label) => { const [v, g] = label.split('x').map(Number); return (v * 0.004 + g * 0.00225).toFixed(3); };
+export const SIZE_COSTS = ALL_SIZES.map((l) => `${l} $${hourly(l)}/h`).join(', ');
+// SIZE_PRICE plus the default for comparison (for a size other than the default 4x8).
+export const sizeCostLine = (vcpus, gib) => `${SIZE_PRICE(vcpus, gib)}${vcpus === 4 && gib === 8 ? '' : ` The default 4x8 costs about $${hourly('4x8')} an hour.`}`;
 export const planFee = (plan) => PLANS.find(([n]) => n === plan)?.[3];

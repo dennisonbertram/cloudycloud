@@ -81,7 +81,7 @@ test('#128 size_not_allowed names the tier, the sizes, the plan and the upgrade 
   assert.ok(CODES.includes('size_not_allowed') && HUMAN_CODES.includes('size_not_allowed'));
   const t = guide('size_not_allowed', { size: '16x32', tier: 'pro', sizes: '2x4 4x8 8x16', plan: 'builder', largest: '8x16', secrets: ['ib-secret'], message: 'ib-secret' });
   assert.match(t, /16x32 is not on your Instabox plan \(pro\)/);
-  assert.match(t, /allows: 2x4 4x8 8x16/);
+  assert.match(t, /one of: 2x4 4x8 8x16/);
   assert.match(t, /builder plan or higher/);
   assert.match(t, /npx --yes instabox@latest workspace plan <workspace> builder/);
   assert.match(t, /use 8x16/);
@@ -98,15 +98,55 @@ test('#128 size_not_allowed names the monthly fee and the pricing link; no plan 
 
 test('plan-limit guidance names the tier, the number hit and the upgrade path; no plan keeps the old wording', () => {
   const plan = { tier: 'pro', startsPerMinute: 30, maxRunning: 100, maxMachines: 500 };
-  const up = /instabox workspace plan <workspace> (pro\|)?builder\|team|billing/;
+  const up = /workspace plan <workspace> builder/;
   const q = guide('quota_exceeded', { plan });
   assert.match(q, /pro plan/); assert.match(q, /500 machines/); assert.match(q, up);
   const r = guide('rate_limited', { plan });
   assert.match(r, /pro plan/); assert.match(r, /30 starts a minute/); assert.match(r, up);
   const c = guide('concurrency_limit', { plan });
   assert.match(c, /pro plan/); assert.match(c, /100 machines running/); assert.match(c, up);
-  assert.match(guide('machine_not_on_plan', { plan, kind: 'gpu' }), /pro plan[\s\S]*instabox workspace plan/);
+  assert.match(guide('machine_not_on_plan', { plan, kind: 'gpu' }), /pro plan[\s\S]*workspace plan <workspace> builder/);
   for (const code of ['quota_exceeded', 'rate_limited', 'concurrency_limit', 'machine_not_on_plan']) assert.doesNotMatch(guide(code, {}), /plan \(|\bpro\b|undefined/);
   assert.match(guide('quota_exceeded', {}), /upgrade the plan or wait/);
   assert.equal(classify('x concurrency_limit y'), 'concurrency_limit');
+});
+
+test('#135 a size no plan offers does not suggest an upgrade; a size a higher plan lists does, naming that plan', () => {
+  const none = guide('size_not_allowed', { size: '3x5', tier: 'pro', sizes: '2x4 4x8 8x16', notOffered: true });
+  assert.match(none, /3x5 is not an Instabox size/);
+  assert.match(none, /2x4 4x8 8x16 \(pro\), 16x32 \(builder\), 32x64 \(team\)/);
+  assert.doesNotMatch(none, /upgrade|workspace plan/i);
+  const up = guide('size_not_allowed', { size: '16x32', tier: 'pro', sizes: '2x4 4x8 8x16', plan: 'builder' });
+  assert.match(up, /Likely cause: The pro plan doesn't include 16x32/);
+  assert.doesNotMatch(up, /Likely cause:[^\n]*2x4 4x8/);
+  assert.match(up, /Next step:[^\n]*2x4 4x8 8x16/);
+});
+
+test('#136 limit errors say how long Cloudy Cloud already retried and do not say to retry at once', () => {
+  const plan = { tier: 'pro', maxRunning: 100, maxMachines: 500, startsPerMinute: 30 };
+  for (const code of ['quota_exceeded', 'concurrency_limit']) assert.match(guide(code, { plan, waited: 30 }), /already retried for 30 minutes[^]*do not (call cloud_agent again|retry)/i);
+  const r = guide('rate_limited', { plan, waited: 10 });
+  assert.match(r, /already retried for about 10 minutes/);
+  assert.doesNotMatch(r, /Wait 60 seconds/);
+  assert.match(r, /Do not retry at once/);
+});
+
+test('#126 one upgrade instruction names the next tier, where to find the workspace and the billing page', () => {
+  for (const [tier, next] of [['free', 'pro'], ['pro', 'builder'], ['builder', 'team']]) {
+    const t = guide('quota_exceeded', { plan: { tier, maxMachines: 5 }, waited: 30 });
+    assert.match(t, new RegExp(`npx --yes instabox@latest workspace plan <workspace> ${next}`));
+    assert.match(t, /npx --yes instabox@latest workspace ls/);
+    assert.match(t, /billing page/);
+    assert.doesNotMatch(t, /pro\|builder\|team/);
+  }
+});
+
+test('#135 a size no plan offers never mentions upgrading, even when the plan could not be read; a size the plan lists is not called larger-than-any-plan', () => {
+  const none = guide('size_not_allowed', { size: '3x5', notOffered: true });
+  assert.doesNotMatch(none, /upgrade/i);
+  const on = guide('size_not_allowed', { size: '16x32', tier: 'builder', sizes: '2x4 16x32', onPlan: true });
+  assert.doesNotMatch(on, /upgrade|larger plan than any/i);
+  assert.match(on, /lists 16x32[\s\S]*refused it/);
+  assert.match(on, /smaller size or without size/);
+  assert.match(on, /https:\/\/instabox\.sh\/pricing/);
 });
