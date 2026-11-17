@@ -550,7 +550,7 @@ async function startGateway(a, ctx) {
 // Text from GitHub (logs, comments, reviews) is untrusted: redacted before it is cut, and review text counts only from people with write access.
 // Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
 const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,state,headRefOid,baseRefName,mergeable,author,reviews';
-const REF = /^[A-Za-z0-9._/-]{1,100}$/, SHA = /^[0-9a-f]{40}$/, RUN = /\/actions\/runs\/(\d+)/, LINK = /^https:\/\/github\.com\/[A-Za-z0-9._/-]+$/, TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const REF = /^[A-Za-z0-9._/-]{1,100}$/, SHA = /^[0-9a-f]{40}$/, RUN = /\/actions\/runs\/(\d+)/, LINK = /^https:\/\/github\.com\/[A-Za-z0-9._/-]+$/, LOGIN = /^[A-Za-z0-9-]{1,39}(\[bot\])?$/, WRITE = new Set(['admin', 'maintain', 'write']);
 const nap = (ms, t) => { let id, off; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done, new Promise((r) => { t.abort.signal.addEventListener('abort', r, { once: true }); off = () => t.abort.signal.removeEventListener('abort', r); })]).finally(() => { clearTimeout(id); off(); }); };
 function autofix(a, ctx, t) {
   const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`, cwd = `${a.home}/repo`;
@@ -563,7 +563,7 @@ function autofix(a, ctx, t) {
   let fixes = 0, lastPush = '', ignored = 0;
   const say = (note) => { t.prefix = `autofix ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
   const hand = `open or fix the pull request by hand (git fetch origin ${branch}), or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
-  const done = (text) => ({ text: safe(`${text}${lastPush ? `\nLatest push: ${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
+  const done = (text) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
   const stop = (why) => done(`Autofix stopped: ${why}\nNext step: ${hand}`);
   const bail = (result) => { throw Object.assign(new Error('autofix ends'), { result }); };
   const exec = async (cmd, ms = GH_MS) => {
@@ -627,7 +627,7 @@ function autofix(a, ctx, t) {
       if (w.error) return stop(`gh could not read the checks. gh said: ${w.error}`);
       if (w.timeout !== undefined) return done(`Autofix stopped: checks on ${pr.url} were still running after ${w.timeout} minutes.\nNext step: check ${pr.url} later; send cloud_agent_message to agent ${a.id} if something fails.`);
       say('reading failures and review comments');
-      const problems = [], incomplete = [];
+      const problems = [], incomplete = [], pendingSeen = []; // comments sent are remembered only once a fix turn pushed a new commit
       ignored = 0;
       const bad = w.list.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel');
       const logs = new Map();
@@ -645,14 +645,28 @@ function autofix(a, ctx, t) {
         if (pr.state !== 'OPEN') incomplete.push(`the pull request is ${pr.state}`);
         else if (pr.headRefOid !== sha) incomplete.push('the pull request head is not the pushed commit');
         if (pr.mergeable === 'UNKNOWN') incomplete.push('GitHub has not computed mergeability yet');
-        const mine = pr.author?.login, fresh = [];
-        const take = (id, login, assoc, text) => { if (login === mine || seen.has(id)) return; if (TRUSTED.has(assoc)) fresh.push([id, text]); else ignored++; };
-        for (const rv of pr.reviews ?? []) if ((rv.state === 'CHANGES_REQUESTED' || rv.state === 'COMMENTED') && String(rv.body ?? '').trim()) take(rv.id, rv.author?.login, rv.authorAssociation, `Review by ${safe(rv.author?.login).slice(0, 40)}: ${safe(rv.body).slice(0, 500)}`);
-        const c = await gh(`api 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100&sort=created&direction=desc'`);
-        let inline; try { inline = JSON.parse(c.out); } catch { /* checked below */ }
-        if (!c.ok || !Array.isArray(inline)) incomplete.push('the inline review comments could not be read');
-        else for (const x of inline) take(`c${x.id}`, x.user?.login, x.author_association, `Comment by ${safe(x.user?.login).slice(0, 40)} on ${safe(x.path).slice(0, 100)}${x.line ? `:${Number(x.line) || 0}` : ''}: ${safe(x.body).slice(0, 500)}`);
-        for (const [id, text] of fresh.slice(0, 10)) { seen.add(id); problems.push(text); }
+        const mine = pr.author?.login;
+        const cand = []; // [id, login, text], newest first
+        const take = (id, login, text) => { if (login !== mine && !seen.has(id)) cand.push([id, login, text]); };
+        for (const rv of pr.reviews ?? []) if ((rv.state === 'CHANGES_REQUESTED' || rv.state === 'COMMENTED') && String(rv.body ?? '').trim()) take(rv.id, rv.author?.login, `Review by ${safe(rv.author?.login).slice(0, 40)}: ${safe(rv.body).slice(0, 500)}`);
+        // --paginate reads every page; --jq prints one compact JSON object per line (ponytail: no cap on pages, GitHub allows at most 1000 review comments)
+        const c = await gh(`api --paginate 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100' --jq '.[] | {id, login: .user.login, path, line, body, created_at} | tojson'`);
+        const inline = [];
+        for (const l of c.out.split('\n').filter(Boolean).slice(0, 2000)) { try { inline.push(JSON.parse(l)); } catch { inline.length = 0; inline.bad = true; break; } }
+        if (!c.ok || inline.bad) incomplete.push('the inline review comments could not be read');
+        else for (const x of inline.sort((p, q) => String(q.created_at).localeCompare(String(p.created_at)))) take(`c${x.id}`, x.login, `Comment by ${safe(x.login).slice(0, 40)} on ${safe(x.path).slice(0, 100)}${x.line ? `:${Number(x.line) || 0}` : ''}: ${safe(x.body).slice(0, 500)}`);
+        // Write access is asked of GitHub for each author (an owner, member or collaborator can still be read-only).
+        const perm = (a.autofixPerm ??= new Map());
+        const trusted = [];
+        for (const [id, login, text] of cand.slice(0, 30)) {
+          if (!LOGIN.test(login ?? '')) { ignored++; continue; }
+          if (!perm.has(login)) {
+            const q = await gh(`api 'repos/{owner}/{repo}/collaborators/${login}/permission' --jq .permission`);
+            if (q.ok && /^(admin|maintain|write|triage|read|none)$/.test(q.out.trim())) perm.set(login, WRITE.has(q.out.trim())); // a failed lookup is not cached: it counts as untrusted and is asked again
+          }
+          if (perm.get(login)) trusted.push([id, text]); else ignored++;
+        }
+        for (const [id, text] of trusted.slice(0, 10)) { pendingSeen.push(id); problems.push(text); }
         if (pr.mergeable === 'CONFLICTING') problems.push(REF.test(pr.baseRefName ?? '') ? `Merge conflict with ${pr.baseRefName}. Fetch origin, merge origin/${pr.baseRefName} into your branch, resolve the conflicts, commit and push.` : 'Merge conflict with the base branch. Fetch origin, merge the pull request base branch into your branch, resolve the conflicts, commit and push.');
       }
       const why = incomplete.length ? `\nNot confirmed: ${incomplete.join('; ')}.` : '';
@@ -676,6 +690,7 @@ function autofix(a, ctx, t) {
       if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
       const was = sha;
       sha = await headSha();
+      if (sha !== was) pendingSeen.forEach((id) => seen.add(id));
       if (sha === was) return done(`Autofix stopped: the worker pushed no new commits, so the checks cannot change. Still failing on ${pr.url}:\n${list}\n${next}`);
       v = await sync(sha);
       if (!v.pr) return stop(`gh could not read the pull request after the fix. gh said: ${v.err}`);
