@@ -1578,7 +1578,8 @@ test('an unknown machine string is rejected before any sandbox', async () => {
   for (const machine of ['windows', 'gpu:l4:9']) {
     const r = await runSubagent({ description: 'd', prompt: 'hi', machine }, deps);
     assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /linux, android, omarchy, gpu\[:TYPE\[:COUNT\]\]/);
+    assert.match(r.content[0].text, /linux, android, omarchy, gpu\[:TYPE\[:COUNT\]\] \(COUNT 1-4/);
+    assert.equal(r.content[0].text.split('Accepted forms').length + r.content[0].text.split('Use one of').length - 2, 1, 'accepted forms once');
   }
   assert.equal(provider.log.create.length, 0);
   assert.equal(deps.count?.started ?? 0, 0);

@@ -100,6 +100,10 @@
   .pv.note { white-space: normal; align-items: flex-start; }
   .prop.full { grid-column: 1 / -1; }
   .prop.wide { grid-column: span 2; }
+  .props.cmds { grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 12px; }
+  .cmds .prop { display: flex; gap: 12px; align-items: baseline; }
+  .cmds .pl { flex: none; width: 64px; margin: 0; }
+  .kindrep { display: none; }
   .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
   .pv { font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -203,8 +207,11 @@
     .back { display: inline-block; }
     .panel-head, .seclabel, .thread, .subbar { padding-left: 16px; padding-right: 16px; }
     .badge { margin-left: 0; }
-    .panel-head { max-height: 38dvh; overflow-y: auto; } /* keep room for the timeline: the header scrolls on its own */
     .props { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .props.cmds { grid-template-columns: minmax(0, 1fr); }
+    .panel { overflow-y: auto; } /* the whole panel scrolls once; the timeline keeps a fixed height instead of being squeezed */
+    .thread { flex: none; height: 70dvh; }
+    .kindrep { display: inline; } /* the list is hidden on a phone, so the badge is not on screen */
     .fleet { padding: 4px 16px 16px; }
     .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   }
@@ -387,7 +394,13 @@
     v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
     return e;
   };
-  const COST = { gpu: 'GPU machines cost more per hour than a Linux one. Stop the agent when it is done.', macos: 'macOS machines cost more per hour than a Linux one, and have a minimum rental time.' };
+  // Price for the kind the user chose (Instabox pricing). gpu:l4:2 is two GPUs; a bare gpu is one L4 by default.
+  const costText = (b) => {
+    const [k, type, n] = (b.machineKind || '').split(':'), stop = ' Stop it by asking Claude to call cloud_agent_stop from the session' + (b.deadline ? '; it is deleted anyway at the deadline shown above.' : '.');
+    if (k === 'gpu') { const c = /^[1-4]$/.test(n) ? +n : 1; return (!type || type === 'l4' ? '$0.765 per GPU-hour × ' + c + ' GPU' + (c > 1 ? 's' : '') + ' = about $' + (0.765 * c).toFixed(2) + ' per hour.' : '$0.765 per GPU-hour for an L4; other GPU types may differ.') + stop; }
+    if (k === 'macos') return '$0.45 to $1.25 per hour by model, with a 24-hour minimum lease that cannot be cut short.' + stop;
+    return null;
+  };
   const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
   const cliId = (b) => b.source === 'log' || !b.machine ? b.id : b.machine; // shell and display resolve a local agent id, a machine name or a machine id, not a label-only agent id
   const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
@@ -397,9 +410,11 @@
     e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG."; return e;
   };
   const costRow = (t) => { const e = prop('Cost', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
+  const noScreen = (t) => { const e = prop('Screen', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
+  // Screen: linux, android and gpu yes; omarchy no; macos not verified (the command is shown anyway).
   const kindRows = (b) => {
-    const caps = S.data?.caps || {}, k = kindBase(b);
-    return [caps.hasShell !== false && shellRow(b), caps.hasDisplay !== false && k !== 'omarchy' && screenRow(b), COST[k] && costRow(COST[k])];
+    const caps = S.data?.caps || {}, k = kindBase(b), cost = costText(b);
+    return [caps.hasShell !== false && shellRow(b), caps.hasDisplay !== false && (k === 'omarchy' ? noScreen('not available on omarchy yet') : screenRow(b)), cost && costRow(cost)];
   };
   const wide = (e) => { e?.classList.add('wide'); return e; };
   const pushView = (p) => p.failed
@@ -571,13 +586,14 @@
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') })),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
-        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), kindBadge(b) && h('span', { text: ' · ' + kindBadge(b) })),
+        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) })),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
           : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
             b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
-        openable(b) && openApp(b), openable(b) && kindRows(b)));
+      ),
+      openable(b) && h('div', { class: 'props cmds' }, openApp(b), kindRows(b))); // no height cap on a phone: a capped, internally scrolling header hid these rows
     updateBadge(b);
     const thread = h('div', { class: 'thread', tabindex: '0', role: b.kind === 'coordinator' ? 'tabpanel' : null, id: b.kind === 'coordinator' ? 'tabpanel' : null, 'aria-label': term ? 'Terminal' : 'Message thread' }, term ? kids : h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'subbar' }, tabBar(b), term ? null : turnBar(b), badgeEl), thread);

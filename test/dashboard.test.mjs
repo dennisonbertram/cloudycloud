@@ -743,3 +743,16 @@ test('shell and display commands use an id the CLI resolves, and a kind or caps 
   assert.match(html, /sig\(\['r'[^\n]*b\.machineKind/);
   assert.match(html, /sig\(\['p'[^\n]*sb\.machineKind[^\n]*caps/);
 });
+
+test('#111 the command rows are in the header, which has no height cap on a phone, and the Cost row names the price and how to stop', () => {
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  const head = html.match(/const head = h\('div', \{ class: 'panel-head' \}[\s\S]*?updateBadge\(b\);/)[0];
+  assert.match(head, /class: 'props cmds'[^\n]*kindRows\(b\)/);
+  assert.doesNotMatch(html, /\.panel-head \{[^}]*(max-height|overflow)/); // a capped header scrolled on its own and hid the rows at 390px
+  assert.match(html, /\.props\.cmds/);
+  assert.match(html, /\$0\.765 per GPU-hour/);
+  assert.match(html, /cloud_agent_stop/);
+  assert.match(html, /24-hour minimum/);
+  assert.match(html, /not available on omarchy/i);
+  assert.match(html, /kindrep/); // the kind in the Machine row only where the list badge is hidden
+});
