@@ -1726,23 +1726,23 @@ const usageSetup = async (metrics, over = {}) => {
   s.deps.provider.metrics = metrics;
   return { ...s, ids };
 };
-const SAMPLE = { samples: [{ t: 1, cpuPct: 3, cpuCount: 2, memUsed: 1e9, memTotal: 4e9 }, { t: 2, cpuPct: 12.4, cpuCount: 2, memUsed: 2.04e9, memTotal: 8.59e9 }], fetchedAt: 2 };
+const SAMPLE = { samples: [{ t: Date.now() - 60_000, cpuPct: 3, cpuCount: 2, memUsed: 1e9, memTotal: 4e9 }, { t: Date.now() - 30_000, cpuPct: 12.4, cpuCount: 2, memUsed: 2.04e9, memTotal: 8.59e9 }], fetchedAt: 2 };
 
 test('list adds cpu and memory from the newest sample, and usage n/a on an error', async () => {
   const { deps, text, ids, open } = await usageSetup(async (id) => { if (id === open.get(ids[1]).sandbox.id) throw new Error('boom secret'); return SAMPLE; });
   const out = text(await listAgents({}, deps));
   const lines = out.split('\n').filter((l) => l.startsWith(ids[0]) || l.startsWith(ids[1]));
-  assert.match(lines[0], /  one  cpu 12%  mem 1\.9\/8 GiB$/);
-  assert.match(lines[1], /  two  usage n\/a$/);
+  assert.match(lines[0], /  cpu 12% mem 1\.9\/8 GiB \(\d+[sm] ago\)  one$/);
+  assert.match(lines[1], /  usage n\/a \(unavailable\)  two$/);
   assert.doesNotMatch(out, /boom|secret/);
 });
 
 test('list says usage n/a when the samples are empty, and when metrics exceed the time budget', async () => {
   const empty = await usageSetup(async () => ({ samples: [], fetchedAt: 1 }));
-  assert.match(text0(await listAgents({}, empty.deps)), /two  usage n\/a/);
+  assert.match(text0(await listAgents({}, empty.deps)), /usage n\/a \(none yet\)  two/);
   const slow = await usageSetup(() => new Promise(() => {}), { usageBudgetMs: 50 });
   const t0 = Date.now();
-  assert.match(text0(await listAgents({}, slow.deps)), /one  usage n\/a/);
+  assert.match(text0(await listAgents({}, slow.deps)), /usage n\/a \(timeout\)  one/);
   assert.ok(Date.now() - t0 < 2000);
 });
 const text0 = (r) => r.content[0].text;
@@ -1798,5 +1798,5 @@ test('list puts the usage segment on the first line when the description has a n
   const { deps, ids, open } = await usageSetup(async () => SAMPLE);
   open.get(ids[0]).description = 'first\nsecond';
   const out = text0(await listAgents({}, deps));
-  assert.match(out, new RegExp(`${ids[0]}  [^\\n]*first  cpu 12%  mem 1\\.9/8 GiB\\nsecond`));
+  assert.match(out, new RegExp(`${ids[0]}  [^\\n]*  cpu 12% mem 1\\.9/8 GiB \\(\\d+[sm] ago\\)  first\\nsecond`));
 });

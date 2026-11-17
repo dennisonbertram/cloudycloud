@@ -1,5 +1,6 @@
 // Sample data for `cloudy-cloud dashboard --demo`. Nothing here is real.
 import { pushOf } from './events.mjs';
+import { isQuiet } from './dashboard.mjs';
 
 const M = 60_000, H = 60 * M;
 
@@ -21,7 +22,7 @@ export function demoSeries(id, now = Date.now()) {
       netIn: Math.round((busy ? 90_000 : quiet ? 200 : 1_500) * (1.3 + w)), netOut: Math.round((busy ? 30_000 : quiet ? 80 : 600) * (1.3 + w)), diskRead: 0, diskWrite: busy ? 40_000 : 2000 };
   });
 }
-const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { at: s.t, cpuPct: s.cpuPct, cpuCount: s.cpuCount, memUsed: s.memUsed, memTotal: s.memTotal, netIn: s.netIn, netOut: s.netOut, fetchedAt: now, source: 'live' }; };
+const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { at: s.t, cpuPct: s.cpuPct, cpuCount: s.cpuCount, memUsed: s.memUsed, memTotal: s.memTotal, netIn: s.netIn, netOut: s.netOut, fetchedAt: now, source: 'live', ...(isQuiet(demoSeries(id, now), now) && { quiet: true }) }; };
 
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;

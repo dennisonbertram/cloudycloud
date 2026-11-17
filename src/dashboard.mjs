@@ -270,6 +270,17 @@ const METRICS_MS = 30_000; // one Instabox usage read per running machine at mos
 const METRICS_WINDOW_MS = 3_600_000; // the page gets the last hour of samples
 const METRICS_AT_ONCE = 4;
 const METRICS_MAX_SAMPLES = 150; // an hour at 30 s, with margin
+// Quiet: marked running; the newest sample is under 2 minutes old; the last 10 minutes are covered without a gap over 90 s
+// (at least 18 samples); every sample is under 3 % CPU. Network under 1 KB/s counts only where the sample reports it
+// (a new machine reports none for its first minutes: then CPU alone decides). The page shows this flag in the list, fleet and detail.
+const fin = (n) => typeof n === 'number' && Number.isFinite(n);
+const sampleQuiet = (x) => fin(x.cpuPct) && x.cpuPct < 3 && (!(fin(x.netIn) && fin(x.netOut)) || x.netIn + x.netOut < 1024);
+export function isQuiet(samples, t) {
+  const ss = samples.filter((x) => x && fin(x.t) && fin(x.cpuPct)).sort((a, b) => a.t - b.t), last = ss.at(-1);
+  if (!last || t - last.t > 120_000) return false;
+  const from = last.t - 600_000, w = ss.filter((x) => x.t >= from);
+  return w.length >= 18 && w[0].t - from <= 90_000 && w.every((x, i) => (i === 0 || x.t - w[i - 1].t <= 90_000) && sampleQuiet(x));
+}
 const METRICS_POLL_GRACE_MS = METRICS_MS * 2; // reads start only while the state was asked for this recently
 const MAX_EVENTS = 5000; // events kept per coordinator: its recent history, not all of it
 const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
@@ -370,7 +381,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     if (machines && provider && seq > appliedSeq) { appliedSeq = seq; refreshUsage(machines); }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
-    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) b.usage = u; }
+    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(b.machine).samples, now()), now())) u.quiet = true; } }
     at = now();
     return cached;
   };
