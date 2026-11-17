@@ -389,10 +389,11 @@
   };
   const COST = { gpu: 'GPU machines cost more per hour than a Linux one. Stop the agent when it is done.', macos: 'macOS machines cost more per hour than a Linux one, and have a minimum rental time.' };
   const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
-  const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(b.id) }), copyBtn(shellCmd(b.id), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
+  const cliId = (b) => b.source === 'log' || !b.machine ? b.id : b.machine; // shell and display resolve a local agent id, a machine name or a machine id, not a label-only agent id
+  const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
   // Display is a command to run, never a link: the link is a bearer token and only the command line makes one.
   const screenRow = (b) => {
-    const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(b.id) }), copyBtn(displayCmd(b.id), 'display command')); e.classList.add('full');
+    const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(cliId(b)) }), copyBtn(displayCmd(cliId(b)), 'display command')); e.classList.add('full');
     e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG."; return e;
   };
   const costRow = (t) => { const e = prop('Cost', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
@@ -728,11 +729,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb);
     tick();

@@ -732,3 +732,14 @@ test('the page shows kind badges, shell and display command rows once each, hide
   assert.doesNotMatch(html, /location\.hash|#token/);
   assert.doesNotMatch(JSON.stringify(demoState()), /https?:\/\/[^\s"]*(display|desktop|stream)|[?#&]token=/i);
 });
+
+test('shell and display commands use an id the CLI resolves, and a kind or caps change re-renders the rail and the panel', () => {
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  // a local agent (source log) uses its agent id; any other box uses its machine id, since a label-only agent id is unknown to the CLI
+  assert.match(html, /const cliId = \(b\) => b\.source === 'log' \|\| !b\.machine \? b\.id : b\.machine;/);
+  assert.match(html, /shellCmd\(cliId\(b\)\)/);
+  assert.match(html, /displayCmd\(cliId\(b\)\)/);
+  assert.doesNotMatch(html, /shellCmd\(b\.id\)|displayCmd\(b\.id\)/);
+  assert.match(html, /sig\(\['r'[^\n]*b\.machineKind/);
+  assert.match(html, /sig\(\['p'[^\n]*sb\.machineKind[^\n]*caps/);
+});
