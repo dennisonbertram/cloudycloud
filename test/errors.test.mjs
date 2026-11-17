@@ -76,3 +76,18 @@ test('#116 metrics codes exist, name a command, and metrics_unsupported names th
   assert.match(guide('metrics_forbidden', {}), /machines:read.*cloudy-cloud setup/s);
   assert.match(guide('metrics_unsupported', { provider: 'self-hosted', id: 'm1' }), /self-hosted[\s\S]*cloudy-cloud shell m1 -- top -bn1/);
 });
+
+test('plan-limit guidance names the tier, the number hit and the upgrade path; no plan keeps the old wording', () => {
+  const plan = { tier: 'pro', startsPerMinute: 30, maxRunning: 100, maxMachines: 500 };
+  const up = /instabox workspace plan <workspace> (pro\|)?builder\|team|billing/;
+  const q = guide('quota_exceeded', { plan });
+  assert.match(q, /pro plan/); assert.match(q, /500 machines/); assert.match(q, up);
+  const r = guide('rate_limited', { plan });
+  assert.match(r, /pro plan/); assert.match(r, /30 starts a minute/); assert.match(r, up);
+  const c = guide('concurrency_limit', { plan });
+  assert.match(c, /pro plan/); assert.match(c, /100 machines running/); assert.match(c, up);
+  assert.match(guide('machine_not_on_plan', { plan, kind: 'gpu' }), /pro plan[\s\S]*instabox workspace plan/);
+  for (const code of ['quota_exceeded', 'rate_limited', 'concurrency_limit', 'machine_not_on_plan']) assert.doesNotMatch(guide(code, {}), /plan \(|\bpro\b|undefined/);
+  assert.match(guide('quota_exceeded', {}), /upgrade the plan or wait/);
+  assert.equal(classify('x concurrency_limit y'), 'concurrency_limit');
+});

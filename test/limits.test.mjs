@@ -68,3 +68,65 @@ test('poke: a rate raised while starts wait releases them at once; a lowered rat
   n = 1; q.poke(); go(3); await tick();
   assert.deepEqual(started, [0, 1, 2], 'a lower rate must not release a start');
 });
+
+test('concurrency_limit is retried like quota_exceeded, then surfaced after the give-up time', async () => {
+  const c = clock();
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, quotaRetryMs: 1000, quotaGiveUpMs: 3500 });
+  let n = 0;
+  const ok = await q.create({}, async () => { if (++n < 3) throw Object.assign(new Error('x'), { code: 'concurrency_limit' }); return 'up'; });
+  assert.equal(ok, 'up');
+  const err = Object.assign(new Error('too many running'), { code: 'concurrency_limit' });
+  n = 0;
+  await assert.rejects(q.create({}, async () => { n++; throw err; }), (e) => e === err);
+  assert.ok(n > 2 && n < 10);
+});
+
+test('soft wait: at maxRunning the create waits, releases when an agent stops, and is bounded', async () => {
+  const c = clock();
+  let live = 2, started = 0;
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: async (ms) => { c.t += ms; if (c.t >= 20_000) live = 1; }, liveCount: () => live, maxRunning: () => 2, softPollMs: 5000, softWaitMs: 600_000 });
+  const a = {};
+  await q.create(a, async () => { started++; });
+  assert.equal(started, 1);
+  assert.ok(c.t >= 20_000 && c.t < 30_000);
+  // never released: gives up waiting at softWaitMs and lets the API decide
+  live = 5; c.t = 0;
+  const q2 = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, liveCount: () => live, maxRunning: () => 2, softPollMs: 5000, softWaitMs: 60_000 });
+  const b = {};
+  const p = q2.create(b, async () => { started++; });
+  await p;
+  assert.equal(started, 2);
+  assert.ok(c.t >= 60_000 && c.t < 70_000);
+  // no limit known (0 or undefined): no wait
+  const q3 = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, liveCount: () => 9, maxRunning: () => 0 });
+  const t0 = c.t; await q3.create({}, async () => {}); assert.equal(c.t, t0);
+});
+
+test('soft wait keeps FIFO: a later request never overtakes a sleeping head', async () => {
+  const c = clock();
+  let live = 2; const order = [];
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: async (ms) => { c.t += ms; if (c.t >= 10_000) live = 1; }, liveCount: () => live, maxRunning: () => 2, softPollMs: 5000 });
+  const go = (i) => q.create({}, async () => { order.push(i); live++; });
+  await Promise.all([go(0), go(1)]);
+  assert.deepEqual(order, [0, 1]);
+  assert.ok(c.t >= 10_000);
+});
+
+test('a request that waited for the rate limit rechecks capacity before starting', async () => {
+  const c = clock();
+  let live = 0; const order = [];
+  // the rate wait (60 s) is where capacity fills; the second request must then wait for it to free up
+  const q = createStartQueue({ perMin: 1, now: c.now, sleep: async (ms) => { c.t += ms; if (c.t >= 60_000 && c.t < 100_000) live = 1; else if (c.t >= 100_000) live = 0; }, liveCount: () => live, maxRunning: () => 1, softPollMs: 5000 });
+  await q.create({}, async () => { order.push(c.t); });
+  await q.create({}, async () => { order.push(c.t); });
+  assert.equal(order[0], 0);
+  assert.ok(order[1] >= 100_000, `started at ${order[1]} while full`);
+});
+
+test('the requesting agent is passed to liveCount so it can exclude itself', async () => {
+  const c = clock(); const seen = [];
+  const a = {};
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, liveCount: (x) => { seen.push(x); return 0; }, maxRunning: () => 1 });
+  await q.create(a, async () => {});
+  assert.ok(seen.length && seen.every((x) => x === a));
+});

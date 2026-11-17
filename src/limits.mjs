@@ -25,12 +25,12 @@ export function createLimiter(max) {
 
 const code = (e) => `${e?.code ?? ''} ${e?.message ?? ''}`;
 export const isRateLimited = (e) => /rate_limited/.test(code(e));
-export const isQuotaExceeded = (e) => /quota_exceeded/.test(code(e));
+export const isQuotaExceeded = (e) => /quota_exceeded|concurrency_limit/.test(code(e)); // concurrency_limit: too many machines running at once (#129), retried the same way
 
 // Start queue: at most perMin (a number or a function returning one) machine creates per rolling minute, in arrival order.
 // create(a, fn) waits for a slot, runs fn (the machine create) and retries it on rate_limited / quota_exceeded.
 // a.status is 'queued' while it waits and 'starting' while fn runs. cancel(a) makes a pending create() reject.
-export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES } = {}) {
+export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES, liveCount, maxRunning, tierName, softPollMs = 5000, softWaitMs = 10 * MINUTE } = {}) {
   const waiting = []; // { a, grant, reject }
   const stamps = []; // times of recent create attempts
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
@@ -38,16 +38,25 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   const rate = () => (typeof perMin === 'function' ? perMin() : perMin); // read on every grant, so a rate learned later applies
   let wake; // ends the pump's wait for the oldest start to age out
   const q = { waiting, pace: rate, poke: () => wake?.() }; // poke: the rate changed, so recheck now
+  // Admission is strictly FIFO: only the head is checked. It needs a free rate slot and, when the plan caps running machines,
+  // free capacity (live count excludes the head's own agent). Capacity waits are local and bounded by softWaitMs; after that the API decides.
+  const full = (e) => { const max = maxRunning?.(); return max > 0 && now() - e.t0 < softWaitMs && liveCount?.(e.a) >= max; };
   const pump = async () => {
     if (pumping) return;
     pumping = true;
     while (waiting.length) {
+      const head = waiting[0];
       while (stamps.length && now() - stamps[0] >= MINUTE) stamps.shift();
-      if (stamps.length < rate()) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await Promise.race([sleep(stamps[0] + MINUTE - now()), new Promise((r) => { wake = r; })]);
+      let ms;
+      if (full(head)) {
+        head.a.queueNote = `waiting for a free machine slot (${liveCount(head.a)} running on the ${tierName?.() ? `${tierName()} ` : ''}plan)`;
+        ms = softPollMs;
+      } else if (stamps.length >= rate()) ms = stamps[0] + MINUTE - now();
+      if (ms === undefined) { delete head.a.queueNote; stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await Promise.race([sleep(ms), new Promise((r) => { wake = r; })]);
     }
     pumping = false;
   };
-  const slot = (a) => new Promise((grant, reject) => { waiting.push({ a, grant, reject }); pump(); });
+  const slot = (a) => new Promise((grant, reject) => { waiting.push({ a, grant, reject, t0: now() }); pump(); });
   const nap = (a, ms) => new Promise((resolve, reject) => {
     sleeping.set(a, () => reject(new Error('cancelled')));
     sleep(ms).then(resolve, reject);
@@ -57,7 +66,7 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   q.cancel = (a) => {
     a.cancelled = true;
     const i = waiting.findIndex((e) => e.a === a);
-    if (i >= 0) waiting.splice(i, 1)[0].reject(new Error('cancelled'));
+    if (i >= 0) { waiting.splice(i, 1)[0].reject(new Error('cancelled')); wake?.(); }
     sleeping.get(a)?.();
   };
   q.create = async (a, fn) => {
