@@ -462,7 +462,7 @@ test('metrics: no key is no_key and no request is made', async () => {
 
 // ---- plan (#127) ----
 const ME = { org: { id: 'org-secret-id', tier: 'pro' }, allowedSpecs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 2, memMiB: 4096 }], plans: [] };
-const ORG = { id: 'org-secret-id', allowedSpecs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], limits: { startsPerMinute: 30, maxRunning: 0, maxMachines: 100, maxVCPUs: 64 }, usage: { running: 1 } };
+const ORG = { id: 'org-secret-id', allowedSpecs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], limits: { startsPerMinute: 30, maxRunning: 0, maxMachines: 100, maxVCPUs: 64 }, usage: { running: 1, costUSD: 66.12, allowanceUSD: 16.61, creditRemainingUSD: 0, overageUSD: 49.51, chargedUSD: 5, periodStart: '2026-11-01T00:00:00Z', ratedUntil: '2026-11-17T10:00:00Z', periodEnd: '2026-12-01T00:00:00Z' } };
 const planHandler = (org = () => Response.json(ORG)) => (url) => (url.endsWith('/v1/me') ? Response.json(ME) : org());
 
 test('plan: GET /v1/me then /v1/orgs/<id> with the key header only; maps the fields; no identifiers in the result', async () => {
@@ -470,7 +470,8 @@ test('plan: GET /v1/me then /v1/orgs/<id> with the key header only; maps the fie
   const r = await p.plan();
   assert.deepEqual(f.calls.map((c) => c.url), ['https://api.instabox.sh/v1/me', 'https://api.instabox.sh/v1/orgs/org-secret-id']);
   assert.ok(f.calls.every((c) => c.headers['X-API-Key'] === KEY && Object.keys(c.headers).length === 1));
-  assert.deepEqual(r, { tier: 'pro', specs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], startsPerMinute: 30, maxRunning: 0, maxMachines: 100, fetchedAt: NOW });
+  assert.deepEqual(r, { tier: 'pro', specs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], startsPerMinute: 30, maxRunning: 0, maxMachines: 100, fetchedAt: NOW,
+    usage: { costUSD: 66.12, allowanceUSD: 16.61, creditRemainingUSD: 0, overageUSD: 49.51, ratedUntil: '2026-11-17T10:00:00Z', periodEnd: '2026-12-01T00:00:00Z' } });
   assert.ok(!JSON.stringify(r).includes('org-secret-id'));
 });
 
@@ -521,4 +522,10 @@ test('#128 create passes vcpus and memMiB only when a size is given; spec_not_al
   const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw Object.assign(new Error('size 16/32 is not allowed'), { status: 400, code: 'spec_not_allowed' }); } } }, fetchFn: fakeFetch().f, timing });
   await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60, size: { vcpus: 16, memMiB: 32768 } }), (e) => e.code === 'size_not_allowed' && e.instaboxCode === 'spec_not_allowed' && /16\/32/.test(e.message));
   assert.equal(createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: fakeFetch().f, timing }).caps.hasSizes, true);
+});
+
+test('plan: usage is omitted when the org has none or its fields are not numbers or strings', async () => {
+  assert.equal('usage' in await metricsProvider(planHandler(() => Response.json({ ...ORG, usage: undefined }))).p.plan(), false);
+  const r = await metricsProvider(planHandler(() => Response.json({ ...ORG, usage: { costUSD: 3.1, allowanceUSD: null, overageUSD: {} } }))).p.plan();
+  assert.deepEqual(r.usage, { costUSD: 3.1 });
 });

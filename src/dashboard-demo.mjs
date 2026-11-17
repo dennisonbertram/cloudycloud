@@ -108,7 +108,7 @@ export function demoState(now = Date.now()) {
   for (const b of boxes) if (b.machineState === 'running' && ['running', 'idle', 'starting'].includes(b.status)) b.usage = b.status === 'starting' ? { none: 'no_samples_yet', fetchedAt: now } : demoUsage(b.id, now);
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
   boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
-  return { now, demo: true, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
+  return { now, demo: true, usage: { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42, ratedUntil: new Date(now - 20 * 60_000).toISOString() }, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
 }
 
 // Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so

@@ -110,7 +110,7 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'] } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
@@ -170,7 +170,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
         ...(i < 4 && { netIn: 1000 * (5 - i), netOut: 500 * (5 - i), diskRead: 0, diskWrite: 2048 }) })).filter((s) => s.t >= since);
       return { samples, fetchedAt };
     },
-    async plan() { return null; },
+    async plan(o) { if (o?.refresh) log.planRefresh = (log.planRefresh ?? 0) + 1; return typeof plan === 'function' ? plan(o) : plan; },
     async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
     async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
     localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),
