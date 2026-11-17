@@ -269,6 +269,8 @@ const PANE_MS = 30_000; // a coordinator's screen is checked for a waiting promp
 const METRICS_MS = 30_000; // one Instabox usage read per running machine at most this often, only while something polls
 const METRICS_WINDOW_MS = 3_600_000; // the page gets the last hour of samples
 const METRICS_AT_ONCE = 4;
+const METRICS_MAX_SAMPLES = 150; // an hour at 30 s, with margin
+const METRICS_POLL_GRACE_MS = METRICS_MS * 2; // reads start only while the state was asked for this recently
 const MAX_EVENTS = 5000; // events kept per coordinator: its recent history, not all of it
 const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
 
@@ -311,7 +313,8 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   // One read per running machine per METRICS_MS, started in the background so a slow read never delays the state. A failure keeps
   // the last good samples and records the error code. A machine that is not running is never read; a machine with a read in flight is not read again.
   const inflight = new Map(); // machine id -> promise (never rejects)
-  let running = [];
+  let running = [], lastPoll = 0;
+  const recent = (samples, t) => (Array.isArray(samples) ? samples : []).filter((x) => x.t >= t - METRICS_WINDOW_MS).slice(-METRICS_MAX_SAMPLES);
   const refreshUsage = (machines) => {
     running = machines.filter((m) => m.state === 'running').map((m) => m.id);
     for (const id of usage.keys()) if (!running.includes(id)) usage.delete(id);
@@ -319,10 +322,15 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       const prev = usage.get(id);
       if (inflight.has(id) || (prev && now() - prev.at < METRICS_MS)) continue;
       if (!provider.caps?.hasMetrics) { usage.set(id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); continue; }
-      const t = now(), put = (u) => { if (running.includes(id)) usage.set(id, u); };
-      inflight.set(id, limiter.run(() => provider.metrics(id, { since: t - METRICS_WINDOW_MS }))
-        .then((r) => put({ samples: r.samples, fetchedAt: r.fetchedAt, at: t }), (e) => put({ samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }))
-        .finally(() => inflight.delete(id)));
+      // Eligibility is checked when the limiter grants the slot, not when the read was queued; a read that is no longer wanted is dropped.
+      inflight.set(id, limiter.run(async () => {
+        if (!running.includes(id) || now() - lastPoll > METRICS_POLL_GRACE_MS) return;
+        const t = now(); // the 30 s interval counts from here
+        let u;
+        try { const r = await provider.metrics(id, { since: t - METRICS_WINDOW_MS }); u = { samples: recent(r.samples, t), fetchedAt: r.fetchedAt, at: t }; }
+        catch (e) { u = { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }; }
+        if (running.includes(id)) usage.set(id, u);
+      }).catch(() => {}).finally(() => inflight.delete(id)));
     }
   };
   const errorOf = (code) => (code === 'not_found' ? { code: 'machine_gone' } : (({ code: c, whatHappened, nextStep }) => ({ code: c, whatHappened, nextStep }))(guideObj(code, { provider: provider.name })));
@@ -331,11 +339,12 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     const u = usage.get(id);
     if (!u) return { none: 'no_samples_yet', fetchedAt: null };
     if (u.error) return { error: errorOf(u.error.code) };
-    const n = u.samples.at(-1);
+    const n = recent(u.samples, now()).at(-1);
     if (!n) return { none: 'no_samples_yet', fetchedAt: u.fetchedAt };
     return { at: n.t, cpuPct: n.cpuPct, cpuCount: n.cpuCount, memUsed: n.memUsed, memTotal: n.memTotal, netIn: n.netIn, netOut: n.netOut, fetchedAt: u.fetchedAt, source: sourceOf(u) };
   };
   const state = async () => {
+    lastPoll = now();
     if (cached && now() - at < cacheMs) return cached;
     let machines, machineError;
     try {
@@ -363,7 +372,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   state.settle = () => Promise.all(inflight.values()); // tests: wait for the background reads
   state.metrics = (machineId) => {
     const u = usage.get(machineId);
-    return u && { samples: u.samples, fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code) }) };
+    return u && { samples: recent(u.samples, now()), fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code) }) };
   };
   return state;
 }

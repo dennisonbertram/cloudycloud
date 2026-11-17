@@ -881,6 +881,59 @@ test('the demo has usage for running boxes (one busy, one quiet) and a series at
   assert.equal('usage' in by('a7716be4'), false);
   const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
   const r = (await api(opts, '/api/metrics?box=7c1e90ab')).json;
-  assert.equal(r.samples.length, 240);
-  assert.ok(r.samples.at(-1).t - r.samples[0].t >= 3_500_000);
+  assert.equal(r.samples.length, 120);
+  assert.ok(r.samples.at(-1).t - r.samples[0].t >= 3_500_000 && r.samples.at(-1).t - r.samples[0].t <= 3_600_000);
+});
+
+// ---- usage read eligibility, timing and bounds (#117 review) ----
+const gated = () => { // m1, m2, x1..x3 running; metrics for the first four block until released, later ones answer at once
+  const held = [], seen = [];
+  const e = usageEnv({ metrics: (id) => { seen.push(id); const s = [{ t: 1_000_000 - 5000, cpuPct: 1, cpuCount: 1, memUsed: 1, memTotal: 2 }]; return held.length < 4 ? new Promise((r) => held.push(() => r({ samples: s, fetchedAt: 1 }))) : Promise.resolve({ samples: s, fetchedAt: 1 }); } });
+  for (const id of ['x1', 'x2', 'x3']) e.machines.push({ id, state: 'running', status: 'running', labels: {} });
+  return { ...e, held, seen };
+};
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('a read queued behind others is dropped when its machine left the running list meanwhile', async () => {
+  const { getState, machines, held, seen } = gated();
+  await getState(); await tick(); assert.equal(seen.length, 4);
+  machines.find((m) => m.id === 'x3').state = 'stopped'; await getState();
+  held.forEach((f) => f()); await getState.settle(); await tick();
+  assert.equal(seen.includes('x3'), false);
+});
+
+test('a read queued when the page stops polling is dropped', async () => {
+  const { getState, clock, held, seen } = gated();
+  await getState(); await tick(); clock.t += 600_000;
+  held.forEach((f) => f()); await getState.settle(); await tick();
+  assert.equal(seen.length, 4);
+});
+
+test('the 30 s interval counts from when the read starts, not when it was queued', async () => {
+  const { getState, clock, held, seen } = gated();
+  await getState(); await tick(); clock.t += 31_000; await getState(); // x3 still queued; the page keeps polling
+  held.forEach((f) => f()); await getState.settle(); await tick(); assert.equal(seen.filter((i) => i === 'x3').length, 1);
+  clock.t += 1_000; await getState(); await getState.settle();
+  assert.equal(seen.filter((i) => i === 'x3').length, 1); // started at +31 s, so not again at +32 s
+});
+
+test('stored samples are capped and limited to the last hour, also at response time', async () => {
+  const clock0 = 10_000_000;
+  const many = Array.from({ length: 400 }, (_, i) => ({ t: clock0 - (399 - i) * 5000, cpuPct: i, cpuCount: 1, memUsed: 1, memTotal: 2 }));
+  const old = [{ t: clock0 - 7_200_000, cpuPct: 99, cpuCount: 1, memUsed: 1, memTotal: 2 }, ...many];
+  let fail = false;
+  const { getState, clock } = usageEnv({ metrics: async () => { if (fail) throw Object.assign(new Error('x'), { code: 'metrics_unavailable' }); return { samples: old, fetchedAt: clock0 }; } });
+  clock.t = clock0;
+  const s = await fresh(getState);
+  const kept = getState.metrics('m1').samples;
+  assert.equal(kept.length, 150); assert.equal(kept.at(-1).cpuPct, 399); assert.ok(kept.every((x) => x.t >= clock0 - 3_600_000));
+  assert.equal(boxOf(s, 'm1').usage.cpuPct, 399);
+  fail = true; clock.t += 2 * 3_600_000; const s2 = await fresh(getState);
+  assert.equal(getState.metrics('m1').samples.length, 0); // nothing older than an hour is returned after a failed refresh
+  assert.equal(boxOf(s2, 'm1').usage.error.code, 'metrics_unavailable');
+});
+
+test('the demo series covers one hour', () => {
+  const s = demoStream.metrics('7c1e90ab').samples;
+  assert.equal(s.length, 120); assert.ok(s.at(-1).t - s[0].t <= 3_600_000);
 });
