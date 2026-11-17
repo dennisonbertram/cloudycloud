@@ -148,3 +148,13 @@ test('a gpu machine gets the two-minute note before the request', async () => {
   s.provider.displayLink = async () => { assert.match(s.err.join('\n'), /about two minutes/); return { url: 'https://x/#t', expiresAt: Date.now() + 1000 }; };
   assert.equal(await run(['box-aaa'], s.d), 0);
 });
+
+test('an omarchy machine is refused up front whether addressed by agent id, name or machine id', async () => {
+  for (const id of ['7c1e90ab', 'box-aaa', 'mach-aaa']) {
+    const s = setup();
+    s.d.list = async () => [{ ...machines[0], labels: { kind: 'omarchy' } }];
+    assert.equal(await run([id], s.d), 1, id);
+    assert.match(s.err.join('\n'), /omarchy machine has no desktop/);
+    assert.deepEqual(s.provider.log.display, [], id);
+  }
+});

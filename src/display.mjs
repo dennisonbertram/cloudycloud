@@ -58,11 +58,11 @@ export async function run(argv, deps = {}) {
     const events = (deps.events ?? (() => readEvents(eventsFile(env))))();
     let machine;
     // --unshare must work on a stopped or suspended machine, so treat every listed machine as running for the lookup.
-    const row = machines.find((m) => m.id === a.id || m.name === a.id);
     try { machine = resolveTarget(a.id, { machines: a.unshare ? machines.map((m) => ({ ...m, status: 'running' })) : machines, events, alive: deps.alive }); } catch (e) {
       if (/is not running/.test(e.message)) fail(`${e.message}\n${guide('machine_not_running', { id: a.id })}`);
       throw e;
     }
+    const row = machines.find((m) => m.id === machine); // by the resolved machine id: a is an agent id, a machine name or a machine id
     if (!provider.caps.hasDisplay) fail(guide('display_unsupported', { provider: provider.name }));
     if (!a.unshare && row?.labels?.kind === 'omarchy') fail(guide('desktop_unavailable', { kind: 'omarchy' }));
     // Provider errors with a display code get that code's plain next step; the raw message never carries the link.

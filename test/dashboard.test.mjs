@@ -756,3 +756,15 @@ test('#111 the command rows are in the header, which has no height cap on a phon
   assert.match(html, /not available on omarchy/i);
   assert.match(html, /kindrep/); // the kind in the Machine row only where the list badge is hidden
 });
+
+test('the macOS Cost row prices the chosen model with its 24-hour minimum, and the macOS Screen row says it is unverified', () => {
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  const src = html.match(/  const costText = [\s\S]*?\n  \};/)[0];
+  const costText = new Function(`${src}; return costText;`)();
+  const m2 = costText({ machineKind: 'macos:m2', deadline: 1 }), pro = costText({ machineKind: 'macos:m4pro' });
+  assert.match(m2, /\$0\.45 per hour[\s\S]*24-hour minimum[\s\S]*\$10\.80/);
+  assert.match(pro, /\$1\.25 per hour[\s\S]*24-hour minimum[\s\S]*\$30\.00/);
+  assert.doesNotMatch(pro, /\$0\.45/);
+  assert.match(costText({ machineKind: 'macos' }), /\$0\.45 to \$1\.25 per hour/);
+  assert.match(html, /not verified on macOS yet/);
+});

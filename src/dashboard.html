@@ -104,6 +104,7 @@
   .cmds .prop { display: flex; gap: 12px; align-items: baseline; }
   .cmds .pl { flex: none; width: 64px; margin: 0; }
   .kindrep { display: none; }
+  .hint { color: var(--text-3); font-size: 12px; }
   .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
   .pv { font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -398,7 +399,7 @@
   const costText = (b) => {
     const [k, type, n] = (b.machineKind || '').split(':'), stop = ' Stop it by asking Claude to call cloud_agent_stop from the session' + (b.deadline ? '; it is deleted anyway at the deadline shown above.' : '.');
     if (k === 'gpu') { const c = /^[1-4]$/.test(n) ? +n : 1; return (!type || type === 'l4' ? '$0.765 per GPU-hour × ' + c + ' GPU' + (c > 1 ? 's' : '') + ' = about $' + (0.765 * c).toFixed(2) + ' per hour.' : '$0.765 per GPU-hour for an L4; other GPU types may differ.') + stop; }
-    if (k === 'macos') return '$0.45 to $1.25 per hour by model, with a 24-hour minimum lease that cannot be cut short.' + stop;
+    if (k === 'macos') { const p = { m2: 0.45, m2pro: 0.85, m4: 0.75, m4pro: 1.25 }[type]; return (p ? '$' + p.toFixed(2) + ' per hour for ' + type + ', with a 24-hour minimum lease ($' + (p * 24).toFixed(2) + ') that cannot be cut short.' : '$0.45 to $1.25 per hour by model, with a 24-hour minimum lease that cannot be cut short.') + stop; }
     return null;
   };
   const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
@@ -407,7 +408,9 @@
   // Display is a command to run, never a link: the link is a bearer token and only the command line makes one.
   const screenRow = (b) => {
     const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(cliId(b)) }), copyBtn(displayCmd(cliId(b)), 'display command')); e.classList.add('full');
-    e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG."; return e;
+    e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG.";
+    if (kindBase(b) === 'macos') { e.querySelector('.pv').classList.add('note'); e.querySelector('.pv').append(h('span', { class: 'hint', text: 'not verified on macOS yet' })); }
+    return e;
   };
   const costRow = (t) => { const e = prop('Cost', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
   const noScreen = (t) => { const e = prop('Screen', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
