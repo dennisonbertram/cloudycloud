@@ -568,7 +568,8 @@ function statusOf(t, ctx) {
 const iso = (ms) => new Date(ms).toISOString();
 
 // What cloud_agent and cloud_agent_message answer with in task mode.
-const priceNote = (t) => (EXPENSIVE.includes(t.agent.kind?.name) ? `${PRICE[t.agent.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : '');
+const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : '');
+const priceNote = (t) => priceOf(t.agent);
 function taskAnswer(t, ctx) {
   return {
     resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), priceNote(t)].filter(Boolean).join(' '),
@@ -735,7 +736,7 @@ export async function waitAgents(args = {}, deps) {
     if (active(a) || !a.result) return head;
     if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
     a.result.reported = true;
-    return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}`;
+    return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`;
   });
   return ctx.ok(parts.join('\n\n'));
 }
@@ -756,7 +757,7 @@ export async function resultAgent(args = {}, deps) {
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
   if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
-  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`);
 }
 
 // cloud_agent_list: read-only.
