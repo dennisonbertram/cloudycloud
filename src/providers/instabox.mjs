@@ -107,6 +107,8 @@ const sharedLimiter = (env) => (shared ??= createLimiter(Number(env.CLOUDY_CLOUD
 // The Provider for Instabox. `deps` = { sdk, fetchFn, spawn, timing, limiter, now, sleep, sliceMs }, all injectable for tests.
 // Every command, file and job-wait call goes through one limiter (Instabox allows 32 concurrent requests per account);
 // a 429 is retried after a short backoff, outside the slot. list and delete use raw fetch so the reaper never loads the SDK.
+const shq = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote
+
 export function createProvider(env, deps = {}) {
   const fetchFn = deps.fetchFn ?? fetch;
   const limiter = deps.limiter ?? sharedLimiter(env);
@@ -293,7 +295,8 @@ export function createProvider(env, deps = {}) {
     },
     revokeDisplayLinks(id) { return this.desktop(id, (d) => d.revokeStreamUrls()); },
     screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
-    shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', ...cmd] : [])],
+    // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command.
+    shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', '-T', cmd.map(shq).join(' ')] : [])],
 
     async connect(id, { retry = true } = {}) {
       const { Sandbox } = await loadSdk();

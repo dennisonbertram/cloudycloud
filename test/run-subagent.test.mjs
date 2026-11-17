@@ -1624,6 +1624,28 @@ test('gpu without consent is refused with the price and the env line; with conse
   assert.equal(r.isError, true);
 });
 
+test('#105 the wait and result text carry the cost line for gpu, and not for linux', async () => {
+  for (const [machine, expect] of [['gpu', true], [undefined, false]]) {
+    const { deps, text } = await kindSetup();
+    deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'gpu';
+    const id = text(await runSubagent({ description: 'd', prompt: 'hi', machine }, deps)).match(/agent_id: (\w+)/)[1];
+    const w = text(await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, deps));
+    assert.equal(/per GPU-hour/.test(w) && /cloud_agent_stop/.test(w), expect, w);
+    const r = text(await resultAgent({ agent_id: id }, deps));
+    assert.equal(/per GPU-hour/.test(r) && /cloud_agent_stop/.test(r), expect, r);
+  }
+});
+
+test('#105 a failed gpu result still starts with ERROR:, with the cost line after it', async () => {
+  const { deps, text } = await kindSetup();
+  deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'gpu';
+  const id = text(await runSubagent({ description: 'd', prompt: 'FAIL', machine: 'gpu' }, deps)).match(/agent_id: (\w+)/)[1];
+  await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, deps);
+  const r = text(await resultAgent({ agent_id: id }, deps));
+  assert.match(r, /^ERROR: /, r);
+  assert.match(r, /per GPU-hour[\s\S]*$/);
+});
+
 // Runs the real preflight command in bash, with PATH holding only `have` as executables and `shellOnly` as functions.
 const probeProvider = (have, shellOnly = []) => {
   const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
