@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes'];
+const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes', 'hasSizes'];
 const create = (p, labels, extra = {}) => p.create({ image: 'agent-browser', envs: {}, labels, ttlSeconds: 3600, ...extra });
 
 // kindsSkip: a reason to skip the kinds check explicitly (shown as skipped) for an adapter that does not have the caps yet.

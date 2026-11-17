@@ -77,6 +77,25 @@ test('#116 metrics codes exist, name a command, and metrics_unsupported names th
   assert.match(guide('metrics_unsupported', { provider: 'self-hosted', id: 'm1' }), /self-hosted[\s\S]*cloudy-cloud shell m1 -- top -bn1/);
 });
 
+test('#128 size_not_allowed names the tier, the sizes, the plan and the upgrade command, and keeps secrets out', () => {
+  assert.ok(CODES.includes('size_not_allowed') && HUMAN_CODES.includes('size_not_allowed'));
+  const t = guide('size_not_allowed', { size: '16x32', tier: 'pro', sizes: '2x4 4x8 8x16', plan: 'builder', largest: '8x16', secrets: ['ib-secret'], message: 'ib-secret' });
+  assert.match(t, /16x32 is not on your Instabox plan \(pro\)/);
+  assert.match(t, /allows: 2x4 4x8 8x16/);
+  assert.match(t, /builder plan or higher/);
+  assert.match(t, /npx --yes instabox@latest workspace plan <workspace> builder/);
+  assert.match(t, /use 8x16/);
+  assert.ok(!t.includes('ib-secret'));
+  assert.match(guide('size_not_allowed', { size: '16x32' }), /Likely the plan does not include it/);
+});
+
+test('#128 size_not_allowed names the monthly fee and the pricing link; no plan says larger than any plan', () => {
+  const t = guide('size_not_allowed', { size: '16x32', plan: 'builder', fee: 100 });
+  assert.match(t, /builder plan \(\$100\/month, which includes usage equal to the fee\)/);
+  assert.match(t, /instabox\.sh\/pricing/);
+  assert.match(guide('size_not_allowed', { size: '64x128' }), /larger plan than any listed/);
+});
+
 test('plan-limit guidance names the tier, the number hit and the upgrade path; no plan keeps the old wording', () => {
   const plan = { tier: 'pro', startsPerMinute: 30, maxRunning: 100, maxMachines: 500 };
   const up = /instabox workspace plan <workspace> (pro\|)?builder\|team|billing/;

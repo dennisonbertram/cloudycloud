@@ -30,3 +30,26 @@ test('KINDS, EXPENSIVE and PRICE agree', () => {
   assert.deepEqual(EXPENSIVE, ['gpu', 'macos']);
   for (const k of EXPENSIVE) assert.match(PRICE[k], /\$/);
 });
+
+test('parseSize reads NxM, rejects other forms, and ignores an empty value', async () => {
+  const { parseSize, sizeLabel, SIZE_PRICE, planFor } = await import('../src/machine.mjs');
+  assert.deepEqual(parseSize('8x16'), { vcpus: 8, memMiB: 16384, label: '8x16' });
+  assert.deepEqual(parseSize(' 2X4 '), { vcpus: 2, memMiB: 4096, label: '2x4' });
+  assert.equal(parseSize(undefined), undefined);
+  assert.equal(parseSize(''), undefined);
+  for (const s of ['8/16', '8x', 'big', 'x8', '0x4', '4x0', '4x8x1', '-4x8', '4.5x8']) assert.match(parseSize(s).error, /VCPUSxGIB|4x8/, s);
+  assert.equal(sizeLabel({ vcpus: 2, memMiB: 4096 }), '2x4');
+  assert.equal(sizeLabel({ vcpus: 8, memMiB: 16384 }), '8x16');
+  assert.equal(SIZE_PRICE(8, 16), '8x16 costs about $0.068 an hour while running (vCPU $0.004/h, memory $0.00225/GiB-h).');
+  assert.match(SIZE_PRICE(2, 4), /\$0\.017 an hour/);
+  assert.deepEqual([planFor(8), planFor(16), planFor(32), planFor(64)], ['pro', 'builder', 'team', undefined]);
+});
+
+test('#128 planFor needs both the vCPUs and the memory to fit; planFee gives the monthly fee', async () => {
+  const { planFor, planFee } = await import('../src/machine.mjs');
+  assert.equal(planFor(8, 16384), 'pro');
+  assert.equal(planFor(8, 32768), 'builder');
+  assert.equal(planFor(16, 65536), 'team');
+  assert.equal(planFor(64, 131072), undefined);
+  assert.deepEqual(['pro', 'builder', 'team', 'x'].map(planFee), [20, 100, 500, undefined]);
+});

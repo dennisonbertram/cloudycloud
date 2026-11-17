@@ -509,3 +509,16 @@ test('plan: a failure is not cached, so the next call can succeed', async () => 
   assert.equal(await p.plan(), null);
   assert.equal((await p.plan()).tier, 'pro');
 });
+
+test('#128 create passes vcpus and memMiB only when a size is given; spec_not_allowed becomes size_not_allowed', async () => {
+  const mk = (a) => createProvider({ INSTABOX_API_KEY: KEY }, { sdk: a.sdk, fetchFn: fakeFetch().f, timing });
+  const a = fakeSdk(), b = fakeSdk();
+  await mk(a).create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60, size: { vcpus: 8, memMiB: 16384, label: '8x16' } });
+  assert.equal(a.calls.create[0].opts.vcpus, 8);
+  assert.equal(a.calls.create[0].opts.memMiB, 16384);
+  await mk(b).create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60 });
+  assert.ok(!('vcpus' in b.calls.create[0].opts) && !('memMiB' in b.calls.create[0].opts));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: { Sandbox: { create: async () => { throw Object.assign(new Error('size 16/32 is not allowed'), { status: 400, code: 'spec_not_allowed' }); } } }, fetchFn: fakeFetch().f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', envs: {}, labels: {}, ttlSeconds: 60, size: { vcpus: 16, memMiB: 32768 } }), (e) => e.code === 'size_not_allowed' && e.instaboxCode === 'spec_not_allowed' && /16\/32/.test(e.message));
+  assert.equal(createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: fakeFetch().f, timing }).caps.hasSizes, true);
+});

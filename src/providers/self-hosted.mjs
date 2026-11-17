@@ -94,7 +94,7 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
-      machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false,
+      machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false, hasSizes: false,
     },
 
     async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind }) {
