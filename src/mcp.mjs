@@ -50,7 +50,7 @@ const tools = [
   },
   {
     name: 'cloud_agent_list',
-    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step). With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
+    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step), plus CPU and memory use of each running or idle machine (usage n/a when it cannot be read). With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'List every cloudy-cloud machine from the provider, grouped by parent' } } },
     annotations: { readOnlyHint: true },
   },

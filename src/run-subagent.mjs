@@ -766,11 +766,38 @@ export async function listAgents(args, deps) {
   const { ok, open } = ctx;
   if (args?.all === true) return ok(await allMachines(ctx));
   if (!open.size) return ok('No agents.');
-  return ok([...open.values()].map((a) =>
+  const usage = await usageOf([...open.values()], ctx);
+  const withUsage = (a, text) => { const u = usage.get(a); if (!u) return text; const i = text.indexOf('\n'); return i < 0 ? text + u : text.slice(0, i) + u + text.slice(i); };
+  return ok([...open.values()].map((a) => withUsage(a,
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
-    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : '')).join('\n'));
+    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'));
+}
+
+// Usage segment per running or idle agent, appended to the first line. Never throws; any failure or slowness reads "usage n/a".
+// At most 4 reads at once (the provider's own limiter paces the calls), 3 s in total. Stopped and queued agents are never touched.
+async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
+  const out = new Map();
+  const eligible = (a) => a.sandbox?.id && (a.status === 'running' || a.status === 'idle');
+  const todo = provider?.caps?.hasMetrics ? agents.filter(eligible) : [];
+  for (const a of todo) out.set(a, '  usage n/a');
+  let next = 0, timer;
+  const read = async () => {
+    for (let a; (a = todo[next++]);) {
+      if (!eligible(a)) { out.delete(a); continue; } // stopped while it waited for a slot: no call, no segment
+      try {
+        const { samples } = await provider.metrics(a.sandbox.id, { since: Date.now() - 120_000 });
+        const s = samples?.at(-1);
+        if (s && Number.isFinite(s.cpuPct) && s.memTotal > 0) { const gib = (n) => (n / 2 ** 30).toFixed(1).replace(/\.0$/, ''); out.set(a, `  cpu ${Math.round(s.cpuPct)}%  mem ${gib(s.memUsed)}/${gib(s.memTotal)} GiB`); }
+      } catch { /* usage n/a */ }
+    }
+  };
+  const budget = new Promise((r) => { timer = setTimeout(r, usageBudgetMs); });
+  await Promise.race([Promise.all(Array.from({ length: Math.min(4, todo.length) }, read)), budget]);
+  clearTimeout(timer);
+  next = todo.length; // a late timeout stops workers from starting more reads
+  return new Map(out); // snapshot: a read that finishes after the budget cannot change the output
 }
 
 // cloud_agent_stop: idempotent.
