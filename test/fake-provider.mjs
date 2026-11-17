@@ -11,7 +11,6 @@ const exec = promisify(execFile);
 // Fake `claude`: behaviour chosen by the first word of the prompt on stdin. Prints stream-json like `claude -p --output-format stream-json --verbose`.
 export const SID = '11111111-2222-3333-4444-555555555555';
 const FAKE_CLAUDE = `#!/bin/sh
-[ "$1" = mcp ] && exit 0 # claude mcp remove instabox runs before every worker turn
 p=$(cat)
 echo "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS $BASH_DEFAULT_TIMEOUT_MS $BASH_MAX_TIMEOUT_MS" >> ../envlog.txt
 sid=${SID}

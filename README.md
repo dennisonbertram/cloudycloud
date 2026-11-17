@@ -209,7 +209,7 @@ Details and the `profiles.json` format: [Models and keys](https://cloudycloud.te
 
 ## MCP servers
 
-Cloud subagents have no MCP servers until you copy some. Copying is opt-in, one server at a time:
+Claude workers get the machine image's own MCP servers (on Instabox, open-computer-use; the image's instabox server is removed because the worker has no Instabox sign-in) plus the servers you share. A repository's `.mcp.json` is never loaded. Sharing is opt-in, one server at a time:
 
 ```sh
 cloudy-cloud mcp add notion
@@ -219,7 +219,7 @@ cloudy-cloud mcp ls
 
 `mcp add` finds the server in your Claude Code settings, saves it to `~/.config/cloudy-cloud/mcp.json` and prints the exact `secrets set` command for its token. Run that command once with the real token, signed in with `instabox login` (the Instabox API key cannot create secrets). Every subagent you start afterwards gets the server, and the reply ends with a line such as `MCP servers: notion`. Remove one with `cloudy-cloud mcp rm notion`.
 
-Only remote `https` servers on public hosts and `npx` or `uvx` servers are accepted. No OAuth sign-in, no localhost or local paths, no secrets in URLs or arguments, and a `pi` worker skips `sse` servers (pi has no SSE transport). `pi` and `omp` workers get the same servers and the same Instabox token secrets; their file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` on the machine, and their reply shows `MCP servers: a, b` for the servers delivered, which does not confirm a connection. Once you have copied a server, a repo's own `.mcp.json` is no longer loaded on the machine. The token stays in Instabox and is added only to requests to the host you named; never store the secret without `--host`. `--allow-literal` is an explicit, confirmed exception that puts the real token on the machine of each subagent you start; a coordinator's own session gets it, but the workers the coordinator starts do not. Details: [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+Only remote `https` servers on public hosts and `npx` or `uvx` servers are accepted. No OAuth sign-in, no localhost or local paths, no secrets in URLs or arguments, and a `pi` worker skips `sse` servers (pi has no SSE transport). `pi` and `omp` workers get the same servers and the same Instabox token secrets; their file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` on the machine, and their reply shows `MCP servers: a, b` for the servers delivered, which does not confirm a connection.  The token stays in Instabox and is added only to requests to the host you named; never store the secret without `--host`. `--allow-literal` is an explicit, confirmed exception that puts the real token on the machine of each subagent you start; a coordinator's own session gets it, but the workers the coordinator starts do not. Details: [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ## Coordinators
 
@@ -286,7 +286,7 @@ See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troublesho
 
 ## Limits and known issues
 
-- Subagents see only files tracked by git. They cannot see your settings or agents in `~/.claude/agents`. They get the MCP servers you share with `cloudy-cloud mcp add` plus whatever the machine image already provides (on Instabox, open-computer-use); the image's instabox server is removed, because the worker has no Instabox sign-in. Only remote `https` servers on public hosts and `npx` or `uvx` servers can be copied (see [MCP servers](#mcp-servers)).
+- Subagents see only files tracked by git. They cannot see your settings or agents in `~/.claude/agents`. Claude workers get the MCP servers you share with `cloudy-cloud mcp add` plus the machine image's own (on Instabox, open-computer-use); the image's instabox server is removed, because the worker has no Instabox sign-in. `pi` and `omp` workers get only the servers you share. Only remote `https` servers on public hosts and `npx` or `uvx` servers can be copied (see [MCP servers](#mcp-servers)).
 - An ordinary subagent's own subagents run inside the same machine, not on new ones. Only coordinators start new machines.
 - Tested on macOS.
 - Two items are still open: the Particle.ai proxy secret is covered by stub tests but not yet proven live end to end, and agent-drive access for workers is not built. See [docs/STATUS.md](docs/STATUS.md) for what has been proven live.

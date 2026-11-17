@@ -1022,15 +1022,17 @@ async function mcpSetup(servers, over = {}) {
   return { ...s, opts, file };
 }
 const X = { x: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ${MCP_X_TOKEN}' } } };
+import { MERGE_MCP_SCRIPT } from '../src/worker-mcp.mjs';
+const MERGE = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json /home/user/.config/cloudy-cloud/mcp.json || echo '{"mcpServers":{}}' > $D/mcp.json;`;
 const claudeCmd = (sbx) => sbx.cmds.find((c) => /claude -p|cloudy-cloud\/bin\/cloudy-cloud -p/.test(c));
 
 test('a plain worker without mcp.json runs the same claude command (now inside the stream tee) and writes no mcp file', async () => {
   const { start, wait, sandboxes, opts } = await mcpSetup('{"mcpServers":{}}');
   await wait([await start({})]);
   const sbx = sandboxes[0];
-  const inner = /\{ (.*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
+  const inner = /\{ ([\s\S]*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
   assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
-    'claude mcp remove instabox -s user >/dev/null 2>&1 || true; CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt \'HINT\' < /home/user/prompt.txt');
+    MERGE + ' CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --mcp-config $D/mcp.json --strict-mcp-config --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
@@ -1043,9 +1045,8 @@ test('a worker with an mcp.json server gets the file, the flags, the secret, the
   assert.deepEqual(opts[0].secrets, ['CLAUDE_CODE_OAUTH_TOKEN', 'MCP_X_TOKEN']);
   assert.equal(sbx.written[`${home}/.config/cloudy-cloud/mcp.json`], JSON.stringify({ mcpServers: X }, null, 2));
   assert.ok(sbx.cmds.some((c) => c.includes(`chmod 600 ${home}/.config/cloudy-cloud/mcp.json`)));
-  assert.match(claudeCmd(sbx), /--verbose --mcp-config \/home\/user\/\.config\/cloudy-cloud\/mcp\.json --append-system-prompt/);
-  assert.match(claudeCmd(sbx), /claude mcp remove instabox -s user >\/dev\/null 2>&1 \|\| true; /);
-  assert.doesNotMatch(claudeCmd(sbx), /--strict-mcp-config/);
+  assert.match(claudeCmd(sbx), /--verbose --mcp-config \$D\/mcp\.json --strict-mcp-config --append-system-prompt/);
+  assert.ok(claudeCmd(sbx).includes(`' $D/mcp.json ${home}/.config/cloudy-cloud/mcp.json ||`), 'the merge reads the shared file');
   assert.match(r, /MCP servers: x/);
   assert.ok(!JSON.stringify(sbx.envs).includes('MCP_'), 'no MCP value in the sandbox env');
 });
@@ -1149,8 +1150,7 @@ test('with no mcp.json at all the footer has no MCP line and no secrets are pass
   await rm(file);
   const r = await wait([await start({})]);
   assert.doesNotMatch(r, /MCP/);
-  assert.ok(!claudeCmd(sandboxes[0]).includes('--mcp-config'));
-  assert.match(claudeCmd(sandboxes[0]), /claude mcp remove instabox -s user >\/dev\/null 2>&1 \|\| true; /);
+  assert.match(claudeCmd(sandboxes[0]), /--mcp-config \$D\/mcp\.json --strict-mcp-config/);
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
 
