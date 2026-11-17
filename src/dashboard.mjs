@@ -280,7 +280,9 @@ const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 
 export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider, getReader, now = Date.now } = {}) {
   let cached, at = 0;
   const usage = new Map(); // running machine id -> { samples, fetchedAt, at, error } (#117)
-  const limiter = createLimiter(METRICS_AT_ONCE);
+  let limiter; // made on first use: metrics reads leave at least one provider slot free for the state's own reads
+  const lastRead = new Map(); // machine id -> when its last read started; kept after the machine stops so a quick restart is not read again within METRICS_MS
+  let listSeq = 0, appliedSeq = 0; // a list answer older than the one already applied is ignored
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
     let st = logs.get(m.id);
@@ -317,15 +319,18 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   const recent = (samples, t) => (Array.isArray(samples) ? samples : []).filter((x) => x.t >= t - METRICS_WINDOW_MS).slice(-METRICS_MAX_SAMPLES);
   const refreshUsage = (machines) => {
     running = machines.filter((m) => m.state === 'running').map((m) => m.id);
+    limiter ??= createLimiter(Math.max(1, Math.min(METRICS_AT_ONCE, (provider.caps?.maxConcurrentCalls || 24) - 1)));
+    for (const [id, t] of lastRead) if (now() - t >= METRICS_MS) lastRead.delete(id);
     for (const id of usage.keys()) if (!running.includes(id)) usage.delete(id);
     for (const id of running) {
       const prev = usage.get(id);
-      if (inflight.has(id) || (prev && now() - prev.at < METRICS_MS)) continue;
-      if (!provider.caps?.hasMetrics) { usage.set(id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); continue; }
+      if (inflight.has(id) || now() - (lastRead.get(id) ?? -Infinity) < METRICS_MS) continue;
+      if (!provider.caps?.hasMetrics) { usage.set(id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); lastRead.set(id, now()); continue; }
       // Eligibility is checked when the limiter grants the slot, not when the read was queued; a read that is no longer wanted is dropped.
       inflight.set(id, limiter.run(async () => {
         if (!running.includes(id) || now() - lastPoll > METRICS_POLL_GRACE_MS) return;
         const t = now(); // the 30 s interval counts from here
+        lastRead.set(id, t);
         let u;
         try { const r = await provider.metrics(id, { since: t - METRICS_WINDOW_MS }); u = { samples: recent(r.samples, t), fetchedAt: r.fetchedAt, at: t }; }
         catch (e) { u = { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }; }
@@ -347,6 +352,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     lastPoll = now();
     if (cached && now() - at < cacheMs) return cached;
     let machines, machineError;
+    const seq = ++listSeq;
     try {
       provider ??= await loadProvider(env);
       machines = await list(env, provider);
@@ -361,7 +367,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
       coordLogs[m.id] = st.folded;
     }
-    if (machines && provider) refreshUsage(machines);
+    if (machines && provider && seq > appliedSeq) { appliedSeq = seq; refreshUsage(machines); }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
     for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) b.usage = u; }

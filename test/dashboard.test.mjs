@@ -10,6 +10,7 @@ import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/e
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 import { createMachineReader } from '../src/machine-read.mjs';
+import { createLimiter } from '../src/limits.mjs';
 
 const TOKEN = 'tok-123';
 const get = (port, path, host = `127.0.0.1:${port}`, method = 'GET') => new Promise((resolve, reject) => {
@@ -936,4 +937,38 @@ test('stored samples are capped and limited to the last hour, also at response t
 test('the demo series covers one hour', () => {
   const s = demoStream.metrics('7c1e90ab').samples;
   assert.equal(s.length, 120); assert.ok(s.at(-1).t - s[0].t <= 3_600_000);
+});
+
+// ---- provider slots, list order, restart within 30 s (#117 second review) ----
+const mkMachines = (...ids) => ids.map((id) => ({ id, state: 'running', status: 'running', labels: {} }));
+const stateWith = (list, provider, clock) => liveState({}, { list, provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl'), cacheMs: 0, now: () => clock.t });
+
+test('pending metrics reads never take every provider slot: a state build that needs a slot still completes', async () => {
+  const L = createLimiter(4), clock = { t: 1_000_000 }, calls = [];
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true, maxConcurrentCalls: 4 }, metrics: (id) => L.run(() => { calls.push(id); return new Promise(() => {}); }) };
+  const machines = mkMachines('a', 'b', 'c', 'd', 'e');
+  const getState = stateWith(() => L.run(async () => machines), provider, clock);
+  await getState(); await tick();
+  assert.ok(calls.length >= 1 && calls.length <= 3);
+  const done = await Promise.race([getState().then(() => true), new Promise((r) => setTimeout(() => r(false), 300))]);
+  assert.equal(done, true);
+});
+
+test('a list answer older than the one already applied does not start reads', async () => {
+  const clock = { t: 1_000_000 }, calls = []; let n = 0;
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true }, metrics: async (id) => { calls.push(id); return { samples: [], fetchedAt: 1 }; } };
+  const list = async () => (++n === 1 ? (await new Promise((r) => setTimeout(r, 30)), mkMachines('m1')) : [{ id: 'm1', state: 'stopped', status: 'stopped', labels: {} }]);
+  const getState = stateWith(list, provider, clock);
+  await Promise.all([getState(), getState()]); await getState.settle(); await tick();
+  assert.deepEqual(calls, []);
+});
+
+test('a machine that stops and resumes within 30 s is not read again at once', async () => {
+  const clock = { t: 1_000_000 }, calls = []; let state = 'running';
+  const provider = { name: 'fake', keyName: 'K', caps: { hasMetrics: true }, metrics: async (id) => { calls.push(id); return { samples: [], fetchedAt: 1 }; } };
+  const getState = stateWith(async () => [{ id: 'm1', state, status: state, labels: {} }], provider, clock);
+  await fresh(getState); state = 'stopped'; clock.t += 2000; await getState(); state = 'running'; clock.t += 2000; await fresh(getState);
+  assert.equal(calls.length, 1);
+  clock.t += 30_000; await fresh(getState);
+  assert.equal(calls.length, 2);
 });
