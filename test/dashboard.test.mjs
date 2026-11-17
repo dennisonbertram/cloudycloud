@@ -778,18 +778,19 @@ const usageEnv = (over = {}) => {
   const getState = liveState({}, { list: async () => machines, provider: over.provider ?? provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl'), cacheMs: 0, now: () => clock.t });
   return { clock, calls, getState, machines };
 };
+const fresh = async (getState) => { await getState(); await getState.settle(); return getState(); }; // one state build, the background reads, then the state with their result
 const boxOf = (s, m) => s.boxes.find((b) => b.machine === m);
 
 test('usage is read once per running machine per 30 s, from the newest sample, and never for a stopped machine', async () => {
   const { clock, calls, getState } = usageEnv();
-  const s = await getState(); await getState(); clock.t += 29_000; await getState();
+  const s = await fresh(getState); await getState(); clock.t += 29_000; await fresh(getState);
   assert.deepEqual(calls.map((c) => c.id).sort(), ['m1', 'm2']);
   assert.equal(calls[0].since, 1_000_000 - 3_600_000);
   const u = boxOf(s, 'm1').usage;
   assert.deepEqual([u.cpuPct, u.cpuCount, u.memUsed, u.memTotal, u.netIn, u.netOut, u.at, u.fetchedAt, u.source], [77, 2, 2, 4, 9, 8, 1_000_000 - 20_000, 1_000_000, 'live']);
   assert.equal(boxOf(s, 'm2').usage.cpuPct, 12);
   assert.equal('usage' in boxOf(s, 'm3'), false);
-  clock.t += 2_000; await getState();
+  clock.t += 2_000; await fresh(getState);
   assert.equal(calls.length, 4);
 });
 
@@ -797,16 +798,16 @@ test('at most 4 usage reads are in flight at once', async () => {
   let now = 0, peak = 0;
   const { getState, machines } = usageEnv({ metrics: async () => { now++; peak = Math.max(peak, now); await new Promise((r) => setTimeout(r, 5)); now--; return { samples: [], fetchedAt: 1 }; } });
   for (let i = 0; i < 10; i++) machines.push({ id: `x${i}`, state: 'running', status: 'running', labels: {} });
-  await getState();
+  await fresh(getState);
   assert.equal(peak, 4);
 });
 
 test('a failed usage read shows the reason with its guide, keeps the last samples, and is not a zero', async () => {
   let fail = false;
   const { clock, getState, calls } = usageEnv({ metrics: async (id) => { if (fail) throw Object.assign(new Error('503 secret-detail'), { code: 'metrics_unavailable' }); return { samples: [{ t: 5, cpuPct: 40, cpuCount: 1, memUsed: 1, memTotal: 2 }], fetchedAt: 6 }; } });
-  assert.equal(boxOf(await getState(), 'm1').usage.cpuPct, 40);
+  assert.equal(boxOf(await fresh(getState), 'm1').usage.cpuPct, 40);
   fail = true; clock.t += 31_000;
-  const u = boxOf(await getState(), 'm1').usage;
+  const u = boxOf(await fresh(getState), 'm1').usage;
   assert.equal(u.error.code, 'metrics_unavailable');
   assert.equal(typeof u.error.nextStep, 'string');
   assert.equal(u.cpuPct, undefined);
@@ -815,12 +816,12 @@ test('a failed usage read shows the reason with its guide, keeps the last sample
   assert.equal(kept.samples.length, 1);
   assert.equal(kept.error.code, 'metrics_unavailable');
   fail = false; clock.t += 31_000;
-  assert.equal(boxOf(await getState(), 'm1').usage.error, undefined);
+  assert.equal(boxOf(await fresh(getState), 'm1').usage.error, undefined);
 });
 
 test('a machine that is gone gives machine_gone without guide text; no samples gives no_samples_yet', async () => {
   const { getState } = usageEnv({ metrics: async (id) => { if (id === 'm1') throw Object.assign(new Error('x'), { code: 'not_found' }); return { samples: [], fetchedAt: 7 }; } });
-  const s = await getState();
+  const s = await fresh(getState);
   assert.deepEqual(boxOf(s, 'm1').usage, { error: { code: 'machine_gone' } });
   assert.deepEqual(boxOf(s, 'm2').usage, { none: 'no_samples_yet', fetchedAt: 7 });
 });
@@ -828,10 +829,31 @@ test('a machine that is gone gives machine_gone without guide text; no samples g
 test('a provider without metrics says metrics_unsupported once and makes no calls', async () => {
   let n = 0;
   const { getState, clock } = usageEnv({ provider: { name: 'self-hosted', keyName: 'K', caps: { hasMetrics: false }, metrics: async () => { n++; } } });
-  const u = boxOf(await getState(), 'm1').usage;
+  const u = boxOf(await fresh(getState), 'm1').usage;
   assert.equal(u.error.code, 'metrics_unsupported');
   clock.t += 60_000; await getState();
   assert.equal(n, 0);
+});
+
+test('a read that never finishes does not delay the state, is not started twice, and shows up once it lands', async () => {
+  const releases = []; let started = 0;
+  const { getState, clock } = usageEnv({ metrics: () => { started++; return new Promise((r) => { releases.push(() => r({ samples: [{ t: 9, cpuPct: 33, cpuCount: 1, memUsed: 1, memTotal: 2 }], fetchedAt: 10 })); }); } });
+  const t0 = Date.now();
+  const s1 = await getState(); clock.t += 1000; await getState(); clock.t += 40_000; await getState();
+  assert.ok(Date.now() - t0 < 200);
+  assert.deepEqual(boxOf(s1, 'm1').usage, { none: 'no_samples_yet', fetchedAt: null });
+  assert.equal(started, 2); // m1 and m2, once each, although the 30 s passed while they were still in flight
+  releases.forEach((f) => f()); await getState.settle();
+  assert.equal(boxOf(await getState(), 'm1').usage.cpuPct, 33);
+});
+
+test('a read that fails in the background is not an unhandled rejection', async () => {
+  const seen = []; const h = (e) => seen.push(e); process.on('unhandledRejection', h);
+  try {
+    const { getState } = usageEnv({ metrics: async () => { throw new Error('boom'); } });
+    await getState(); await getState.settle(); await new Promise((r) => setImmediate(r));
+  } finally { process.off('unhandledRejection', h); }
+  assert.deepEqual(seen, []);
 });
 
 test('/api/metrics gives a live box its samples, 404 for a stopped or unknown box, 401 without the token, and never a key', async () => {

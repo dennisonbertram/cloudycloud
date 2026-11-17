@@ -308,26 +308,28 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       st.waiting = p.blocked || p.waiting || undefined; st.fatal = !!p.blocked;
     } catch { /* keep the last answer */ }
   };
-  // One read per running machine per METRICS_MS. A failure keeps the last good samples and records the error code. A machine that is not running is never read.
-  const refreshUsage = async (machines) => {
-    const running = machines.filter((m) => m.state === 'running');
-    for (const id of usage.keys()) if (!running.some((m) => m.id === id)) usage.delete(id);
-    await Promise.all(running.map(async (m) => {
-      const prev = usage.get(m.id);
-      if (prev && now() - prev.at < METRICS_MS) return;
-      if (!provider.caps?.hasMetrics) { if (!prev) usage.set(m.id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); return; }
-      const t = now();
-      try {
-        const r = await limiter.run(() => provider.metrics(m.id, { since: t - METRICS_WINDOW_MS }));
-        usage.set(m.id, { samples: r.samples, fetchedAt: r.fetchedAt, at: t });
-      } catch (e) { usage.set(m.id, { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }); }
-    }));
+  // One read per running machine per METRICS_MS, started in the background so a slow read never delays the state. A failure keeps
+  // the last good samples and records the error code. A machine that is not running is never read; a machine with a read in flight is not read again.
+  const inflight = new Map(); // machine id -> promise (never rejects)
+  let running = [];
+  const refreshUsage = (machines) => {
+    running = machines.filter((m) => m.state === 'running').map((m) => m.id);
+    for (const id of usage.keys()) if (!running.includes(id)) usage.delete(id);
+    for (const id of running) {
+      const prev = usage.get(id);
+      if (inflight.has(id) || (prev && now() - prev.at < METRICS_MS)) continue;
+      if (!provider.caps?.hasMetrics) { usage.set(id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); continue; }
+      const t = now(), put = (u) => { if (running.includes(id)) usage.set(id, u); };
+      inflight.set(id, limiter.run(() => provider.metrics(id, { since: t - METRICS_WINDOW_MS }))
+        .then((r) => put({ samples: r.samples, fetchedAt: r.fetchedAt, at: t }), (e) => put({ samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }))
+        .finally(() => inflight.delete(id)));
+    }
   };
   const errorOf = (code) => (code === 'not_found' ? { code: 'machine_gone' } : (({ code: c, whatHappened, nextStep }) => ({ code: c, whatHappened, nextStep }))(guideObj(code, { provider: provider.name })));
   const sourceOf = (u) => (u.fetchedAt != null && now() - u.fetchedAt < METRICS_MS * 2 ? 'live' : 'cache');
   const usageOf = (id) => {
     const u = usage.get(id);
-    if (!u) return undefined;
+    if (!u) return { none: 'no_samples_yet', fetchedAt: null };
     if (u.error) return { error: errorOf(u.error.code) };
     const n = u.samples.at(-1);
     if (!n) return { none: 'no_samples_yet', fetchedAt: u.fetchedAt };
@@ -350,7 +352,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
       coordLogs[m.id] = st.folded;
     }
-    if (machines && provider) await refreshUsage(machines);
+    if (machines && provider) refreshUsage(machines);
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
     for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) b.usage = u; }
@@ -358,6 +360,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     return cached;
   };
   // The last hour of samples for one running machine, from the same map (no provider call): what /api/metrics returns.
+  state.settle = () => Promise.all(inflight.values()); // tests: wait for the background reads
   state.metrics = (machineId) => {
     const u = usage.get(machineId);
     return u && { samples: u.samples, fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code) }) };
