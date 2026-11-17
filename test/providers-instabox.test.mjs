@@ -138,7 +138,7 @@ test('missing key gives code no_key; localMachineName; snapshot and ports', asyn
   await assert.rejects(createProvider({}, { fetchFn: fakeFetch().f }).list({}), (e) => e.code === 'no_key');
   const spawned = [];
   const { sdk, calls } = fakeSdk();
-  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing,
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' }, { sdk, fetchFn: fakeFetch().f, timing,
     spawn: async (argv, o) => { spawned.push([argv, o]); return { code: 0, stdout: '{"url":"https://u"}', stderr: '' }; } });
   assert.equal(p.localMachineName('instabox-abc'), 'abc');
   assert.equal(p.localMachineName('laptop'), '');
@@ -212,7 +212,7 @@ test('wire: list and delete use the raw API with the key, confirm and idempotenc
 test('wire: port commands use the exact npx instabox argv and the key only in env', async () => {
   const calls = [];
   const spawn = async (argv, o) => { calls.push([argv, o]); return { code: 0, stdout: '{"url":"https://x.example/?_token=t"}' }; };
-  const p = createProvider({ INSTABOX_API_KEY: KEY }, { spawn });
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' }, { spawn });
   assert.equal(await p.forwardPort('mach-aaa', '8080:3000'), 0);
   assert.deepEqual(await p.publishPort('mach-aaa', '3000'), { url: 'https://x.example/?_token=t' });
   assert.equal(await p.unpublishPort('mach-aaa', '3000'), 0);
@@ -292,7 +292,7 @@ test('kinds: create errors map to the machine_* codes', async () => {
 });
 
 test('shellArgv keeps every argument separate and the key out of argv', () => {
-  const p = createProvider({ INSTABOX_API_KEY: KEY }, {});
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' }, {});
   assert.deepEqual(p.shellArgv('m1'), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1']);
   assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', '-T', "'ls' '-la' 'a b'"]);
   assert.equal(p.caps.hasShell, true);
@@ -359,7 +359,7 @@ test('permission_denied keeps its own code outside the display calls', async () 
 });
 
 test('#89 shellArgv sends one quoted remote string that a shell parses back into the same arguments', () => {
-  const p = createProvider({ env: { INSTABOX_API_KEY: KEY } });
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' });
   for (const cmd of [['sh', '-c', 'echo "a b" $(echo SUB); exit 7'], ['printf', '%s|', 'a b', "it's", 'x;y', '$HOME', '']]) {
     const argv = p.shellArgv('m1', cmd);
     assert.deepEqual(argv.slice(0, 6), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--']);
@@ -528,4 +528,39 @@ test('plan: usage is omitted when the org has none or its fields are not numbers
   assert.equal('usage' in await metricsProvider(planHandler(() => Response.json({ ...ORG, usage: undefined }))).p.plan(), false);
   const r = await metricsProvider(planHandler(() => Response.json({ ...ORG, usage: { costUSD: 3.1, allowanceUSD: null, overageUSD: {} } }))).p.plan();
   assert.deepEqual(r.usage, { costUSD: 3.1 });
+});
+
+import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as pjoin } from 'node:path';
+
+const binDir = (mode) => { const d = mkdtempSync(pjoin(tmpdir(), 'ibx-')); if (mode != null) { const f = pjoin(d, 'instabox'); writeFileSync(f, '#!/bin/sh\n'); chmodSync(f, mode); } return d; };
+const NPX = ['npx', '--yes', 'instabox@latest'];
+
+test('an executable instabox on the provider PATH is spawned directly, same args as npx', async () => {
+  const d = binDir(0o755), bin = pjoin(d, 'instabox');
+  const calls = [];
+  const spawn = async (argv, o) => { calls.push([argv, o]); return { code: 0, stdout: '{"url":"u"}' }; };
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: `/nonexistent${':'}${d}` }, { spawn });
+  assert.deepEqual(p.shellArgv('m1'), [bin, 'ssh', 'm1']);
+  assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), [bin, 'ssh', 'm1', '--', '-T', "'ls' '-la' 'a b'"]);
+  await p.forwardPort('m1', '8080:3000'); await p.publishPort('m1', '3000'); await p.unpublishPort('m1', '3000');
+  assert.deepEqual(calls.map(([a]) => a), [
+    [bin, 'port-forward', 'm1', '8080:3000'],
+    [bin, 'port', 'publish', 'm1', '3000', '--private', '--json'],
+    [bin, 'port', 'unpublish', 'm1', '3000'],
+  ]);
+  assert.ok(calls.every(([a, o]) => o.env.INSTABOX_API_KEY === KEY && !a.includes(KEY)));
+});
+
+test('PATH without instabox, or with a non-executable file of that name, uses npx', () => {
+  assert.deepEqual(createProvider({ PATH: binDir(null) }, {}).shellArgv('m1'), [...NPX, 'ssh', 'm1']);
+  assert.deepEqual(createProvider({ PATH: binDir(0o644) }, {}).shellArgv('m1'), [...NPX, 'ssh', 'm1']);
+});
+
+test('the instabox lookup runs once per provider', () => {
+  const env = { PATH: binDir(null) }, p = createProvider(env, {});
+  assert.deepEqual(p.shellArgv('m1'), [...NPX, 'ssh', 'm1']);
+  env.PATH = binDir(0o755);
+  assert.deepEqual(p.shellArgv('m1'), [...NPX, 'ssh', 'm1']);
 });
