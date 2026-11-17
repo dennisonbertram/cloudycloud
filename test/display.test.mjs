@@ -39,6 +39,17 @@ test('parseArgs reads the flags and rejects bad ones', () => {
   assert.throws(() => parseArgs(['x', '--screenshot', 'a.png', '--control']), /--screenshot/);
 });
 
+test('--help prints usage with where the id comes from and exits 0; the expiry is local time with a zone, not ISO', async () => {
+  const s = setup();
+  assert.equal(await run(['--help'], s.d), 0);
+  assert.match(s.out.join('\n'), /Usage: cloudy-cloud display[\s\S]*cloud_agent_list/);
+  assert.deepEqual(s.err, []);
+  const t = setup();
+  assert.equal(await run(['7c1e90ab'], t.d), 0);
+  assert.doesNotMatch(t.err.join('\n'), /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z/);
+  assert.match(t.err.join('\n'), /stops working for new viewers at \d{1,2}:\d\d\b.*[A-Z]{2,5}|GMT/);
+});
+
 test('prints only the URL on stdout; view-only by default; the link never reaches stderr', async () => {
   const s = setup();
   assert.equal(await run(['7c1e90ab'], s.d), 0);
@@ -136,4 +147,14 @@ test('a gpu machine gets the two-minute note before the request', async () => {
   s.d.list = async () => [{ ...machines[0], labels: { kind: 'gpu' } }];
   s.provider.displayLink = async () => { assert.match(s.err.join('\n'), /about two minutes/); return { url: 'https://x/#t', expiresAt: Date.now() + 1000 }; };
   assert.equal(await run(['box-aaa'], s.d), 0);
+});
+
+test('an omarchy machine is refused up front whether addressed by agent id, name or machine id', async () => {
+  for (const id of ['7c1e90ab', 'box-aaa', 'mach-aaa']) {
+    const s = setup();
+    s.d.list = async () => [{ ...machines[0], labels: { kind: 'omarchy' } }];
+    assert.equal(await run([id], s.d), 1, id);
+    assert.match(s.err.join('\n'), /omarchy machine has no desktop/);
+    assert.deepEqual(s.provider.log.display, [], id);
+  }
 });

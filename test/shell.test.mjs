@@ -25,6 +25,14 @@ const setup = (caps = {}, status = 0) => {
   } };
 };
 
+test('--help prints usage with where the id comes from and exits 0', async () => {
+  const out = [], err = [];
+  const log = console.log; console.log = (m) => out.push(m);
+  try { assert.equal(await run(['--help'], { err: (m) => err.push(m), env: {} }), 0); } finally { console.log = log; }
+  assert.match(out.join('\n'), /Usage: cloudy-cloud shell[\s\S]*cloud_agent_list/);
+  assert.deepEqual(err, []);
+});
+
 test('parseArgs splits the target from the command at --', () => {
   assert.deepEqual(parseArgs(['x']), { id: 'x', cmd: undefined });
   assert.deepEqual(parseArgs(['x', '--']), { id: 'x', cmd: undefined });

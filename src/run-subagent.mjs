@@ -640,7 +640,7 @@ export async function runSubagent(args, deps) {
   if (apt.error) return fail(apt.error);
   if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   const kind = parseMachine(args.machine);
-  if (kind.error) return fail(`${guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) })}\n${kind.error}`);
+  if (kind.error) return fail(guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) }));
   const offered = ctx.provider.caps.machineKinds ?? ['linux'];
   if (!offered.includes(kind.name)) return fail(guide('machine_kind_unsupported', { provider: ctx.provider.name, kind: kind.name, kinds: offered.join(', ') }));
   if (EXPENSIVE.includes(kind.name) && !String(ctx.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS ?? '').split(/[\s,]+/).includes(kind.name)) return fail(guide('machine_needs_consent', { kind: kind.name, price: PRICE[kind.name] }));

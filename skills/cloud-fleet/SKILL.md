@@ -32,10 +32,10 @@ The default `linux` machine is right for almost everything. Pass `machine` only 
 | --- | --- | --- |
 | Run or test an Android app (`adb`, an emulator) | `android` | Its desktop starts in about 1 second. |
 | Training, inference, CUDA builds | `gpu` (or `gpu:TYPE`, `gpu:TYPE:COUNT`) | Costs from $0.765 per GPU-hour. Needs the user's consent. The first desktop start takes about 2 minutes. |
-| A Hyprland desktop app | `omarchy` | No display or screenshot; use `cloudy-cloud shell`. |
+| A Hyprland desktop app | `omarchy` | No screen yet (`display` is refused); use `cloudy-cloud shell`. |
 | Xcode or other Mac builds | `macos` (or `macos:MODEL`) | $0.45 to $1.25 per hour, 24-hour minimum lease. Needs consent. Experimental, not run live. |
 
-`gpu` and `macos` are refused until the user lists them in `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` (in `~/.config/cloudy-cloud/env`, for example `gpu,macos`). If `cloud_agent` returns `machine_needs_consent`, nothing was started. Do not retry. Tell the user the kind and price from the error and ask them to add that line, then call `cloud_agent` again. Never edit that file yourself. If a result says the plan lacks the template, or the machine lacks a tool, relay its Next step; `machine: "linux"` is the fallback.
+`gpu` and `macos` are refused until the user lists them in `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` (in `~/.config/cloudy-cloud/env`, for example `gpu`; add only the kind the user asked for). linux, android and gpu machines have a screen (`cloudy-cloud display`; gpu's first start is slow); omarchy does not, and macos is not verified. If `cloud_agent` returns `machine_needs_consent`, nothing was started. Do not retry. Tell the user the kind and price from the error and ask them to add that line, then call `cloud_agent` again. Never edit that file yourself. If a result says the plan lacks the template, or the machine lacks a tool, relay its Next step; `machine: "linux"` is the fallback.
 
 ## Seeing and reaching a worker
 

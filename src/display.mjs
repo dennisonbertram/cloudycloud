@@ -13,7 +13,8 @@ import { guide, CODES } from './errors.mjs';
 export const USAGE = `Usage: cloudy-cloud display <agent-id-or-machine> [--control] [--ttl SECONDS]
        cloudy-cloud display <agent-id-or-machine> --screenshot FILE
        cloudy-cloud display <agent-id-or-machine> --unshare
-Print a link to the machine's desktop (android, omarchy, gpu, macos); only the link goes to stdout.
+Print a link to the machine's desktop; only the link goes to stdout. linux, android and gpu have one (gpu's first start is slow);
+omarchy does not, and macos is not verified. The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.
   (default)         view-only link for 1 hour
   --control         let the viewer click and type
   --ttl SECONDS     link lifetime, 60 to 86400
@@ -45,6 +46,7 @@ export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const out = deps.out ?? ((s) => console.log(s)), err = deps.err ?? ((s) => console.error(s));
   try {
+    if (argv.includes('--help') || argv.includes('-h')) { out(USAGE); return 0; }
     const a = parseArgs(argv);
     const provider = deps.provider ?? await loadProvider(env);
     const Name = provider.name[0].toUpperCase() + provider.name.slice(1);
@@ -56,12 +58,13 @@ export async function run(argv, deps = {}) {
     const events = (deps.events ?? (() => readEvents(eventsFile(env))))();
     let machine;
     // --unshare must work on a stopped or suspended machine, so treat every listed machine as running for the lookup.
-    const row = machines.find((m) => m.id === a.id || m.name === a.id);
     try { machine = resolveTarget(a.id, { machines: a.unshare ? machines.map((m) => ({ ...m, status: 'running' })) : machines, events, alive: deps.alive }); } catch (e) {
       if (/is not running/.test(e.message)) fail(`${e.message}\n${guide('machine_not_running', { id: a.id })}`);
       throw e;
     }
+    const row = machines.find((m) => m.id === machine); // by the resolved machine id: a is an agent id, a machine name or a machine id
     if (!provider.caps.hasDisplay) fail(guide('display_unsupported', { provider: provider.name }));
+    if (!a.unshare && row?.labels?.kind === 'omarchy') fail(guide('desktop_unavailable', { kind: 'omarchy' }));
     // Provider errors with a display code get that code's plain next step; the raw message never carries the link.
     const call = async (fn) => {
       try { return await fn(); } catch (e) {
@@ -93,7 +96,7 @@ export async function run(argv, deps = {}) {
     let r;
     try { r = await call(() => provider.displayLink(machine, { control: a.control, ttlSeconds: a.ttl })); } finally { clearTimeout(timer); }
     out(r.url);
-    err(`Anyone with the link can ${a.control ? 'view and control' : 'view'} the screen. The link stops working for new viewers at ${new Date(r.expiresAt).toISOString()}. To cut off anyone already connected, run: cloudy-cloud display ${a.id} --unshare`);
+    err(`Anyone with the link can ${a.control ? 'view and control' : 'view'} the screen. The link stops working for new viewers at ${new Date(r.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })} (${new Date(r.expiresAt).toLocaleDateString()}). To cut off anyone already connected, run: cloudy-cloud display ${a.id} --unshare`);
     return 0;
   } catch (e) {
     err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud display: ${e.message.replace(/https?:\/\/\S*#\S*/g, '[link removed]')}`);

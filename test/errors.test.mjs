@@ -1,3 +1,4 @@
+import { PRICE } from '../src/machine.mjs';
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,12 +54,18 @@ test('#92 machine codes exist; consent names the price and the env line; each na
   const NEW = ['machine_kind_unknown', 'machine_kind_unsupported', 'machine_needs_consent', 'machine_not_on_plan', 'machine_no_capacity', 'machine_gpu_limit', 'machine_missing_tools', 'machine_not_running', 'shell_unsupported', 'display_unsupported', 'display_forbidden', 'desktop_unavailable'];
   for (const c of NEW) assert.ok(CODES.includes(c), c);
   for (const c of ['machine_needs_consent', 'machine_not_on_plan', 'machine_gpu_limit', 'display_forbidden']) assert.ok(HUMAN_CODES.includes(c), c);
-  const t = guide('machine_needs_consent', { kind: 'gpu:l4', price: '$0.765 per GPU-hour' });
-  assert.match(t, /\$0\.765 per GPU-hour/);
-  assert.match(t, /CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu,macos/);
+  const t = guide('machine_needs_consent', { kind: 'gpu', price: '$0.765 per GPU-hour' });
+  assert.equal(t.split('$0.765').length - 1, 1, 'price once');
+  assert.match(t.match(/What happened: (.+)/)[1], /\$0\.765/);
+  assert.match(t, /CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu\b(?!,)/);
+  assert.doesNotMatch(t, /macos/);
   assert.match(t, /~\/\.config\/cloudy-cloud\/env/);
   const mt = guide('machine_missing_tools', { kind: 'android', tools: 'tmux' });
   assert.match(mt.match(/Next step: (.+)/)[1], /machine "linux".*CLOUDY_CLOUD_APT_PACKAGES/);
-  assert.doesNotMatch(mt, /cloudy-cloud shell/);
+  assert.doesNotMatch(mt, /cloudy-cloud shell|only the linux image/i);
+  for (const k of ['omarchy', 'macos']) assert.doesNotMatch(guide('machine_missing_tools', { kind: k, tools: 'gh' }), /APT_PACKAGES/);
+  assert.match(guide('machine_missing_tools', { kind: 'omarchy', tools: 'gh' }), /machine "linux"/);
+  assert.match(guide('desktop_unavailable', { kind: 'omarchy' }), /linux, android and gpu/);
+  assert.doesNotMatch(PRICE.macos, /2026/);
   assert.match(guide('machine_kind_unsupported', { provider: 'self-hosted', kinds: 'linux' }), /self-hosted.*linux/s);
 });
