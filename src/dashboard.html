@@ -105,6 +105,14 @@
   .cmds .pl { flex: none; width: 64px; margin: 0; }
   .kindrep { display: none; }
   .hint { color: var(--text-3); font-size: 12px; }
+  .usage { margin-top: 12px; display: grid; gap: 6px; font-size: 13px; }
+  .usage .pl { margin: 0; }
+  .usage svg.spark { width: 100%; height: 48px; display: block; background: var(--subtle); border-radius: 6px; }
+  .usage svg.spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .usage .cpu { stroke: var(--accent); } .usage .mem { stroke: var(--text-2); stroke-dasharray: 4 3; }
+  .usage .key { color: var(--text-3); font-size: 12px; }
+  .usage .fine { color: var(--text-3); font-size: 12px; }
+  .usage .prop { display: flex; gap: 12px; align-items: baseline; } .usage .prop .pl { flex: none; width: 64px; }
   .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
   .pv { font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -188,6 +196,7 @@
   .tile .top .rel { margin-left: auto; }
   .tile .d { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .tile .m { font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .m.use { white-space: normal; }
 
   .state h2:focus { outline: none; }
   .state { margin: auto; max-width: 440px; text-align: center; padding: 40px 24px; font-size: 14px; color: var(--text-2); }
@@ -250,7 +259,7 @@
   const $ = (id) => kept[id] || document.getElementById(id);
   const NS = 'http://www.w3.org/2000/svg';
   const ORDER = { idle: 0, running: 1, starting: 2, queued: 3, failed: 4, stopped: 5 };
-  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {}, kids: {}, collapsed: new Set(), tab: 'activity', turn: {}, st: null, pane: null, full: {}, open: new Set(), busyFull: new Set(), failFull: new Set() };
+  const S = { data: null, sel: null, view: 'list', net: null, err: '', lastOk: 0, sigs: {}, kids: {}, collapsed: new Set(), tab: 'activity', turn: {}, metrics: {}, mBusy: false, st: null, pane: null, full: {}, open: new Set(), busyFull: new Set(), failFull: new Set() };
   const enc = encodeURIComponent;
   try { S.view = localStorage.getItem('cc-view') === 'fleet' ? 'fleet' : 'list'; } catch {}
 
@@ -336,6 +345,7 @@
     if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
     else if (lvl === 1 && b.startedBy && b.startedBy !== 'this session') parts.push(h('span', { text: 'started by ' + b.startedBy }));
     const s = soonTag(b); if (s) parts.push(s);
+    const ul = usageLine(b);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
     const el = h('div', { class: 'row' + (lvl > 1 ? ' child' : ''), role: 'treeitem', 'aria-level': String(lvl), 'aria-expanded': kids ? String(open) : null, 'data-id': b.id,
       'aria-label': [b.status, titleOf(b), b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
@@ -343,6 +353,7 @@
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
       h('div', { class: 'l1' }, kids && h('span', { class: 'chev', 'aria-hidden': 'true', title: open ? 'Hide workers' : 'Show workers', text: open ? '▾' : '▸', onclick: (e) => { e.stopPropagation(); setOpen(b.id, !open); } }), dot(b.status), h('span', { class: 'title', text: titleOf(b) }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
+      ul && h('div', { class: 'l2 mono', text: ul }),
       b.waiting && h('div', { class: 'l3 err' }, h('b', { text: b.fatal ? 'Not working: ' : 'Waiting on a prompt: ' }), b.waiting, b.fatal ? ' · sign in again or check the plan, then restart it · ' : ' · ', h('code', { text: 'cloudy-cloud coordinator attach ' + (b.labels && b.labels.name || b.id) })),
       a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
@@ -390,6 +401,7 @@
 
   const openable = (b) => (b.status === 'running' || b.status === 'idle') && (b.machineState == null || b.machineState === 'running');
   const openApp = (b) => {
+    if (!safeId(b.id)) return null;
     const e = prop('Open app', h('span', { class: 'mono', text: 'cloudy-cloud open ' + b.id + ' <port>' }), copyBtn(openCmd(b.id), 'open command')), v = e.querySelector('.pv');
     e.classList.add('full'); v.classList.add('openapp');
     v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
@@ -404,9 +416,10 @@
   };
   const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
   const cliId = (b) => b.source === 'log' || !b.machine ? b.id : b.machine; // shell and display resolve a local agent id, a machine name or a machine id, not a label-only agent id
-  const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
+  const shellRow = (b) => { if (!safeId(cliId(b))) return null; const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
   // Display is a command to run, never a link: the link is a bearer token and only the command line makes one.
   const screenRow = (b) => {
+    if (!safeId(cliId(b))) return null;
     const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(cliId(b)) }), copyBtn(displayCmd(cliId(b)), 'display command')); e.classList.add('full');
     e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG.";
     if (kindBase(b) === 'macos') { e.querySelector('.pv').classList.add('note'); e.querySelector('.pv').append(h('span', { class: 'hint', text: 'not verified on macOS yet' })); }
@@ -419,6 +432,80 @@
     const caps = S.data?.caps || {}, k = kindBase(b), cost = costText(b);
     return [caps.hasShell !== false && shellRow(b), caps.hasDisplay !== false && (k === 'omarchy' ? noScreen('not available on omarchy yet') : screenRow(b)), cost && costRow(cost)];
   };
+  // ---- usage (#119): numbers from /api/state box.usage, an hour of samples from /api/metrics?box=
+  const fin = (n) => typeof n === 'number' && Number.isFinite(n);
+  const gib = (n) => (n / 2 ** 30).toFixed(1).replace(/\.0$/, '');
+  const rate = (n) => (n < 10 * 1024 ? (n / 1024).toFixed(1) : String(Math.round(n / 1024))) + ' KB/s';
+  const hasUsage = (b) => !!b.usage && b.status !== 'stopped' && b.status !== 'failed'; // nothing for finished agents
+  const memText = (u) => fin(u.memUsed) && fin(u.memTotal) && u.memTotal > 0 ? 'mem ' + (u.memUsed / 2 ** 30).toFixed(1) + ' of ' + gib(u.memTotal) + ' GiB' : null;
+  const usageLine = (b) => hasUsage(b) && fin(b.usage.cpuPct) ? ['cpu ' + Math.round(b.usage.cpuPct) + '%', memText(b.usage)].filter(Boolean).join(' · ') : null;
+  const hs = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
+  const clean = (samples) => (samples || []).filter((x) => x && fin(x.t) && fin(x.cpuPct)).sort((a, c) => a.t - c.t);
+  // pure:begin (the tests run this block on its own; it uses only fin and dur)
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/; // a machine id or agent id that is safe to paste into a shell
+  const safeId = (id) => typeof id === 'string' && SAFE_ID.test(id) ? id : null;
+  const metricsCmdFor = (machine) => safeId(machine) && "npx --yes instabox@latest metrics '" + machine + "' --since 6h";
+  const netKnown = (x) => fin(x.netIn) && fin(x.netOut);
+  const sampleQuiet = (x) => fin(x.cpuPct) && x.cpuPct < 3 && netKnown(x) && x.netIn + x.netOut < 1024;
+  // Quiet: marked running; the newest sample is fresh and is the one shown above; the last 10 minutes are covered without a
+  // gap over 90 s (at least 18 samples); every sample is under 3 % CPU with known network under 1 KB/s.
+  const quietHint = (b, ss, t) => {
+    const last = ss.at(-1), u = b.usage;
+    if (b.status !== 'running' || !last || t - last.t > 120_000 || !u || !fin(u.at) || last.t < u.at || !sampleQuiet(u)) return false;
+    const from = last.t - 10 * 60_000, w = ss.filter((x) => x.t >= from);
+    return w.length >= 18 && w[0].t - from <= 90_000 && w.every((x, i) => (i === 0 || x.t - w[i - 1].t <= 90_000) && sampleQuiet(x));
+  };
+  const KEEP_METRICS = 10;
+  const pruneMetrics = (cache, ids) => {
+    for (const id of Object.keys(cache)) if (!ids.has(id)) delete cache[id];
+    for (const id of Object.keys(cache).sort((x, y) => cache[y].got - cache[x].got).slice(KEEP_METRICS)) delete cache[id];
+  };
+  const historyNote = (m, t) => m?.stale ? (m.okAt ? 'History could not be refreshed. The graph is ' + dur(t - m.okAt) + ' old.' : 'History is unavailable: it could not be read. Retrying every 30 seconds.') : null;
+  // pure:end
+  function sparkline(ss) {
+    const last = ss.at(-1), W = 240, H = 48, t0 = last.t - 3_600_000, pts = (f) => ss.map((x) => [x, f(x)]).filter(([, y]) => fin(y)).map(([x, y]) => (Math.max(0, (x.t - t0) / 3_600_000) * W).toFixed(1) + ',' + (H - 2 - Math.min(100, Math.max(0, y)) / 100 * (H - 4)).toFixed(1)).join(' ');
+    const cpus = ss.map((x) => x.cpuPct), lo = Math.round(Math.min(...cpus)), hi = Math.round(Math.max(...cpus));
+    const s = hs('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', class: 'spark', role: 'img', 'aria-label': 'CPU and memory over the last hour. CPU: lowest ' + lo + '%, highest ' + hi + '%, latest ' + Math.round(last.cpuPct) + '%. Memory is the dashed line.' });
+    s.append(hs('polyline', { class: 'mem', points: pts((x) => fin(x.memUsed) && fin(x.memTotal) && x.memTotal > 0 ? x.memUsed / x.memTotal * 100 : NaN) }), hs('polyline', { class: 'cpu', points: pts((x) => x.cpuPct) }));
+    return s;
+  }
+  const guide = (e) => e.code === 'machine_gone' ? 'This machine is gone.' : [e.whatHappened, e.nextStep].filter((x) => typeof x === 'string').join(' ');
+  function usageBlock(b) {
+    if (!hasUsage(b)) return null;
+    const u = b.usage, m = S.metrics[b.id], ss = clean(m?.samples), kids = [h('div', { class: 'pl', text: 'Usage' })];
+    const empty = (t) => h('div', { class: 'note', text: t });
+    if (u.error) { kids.push(empty(guide(u.error))); return h('div', { class: 'usage' }, kids); }
+    if (u.none) { kids.push(empty('No samples yet. A new machine reports its first sample about 90 seconds after it starts.')); return h('div', { class: 'usage' }, kids); }
+    const net = fin(u.netIn) && fin(u.netOut) ? ' · network ' + rate(u.netIn) + ' in, ' + rate(u.netOut) + ' out' : '';
+    kids.push(h('div', { text: (fin(u.cpuPct) ? 'CPU ' + Math.round(u.cpuPct) + '%' + (fin(u.cpuCount) ? ' of ' + u.cpuCount + ' vCPUs' : '') : 'CPU unknown') + (memText(u) ? ' · memory ' + memText(u).slice(4) : '') + net }));
+    if (ss.length >= 2) kids.push(sparkline(ss), h('div', { class: 'key', text: 'Last hour: solid line CPU (0 to 100 %), dashed line memory (share of the machine).' }));
+    else if (m?.error) kids.push(empty(guide(m.error)));
+    const hn = historyNote(m, now()); if (hn) kids.push(h('div', { class: 'note', role: 'status', text: hn }));
+    kids.push(h('div', { class: 'fine' }, fin(u.at) ? ['Newest sample ', live('ago', u.at)] : 'Newest sample time unknown', u.source === 'cache' && ' · from the saved copy', b.machineState !== 'running' && ' · paused or stopped since then'));
+    if (!m?.stale && quietHint(b, ss, now())) kids.push(h('div', { class: 'note', text: 'Quiet for 10 minutes while marked running: under 3 % CPU and almost no network. It may be waiting on something; check its Activity tab.' }));
+    kids.push(h('div', { class: 'fine', text: 'Measured by Instabox on the host every 30 seconds. Network leaves out SSH and public-port traffic. Memory is what the machine has touched, so it falls only when memory is reclaimed. Reading this never wakes a paused machine.' }));
+    const mc = metricsCmdFor(b.machine), cmd = mc && prop('History', h('span', { class: 'mono', text: mc }), copyBtn(mc, 'metrics command'));
+    if (cmd) { cmd.querySelector('.pv').title = 'Prints the full history (up to 24 hours), or --json for the samples.'; kids.push(cmd); }
+    return h('div', { class: 'usage' }, kids);
+  }
+  // /api/metrics for the selected agent, at most every 30 s while the page is visible.
+  function metricsEnsure(b) {
+    const m = S.metrics[b.id];
+    if (!hasUsage(b) || b.machineState !== 'running' || !visible(b) || S.mBusy || (m && now() - m.got < 30_000 && !(fin(b.usage?.at) && b.usage.at > (clean(m.samples).at(-1)?.t ?? 0) && now() - m.got >= 5_000))) return; // a newer sample than the history ends: look again
+    metricsPoll(b.id);
+  }
+  async function metricsPoll(id) {
+    S.mBusy = true;
+    const prev = S.metrics[id];
+    try {
+      const r = await fetch('/api/metrics?t=' + enc(T) + '&box=' + enc(id), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      if (r.ok) { const j = await r.json(); S.metrics[id] = { samples: Array.isArray(j.samples) ? j.samples : [], error: j.error || null, got: now(), okAt: now() }; }
+      else S.metrics[id] = { samples: prev?.samples || [], error: null, got: now(), stale: true, okAt: prev?.okAt ?? null };
+    } catch { S.metrics[id] = { samples: prev?.samples || [], error: null, got: now(), stale: true, okAt: prev?.okAt ?? null }; }
+    pruneMetrics(S.metrics, new Set((S.data?.boxes || []).map((x) => x.id)));
+    S.mBusy = false;
+    if (S.sel === id) redo();
+  }
   const wide = (e) => { e?.classList.add('wide'); return e; };
   const pushView = (p) => p.failed
     ? h('span', { class: 'push failed', text: 'push failed', title: 'The last turn could not push. The reply below says what survived.' })
@@ -520,7 +607,7 @@
   function terminalView(b) {
     const cmd = 'cloudy-cloud coordinator attach ' + b.id, p = S.pane && S.pane.box === b.id ? S.pane : null;
     const text = !p ? 'Loading…' : p.err || (p.lines.length ? p.lines.join('\n') : '(the terminal is empty)');
-    return h('div', { class: 'term' }, h('div', { class: 'termnote' }, 'Read-only view of the tmux session. Attach with: ', h('code', { text: cmd }), copyBtn(cmd, 'attach command')),
+    return h('div', { class: 'term' }, h('div', { class: 'termnote' }, 'Read-only view of the tmux session.', safeId(b.id) && [' Attach with: ', h('code', { text: cmd }), copyBtn(cmd, 'attach command')]),
       h('pre', { class: 'mono tpre', tabindex: '0', 'aria-label': 'Terminal output', text }));
   }
 
@@ -596,7 +683,7 @@
           : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
             b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
       ),
-      openable(b) && h('div', { class: 'props cmds' }, openApp(b), kindRows(b))); // no height cap on a phone: a capped, internally scrolling header hid these rows
+      openable(b) && h('div', { class: 'props cmds' }, openApp(b), kindRows(b)), usageBlock(b)); // no height cap on a phone: a capped, internally scrolling header hid these rows
     updateBadge(b);
     const thread = h('div', { class: 'thread', tabindex: '0', role: b.kind === 'coordinator' ? 'tabpanel' : null, id: b.kind === 'coordinator' ? 'tabpanel' : null, 'aria-label': term ? 'Terminal' : 'Message thread' }, term ? kids : h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'subbar' }, tabBar(b), term ? null : turnBar(b), badgeEl), thread);
@@ -668,7 +755,7 @@
       const tile = (b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); S.from = 'fleet'; select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
         h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.title || b.description || label(b) }),
-        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), soonTag(b));
+        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), usageLine(b) && h('span', { class: 'm use', text: usageLine(b) }), soonTag(b));
       g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map(tile)));
       for (const c of list) if (S.kids[c.id]) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(S.kids[c.id].length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, S.kids[c.id].map(tile)));
     }
@@ -736,7 +823,7 @@
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(roots)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c)])])]);
+      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at])])]);
       if (S.sigs.f !== f) {
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
@@ -748,13 +835,13 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
-    streamEnsure(sb); paneEnsure(sb);
+    streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();
   }
 
@@ -785,7 +872,7 @@
       const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
       if (r.status === 401) { S.net = 'auth'; S.data = null; }
       else if (!r.ok) { S.net = 'error'; S.err = String((await r.json().catch(() => null))?.error || 'HTTP ' + r.status); }
-      else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
+      else { S.data = await r.json(); pruneMetrics(S.metrics, new Set((S.data.boxes || []).map((x) => x.id))); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
     } catch { S.net = 'down'; }
     busy = false;
     try { render(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
