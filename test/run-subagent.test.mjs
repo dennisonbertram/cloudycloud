@@ -1819,3 +1819,16 @@ test('the start pace follows the provider plan (minus 10 %), CLOUDY_CLOUD_STARTS
   assert.equal(q.pace(), 25);
   assert.equal(startQueue({}, createFakeProvider()).pace(), 25); // no plan() at all
 });
+
+test('the soft wait counts this server\'s live agents against the plan and shows a status; limit errors name the tier', async () => {
+  const provider = { ...createFakeProvider(), plan: async () => ({ tier: 'pro', specs: [], startsPerMinute: 30, maxRunning: 2, maxMachines: 500 }) };
+  const open = new Map([['a', { status: 'running' }], ['b', { status: 'idle' }], ['c', { status: 'queued' }]]);
+  const q = startQueue({}, provider, () => open.values());
+  await q.learnPlan();
+  const a = {};
+  const p = q.create(a, async () => 'up');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(a.queueNote, 'waiting for a free machine slot (2 running on the pro plan)');
+  open.get('a').status = 'stopped';
+  assert.equal(await p, 'up');
+});

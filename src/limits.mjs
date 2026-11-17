@@ -25,12 +25,12 @@ export function createLimiter(max) {
 
 const code = (e) => `${e?.code ?? ''} ${e?.message ?? ''}`;
 export const isRateLimited = (e) => /rate_limited/.test(code(e));
-export const isQuotaExceeded = (e) => /quota_exceeded/.test(code(e));
+export const isQuotaExceeded = (e) => /quota_exceeded|concurrency_limit/.test(code(e)); // concurrency_limit: too many machines running at once (#129), retried the same way
 
 // Start queue: at most perMin (a number or a function returning one) machine creates per rolling minute, in arrival order.
 // create(a, fn) waits for a slot, runs fn (the machine create) and retries it on rate_limited / quota_exceeded.
 // a.status is 'queued' while it waits and 'starting' while fn runs. cancel(a) makes a pending create() reject.
-export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES } = {}) {
+export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES, liveCount, maxRunning, tierName, softPollMs = 5000, softWaitMs = 10 * MINUTE } = {}) {
   const waiting = []; // { a, grant, reject }
   const stamps = []; // times of recent create attempts
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
@@ -60,8 +60,20 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
     if (i >= 0) waiting.splice(i, 1)[0].reject(new Error('cancelled'));
     sleeping.get(a)?.();
   };
+  // Soft wait: this server's live agents are at the plan's running limit. Local only and bounded; the API's concurrency_limit is the real check.
+  const softWait = async (a) => {
+    const t0 = now();
+    for (let max; (max = maxRunning?.()) > 0 && liveCount() >= max && now() - t0 < softWaitMs;) {
+      if (a.cancelled) throw new Error('cancelled');
+      a.status = 'queued';
+      a.queueNote = `waiting for a free machine slot (${liveCount()} running on the ${tierName?.() ? `${tierName()} ` : ''}plan)`;
+      await nap(a, softPollMs);
+    }
+    delete a.queueNote;
+  };
   q.create = async (a, fn) => {
     let tries = 0, quotaSince;
+    await softWait(a);
     for (;;) {
       if (a.cancelled) throw new Error('cancelled');
       a.status = 'queued';

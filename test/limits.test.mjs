@@ -68,3 +68,36 @@ test('poke: a rate raised while starts wait releases them at once; a lowered rat
   n = 1; q.poke(); go(3); await tick();
   assert.deepEqual(started, [0, 1, 2], 'a lower rate must not release a start');
 });
+
+test('concurrency_limit is retried like quota_exceeded, then surfaced after the give-up time', async () => {
+  const c = clock();
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, quotaRetryMs: 1000, quotaGiveUpMs: 3500 });
+  let n = 0;
+  const ok = await q.create({}, async () => { if (++n < 3) throw Object.assign(new Error('x'), { code: 'concurrency_limit' }); return 'up'; });
+  assert.equal(ok, 'up');
+  const err = Object.assign(new Error('too many running'), { code: 'concurrency_limit' });
+  n = 0;
+  await assert.rejects(q.create({}, async () => { n++; throw err; }), (e) => e === err);
+  assert.ok(n > 2 && n < 10);
+});
+
+test('soft wait: at maxRunning the create waits, releases when an agent stops, and is bounded', async () => {
+  const c = clock();
+  let live = 2, started = 0;
+  const q = createStartQueue({ perMin: 100, now: c.now, sleep: async (ms) => { c.t += ms; if (c.t >= 20_000) live = 1; }, liveCount: () => live, maxRunning: () => 2, softPollMs: 5000, softWaitMs: 600_000 });
+  const a = {};
+  await q.create(a, async () => { started++; });
+  assert.equal(started, 1);
+  assert.ok(c.t >= 20_000 && c.t < 30_000);
+  // never released: gives up waiting at softWaitMs and lets the API decide
+  live = 5; c.t = 0;
+  const q2 = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, liveCount: () => live, maxRunning: () => 2, softPollMs: 5000, softWaitMs: 60_000 });
+  const b = {};
+  const p = q2.create(b, async () => { started++; });
+  await p;
+  assert.equal(started, 2);
+  assert.ok(c.t >= 60_000 && c.t < 70_000);
+  // no limit known (0 or undefined): no wait
+  const q3 = createStartQueue({ perMin: 100, now: c.now, sleep: c.sleep, liveCount: () => 9, maxRunning: () => 0 });
+  const t0 = c.t; await q3.create({}, async () => {}); assert.equal(c.t, t0);
+});
