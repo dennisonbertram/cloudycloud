@@ -57,3 +57,39 @@ export const SIZE_COSTS = ALL_SIZES.map((l) => `${l} $${hourly(l)}/h`).join(', '
 // SIZE_PRICE plus the default for comparison (for a size other than the default 4x8).
 export const sizeCostLine = (vcpus, gib) => `${SIZE_PRICE(vcpus, gib)}${vcpus === 4 && gib === 8 ? '' : ` The default 4x8 costs about $${hourly('4x8')} an hour.`}`;
 export const planFee = (plan) => PLANS.find(([n]) => n === plan)?.[3];
+// One sentence on this month's Instabox usage against what the plan includes; null when the plan carries no readable usage.
+// The dashboard page has a copy of this logic (usageSentence in dashboard.html); a test keeps the two equal.
+const usd = (n) => '$' + n.toFixed(2);
+export function usageLine(plan) {
+  const u = plan?.usage, num = (x) => typeof x === 'number' && Number.isFinite(x);
+  if (!num(u?.costUSD)) return null;
+  if (!num(u.allowanceUSD)) return null; // a missing or invalid allowance is unknown, not zero
+  const inc = u.allowanceUSD;
+  if (!(inc > 0)) return `Instabox this month: ${usd(u.costUSD)} used (pay as you go)`;
+  if (num(u.overageUSD) && u.overageUSD > 0) return `Instabox this month: ${usd(u.costUSD)} used, ${usd(inc)} included, ${usd(u.overageUSD)} beyond it (pay as you go)`;
+  return `Instabox this month: ${usd(u.costUSD)} of ${usd(inc)} included used`;
+}
+// The provider's plan, read again when the cached copy is over 30 minutes old (Instabox rates usage hourly). Null when unreadable.
+export async function currentPlan(provider, now = Date.now()) {
+  try {
+    let p = await provider?.plan?.();
+    if (p && now - p.fetchedAt > 30 * 60_000) p = (await provider.plan({ refresh: true })) ?? p;
+    return p ?? null;
+  } catch { return null; }
+}
+
+// Optional spend figures must never delay a status call: callers read the last snapshot at once and a background read refreshes it.
+// One read in flight per provider; the next try is 30 minutes after a success and 5 minutes after a failure (including no plan yet).
+const snaps = new WeakMap();
+export function planSnapshot(provider, now = Date.now()) {
+  if (!provider || typeof provider !== 'object') return null;
+  const s = snaps.get(provider) ?? {};
+  snaps.set(provider, s);
+  if (!s.inflight && (s.at == null || now - s.at > (s.ok ? 30 : 5) * 60_000)) {
+    s.at = now;
+    s.inflight = currentPlan(provider, now).then((p) => { if (p) s.plan = p; s.ok = !!p; }, () => { s.ok = false; }).finally(() => { s.inflight = null; });
+  }
+  return s.plan ?? null;
+}
+// Tests: wait for the background read of one provider.
+export const planSettled = (provider) => Promise.resolve(snaps.get(provider)?.inflight);

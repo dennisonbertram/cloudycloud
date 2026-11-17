@@ -60,3 +60,15 @@ test('#135 offeredBy lists only exact plan sizes; sizeCostLine adds the default 
   assert.match(sizeCostLine(8, 16), /\$0\.068 an hour[^]*default 4x8 costs about \$0\.034 an hour/);
   assert.doesNotMatch(sizeCostLine(4, 8), /default/);
 });
+
+test('#139 usageLine: under, over, no allowance, rounding, and null without readable usage', async () => {
+  const { usageLine } = await import('../src/machine.mjs');
+  const L = (usage) => usageLine({ usage });
+  assert.equal(L({ costUSD: 12.4, allowanceUSD: 20, overageUSD: 0 }), 'Instabox this month: $12.40 of $20.00 included used');
+  assert.equal(L({ costUSD: 12.4, allowanceUSD: 20 }), 'Instabox this month: $12.40 of $20.00 included used');
+  assert.equal(L({ costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42 }), 'Instabox this month: $66.03 used, $16.61 included, $49.42 beyond it (pay as you go)');
+  assert.equal(L({ costUSD: 3.1, allowanceUSD: 0 }), 'Instabox this month: $3.10 used (pay as you go)');
+  assert.equal(L({ costUSD: 0.005, allowanceUSD: 16.666 }), 'Instabox this month: $0.01 of $16.67 included used');
+  for (const bad of [undefined, null, '20', NaN, Infinity]) assert.equal(L({ costUSD: 3, allowanceUSD: bad }), null);
+  for (const p of [null, undefined, {}, { usage: {} }, { usage: { costUSD: '3' } }, { usage: { costUSD: NaN } }]) assert.equal(usageLine(p), null);
+});

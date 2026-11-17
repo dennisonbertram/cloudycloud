@@ -1,4 +1,5 @@
 import './tmp-cleanup.mjs';
+import { planSnapshot, planSettled } from '../src/machine.mjs';
 import { mcpConfigText } from '../src/mcpsync.mjs';
 import { ompModels, ompConfig } from '../src/profiles.mjs';
 import { test } from 'node:test';
@@ -1994,8 +1995,8 @@ test('#126 every queued agent shows why it waits, in list and wait', async () =>
   const queue = createStartQueue({ perMin: 100, sleep: () => new Promise(() => {}), maxRunning: () => 1, tierName: () => 'pro', liveCount: () => 1 });
   const { start, deps, text, wait } = await setup({ queue });
   const [, b, c] = [await start(), await start(), await start()];
-  await tick(100);
-  const l = text(await listAgents({}, deps));
+  let l; // under heavy load the third start can take longer than a fixed tick to reach the queue
+  for (let i = 0; i < 100 && !new RegExp(`${c}  queued`).test(l = text(await listAgents({}, deps))); i++) await tick(50);
   assert.match(l, new RegExp(`${c}  queued[^]*2 ahead[^]*waiting for a free machine slot \\(1 running on the pro plan\\)`));
   assert.match(await wait([b], 0.1), /waiting for a free machine slot/);
 });
@@ -2008,4 +2009,59 @@ test('#135 a provider-side size_not_allowed for a size the current plan lists sa
   const res = s.text(await resultAgent({ agent_id: id }, s.deps));
   assert.match(res, /refused/);
   assert.doesNotMatch(res, /upgrade|larger plan than any/i);
+});
+
+test('#139 cloud_agent_list ends with the usage line; no plan, a failing plan or no usage add nothing; a stale plan is refreshed', async () => {
+  const mk = (plan) => createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true, plan });
+  const fresh = (usage) => () => ({ tier: 'pro', fetchedAt: Date.now(), usage });
+  const list = async (provider) => {
+    const { start, wait, deps, text } = await setup({ provider });
+    await wait([await start()]);
+    await listAgents({}, deps); // starts the background plan read
+    await planSettled(provider);
+    return text(await listAgents({}, deps));
+  };
+  const base = await list(mk(null));
+  assert.doesNotMatch(base, /Instabox this month/);
+  const over = await list(mk(fresh({ costUSD: 66.12, allowanceUSD: 16.61, overageUSD: 49.51 })));
+  assert.equal(over.split('\n').at(-1), 'Instabox this month: $66.12 used, $16.61 included, $49.51 beyond it (pay as you go)');
+  assert.equal((await list(mk(fresh({ costUSD: 12.4, allowanceUSD: 20, overageUSD: 0 })))).split('\n').at(-1), 'Instabox this month: $12.40 of $20.00 included used');
+  for (const p of [fresh(undefined), () => { throw new Error('boom'); }, () => ({ tier: 'free', fetchedAt: Date.now(), usage: { costUSD: 'NaN' } })]) {
+    const t = await list(mk(p));
+    assert.doesNotMatch(t, /Instabox this month|NaN|undefined/);
+    assert.equal(t.split('\n').length, base.split('\n').length);
+  }
+  const stale = mk((o) => ({ tier: 'pro', fetchedAt: o?.refresh ? Date.now() : Date.now() - 31 * 60_000, usage: { costUSD: o?.refresh ? 2 : 1, allowanceUSD: 20 } }));
+  assert.match(await list(stale), /\$2\.00 of \$20\.00 included used$/);
+  assert.equal(stale.log.planRefresh, 1);
+});
+
+test('#139 review: a plan() that never resolves does not delay cloud_agent_list, and the line is absent', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true, plan: () => new Promise(() => {}) });
+  const { start, wait, deps, text } = await setup({ provider });
+  await wait([await start()]);
+  const t0 = Date.now();
+  const out = text(await listAgents({}, deps));
+  assert.ok(Date.now() - t0 < 1000);
+  assert.doesNotMatch(out, /Instabox this month/);
+});
+
+test('#139 review: a failing plan() is tried once per 5 minutes, not on every list', async () => {
+  let calls = 0;
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true, plan: () => { calls++; throw new Error('429'); } });
+  const { deps } = await setup({ provider });
+  const base = calls; // the start pace may read the plan too
+  const t = Date.now();
+  for (let i = 0; i < 3; i++) { planSnapshot(provider, t + i * 1000); await planSettled(provider); }
+  assert.equal(calls - base, 1);
+  planSnapshot(provider, t + 6 * 60_000); await planSettled(provider);
+  assert.equal(calls - base, 2);
+});
+
+test('#139 review: the all and no-agents listings end with the usage line too', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true, plan: () => ({ tier: 'pro', fetchedAt: Date.now(), usage: { costUSD: 3, allowanceUSD: 20 } }) });
+  const { deps, text } = await setup({ provider });
+  await listAgents({}, deps); await planSettled(provider);
+  assert.equal(text(await listAgents({}, deps)), 'No agents.\nInstabox this month: $3.00 of $20.00 included used');
+  assert.match(text(await listAgents({ all: true }, deps)), /No cloudy-cloud machines\.\nInstabox this month: \$3\.00 of/);
 });

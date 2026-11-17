@@ -279,7 +279,9 @@ export function createProvider(env, deps = {}) {
         const org = await rawGet(`https://api.instabox.sh/v1/orgs/${encodeURIComponent(me.org.id)}`, 'plan');
         const l = org.limits ?? {};
         const sizes = (org.allowedSpecs?.length ? org.allowedSpecs : me.allowedSpecs ?? []).map((x) => ({ vcpus: x.vcpus, memMiB: x.memMiB }));
-        return (planCache = { tier: me.org.tier, specs: sizes, startsPerMinute: l.startsPerMinute ?? 0, maxRunning: l.maxRunning ?? 0, maxMachines: l.maxMachines ?? 0, fetchedAt: now() });
+        const usage = {};
+        for (const k of ['costUSD', 'allowanceUSD', 'creditRemainingUSD', 'overageUSD', 'ratedUntil', 'periodEnd']) if (['number', 'string'].includes(typeof org.usage?.[k])) usage[k] = org.usage[k];
+        return (planCache = { ...(org.usage && typeof org.usage === 'object' && { usage }), tier: me.org.tier, specs: sizes, startsPerMinute: l.startsPerMinute ?? 0, maxRunning: l.maxRunning ?? 0, maxMachines: l.maxMachines ?? 0, fetchedAt: now() });
       } catch (e) {
         if (!planLogged) { planLogged = true; console.error('[cloudy-cloud] could not read the Instabox plan:', String(e?.message ?? 'error').split(apiKeyOrEmpty()).join('[redacted]')); }
         return null;

@@ -14,6 +14,7 @@ import { createMachineReader } from './machine-read.mjs';
 import { paneState } from './pane-state.mjs';
 import { secretValues } from './run-subagent.mjs';
 import { consentedLiterals } from './mcpsync.mjs';
+import { planSnapshot } from './machine.mjs';
 import { demoState, demoStream } from './dashboard-demo.mjs';
 import { guideObj } from './errors.mjs';
 import { createLimiter } from './limits.mjs';
@@ -382,6 +383,8 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
     for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(b.machine).samples, now()), now())) u.quiet = true; } }
+    const u = planSnapshot(provider, now())?.usage;
+    if (typeof u?.costUSD === 'number') cached.usage = Object.fromEntries(['costUSD', 'allowanceUSD', 'overageUSD', 'ratedUntil'].filter((k) => u[k] != null).map((k) => [k, u[k]]));
     at = now();
     return cached;
   };
