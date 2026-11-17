@@ -972,3 +972,21 @@ test('a machine that stops and resumes within 30 s is not read again at once', a
   clock.t += 30_000; await fresh(getState);
   assert.equal(calls.length, 2);
 });
+
+// #119: usage per agent on the page. The page is not run here; these check the source for the behaviour the issue fixes.
+test('the page shows usage: list text, sparkline from numbers, quiet hint, freshness, states and the copy command', () => {
+  const script = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.match(script, /\/api\/metrics\?t=' \+ enc\(T\)/, 'the metrics fetch carries the token');
+  assert.match(script, /'cpu ' \+ Math\.round\(/, 'rail and fleet text: cpu N% · mem X of Y GiB');
+  assert.match(script, /createElementNS\(NS, tag\)/); assert.match(script, /hs\('polyline'/, 'the sparkline is built with createElementNS');
+  assert.match(script, /Number\.isFinite/, 'sparkline points are checked as finite numbers');
+  assert.match(script, /stroke-dasharray/, 'memory line is dashed');
+  assert.match(script, /cpuPct < 3/); assert.match(script, /< 1024/); assert.match(script, /10 \* 60_000/);
+  assert.match(script, /Quiet for 10 minutes while marked running/);
+  assert.match(script, /Newest sample/); assert.match(script, /paused or stopped since then/);
+  assert.match(script, /never wakes a paused machine/);
+  assert.match(script, /about 90 seconds after it starts/);
+  assert.match(script, /whatHappened/); assert.match(script, /nextStep/);
+  assert.match(script, /'npx --yes instabox@latest metrics ' \+ b\.machine \+ ' --since 6h'/);
+  assert.match(script, /usage\?\.cpuPct/, 'usage fields are in the rebuild signatures');
+});
