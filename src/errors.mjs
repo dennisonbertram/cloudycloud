@@ -1,4 +1,4 @@
-import { FORMS } from './machine.mjs';
+import { FORMS, SIZES_BY_PLAN } from './machine.mjs';
 
 // Error guidance: every tool error says what happened, the likely cause, the next step and, when only the human can
 // fix it, what to tell the user. guide(code, detail) returns the text; guideObj returns the same as fields.
@@ -13,7 +13,11 @@ export const setCmd = (d) => `printf %s "$KEY" | npx --yes instabox@latest secre
 const SETTINGS = 'Add it in cloudy-cloud setup: run `cloudy-cloud setup`.';
 
 // Plan wording (d.plan comes from provider.plan(); absent when the provider has no plan). Names the tier and the number hit.
-const UPGRADE = 'Upgrade with `instabox workspace plan <workspace> pro|builder|team` (needs `instabox login`) or on the Instabox dashboard billing page.';
+// One upgrade instruction everywhere: the next tier (or `to`), where <workspace> comes from, and the billing page.
+const NEXT = { free: 'pro', pro: 'builder', builder: 'team' };
+const NPX = 'npx --yes instabox@latest';
+const upgrade = (tier, to = NEXT[tier]) => (to ? `Upgrade with \`${NPX} workspace plan <workspace> ${to}\` (needs \`${NPX} login\`; <workspace> is the name that \`${NPX} workspace ls\` prints), or on the Instabox dashboard billing page.` : 'Upgrade on the Instabox dashboard billing page.');
+const waitedFor = (d) => (d.waited ? `Cloudy Cloud already retried for ${d.waited} minutes, so do not call cloud_agent again at once. ` : '');
 const tier = (d) => (d.plan?.tier ? `${d.plan.tier} plan` : '');
 const lim = (n, unit) => (n > 0 ? `${n} ${unit}` : '');
 
@@ -22,15 +26,15 @@ const T = {
   model_not_found: (d) => ['The model is not available on this provider.', 'Likely a typo in the model name, or the key has no access to this model.', `Retry once after a wait, or call cloud_agent with another profile (known profiles: ${d.profiles ?? 'see cloud_agent'}).`, 'The key has no access to this model; pick another model or check the provider plan.'],
   rate_limited: (d) => {
     const t = tier(d), n = lim(d.plan?.startsPerMinute, 'starts a minute');
-    return ['The provider is limiting how fast machines or requests start.', t && n ? `Likely too many agents started at once; the ${t} allows ${n}.` : 'Likely too many agents started at once.', `Wait ${d.seconds ?? 60} seconds, then retry cloud_agent. Free capacity sooner with cloud_agent_stop on idle agents (see cloud_agent_list).${t ? ` ${UPGRADE}` : ''}`];
+    return ['The provider is limiting how fast machines or requests start.', t && n ? `Likely too many agents started at once; the ${t} allows ${n}.` : 'Likely too many agents started at once.', `${d.waited ? `Cloudy Cloud already retried for about ${d.waited} minutes. Do not retry at once. ` : ''}First stop agents you no longer need (cloud_agent_list, then cloud_agent_stop) or lower CLOUDY_CLOUD_STARTS_PER_MIN, then wait ${d.waited ?? 10} minutes before calling cloud_agent again.${t ? ` If it keeps happening, tell the user: ${upgrade(d.plan.tier)}` : ''}`];
   },
   quota_exceeded: (d) => {
     const t = tier(d), n = lim(d.plan?.maxMachines, 'machines');
-    return ['The provider machine limit is reached.', t && n ? `The ${t} allows ${n} at once, paused machines included.` : 'The plan allows no more machines at once.', 'Call cloud_agent_list, then cloud_agent_stop on idle agents, then retry cloud_agent.', t ? `The ${t} machine limit (${n || 'reached'}) is reached; delete leftover machines or wait. ${UPGRADE}` : 'The plan machine limit is reached; upgrade the plan or wait for machines to finish.'];
+    return ['The provider machine limit is reached.', t && n ? `The ${t} allows ${n} at once, paused machines included.` : 'The plan allows no more machines at once.', `${waitedFor(d)}Call cloud_agent_list, then cloud_agent_stop on agents you no longer need, then retry cloud_agent. If every agent is needed, tell the user the upgrade path.`, t ? `The ${t} machine limit (${n || 'reached'}) is reached; delete leftover machines or wait. ${upgrade(d.plan.tier)}` : 'The plan machine limit is reached; upgrade the plan or wait for machines to finish.'];
   },
   concurrency_limit: (d) => {
     const t = tier(d), n = lim(d.plan?.maxRunning, 'machines running');
-    return ['The provider limit on machines running at once is reached.', t && n ? `The ${t} allows ${n} at once.` : 'The plan allows no more machines running at once.', 'Call cloud_agent_list, then cloud_agent_stop on idle agents, then retry cloud_agent.', t ? `The ${t} limit (${n || 'reached'}) is reached; wait for agents to finish. ${UPGRADE}` : 'The plan running-machine limit is reached; upgrade the plan or wait for agents to finish.'];
+    return ['The provider limit on machines running at once is reached.', t && n ? `The ${t} allows ${n} at once.` : 'The plan allows no more machines running at once.', `${waitedFor(d)}Call cloud_agent_list, then cloud_agent_stop on agents you no longer need, then retry cloud_agent. If every agent is needed, tell the user the upgrade path.`, t ? `The ${t} limit (${n || 'reached'}) is reached; wait for agents to finish. ${upgrade(d.plan.tier)}` : 'The plan running-machine limit is reached; upgrade the plan or wait for agents to finish.'];
   },
   spend_limit: () => ['The Claude spend limit is reached, so no turn can run.', 'The account hit its usage cap.', 'Do not retry now. Call cloud_agent_list to see which agents are affected, and cloud_agent_stop on those you no longer need.', 'Your Claude spend limit is reached; raise it in your Claude usage settings or wait for the reset.'],
   coordinator_login_expired: () => ['The Claude sign-in saved in the coordinator image has expired or is missing.', 'The image was signed in once with `claude auth login` and that login is no longer valid.', 'Run `cloudy-cloud coordinator image`, attach as it says, run `claude auth login`, then run `cloudy-cloud coordinator image --save`, then start the coordinator again.', "Your coordinator image's Claude sign-in expired; sign in again with `cloudy-cloud coordinator image`, `claude auth login` on the image machine, then `cloudy-cloud coordinator image --save`."],
@@ -58,10 +62,16 @@ const T = {
   machine_kind_unknown: (d) => [`The machine "${d.message ?? '?'}" is not a known kind.`, 'The machine argument has a typo, an unsupported form, or a GPU count outside 1-4.', `Use one of: ${FORMS}. Then call cloud_agent again.`],
   machine_kind_unsupported: (d) => [`The provider ${d.provider ?? '<provider>'} cannot start a ${d.kind ?? 'this'} machine (it offers: ${d.kinds ?? 'linux'}).`, 'This provider runs only the kinds listed.', 'Call cloud_agent again with machine "linux". For other kinds set CLOUDY_CLOUD_PROVIDER=instabox: run `cloudy-cloud setup`.'],
   machine_needs_consent: (d) => [`A ${d.kind ?? 'gpu or macos'} machine costs money, so it is refused until you allow it. ${d.price ?? 'It costs more than a linux machine'}.`, 'Machines that cost money need your consent first. Nothing was started.', `Do not retry. Ask the user to add \`CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=${d.kind ?? '<kind>'}\` to ~/.config/cloudy-cloud/env (it applies to the next cloud_agent call, no restart), then call cloud_agent again.`, `To allow a ${d.kind ?? 'gpu or macos'} machine, add CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=${d.kind ?? '<kind>'} to ~/.config/cloudy-cloud/env.`],
-  machine_not_on_plan: (d) => [`The plan does not include a ${d.kind ?? 'this'} machine (HTTP 403 template_not_allowed).`, 'The Instabox plan lacks this template.', 'Call cloud_agent again with machine "linux".', tier(d) ? `Your Instabox ${tier(d)} does not include ${d.kind ?? 'this machine kind'}. ${UPGRADE} Or pick another kind.` : `Your Instabox plan does not include ${d.kind ?? 'this machine kind'}; upgrade the plan or pick another kind.`],
+  machine_not_on_plan: (d) => [`The plan does not include a ${d.kind ?? 'this'} machine (HTTP 403 template_not_allowed).`, 'The Instabox plan lacks this template.', 'Call cloud_agent again with machine "linux".', tier(d) ? `Your Instabox ${tier(d)} does not include ${d.kind ?? 'this machine kind'}. ${upgrade(d.plan.tier)} Or pick another kind.` : `Your Instabox plan does not include ${d.kind ?? 'this machine kind'}; upgrade the plan or pick another kind.`],
   machine_no_capacity: (d) => [`Instabox has no free ${d.kind ?? 'machine'} capacity right now (HTTP 503).`, 'Capacity for this GPU type or Mac model is used up.', 'Wait a few minutes, then call cloud_agent again, or use another GPU type or Mac model (for example machine "gpu:l4").'],
-  size_not_allowed: (d) => [`The size ${d.size ?? '?'} is not on your Instabox plan${d.tier ? ` (${d.tier})` : ''}.`, d.sizes ? `The plan allows: ${d.sizes}.` : 'Likely the plan does not include it.', d.sizes ? 'Call cloud_agent again with one of those sizes, or ask the user to upgrade.' : 'Call cloud_agent again without size, or ask the user to upgrade.',
-    `Size ${d.size ?? 'this'} needs ${d.plan ? `the ${d.plan} plan${d.fee ? ` ($${d.fee}/month, which includes usage equal to the fee)` : ''} or higher; upgrade with \`npx --yes instabox@latest workspace plan <workspace> ${d.plan}\` or at https://instabox.sh/pricing` : 'a larger plan than any listed; see https://instabox.sh/pricing'}${d.largest ? `, or use ${d.largest}` : ''}.`],
+  size_not_allowed: (d) => {
+    const z = d.size ?? '?', t = d.tier ? `${d.tier} plan` : '';
+    return [d.notOffered ? `The size ${z} is not an Instabox size.` : `The size ${z} is not on your Instabox plan${d.tier ? ` (${d.tier})` : ''}.`,
+      d.notOffered ? `Instabox does not offer ${z} on any plan. It offers ${SIZES_BY_PLAN}.` : t ? `The ${t} doesn't include ${z}${d.plan ? `; the ${d.plan} plan does` : ''}.` : 'Likely the plan does not include it.',
+      d.sizes ? `Call cloud_agent again with one of: ${d.sizes}${d.plan ? ', or ask the user to upgrade' : ''}.` : 'Call cloud_agent again without size, or ask the user to upgrade.',
+      d.notOffered ? `Size ${z} does not exist, so no plan change helps; the agent should pick a listed size.`
+        : `Size ${z} needs ${d.plan ? `the ${d.plan} plan${d.fee ? ` ($${d.fee}/month, which includes usage equal to the fee)` : ''} or higher. ${upgrade(d.tier, d.plan)} Pricing: https://instabox.sh/pricing.` : 'a larger plan than any listed; see https://instabox.sh/pricing'}${d.largest ? ` Or use ${d.largest}.` : ''}`];
+  },
   machine_gpu_limit: () => ['The organisation has reached its limit of 8 GPUs (HTTP 403 template_limit).', 'Running GPU agents already use the 8 GPUs the API allows.', 'Call cloud_agent_list, then cloud_agent_stop on an idle GPU agent, then call cloud_agent again.', 'The 8-GPU limit of the organisation is reached; stop a GPU agent or ask Instabox for more.'],
   machine_missing_tools: (d) => [`The ${d.kind ?? 'machine'} image lacks tools the agent needs (${d.tools ?? 'git, node, claude'}).`, 'The image does not include them.', `The machine was stopped. Call cloud_agent again with machine "linux"${/^(omarchy|macos)/.test(d.kind ?? '') ? '.' : ', or set CLOUDY_CLOUD_APT_PACKAGES to the missing packages (in ~/.config/cloudy-cloud/env).'}`],
   machine_not_running: (d) => [`Machine ${d.id ?? ''} is not running.`.replace('  ', ' '), 'It was stopped, suspended or deleted.', 'Call cloud_agent_list to see open agents, then start a new one with cloud_agent.'],

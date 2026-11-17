@@ -654,7 +654,7 @@
     if (b.kind === 'agent' && active(b) && turn === (b.turns || 1)) {
       const turnT = all.findLast((m) => m.kind === 'out')?.t ?? b.startedAt;
       const lastT = Math.max(msgs.findLast((m) => m.kind === 'progress')?.t || 0, evs.at(-1)?.t || 0);
-      kids.push(h('div', { class: 'ev work' }, b.status === 'queued' ? 'Queued: waiting for a free machine…' : b.status === 'starting' ? 'Starting the machine…'
+      kids.push(h('div', { class: 'ev work' }, b.status === 'queued' ? 'Queued: ' + (b.queueNote || 'waiting for a free machine…') : b.status === 'starting' ? 'Starting the machine…'
         : h('span', { title: "Time since your last message, and since the agent's last event" }, 'Working · ', live('age', turnT), lastT > turnT && [' · last event ', live('ago', lastT)])));
     }
     if (!kids.length) kids.push(h('div', { class: 'state' }, h('p', { text: b.kind === 'agent' ? 'No messages recorded for this agent.' : b.kind === 'coordinator' ? 'This coordinator runs in the cloud, so its messages are not recorded on this computer. Its workers are listed under it.' : 'No session messages: this box is not tracked by a session log on this computer.' })));

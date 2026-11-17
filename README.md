@@ -253,11 +253,23 @@ Full reference with every option and environment variable: [Command and tool ref
 
 | Tool | What it does |
 | --- | --- |
-| `cloud_agent` | Starts a subagent. Returns at once. Optional `size` (VCPUSxGIB, such as `8x16`) picks a bigger Instabox machine when your plan allows it; the default is 4x8. |
+| `cloud_agent` | Starts a subagent. Returns at once. Optional `size` (VCPUSxGIB, such as `8x16`) picks a bigger Instabox machine when your plan allows it; the default is 4x8 (about $0.034 an hour). See [Machine sizes](#machine-sizes). |
 | `cloud_agent_message` | Sends a follow-up to an open subagent. |
 | `cloud_agent_wait` | Waits for subagents and returns their answers (not needed in task mode). |
 | `cloud_agent_list` | Shows every subagent's status and progress. |
 | `cloud_agent_stop` | Stops subagents and deletes their machines. |
+
+**Machine sizes.** `size` must be a size Instabox sells and your plan includes. The cost is vCPU $0.004/h plus memory $0.00225/GiB-h while the machine runs.
+
+| Size | Cost an hour | Plan |
+| --- | --- | --- |
+| 2x4 | $0.017 | pro and up |
+| 4x8 (default) | $0.034 | pro and up |
+| 8x16 | $0.068 | pro and up (largest on pro) |
+| 16x32 | $0.136 | builder and up (largest on builder) |
+| 32x64 | $0.272 | team |
+
+A size on a higher plan is refused with the upgrade command; a size no plan lists (such as 3x5) is refused as not offered. Cloudy Cloud never starts a different size instead. If your plan cannot be read, the size is sent anyway and the reply says it was not checked.
 
 In a terminal session, `/tasks` lists each subagent with a progress line. Selecting the first task of a subagent and pressing `x` stops the subagent and deletes its machine; cancelling a follow-up message only stops that turn, and the subagent stays open.
 

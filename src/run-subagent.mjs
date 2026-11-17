@@ -6,8 +6,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
-import { parseMachine, parseSize, sizeLabel, planFor, planFee, SIZE_PRICE, EXPENSIVE, PRICE } from './machine.mjs';
+import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS } from './limits.mjs';
+import { parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
@@ -80,7 +80,7 @@ export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, ke
 function helpers(env, literals, keyName, tool) {
   const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
-  return { scrub, ok, fail: (text) => ({ ...ok(/^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
+  return { scrub, ok, fail: (text, bare) => ({ ...ok(bare || /^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 // The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
@@ -88,7 +88,8 @@ function helpers(env, literals, keyName, tool) {
 export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
-  const live = (me) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'starting')).length; // this server's other agents holding or creating a machine
+  // This server's other agents holding or creating a machine. Admission counts a start whose create is still in flight; the count shown to people (shown) counts only agents that own a machine.
+  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && !(shown && !a.sandbox)))).length;
   const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, ...opts });
   q.plan = () => plan;
   q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
@@ -334,10 +335,12 @@ const BUNDLE_MARGIN = 1024 * 1024;
 
 const limitText = (e, plan, kind) => {
   const s = `${e?.code ?? ''} ${e?.message ?? ''}`;
+  const waitedQuota = Math.round(QUOTA_GIVE_UP_MS / 60_000); // minutes the queue already retried quota and concurrency limits
+  const waitedRate = Math.round(((e?.retryAfterSeconds ?? e?.retryAfter) > 0 ? (e.retryAfterSeconds ?? e.retryAfter) : 60) * ((MAX_START_TRIES - 1) * MAX_START_TRIES / 2) / 60); // backoff 1x, 2x, 3x ... between the tries
   if (e?.code === 'machine_not_on_plan') return `${guide('machine_not_on_plan', { plan, kind })}\nProvider message: ${e?.message}`;
-  if (/concurrency_limit/.test(s)) return `${guide('concurrency_limit', { plan })}\nProvider message: ${e?.message}`;
-  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded', { plan })}\nProvider message: ${e?.message}`;
-  if (/rate_limited/.test(s)) return `${guide('rate_limited', { plan })}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
+  if (/concurrency_limit/.test(s)) return `${guide('concurrency_limit', { plan, waited: waitedQuota })}\nProvider message: ${e?.message}`;
+  if (/quota_exceeded/.test(s)) return `${guide('quota_exceeded', { plan, waited: waitedQuota })}\nProvider message: ${e?.message}`;
+  if (/rate_limited/.test(s)) return `${guide('rate_limited', { plan, waited: waitedRate })}\n(Still limited after ${MAX_START_TRIES} tries.) Provider message: ${e?.message}`;
 };
 
 // Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
@@ -570,12 +573,19 @@ async function work(a, message, first, ctx, t) {
   wake(a);
 }
 
+// Why a queued agent waits, shown by list, wait, task status and the dashboard: the capacity reason (when one holds the line) and the place in line.
+function queuedText(a, queue) {
+  const ahead = queue.ahead(a), why = queue.reason?.(a);
+  if (ahead === undefined) return a.queueNote ?? 'queued for a machine (waiting to retry)';
+  return why ? (ahead ? `queued, ${ahead} ahead: ${why}` : why) : `queued for a machine (${ahead} ahead)`;
+}
+
 // The progress line for a turn, safe to show: scrubbed, one line, at most STATUS_MAX characters.
 function statusOf(t, ctx) {
   let m;
   if (t.status === 'working') {
     const a = t.agent, ahead = ctx.queue.ahead(a);
-    m = a.status === 'queued' ? (a.queueNote ?? `queued for a machine (${ahead === undefined ? 'waiting to retry' : `${ahead} ahead`})`)
+    m = a.status === 'queued' ? queuedText(a, ctx.queue)
       : a.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
   }
   else if (t.status === 'completed') m = statusLine(t.progress);
@@ -591,8 +601,9 @@ const iso = (ms) => new Date(ms).toISOString();
 function sizeGuide(size, planOrProvider, read) {
   const build = (plan) => {
     const sorted = (plan?.specs ?? []).slice().sort((x, y) => x.vcpus - y.vcpus || x.memMiB - y.memMiB).map(sizeLabel);
-    const p = planFor(size.vcpus, size.memMiB);
-    return guide('size_not_allowed', { size: size.label, plan: p, fee: planFee(p), ...(sorted.length && { tier: plan.tier, sizes: sorted.join(' '), largest: sorted.at(-1) }) });
+    const p = offeredBy(size.label); // the lowest plan that lists exactly this size; none means no plan offers it
+    const up = p && !(plan?.tier && TIERS.indexOf(p) <= TIERS.indexOf(plan.tier)) ? p : undefined; // suggest an upgrade only to a higher plan
+    return guide('size_not_allowed', { size: size.label, notOffered: !p, plan: up, fee: planFee(up), ...(sorted.length && { tier: plan.tier, sizes: sorted.join(' '), largest: sorted.at(-1) }) });
   };
   if (!read) return build(planOrProvider);
   return (async () => {
@@ -603,7 +614,7 @@ function sizeGuide(size, planOrProvider, read) {
 }
 
 // What cloud_agent and cloud_agent_message answer with in task mode.
-const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : a.size ? SIZE_PRICE(a.size.vcpus, a.size.memMiB / 1024) : '');
+const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : a.size ? [sizeCostLine(a.size.vcpus, a.size.memMiB / 1024), a.sizeNote].filter(Boolean).join(' ') : '');
 const priceNote = (t) => priceOf(t.agent);
 function taskAnswer(t, ctx) {
   return {
@@ -682,7 +693,8 @@ export async function runSubagent(args, deps) {
   if (EXPENSIVE.includes(kind.name) && !String(ctx.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS ?? '').split(/[\s,]+/).includes(kind.name)) return fail(guide('machine_needs_consent', { kind: kind.name, price: PRICE[kind.name] }));
   if (apt.list.length && ['omarchy', 'macos'].includes(kind.name)) return fail(`CLOUDY_CLOUD_APT_PACKAGES cannot be installed on a ${kind.name} machine (it has no apt-get). Call cloud_agent again with machine "linux" or "android", or clear CLOUDY_CLOUD_APT_PACKAGES.`);
   const size = parseSize(args.size);
-  if (size?.error) return fail(size.error);
+  let sizeNote;
+  if (size?.error) return fail(size.error, true);
   if (size) {
     if (EXPENSIVE.includes(kind.name)) return fail('gpu and macos machines have their own sizes, so size cannot be used with them. Call cloud_agent again without size.');
     if (!ctx.provider.caps.hasSizes) return fail(`size is not available: the ${ctx.provider.name} provider has one machine size. Call cloud_agent again without size.`);
@@ -692,6 +704,7 @@ export async function runSubagent(args, deps) {
     if (plan?.specs && !has(plan)) {
       return fail(sizeGuide(size, plan));
     }
+    if (!plan?.specs) sizeNote = `Your Instabox plan could not be read, so size ${size.label} was not checked against it and Instabox may refuse it (read the reason with cloud_agent_result).`;
   }
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp')) return fail('A coordinator cannot use a pi or omp profile, because coordinators run Claude Code. Use a pi or omp profile for workers only.');
@@ -724,7 +737,7 @@ export async function runSubagent(args, deps) {
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, kind, ...(size && { size }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { role, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
@@ -736,7 +749,7 @@ export async function runSubagent(args, deps) {
   work(a, prompt, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${SIZE_PRICE(size.vcpus, size.memMiB / 1024)}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
@@ -781,7 +794,7 @@ export async function waitAgents(args = {}, deps) {
     const a = agents[i];
     if (!a || a.status === 'stopped') return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`;
     const head = `## ${id}${a.description ? ` (${a.description})` : ''}\nstatus: ${a.status}`;
-    if (active(a) || !a.result) return head;
+    if (active(a) || !a.result) return a.status === 'queued' ? `${head}\n${queuedText(a, ctx.queue)}` : head;
     if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
     a.result.reported = true;
     return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`;
