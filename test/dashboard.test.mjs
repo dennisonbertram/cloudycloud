@@ -987,6 +987,68 @@ test('the page shows usage: list text, sparkline from numbers, quiet hint, fresh
   assert.match(script, /never wakes a paused machine/);
   assert.match(script, /about 90 seconds after it starts/);
   assert.match(script, /whatHappened/); assert.match(script, /nextStep/);
-  assert.match(script, /'npx --yes instabox@latest metrics ' \+ b\.machine \+ ' --since 6h'/);
   assert.match(script, /usage\?\.cpuPct/, 'usage fields are in the rebuild signatures');
+});
+
+// ---- #119 review fixes: run the page's pure helpers on their own
+const pure = (() => {
+  const src = PAGE.slice(PAGE.indexOf('// pure:begin'), PAGE.indexOf('// pure:end'));
+  const dur = (ms) => Math.round(ms / 60_000) + 'm';
+  return new Function('fin', 'dur', `${src}\nreturn { safeId, metricsCmdFor, quietHint, pruneMetrics, historyNote };`)((n) => typeof n === 'number' && Number.isFinite(n), dur);
+})();
+const NOW = 10_000_000;
+const series = (o = {}) => Array.from({ length: 40 }, (_, k) => ({ t: NOW - (39 - k) * 30_000, cpuPct: 1, netIn: 100, netOut: 50, ...o }));
+const runBox = (ss, over = {}) => ({ status: 'running', usage: { at: ss.at(-1).t, cpuPct: 1, netIn: 100, netOut: 50 }, ...over });
+
+test('page: the copied metrics command is shown only for a safe machine id, and single-quoted', () => {
+  assert.equal(pure.metricsCmdFor('m-7c1e90ab'), "npx --yes instabox@latest metrics 'm-7c1e90ab' --since 6h");
+  for (const bad of ['m1; printf INJECTED #', 'a b', '$(x)', '`x`', "a'b", '-rf', '', 'a\nb', undefined]) assert.equal(pure.metricsCmdFor(bad), null, String(bad));
+  assert.equal(pure.safeId('x;y'), null);
+  assert.match(PAGE, /if \(!safeId\(cliId\(b\)\)\) return null/, 'Shell and Screen rows use it too');
+  assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\)\) return null/);
+});
+
+test('page: the quiet hint needs 10 continuous minutes, every sample quiet, known network, and the newest usage sample covered', () => {
+  const ss = series();
+  assert.equal(pure.quietHint(runBox(ss), ss, NOW), true);
+  assert.equal(pure.quietHint(runBox(ss, { status: 'idle' }), ss, NOW), false);
+  const gap = ss.filter((x, i) => i < 20 || i > 24); // a 150 s hole
+  assert.equal(pure.quietHint(runBox(gap), gap, NOW), false);
+  const short = ss.slice(-15); assert.equal(pure.quietHint(runBox(short), short, NOW), false);
+  const late = series().map((x, i) => (i < 5 ? { ...x, cpuPct: 50 } : x)); assert.equal(pure.quietHint(runBox(late), late, NOW), true, 'a busy sample older than 10 minutes does not count');
+  const busy = series().map((x, i) => (i === 30 ? { ...x, cpuPct: 3 } : x)); assert.equal(pure.quietHint(runBox(busy), busy, NOW), false);
+  const noNet = series().map((x, i) => (i === 30 ? { ...x, netIn: undefined } : x)); assert.equal(pure.quietHint(runBox(noNet), noNet, NOW), false);
+  const loud = series({ netIn: 1000, netOut: 100 }); assert.equal(pure.quietHint(runBox(loud), loud, NOW), false);
+  assert.equal(pure.quietHint(runBox(ss), ss, NOW + 130_000), false, 'stale newest sample');
+});
+
+test('page: the hint is suppressed when the shown usage is newer than the history or is not quiet', () => {
+  const ss = series();
+  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW + 30_000, cpuPct: 1, netIn: 1, netOut: 1 } }), ss, NOW), false);
+  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW, cpuPct: 80, netIn: 1, netOut: 1 } }), ss, NOW), false);
+  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW, cpuPct: 1 } }), ss, NOW), false);
+  assert.equal(pure.quietHint(runBox(ss, { usage: undefined }), ss, NOW), false);
+});
+
+test('page: a failed history read keeps the old samples, marks them stale and says how old, or says history is unavailable', () => {
+  assert.equal(pure.historyNote({ stale: true, okAt: NOW - 5 * 60_000 }, NOW), 'History could not be refreshed. The graph is 5m old.');
+  assert.match(pure.historyNote({ stale: true, okAt: null }, NOW), /^History is unavailable/);
+  assert.equal(pure.historyNote({ stale: false }, NOW), null);
+  assert.equal(pure.historyNote(undefined, NOW), null);
+  assert.equal((PAGE.match(/stale: true, okAt: prev\?\.okAt \?\? null/g) || []).length, 2, 'non-OK and network error both mark stale');
+  assert.match(PAGE, /!m\?\.stale && quietHint/);
+});
+
+test('page: the history cache drops agents that left the state and keeps only the 10 most recent', () => {
+  const cache = Object.fromEntries(Array.from({ length: 14 }, (_, i) => ['a' + i, { got: i }]));
+  pure.pruneMetrics(cache, new Set(Object.keys(cache).filter((k) => k !== 'a13')));
+  assert.equal('a13' in cache, false);
+  assert.deepEqual(Object.keys(cache).sort(), Array.from({ length: 10 }, (_, i) => 'a' + (i + 3)).sort());
+  assert.match(PAGE, /pruneMetrics\(S\.metrics, new Set\(\(S\.data\.boxes/, 'also pruned when the state arrives');
+});
+
+test('the demo has one truly quiet running agent: under 3 % CPU and 1 KB/s for the whole hour', () => {
+  const s = demoStream.metrics('c3d4e5f6').samples;
+  assert.equal(s.length, 120);
+  assert.ok(s.every((x) => x.cpuPct < 3 && x.netIn + x.netOut < 1024));
 });

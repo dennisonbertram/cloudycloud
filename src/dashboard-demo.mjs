@@ -11,13 +11,14 @@ const failedText = ['Subagent failed, exit code 1.',
   'Model: claude-sonnet-5-5', 'Total: 9 tool uses, 41.2k in / 3.1k out tokens, $0.2140, 12m 4s'].join('\n');
 
 // One hour of 30 s usage samples for a demo machine, oldest first. Busy machines sit high with swings, quiet ones near idle.
-const BUSY = new Set(['7c1e90ab']);
+const BUSY = new Set(['7c1e90ab']), QUIET = new Set(['c3d4e5f6']); // QUIET: under 3 % CPU and 1 KB/s the whole hour
 export function demoSeries(id, now = Date.now()) {
-  const busy = BUSY.has(id), seed = [...id].reduce((a, c) => a + c.charCodeAt(0), 0);
+  now = Math.floor(now / 30_000) * 30_000; // samples land on a 30 s grid, as on the real host
+  const busy = BUSY.has(id), quiet = QUIET.has(id), seed = [...id].reduce((a, c) => a + c.charCodeAt(0), 0);
   return Array.from({ length: 120 }, (_, k) => {
     const i = 119 - k, t = now - i * 30_000, w = Math.sin((i + seed) / 7) + Math.sin((i + seed) / 3.1) / 2;
-    return { t, cpuPct: Math.round(Math.max(1, busy ? 80 + w * 10 : 5 + w * 3) * 10) / 10, cpuCount: 2, memUsed: Math.round((busy ? 2.6e9 : 0.7e9) + w * 1e8), memTotal: 4e9,
-      netIn: Math.round((busy ? 90_000 : 1_500) * (1.3 + w)), netOut: Math.round((busy ? 30_000 : 600) * (1.3 + w)), diskRead: 0, diskWrite: busy ? 40_000 : 2000 };
+    return { t, cpuPct: quiet ? Math.round((1 + w * 0.4) * 10) / 10 : Math.round(Math.max(1, busy ? 80 + w * 10 : 5 + w * 3) * 10) / 10, cpuCount: 2, memUsed: Math.round((busy ? 2.6e9 : 0.7e9) + w * 1e8), memTotal: 4e9,
+      netIn: Math.round((busy ? 90_000 : quiet ? 200 : 1_500) * (1.3 + w)), netOut: Math.round((busy ? 30_000 : quiet ? 80 : 600) * (1.3 + w)), diskRead: 0, diskWrite: busy ? 40_000 : 2000 };
   });
 }
 const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { at: s.t, cpuPct: s.cpuPct, cpuCount: s.cpuCount, memUsed: s.memUsed, memTotal: s.memTotal, netIn: s.netIn, netOut: s.netOut, fetchedAt: now, source: 'live' }; };

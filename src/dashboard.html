@@ -401,6 +401,7 @@
 
   const openable = (b) => (b.status === 'running' || b.status === 'idle') && (b.machineState == null || b.machineState === 'running');
   const openApp = (b) => {
+    if (!safeId(b.id)) return null;
     const e = prop('Open app', h('span', { class: 'mono', text: 'cloudy-cloud open ' + b.id + ' <port>' }), copyBtn(openCmd(b.id), 'open command')), v = e.querySelector('.pv');
     e.classList.add('full'); v.classList.add('openapp');
     v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
@@ -415,9 +416,10 @@
   };
   const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
   const cliId = (b) => b.source === 'log' || !b.machine ? b.id : b.machine; // shell and display resolve a local agent id, a machine name or a machine id, not a label-only agent id
-  const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
+  const shellRow = (b) => { if (!safeId(cliId(b))) return null; const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
   // Display is a command to run, never a link: the link is a bearer token and only the command line makes one.
   const screenRow = (b) => {
+    if (!safeId(cliId(b))) return null;
     const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(cliId(b)) }), copyBtn(displayCmd(cliId(b)), 'display command')); e.classList.add('full');
     e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG.";
     if (kindBase(b) === 'macos') { e.querySelector('.pv').classList.add('note'); e.querySelector('.pv').append(h('span', { class: 'hint', text: 'not verified on macOS yet' })); }
@@ -439,12 +441,27 @@
   const usageLine = (b) => hasUsage(b) && fin(b.usage.cpuPct) ? ['cpu ' + Math.round(b.usage.cpuPct) + '%', memText(b.usage)].filter(Boolean).join(' · ') : null;
   const hs = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
   const clean = (samples) => (samples || []).filter((x) => x && fin(x.t) && fin(x.cpuPct)).sort((a, c) => a.t - c.t);
-  // Quiet: marked running, a fresh newest sample, 10 minutes of samples, all under 3 % CPU and 1 KB/s of network.
-  const quiet = (b, ss) => {
-    const last = ss.at(-1);
-    if (b.status !== 'running' || !last || now() - last.t > 120_000 || last.t - ss[0].t < 10 * 60_000) return false;
-    return ss.filter((x) => x.t >= last.t - 10 * 60_000).every((x) => x.cpuPct < 3 && (fin(x.netIn) ? x.netIn : 0) + (fin(x.netOut) ? x.netOut : 0) < 1024);
+  // pure:begin (the tests run this block on its own; it uses only fin and dur)
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/; // a machine id or agent id that is safe to paste into a shell
+  const safeId = (id) => typeof id === 'string' && SAFE_ID.test(id) ? id : null;
+  const metricsCmdFor = (machine) => safeId(machine) && "npx --yes instabox@latest metrics '" + machine + "' --since 6h";
+  const netKnown = (x) => fin(x.netIn) && fin(x.netOut);
+  const sampleQuiet = (x) => fin(x.cpuPct) && x.cpuPct < 3 && netKnown(x) && x.netIn + x.netOut < 1024;
+  // Quiet: marked running; the newest sample is fresh and is the one shown above; the last 10 minutes are covered without a
+  // gap over 90 s (at least 18 samples); every sample is under 3 % CPU with known network under 1 KB/s.
+  const quietHint = (b, ss, t) => {
+    const last = ss.at(-1), u = b.usage;
+    if (b.status !== 'running' || !last || t - last.t > 120_000 || !u || !fin(u.at) || last.t < u.at || !sampleQuiet(u)) return false;
+    const from = last.t - 10 * 60_000, w = ss.filter((x) => x.t >= from);
+    return w.length >= 18 && w[0].t - from <= 90_000 && w.every((x, i) => (i === 0 || x.t - w[i - 1].t <= 90_000) && sampleQuiet(x));
   };
+  const KEEP_METRICS = 10;
+  const pruneMetrics = (cache, ids) => {
+    for (const id of Object.keys(cache)) if (!ids.has(id)) delete cache[id];
+    for (const id of Object.keys(cache).sort((x, y) => cache[y].got - cache[x].got).slice(KEEP_METRICS)) delete cache[id];
+  };
+  const historyNote = (m, t) => m?.stale ? (m.okAt ? 'History could not be refreshed. The graph is ' + dur(t - m.okAt) + ' old.' : 'History is unavailable: it could not be read. Retrying every 30 seconds.') : null;
+  // pure:end
   function sparkline(ss) {
     const last = ss.at(-1), W = 240, H = 48, t0 = last.t - 3_600_000, pts = (f) => ss.map((x) => [x, f(x)]).filter(([, y]) => fin(y)).map(([x, y]) => (Math.max(0, (x.t - t0) / 3_600_000) * W).toFixed(1) + ',' + (H - 2 - Math.min(100, Math.max(0, y)) / 100 * (H - 4)).toFixed(1)).join(' ');
     const cpus = ss.map((x) => x.cpuPct), lo = Math.round(Math.min(...cpus)), hi = Math.round(Math.max(...cpus));
@@ -453,7 +470,6 @@
     return s;
   }
   const guide = (e) => e.code === 'machine_gone' ? 'This machine is gone.' : [e.whatHappened, e.nextStep].filter((x) => typeof x === 'string').join(' ');
-  const metricsCmd = (b) => 'npx --yes instabox@latest metrics ' + b.machine + ' --since 6h';
   function usageBlock(b) {
     if (!hasUsage(b)) return null;
     const u = b.usage, m = S.metrics[b.id], ss = clean(m?.samples), kids = [h('div', { class: 'pl', text: 'Usage' })];
@@ -464,18 +480,18 @@
     kids.push(h('div', { text: (fin(u.cpuPct) ? 'CPU ' + Math.round(u.cpuPct) + '%' + (fin(u.cpuCount) ? ' of ' + u.cpuCount + ' vCPUs' : '') : 'CPU unknown') + (memText(u) ? ' · memory ' + memText(u).slice(4) : '') + net }));
     if (ss.length >= 2) kids.push(sparkline(ss), h('div', { class: 'key', text: 'Last hour: solid line CPU (0 to 100 %), dashed line memory (share of the machine).' }));
     else if (m?.error) kids.push(empty(guide(m.error)));
+    const hn = historyNote(m, now()); if (hn) kids.push(h('div', { class: 'note', role: 'status', text: hn }));
     kids.push(h('div', { class: 'fine' }, fin(u.at) ? ['Newest sample ', live('ago', u.at)] : 'Newest sample time unknown', u.source === 'cache' && ' · from the saved copy', b.machineState !== 'running' && ' · paused or stopped since then'));
-    if (quiet(b, ss)) kids.push(h('div', { class: 'note', text: 'Quiet for 10 minutes while marked running: under 3 % CPU and almost no network. It may be waiting on something; check its Activity tab.' }));
+    if (!m?.stale && quietHint(b, ss, now())) kids.push(h('div', { class: 'note', text: 'Quiet for 10 minutes while marked running: under 3 % CPU and almost no network. It may be waiting on something; check its Activity tab.' }));
     kids.push(h('div', { class: 'fine', text: 'Measured by Instabox on the host every 30 seconds. Network leaves out SSH and public-port traffic. Memory is what the machine has touched, so it falls only when memory is reclaimed. Reading this never wakes a paused machine.' }));
-    const cmd = prop('History', h('span', { class: 'mono', text: metricsCmd(b) }), copyBtn(metricsCmd(b), 'metrics command'));
-    cmd.querySelector('.pv').title = 'Prints the full history (up to 24 hours), or --json for the samples.';
-    kids.push(cmd);
+    const mc = metricsCmdFor(b.machine), cmd = mc && prop('History', h('span', { class: 'mono', text: mc }), copyBtn(mc, 'metrics command'));
+    if (cmd) { cmd.querySelector('.pv').title = 'Prints the full history (up to 24 hours), or --json for the samples.'; kids.push(cmd); }
     return h('div', { class: 'usage' }, kids);
   }
   // /api/metrics for the selected agent, at most every 30 s while the page is visible.
   function metricsEnsure(b) {
     const m = S.metrics[b.id];
-    if (!hasUsage(b) || b.machineState !== 'running' || !visible(b) || S.mBusy || (m && now() - m.got < 30_000)) return;
+    if (!hasUsage(b) || b.machineState !== 'running' || !visible(b) || S.mBusy || (m && now() - m.got < 30_000 && !(fin(b.usage?.at) && b.usage.at > (clean(m.samples).at(-1)?.t ?? 0) && now() - m.got >= 5_000))) return; // a newer sample than the history ends: look again
     metricsPoll(b.id);
   }
   async function metricsPoll(id) {
@@ -483,9 +499,10 @@
     const prev = S.metrics[id];
     try {
       const r = await fetch('/api/metrics?t=' + enc(T) + '&box=' + enc(id), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
-      if (r.ok) { const j = await r.json(); S.metrics[id] = { samples: Array.isArray(j.samples) ? j.samples : [], error: j.error || null, got: now() }; }
-      else S.metrics[id] = { samples: prev?.samples || [], error: null, got: now() };
-    } catch { S.metrics[id] = { samples: prev?.samples || [], error: null, got: now() }; }
+      if (r.ok) { const j = await r.json(); S.metrics[id] = { samples: Array.isArray(j.samples) ? j.samples : [], error: j.error || null, got: now(), okAt: now() }; }
+      else S.metrics[id] = { samples: prev?.samples || [], error: null, got: now(), stale: true, okAt: prev?.okAt ?? null };
+    } catch { S.metrics[id] = { samples: prev?.samples || [], error: null, got: now(), stale: true, okAt: prev?.okAt ?? null }; }
+    pruneMetrics(S.metrics, new Set((S.data?.boxes || []).map((x) => x.id)));
     S.mBusy = false;
     if (S.sel === id) redo();
   }
@@ -590,7 +607,7 @@
   function terminalView(b) {
     const cmd = 'cloudy-cloud coordinator attach ' + b.id, p = S.pane && S.pane.box === b.id ? S.pane : null;
     const text = !p ? 'Loading…' : p.err || (p.lines.length ? p.lines.join('\n') : '(the terminal is empty)');
-    return h('div', { class: 'term' }, h('div', { class: 'termnote' }, 'Read-only view of the tmux session. Attach with: ', h('code', { text: cmd }), copyBtn(cmd, 'attach command')),
+    return h('div', { class: 'term' }, h('div', { class: 'termnote' }, 'Read-only view of the tmux session.', safeId(b.id) && [' Attach with: ', h('code', { text: cmd }), copyBtn(cmd, 'attach command')]),
       h('pre', { class: 'mono tpre', tabindex: '0', 'aria-label': 'Terminal output', text }));
   }
 
@@ -855,7 +872,7 @@
       const r = await fetch('/api/state?t=' + encodeURIComponent(T), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
       if (r.status === 401) { S.net = 'auth'; S.data = null; }
       else if (!r.ok) { S.net = 'error'; S.err = String((await r.json().catch(() => null))?.error || 'HTTP ' + r.status); }
-      else { S.data = await r.json(); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
+      else { S.data = await r.json(); pruneMetrics(S.metrics, new Set((S.data.boxes || []).map((x) => x.id))); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
     } catch { S.net = 'down'; }
     busy = false;
     try { render(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
