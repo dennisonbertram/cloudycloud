@@ -736,7 +736,7 @@ export async function waitAgents(args = {}, deps) {
     if (active(a) || !a.result) return head;
     if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
     a.result.reported = true;
-    return `${head}\n${priceOf(a) ? `${priceOf(a)}\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}`;
+    return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`;
   });
   return ctx.ok(parts.join('\n\n'));
 }
@@ -757,7 +757,7 @@ export async function resultAgent(args = {}, deps) {
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
   if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
-  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${priceOf(a) ? `${priceOf(a)}\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}`);
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`);
 }
 
 // cloud_agent_list: read-only.

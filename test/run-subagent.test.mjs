@@ -1635,6 +1635,16 @@ test('#105 the wait and result text carry the cost line for gpu, and not for lin
   }
 });
 
+test('#105 a failed gpu result still starts with ERROR:, with the cost line after it', async () => {
+  const { deps, text } = await kindSetup();
+  deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'gpu';
+  const id = text(await runSubagent({ description: 'd', prompt: 'FAIL', machine: 'gpu' }, deps)).match(/agent_id: (\w+)/)[1];
+  await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, deps);
+  const r = text(await resultAgent({ agent_id: id }, deps));
+  assert.match(r, /^ERROR: /, r);
+  assert.match(r, /per GPU-hour[\s\S]*$/);
+});
+
 // Runs the real preflight command in bash, with PATH holding only `have` as executables and `shellOnly` as functions.
 const probeProvider = (have, shellOnly = []) => {
   const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
