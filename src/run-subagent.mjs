@@ -17,7 +17,7 @@ import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine,
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
-import { redact } from './events.mjs';
+import { redact, redactText } from './events.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 
 const run = promisify(execFile);
@@ -546,89 +546,144 @@ async function startGateway(a, ctx) {
 }
 
 // Autofix: after a pushed turn, the server opens the PR, waits for checks and starts fix turns until the PR is clean or the cap is hit.
-// Every gh call is a fixed command: only the branch (from the id) and numbers from gh's own JSON go in a command string.
+// Every command is fixed text: only the branch (from the id), numbers from gh's own JSON and a validated ref go in a command string.
+// Text from GitHub (logs, comments, reviews) is untrusted: redacted before it is cut, and review text counts only from people with write access.
 // Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
-const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,baseRefName,mergeable,author,reviews';
+const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,state,headRefOid,baseRefName,mergeable,author,reviews';
+const REF = /^[A-Za-z0-9._/-]{1,100}$/, SHA = /^[0-9a-f]{40}$/, RUN = /\/actions\/runs\/(\d+)/, LINK = /^https:\/\/github\.com\/[A-Za-z0-9._/-]+$/, TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 const nap = (ms, t) => { let id, off; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done, new Promise((r) => { t.abort.signal.addEventListener('abort', r, { once: true }); off = () => t.abort.signal.removeEventListener('abort', r); })]).finally(() => { clearTimeout(id); off(); }); };
-async function autofix(a, ctx, t) {
-  const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`;
+function autofix(a, ctx, t) {
+  const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`, cwd = `${a.home}/repo`;
   const rounds = Number(ctx.env.CLOUDY_CLOUD_AUTOFIX_ROUNDS), cap = Number.isInteger(rounds) && rounds >= 0 ? Math.min(rounds, 10) : 3;
   const poll = ctx.autofixPollMs ?? 20_000, grace = ctx.autofixGraceMs ?? 90_000, checksMs = ctx.autofixChecksMs ?? 25 * 60_000;
   const halted = () => t.cancelled || t.status !== 'working' || a.status === 'stopped';
-  const late = () => a.deleteAt && Date.now() > a.deleteAt - AUTOFIX_MARGIN_MS;
-  let fixes = 0;
+  const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
+  const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
+  const seen = (a.autofixSeen ??= new Set());
+  let fixes = 0, lastPush = '', ignored = 0;
   const say = (note) => { t.prefix = `autofix ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
-  const gh = async (cmd, ms = GH_MS) => {
-    try { return { ok: true, out: String((await a.sandbox.commands.run(`gh ${cmd}`, { cwd: `${a.home}/repo`, timeoutMs: ms, signal: t.abort.signal })).stdout ?? '') }; }
-    catch (e) { return { ok: false, out: String(e?.stdout ?? ''), err: tail(e?.stderr || e?.message) }; }
+  const hand = `open or fix the pull request by hand (git fetch origin ${branch}), or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
+  const done = (text) => ({ text: safe(`${text}${lastPush ? `\nLatest push: ${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
+  const stop = (why) => done(`Autofix stopped: ${why}\nNext step: ${hand}`);
+  const bail = (result) => { throw Object.assign(new Error('autofix ends'), { result }); };
+  const exec = async (cmd, ms = GH_MS) => {
+    if (left() < 5000) bail(done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}.\nNext step: ${hand}`));
+    let r;
+    try { r = { ok: true, out: String((await a.sandbox.commands.run(cmd, { cwd, timeoutMs: Math.min(ms, left()), signal: t.abort.signal })).stdout ?? '') }; }
+    catch (e) { r = { ok: false, out: String(e?.stdout ?? ''), err: tail(e?.stderr || e?.message), code: e?.exitCode }; }
+    if (halted()) bail({ cancelled: true }); // an aborted call must never read as a result
+    if (!r.ok && typeof r.code !== 'number') { // the command did not run to its end: is the machine still there?
+      const alive = await a.sandbox.commands.run('true', { cwd, timeoutMs: 15_000 }).then(() => true, () => false);
+      if (halted()) bail({ cancelled: true });
+      if (!alive) bail({ gone: true, text: `The sandbox is no longer reachable during autofix (${r.err}). Only work the agent already pushed to origin ${branch} survives.` });
+    }
+    return r;
   };
-  const view = async () => { const r = await gh(`pr view ${branch} --json ${PR_FIELDS}`); try { return { pr: JSON.parse(r.out) }; } catch { return { err: r.err || r.out }; } };
-  const hand = `Next step: open or fix the pull request by hand (git fetch origin ${branch}), or check that gh works on the machine with cloud_agent_message asking the agent to run \`gh auth status\`.`;
-  const stop = (why) => ({ text: scrub(`Autofix stopped: ${why}\n${hand}`) });
-  let { pr, err } = await view();
-  if (!pr) {
-    if (halted()) return { cancelled: true };
-    say('opening the pull request');
-    const c = await gh(`pr create --head ${branch} --fill`);
-    if (halted()) return { cancelled: true };
-    if (!c.ok) return stop(`gh could not create a pull request for ${branch}. gh said: ${c.err || tail(c.out)}`);
-    ({ pr, err } = await view());
-    if (!pr) return stop(`the pull request was created but gh could not read it back. gh said: ${err}`);
-  }
-  a.prUrl = pr.url;
-  const seen = new Set(), n = pr.number;
-  if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
-  const waitChecks = async () => {
-    const t0 = Date.now(), limit = Math.min(t0 + checksMs, a.deleteAt ? a.deleteAt - AUTOFIX_MARGIN_MS : Infinity);
+  const gh = (cmd, ms) => exec(`gh ${cmd}`, ms);
+  const wait = async (ms) => { await nap(Math.min(ms, Math.max(left(), 0)), t); if (halted()) bail({ cancelled: true }); };
+  const headSha = async () => { const o = (await exec('git rev-parse HEAD')).out.trim(); if (!SHA.test(o)) bail(stop('could not read the commit the worker pushed.')); return o; };
+  const view = async () => { const r = await gh(`pr view ${branch} --json ${PR_FIELDS}`); try { return { pr: JSON.parse(r.out) }; } catch { return { err: r.err || tail(r.out) }; } };
+  // The PR must be open and show the commit just pushed; GitHub can lag behind a push.
+  const sync = async (sha) => {
+    const t0 = Date.now();
     for (;;) {
-      if (halted()) return { halted: true };
-      const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
-      let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
-      const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
-      if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
-      if (none && Date.now() - t0 >= grace) return { list: [] };
-      if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };
-      if (Date.now() >= limit) return { timeout: Math.round((Date.now() - t0) / 60_000) };
-      await nap(poll, t);
+      const v = await view();
+      if ((v.pr?.state === 'OPEN' && v.pr.headRefOid === sha) || Date.now() - t0 >= grace) return v;
+      await wait(poll);
     }
   };
-  for (;;) {
-    say('waiting for checks');
-    const w = await waitChecks();
-    if (w.halted || halted()) return { cancelled: true };
-    if (w.error) return stop(`gh could not read the checks. gh said: ${w.error}`);
-    if (w.timeout !== undefined) return { text: scrub(`Autofix stopped: checks on ${pr.url} were still running after ${w.timeout} minutes${late() ? ` and the machine is deleted at ${new Date(a.deleteAt).toISOString()}` : ''}.\nNext step: check ${pr.url} later; send cloud_agent_message to agent ${a.id} if something fails.`) };
-    say('reading failures and review comments');
-    const problems = [];
-    const failed = w.list.filter((c) => c.bucket === 'fail');
-    const runs = [...new Set(failed.map((c) => /\/actions\/runs\/(\d+)/.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3);
-    const logs = new Map();
-    for (const id of runs) logs.set(id, tail((await gh(`run view ${id} --log-failed`, 120_000)).out));
-    for (const c of failed) {
-      const id = /\/actions\/runs\/(\d+)/.exec(c.link ?? '')?.[1];
-      problems.push(`Failed check "${String(c.name).slice(0, 100)}"${c.link ? ` (${c.link})` : ''}${id && logs.get(id) ? `. End of the failed log:\n${logs.get(id)}` : ''}`);
-      if (id) logs.delete(id); // one log per run
+  const go = async () => {
+    let sha = await headSha();
+    let v = await view();
+    if (!v.pr || v.pr.state !== 'OPEN') {
+      say('opening the pull request');
+      const c = await gh(`pr create --head ${branch} --title '${branch}' --body 'Opened by cloudy-cloud autofix.'`);
+      if (!c.ok) return stop(`gh could not create a pull request for ${branch}. gh said: ${c.err || tail(c.out)}`);
     }
-    ({ pr } = { pr: (await view()).pr ?? pr });
-    const mine = pr.author?.login, fresh = [];
-    for (const r of pr.reviews ?? []) if (r.state === 'CHANGES_REQUESTED' && r.body && r.author?.login !== mine && !seen.has(r.id)) fresh.push([r.id, `Review by ${r.author?.login}: ${String(r.body).slice(0, 500)}`]);
-    let inline = []; try { inline = JSON.parse((await gh(`api 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100'`)).out); } catch { /* none readable */ }
-    for (const c of Array.isArray(inline) ? inline : []) if (c.user?.login !== mine && !seen.has(`c${c.id}`)) fresh.push([`c${c.id}`, `Comment by ${c.user?.login} on ${c.path}${c.line ? `:${c.line}` : ''}: ${String(c.body).slice(0, 500)}`]);
-    for (const [id, text] of fresh.slice(0, 10)) { seen.add(id); problems.push(text); }
-    if (pr.mergeable === 'CONFLICTING') problems.push(`Merge conflict with ${pr.baseRefName}. Run git fetch origin && git merge origin/${pr.baseRefName}, resolve the conflicts, commit and push.`);
-    if (!problems.length) return { text: `Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.` };
-    const list = problems.map((p) => `- ${p}`).join('\n');
-    if (fixes >= cap) return { text: scrub(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}\nNext step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`) };
-    if (late()) return { text: scrub(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}\nNext step: fix it by hand (git fetch origin ${branch}).`) };
-    fixes++;
-    say('worker is fixing');
-    t.note = '';
-    t.progress = PROGRESS[harnessOf(a)]();
-    const r = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
-    if (r.cancelled || halted()) return { cancelled: true };
-    if (r.gone) return { gone: true, text: r.text };
-    if (r.error || !r.pushed) return { text: scrub(`Autofix stopped: the fix turn ${r.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(r.text)}\nNext step: send cloud_agent_message to agent ${a.id}, or fix it by hand (git fetch origin ${branch}).`) };
-  }
+    v = await sync(sha);
+    if (!v.pr) return stop(`gh could not read the pull request for ${branch}. gh said: ${v.err}`);
+    let pr = v.pr;
+    a.prUrl = pr.url;
+    const n = pr.number;
+    if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
+    const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
+    if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    const waitChecks = async () => {
+      const t0 = Date.now(), limit = Math.min(t0 + checksMs, Date.now() + left() - AUTOFIX_MARGIN_MS);
+      for (;;) {
+        const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
+        let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+        const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
+        if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
+        if (none && Date.now() - t0 >= grace) return { list: [] };
+        if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };
+        if (Date.now() >= limit) return { timeout: Math.round((Date.now() - t0) / 60_000) };
+        await wait(poll);
+      }
+    };
+    for (;;) {
+      say('waiting for checks');
+      const w = await waitChecks();
+      if (w.error) return stop(`gh could not read the checks. gh said: ${w.error}`);
+      if (w.timeout !== undefined) return done(`Autofix stopped: checks on ${pr.url} were still running after ${w.timeout} minutes.\nNext step: check ${pr.url} later; send cloud_agent_message to agent ${a.id} if something fails.`);
+      say('reading failures and review comments');
+      const problems = [], incomplete = [];
+      ignored = 0;
+      const bad = w.list.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel');
+      const logs = new Map();
+      for (const id of [...new Set(bad.map((c) => RUN.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3)) logs.set(id, tail(safe((await gh(`run view ${id} --log-failed`, 120_000)).out)));
+      for (const c of bad) {
+        const id = RUN.exec(c.link ?? '')?.[1];
+        problems.push(`Failed check "${safe(c.name).slice(0, 100)}"${c.bucket === 'cancel' ? ' (cancelled)' : ''}${LINK.test(c.link ?? '') ? ` (${c.link})` : ''}${id && logs.get(id) ? `. End of the failed log:\n${logs.get(id)}` : ''}`);
+        if (id) logs.delete(id); // one log per run
+      }
+      let r = await view();
+      for (let i = 0; r.pr?.mergeable === 'UNKNOWN' && i < 4; i++) { await wait(poll); r = await view(); }
+      if (!r.pr) incomplete.push(`gh could not refresh the pull request (${r.err})`);
+      else {
+        pr = r.pr;
+        if (pr.state !== 'OPEN') incomplete.push(`the pull request is ${pr.state}`);
+        else if (pr.headRefOid !== sha) incomplete.push('the pull request head is not the pushed commit');
+        if (pr.mergeable === 'UNKNOWN') incomplete.push('GitHub has not computed mergeability yet');
+        const mine = pr.author?.login, fresh = [];
+        const take = (id, login, assoc, text) => { if (login === mine || seen.has(id)) return; if (TRUSTED.has(assoc)) fresh.push([id, text]); else ignored++; };
+        for (const rv of pr.reviews ?? []) if ((rv.state === 'CHANGES_REQUESTED' || rv.state === 'COMMENTED') && String(rv.body ?? '').trim()) take(rv.id, rv.author?.login, rv.authorAssociation, `Review by ${safe(rv.author?.login).slice(0, 40)}: ${safe(rv.body).slice(0, 500)}`);
+        const c = await gh(`api 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100&sort=created&direction=desc'`);
+        let inline; try { inline = JSON.parse(c.out); } catch { /* checked below */ }
+        if (!c.ok || !Array.isArray(inline)) incomplete.push('the inline review comments could not be read');
+        else for (const x of inline) take(`c${x.id}`, x.user?.login, x.author_association, `Comment by ${safe(x.user?.login).slice(0, 40)} on ${safe(x.path).slice(0, 100)}${x.line ? `:${Number(x.line) || 0}` : ''}: ${safe(x.body).slice(0, 500)}`);
+        for (const [id, text] of fresh.slice(0, 10)) { seen.add(id); problems.push(text); }
+        if (pr.mergeable === 'CONFLICTING') problems.push(REF.test(pr.baseRefName ?? '') ? `Merge conflict with ${pr.baseRefName}. Fetch origin, merge origin/${pr.baseRefName} into your branch, resolve the conflicts, commit and push.` : 'Merge conflict with the base branch. Fetch origin, merge the pull request base branch into your branch, resolve the conflicts, commit and push.');
+      }
+      const why = incomplete.length ? `\nNot confirmed: ${incomplete.join('; ')}.` : '';
+      if (!problems.length) {
+        if (incomplete.length) return done(`Autofix: pull request ${pr.url} could not be confirmed clean after ${fixes} fix round${fixes === 1 ? '' : 's'}: ${incomplete.join('; ')}.\nNext step: look at ${pr.url}, or ${hand}`);
+        return done(`Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.`);
+      }
+      const list = problems.map((p) => `- ${p}`).join('\n');
+      const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
+      if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`);
+      if (left() <= AGENT_MS + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
+      fixes++;
+      say('worker is fixing');
+      t.note = '';
+      t.progress = PROGRESS[harnessOf(a)]();
+      if (halted()) return { cancelled: true };
+      const res = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
+      if (res.cancelled || halted()) return { cancelled: true };
+      if (res.gone) return { gone: true, text: res.text };
+      lastPush = /^(Pushed to origin|Push failed).*$/m.exec(res.text)?.[0] ?? lastPush;
+      if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
+      const was = sha;
+      sha = await headSha();
+      if (sha === was) return done(`Autofix stopped: the worker pushed no new commits, so the checks cannot change. Still failing on ${pr.url}:\n${list}\n${next}`);
+      v = await sync(sha);
+      if (!v.pr) return stop(`gh could not read the pull request after the fix. gh said: ${v.err}`);
+      pr = v.pr;
+      if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    }
+  };
+  return go().catch((e) => { if (e?.result) return e.result; throw e; });
 }
 
 // Background job for one turn. Never throws; records the outcome and wakes waiters.
