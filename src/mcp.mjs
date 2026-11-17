@@ -18,6 +18,7 @@ const tools = [
         profile: { type: 'string', description: 'Optional model profile that runs the worker on another model: glm, deepseek, particle, pi-glm, pi-deepseek, pi-particle, omp-glm, omp-deepseek, omp-particle, openrouter, or a name from profiles.json. Default: Claude.' },
         role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets cloudy-cloud installed and can start its own cloud agents (limited by CLOUDY_CLOUD_MAX_DEPTH, default 3).' },
         machine: { type: 'string', description: 'Optional kind of machine: linux (default), android, omarchy, gpu, gpu:TYPE, gpu:TYPE:COUNT, macos, macos:MODEL. gpu and macos cost much more and need CLOUDY_CLOUD_ALLOW_MACHINE_KINDS in the user\'s cloudy-cloud env file.' },
+        size: { type: 'string', description: 'Optional machine size as VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16. Must be one of the sizes your Instabox plan allows; the error lists them.' },
         subagent_type: { type: 'string', description: 'Optional agent name' },
       },
       required: ['prompt', 'description'],

@@ -1819,3 +1819,80 @@ test('the start pace follows the provider plan (minus 10 %), CLOUDY_CLOUD_STARTS
   assert.equal(q.pace(), 25);
   assert.equal(startQueue({}, createFakeProvider()).pace(), 25); // no plan() at all
 });
+
+// ---- #128 size ----
+const SPECS = [{ vcpus: 4, memMiB: 8192 }, { vcpus: 2, memMiB: 4096 }, { vcpus: 8, memMiB: 16384 }];
+const sizeSetup = (plan, extra = {}) => {
+  const calls = [];
+  const provider = { ...createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true }), plan: async (o) => { calls.push(o); return typeof plan === 'function' ? plan(o, calls.length) : plan; } };
+  return kindSetup({ provider, ...extra }).then((s) => ({ ...s, calls }));
+};
+const proPlan = { tier: 'pro', specs: SPECS, startsPerMinute: 60, maxRunning: 10, maxMachines: 20 };
+
+test('#128 a size the plan lacks is refused with the guide, after one refresh, and nothing is created', async () => {
+  const { deps, provider, text, calls } = await sizeSetup(proPlan);
+  const r = await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /size_not_allowed|16x32 is not on your Instabox plan \(pro\)/);
+  assert.match(text(r), /2x4 4x8 8x16/);
+  assert.match(text(r), /builder/i);
+  assert.match(text(r), /npx --yes instabox@latest workspace plan/);
+  assert.equal(provider.log.create.length, 0);
+  assert.equal(calls.filter((c) => c?.refresh).length, 1, 'refreshed once');
+  assert.equal(deps.count?.started ?? 0, 0);
+});
+
+test('#128 an allowed size starts with the size, the size label and one cost line; a refresh that finds it also passes', async () => {
+  const { deps, provider, text, wait } = await sizeSetup(proPlan);
+  const r = await runSubagent({ description: 'd', prompt: 'hi', size: '8x16' }, deps);
+  assert.notEqual(r.isError, true);
+  assert.match(text(r), /8x16 costs about \$0\.068 an hour while running/);
+  assert.equal(text(r).split('an hour while running').length, 2, 'one cost line');
+  await wait([text(r).match(/agent_id: (\w+)/)[1]]);
+  assert.deepEqual([provider.log.create[0].size.vcpus, provider.log.create[0].size.memMiB], [8, 16384]);
+  assert.equal(provider.log.create[0].labels.size, '8x16');
+  const s2 = await sizeSetup((o) => (o?.refresh ? proPlan : { ...proPlan, specs: SPECS.slice(0, 2) }));
+  const r2 = await runSubagent({ description: 'd', prompt: 'hi', size: '8x16' }, s2.deps);
+  assert.notEqual(r2.isError, true);
+});
+
+test('#128 no size: no size option, no size label, no cost line', async () => {
+  const { deps, provider, text, wait } = await sizeSetup(proPlan);
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  await wait([text(r).match(/agent_id: (\w+)/)[1]]);
+  assert.ok(!('size' in provider.log.create[0]) && !('size' in provider.log.create[0].labels));
+  assert.doesNotMatch(text(r), /an hour while running/);
+});
+
+test('#128 an unknown plan passes the size through, and a provider spec_not_allowed shows the guide', async () => {
+  const { deps, provider, text, wait } = await sizeSetup(null);
+  const id = text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, deps)).match(/agent_id: (\w+)/)[1];
+  await wait([id]);
+  assert.equal(provider.log.create[0].size.vcpus, 16);
+  const s = await sizeSetup(null);
+  s.provider.create = async () => { throw Object.assign(new Error('not allowed'), { code: 'size_not_allowed' }); };
+  const id2 = text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, s.deps)).match(/agent_id: (\w+)/)[1];
+  await waitAgents({ agent_ids: [id2], timeout_seconds: 10 }, s.deps);
+  const res = text(await resultAgent({ agent_id: id2 }, s.deps));
+  assert.match(res, /16x32 is not on your Instabox plan/);
+  assert.match(res, /Likely the plan does not include it/);
+});
+
+test('#128 bad forms, gpu and macos, and providers without sizes are refused with invalid_args', async () => {
+  const { deps, provider, text } = await sizeSetup(proPlan);
+  deps.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS = 'gpu,macos';
+  for (const [a, re] of [[{ size: '8/16' }, /VCPUSxGIB/], [{ size: '4x8', machine: 'gpu' }, /gpu and macos machines have their own sizes/], [{ size: '4x8', machine: 'macos' }, /own sizes/]]) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', ...a }, deps);
+    assert.equal(r.isError, true);
+    assert.match(text(r), re);
+    assert.match(text(r), /call cloud_agent again/i);
+  }
+  assert.equal(provider.log.create.length, 0);
+  const sh = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+  sh.caps.hasSizes = false;
+  const s = await kindSetup({ provider: sh });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', size: '4x8' }, s.deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /provider has one machine size/);
+  assert.equal(sh.log.create.length, 0);
+});

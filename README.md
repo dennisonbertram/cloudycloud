@@ -253,7 +253,7 @@ Full reference with every option and environment variable: [Command and tool ref
 
 | Tool | What it does |
 | --- | --- |
-| `cloud_agent` | Starts a subagent. Returns at once. |
+| `cloud_agent` | Starts a subagent. Returns at once. Optional `size` (VCPUSxGIB, such as `8x16`) picks a bigger Instabox machine when your plan allows it; the default is 4x8. |
 | `cloud_agent_message` | Sends a follow-up to an open subagent. |
 | `cloud_agent_wait` | Waits for subagents and returns their answers (not needed in task mode). |
 | `cloud_agent_list` | Shows every subagent's status and progress. |

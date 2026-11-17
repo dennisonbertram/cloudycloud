@@ -67,7 +67,7 @@ export const withDeleteAfter = (seconds, fetchFn = fetch, extra) => (url, init =
 const TEMPLATES = { android: 'android', omarchy: 'omarchy', gpu: 'gpu', macos: 'macos' };
 const KINDS = ['linux', ...Object.keys(TEMPLATES)];
 // Instabox error codes that have their own guidance.
-const CODE_MAP = { template_not_allowed: 'machine_not_on_plan', template_limit: 'machine_gpu_limit' };
+const CODE_MAP = { template_not_allowed: 'machine_not_on_plan', template_limit: 'machine_gpu_limit', spec_not_allowed: 'size_not_allowed' };
 
 // Seconds a worker or nested coordinator machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most 24 (Instabox caps it at 86400 s).
 export const workerSeconds = (env) => {
@@ -300,11 +300,11 @@ export function createProvider(env, deps = {}) {
       startsPerMin: Number(env.CLOUDY_CLOUD_STARTS_PER_MIN) || 25,
       maxConcurrentCalls: Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24,
       uploadMaxBytes: 10 * 1024 * 1024,
-      machineKinds: KINDS, hasShell: true, hasDisplay: true, hasMetrics: true,
+      machineKinds: KINDS, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true,
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
-    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind } = {}) {
+    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size } = {}) {
       const key = apiKey();
       const kindName = kind?.name ?? 'linux';
       if (!KINDS.includes(kindName)) throw Object.assign(new Error(`Instabox has no ${kindName} machines`), { code: 'machine_kind_unsupported' });
@@ -318,6 +318,7 @@ export function createProvider(env, deps = {}) {
         // Key order is part of the recorded request (golden files): named machines are the coordinator's, the rest are workers or images.
         sbx = await Sandbox.create(image, {
           ...(name ? { apiKey: key, name, ...(envs && { envs }), ...lifetime, metadata: labels } : { apiKey: key, envs, metadata: labels, ...lifetime }),
+          ...(size && { vcpus: size.vcpus, memMiB: size.memMiB }),
           fetch: withDeleteAfter(ttlSeconds, fetchFn, extra),
         });
       } catch (e) { throw e?.code === 'no_capacity' || (kindName !== 'linux' && e?.status === 503 && !e.code) ? Object.assign(e, { code: 'machine_no_capacity' }) : normalize(e); }

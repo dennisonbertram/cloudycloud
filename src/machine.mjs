@@ -29,3 +29,19 @@ export function parseMachine(str) {
   }
   return a === undefined ? { name, label: s } : bad;
 }
+
+// Machine size (cloud_agent `size`): VCPUSxGIB, for example 8x16. The plan's own list decides what is allowed.
+export const SIZE_FORMS = 'VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16';
+/** @returns {{ vcpus: number, memMiB: number, label: string } | { error: string } | undefined} */
+export function parseSize(str) {
+  const s = String(str ?? '').trim().toLowerCase();
+  if (!s) return undefined;
+  const m = /^(\d+)x(\d+)$/.exec(s);
+  if (!m || !+m[1] || !+m[2]) return { error: `Unknown size "${String(str).slice(0, 40)}". Use ${SIZE_FORMS}.` };
+  return { vcpus: +m[1], memMiB: +m[2] * 1024, label: `${+m[1]}x${+m[2]}` };
+}
+export const sizeLabel = ({ vcpus, memMiB }) => `${vcpus}x${memMiB / 1024}`;
+// Unit prices: https://instabox.sh/docs/account/pricing.md
+export const SIZE_PRICE = (vcpus, gib) => `${vcpus}x${gib} costs about $${(vcpus * 0.004 + gib * 0.00225).toFixed(3)} an hour while running (vCPU $0.004/h, memory $0.00225/GiB-h).`;
+// The smallest plan whose largest size (maxVCPUs from GET /v1/me plans[]) holds this many vCPUs.
+export const planFor = (vcpus) => [['pro', 8], ['builder', 16], ['team', 32]].find(([, max]) => vcpus <= max)?.[0];

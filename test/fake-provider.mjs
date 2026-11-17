@@ -120,7 +120,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   return {
     name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
-      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true },
+      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true },
     async create(opts) {
       needKey();
       const k = opts.kind?.name ?? 'linux';
