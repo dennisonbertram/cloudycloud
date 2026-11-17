@@ -97,6 +97,7 @@
   .panel-head h1 { font: 600 20px/1.3 "Inter Tight", Inter, sans-serif; letter-spacing: -.01em; margin: 4px 0 0; }
   .props { grid-auto-flow: row dense; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin-top: 16px; }
   .prop { min-width: 0; }
+  .pv.note { white-space: normal; align-items: flex-start; }
   .prop.full { grid-column: 1 / -1; }
   .prop.wide { grid-column: span 2; }
   .push.failed { color: var(--s-failed); }
@@ -273,6 +274,9 @@
   const clock = (t) => { const d = new Date(t), today = new Date(now()).toDateString() === d.toDateString(); return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
   const timeEl = (cls, t) => Number.isFinite(t) && t > 0 && h('time', { class: cls, text: clock(t), title: new Date(t).toLocaleString(), datetime: new Date(t).toISOString() });
   const active = (b) => ['queued', 'starting', 'running'].includes(b.status);
+  // Machine kind: 'gpu:l4:2' shows as 'gpu:l4', 'macos:m2' as 'macos'; plain Linux has none. Display does not work on omarchy.
+  const kindBadge = (b) => { const [k, t] = (b.machineKind || '').split(':'); return k && k !== 'linux' ? (k === 'gpu' && t ? 'gpu:' + t : k) : null; };
+  const kindBase = (b) => (b.machineKind || '').split(':')[0];
   const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
   const titleOf = (b) => b.title || b.description || '(no description)';
   const stamp = (b) => b.lastActivity || b.startedAt;
@@ -320,6 +324,7 @@
     const parts = [];
     if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
+    const kb = kindBadge(b); if (kb) parts.push(h('span', { class: 'tag', title: 'Machine kind', text: kb }));
     if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
     else if (lvl === 1 && b.startedBy && b.startedBy !== 'this session') parts.push(h('span', { text: 'started by ' + b.startedBy }));
     const s = soonTag(b); if (s) parts.push(s);
@@ -381,6 +386,20 @@
     e.classList.add('full'); v.classList.add('openapp');
     v.title = 'Private tunnel from 127.0.0.1:<port> on your computer to an app on this machine. Start the app in the background there first (nohup npm run dev &). Add --share for a private link that anyone with it can open.';
     return e;
+  };
+  const COST = { gpu: 'GPU machines cost more per hour than a Linux one. Stop the agent when it is done.', macos: 'macOS machines cost more per hour than a Linux one, and have a minimum rental time.' };
+  const shellCmd = (id) => 'cloudy-cloud shell ' + id, displayCmd = (id) => 'cloudy-cloud display ' + id; // the only places these syntaxes live
+  const cliId = (b) => b.source === 'log' || !b.machine ? b.id : b.machine; // shell and display resolve a local agent id, a machine name or a machine id, not a label-only agent id
+  const shellRow = (b) => { const e = prop('Shell', h('span', { class: 'mono', text: shellCmd(cliId(b)) }), copyBtn(shellCmd(cliId(b)), 'shell command')); e.classList.add('full'); e.querySelector('.pv').title = 'Opens a shell on this machine. Add -- <command> to run one command.'; return e; };
+  // Display is a command to run, never a link: the link is a bearer token and only the command line makes one.
+  const screenRow = (b) => {
+    const e = prop('Screen', h('span', { class: 'mono', text: displayCmd(cliId(b)) }), copyBtn(displayCmd(cliId(b)), 'display command')); e.classList.add('full');
+    e.querySelector('.pv').title = "Prints a view-only link to this machine's screen. Add --control to type and click, --screenshot FILE to save a PNG."; return e;
+  };
+  const costRow = (t) => { const e = prop('Cost', h('span', { text: t })); e.classList.add('full'); e.querySelector('.pv').classList.add('note'); return e; };
+  const kindRows = (b) => {
+    const caps = S.data?.caps || {}, k = kindBase(b);
+    return [caps.hasShell !== false && shellRow(b), caps.hasDisplay !== false && k !== 'omarchy' && screenRow(b), COST[k] && costRow(COST[k])];
   };
   const wide = (e) => { e?.classList.add('wide'); return e; };
   const pushView = (p) => p.failed
@@ -552,13 +571,13 @@
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') })),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
-        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine })),
+        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), kindBadge(b) && h('span', { text: ' · ' + kindBadge(b) })),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
           : gone && b.stoppedAt ? prop('Ended', h('span', { title: 'The machine is deleted when an agent ends' }, live('ago', b.stoppedAt)),
             b.sessionEnded && [' · ', h('span', { title: 'The cloudy-cloud session that started this agent ended, so the agent was stopped', text: 'session closed' })]) : null,
-        openable(b) && openApp(b)));
+        openable(b) && openApp(b), openable(b) && kindRows(b)));
     updateBadge(b);
     const thread = h('div', { class: 'thread', tabindex: '0', role: b.kind === 'coordinator' ? 'tabpanel' : null, id: b.kind === 'coordinator' ? 'tabpanel' : null, 'aria-label': term ? 'Terminal' : 'Message thread' }, term ? kids : h('div', { class: 'tl' }, kids));
     p.replaceChildren(head, h('div', { class: 'subbar' }, tabBar(b), term ? null : turnBar(b), badgeEl), thread);
@@ -710,11 +729,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb);
     tick();
