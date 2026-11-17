@@ -15,6 +15,8 @@ import { paneState } from './pane-state.mjs';
 import { secretValues } from './run-subagent.mjs';
 import { consentedLiterals } from './mcpsync.mjs';
 import { demoState, demoStream } from './dashboard-demo.mjs';
+import { guideObj } from './errors.mjs';
+import { createLimiter } from './limits.mjs';
 import { normalise, pruneStreams, streamsDir } from './stream.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -137,7 +139,7 @@ const totalsOf = (events) => events.reduce((t, e) => {
 // `streamsDir`: this laptop's stream copies. `getReader`: async, gives the machine reader (see machine-read.mjs); none means no machine reads.
 // `getSecrets`: async, the exact secret values to drop from every response (see secretValues in run-subagent.mjs).
 // `demo`: { stream(box, turn) -> raw stream text, pane(box) -> lines } replaces both for --demo.
-export function createHandler({ token, getState, html, streamsDir: sdir = streamsDir(), getReader, getSecrets, demo, now = Date.now }) {
+export function createHandler({ token, getState, html, streamsDir: sdir = streamsDir(), getReader, getSecrets, getMetrics, demo, now = Date.now }) {
   const memo = new Map(); // file or machine path -> { sig, raw, events }: a stream is parsed again only when it has grown
   const panes = new Map(); // box id -> the last real pane read
   const remote = new Map(); // machine/path -> { raw, next, at, fetchedAt }: what has been read from a machine so far
@@ -216,13 +218,18 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     if (url.pathname === '/api/state') {
       try { return send(200, JSON.stringify(deepRedact(await getState(), await secretsNow())), 'application/json'); } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
     }
-    if (url.pathname === '/api/stream' || url.pathname === '/api/pane') {
+    if (url.pathname === '/api/stream' || url.pathname === '/api/pane' || url.pathname === '/api/metrics') {
       let secrets = [];
       const json = (code, body) => send(code, JSON.stringify(deepRedact(body, secrets)), 'application/json');
       try {
         secrets = await secretsNow();
         const q = url.searchParams, boxes = (await getState()).boxes ?? [], box = boxes.find((b) => b.id === q.get('box'));
         if (!box) return json(404, { error: 'unknown box' });
+        if (url.pathname === '/api/metrics') {
+          if (box.machineState !== 'running' || !box.machine) return json(404, { error: 'unknown box' });
+          const m = demo ? demo.metrics(box.id) : getMetrics?.(box.machine);
+          return json(200, { box: box.id, samples: m?.samples ?? [], fetchedAt: m?.fetchedAt ?? null, window: METRICS_WINDOW_MS, source: m?.source ?? 'none', ...(m?.error && { error: m.error }) });
+        }
         if (url.pathname === '/api/pane') {
           if (box.kind !== 'coordinator' || !isLive(box)) return json(404, { error: 'unknown box' });
           if (demo) return json(200, { lines: demo.pane(box.id) ?? [], fetchedAt: now(), source: { kind: 'machine', machine: box.machine } });
@@ -259,6 +266,9 @@ const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').t
 
 const COORD_MS = 10_000;
 const PANE_MS = 30_000; // a coordinator's screen is checked for a waiting prompt at most this often
+const METRICS_MS = 30_000; // one Instabox usage read per running machine at most this often, only while something polls
+const METRICS_WINDOW_MS = 3_600_000; // the page gets the last hour of samples
+const METRICS_AT_ONCE = 4;
 const MAX_EVENTS = 5000; // events kept per coordinator: its recent history, not all of it
 const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 MB is read from its last 16 MB
 
@@ -267,6 +277,8 @@ const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 
 // something polls this function) and folded into the workers it started.
 export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider, getReader, now = Date.now } = {}) {
   let cached, at = 0;
+  const usage = new Map(); // running machine id -> { samples, fetchedAt, at, error } (#117)
+  const limiter = createLimiter(METRICS_AT_ONCE);
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
     let st = logs.get(m.id);
@@ -296,7 +308,32 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       st.waiting = p.blocked || p.waiting || undefined; st.fatal = !!p.blocked;
     } catch { /* keep the last answer */ }
   };
-  return async () => {
+  // One read per running machine per METRICS_MS. A failure keeps the last good samples and records the error code. A machine that is not running is never read.
+  const refreshUsage = async (machines) => {
+    const running = machines.filter((m) => m.state === 'running');
+    for (const id of usage.keys()) if (!running.some((m) => m.id === id)) usage.delete(id);
+    await Promise.all(running.map(async (m) => {
+      const prev = usage.get(m.id);
+      if (prev && now() - prev.at < METRICS_MS) return;
+      if (!provider.caps?.hasMetrics) { if (!prev) usage.set(m.id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); return; }
+      const t = now();
+      try {
+        const r = await limiter.run(() => provider.metrics(m.id, { since: t - METRICS_WINDOW_MS }));
+        usage.set(m.id, { samples: r.samples, fetchedAt: r.fetchedAt, at: t });
+      } catch (e) { usage.set(m.id, { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }); }
+    }));
+  };
+  const errorOf = (code) => (code === 'not_found' ? { code: 'machine_gone' } : (({ code: c, whatHappened, nextStep }) => ({ code: c, whatHappened, nextStep }))(guideObj(code, { provider: provider.name })));
+  const sourceOf = (u) => (u.fetchedAt != null && now() - u.fetchedAt < METRICS_MS * 2 ? 'live' : 'cache');
+  const usageOf = (id) => {
+    const u = usage.get(id);
+    if (!u) return undefined;
+    if (u.error) return { error: errorOf(u.error.code) };
+    const n = u.samples.at(-1);
+    if (!n) return { none: 'no_samples_yet', fetchedAt: u.fetchedAt };
+    return { at: n.t, cpuPct: n.cpuPct, cpuCount: n.cpuCount, memUsed: n.memUsed, memTotal: n.memTotal, netIn: n.netIn, netOut: n.netOut, fetchedAt: u.fetchedAt, source: sourceOf(u) };
+  };
+  const state = async () => {
     if (cached && now() - at < cacheMs) return cached;
     let machines, machineError;
     try {
@@ -313,11 +350,19 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
       coordLogs[m.id] = st.folded;
     }
+    if (machines && provider) await refreshUsage(machines);
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
     for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
+    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) b.usage = u; }
     at = now();
     return cached;
   };
+  // The last hour of samples for one running machine, from the same map (no provider call): what /api/metrics returns.
+  state.metrics = (machineId) => {
+    const u = usage.get(machineId);
+    return u && { samples: u.samples, fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code) }) };
+  };
+  return state;
 }
 
 export function listen(handler, port = DEFAULT_PORT) {
@@ -351,7 +396,8 @@ export async function main(argv = process.argv.slice(2)) {
   const getReader = lazy(async () => createMachineReader(await getProvider(), env, { literals }));
   const getSecrets = async () => secretValues(env, (await getProvider()).keyName, consentedLiterals(env));
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
-  const server = await listen(createHandler({ token, html, getReader, getSecrets, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : liveState(env, { getReader }) }), port);
+  const live = demo ? undefined : liveState(env, { getReader });
+  const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live }), port);
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);

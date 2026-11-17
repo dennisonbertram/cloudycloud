@@ -10,6 +10,18 @@ const failedText = ['Subagent failed, exit code 1.',
   '', 'The sandbox could not be reached to push. Only work the agent already pushed to origin cloudy-cloud/90aa13fc survives.',
   'Model: claude-sonnet-5-5', 'Total: 9 tool uses, 41.2k in / 3.1k out tokens, $0.2140, 12m 4s'].join('\n');
 
+// Two hours of 30 s usage samples for a demo machine, oldest first. Busy machines sit high with swings, quiet ones near idle.
+const BUSY = new Set(['7c1e90ab']);
+export function demoSeries(id, now = Date.now()) {
+  const busy = BUSY.has(id), seed = [...id].reduce((a, c) => a + c.charCodeAt(0), 0);
+  return Array.from({ length: 240 }, (_, k) => {
+    const i = 239 - k, t = now - i * 30_000, w = Math.sin((i + seed) / 7) + Math.sin((i + seed) / 3.1) / 2;
+    return { t, cpuPct: Math.round(Math.max(1, busy ? 80 + w * 10 : 5 + w * 3) * 10) / 10, cpuCount: 2, memUsed: Math.round((busy ? 2.6e9 : 0.7e9) + w * 1e8), memTotal: 4e9,
+      netIn: Math.round((busy ? 90_000 : 1_500) * (1.3 + w)), netOut: Math.round((busy ? 30_000 : 600) * (1.3 + w)), diskRead: 0, diskWrite: busy ? 40_000 : 2000 };
+  });
+}
+const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { at: s.t, cpuPct: s.cpuPct, cpuCount: s.cpuCount, memUsed: s.memUsed, memTotal: s.memTotal, netIn: s.netIn, netOut: s.netOut, fetchedAt: now, source: 'live' }; };
+
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const lastPush = (msgs) => { const r = msgs.findLast((m) => m.kind === 'reply'), p = r && pushOf(r.text); return p ? { push: { ...p, t: r.t } } : {}; };
@@ -91,6 +103,7 @@ export function demoState(now = Date.now()) {
     }),
     { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
+  for (const b of boxes) if (b.machineState === 'running' && ['running', 'idle', 'starting'].includes(b.status)) b.usage = b.status === 'starting' ? { none: 'no_samples_yet', fetchedAt: now } : demoUsage(b.id, now);
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
   boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
   return { now, demo: true, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
@@ -117,5 +130,6 @@ export const demoStream = {
     });
     return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
   },
+  metrics: (id) => ({ samples: demoSeries(id), fetchedAt: Date.now(), source: 'live' }),
   pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
 };

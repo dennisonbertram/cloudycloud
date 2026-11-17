@@ -768,3 +768,97 @@ test('the macOS Cost row prices the chosen model with its 24-hour minimum, and t
   assert.match(costText({ machineKind: 'macos' }), /\$0\.45 to \$1\.25 per hour/);
   assert.match(html, /not verified on macOS yet/);
 });
+
+// ---- usage per running machine (#117) ----
+const usageEnv = (over = {}) => {
+  const clock = { t: 1_000_000 }, calls = [];
+  const machines = [{ id: 'm1', state: 'running', status: 'running', labels: {} }, { id: 'm2', state: 'running', status: 'running', labels: {} }, { id: 'm3', state: 'stopped', status: 'stopped', labels: {} }];
+  const series = (id) => [{ t: clock.t - 60_000, cpuPct: 5, cpuCount: 2, memUsed: 1, memTotal: 4 }, { t: clock.t - 20_000, cpuPct: id === 'm1' ? 77 : 12, cpuCount: 2, memUsed: 2, memTotal: 4, netIn: 9, netOut: 8 }];
+  const provider = { name: 'fake', keyName: 'FAKE_API_KEY', caps: { hasMetrics: true }, async metrics(id, o) { calls.push({ id, since: o.since }); return over.metrics ? over.metrics(id, o) : { samples: series(id), fetchedAt: clock.t }; } };
+  const getState = liveState({}, { list: async () => machines, provider: over.provider ?? provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'events.jsonl'), cacheMs: 0, now: () => clock.t });
+  return { clock, calls, getState, machines };
+};
+const boxOf = (s, m) => s.boxes.find((b) => b.machine === m);
+
+test('usage is read once per running machine per 30 s, from the newest sample, and never for a stopped machine', async () => {
+  const { clock, calls, getState } = usageEnv();
+  const s = await getState(); await getState(); clock.t += 29_000; await getState();
+  assert.deepEqual(calls.map((c) => c.id).sort(), ['m1', 'm2']);
+  assert.equal(calls[0].since, 1_000_000 - 3_600_000);
+  const u = boxOf(s, 'm1').usage;
+  assert.deepEqual([u.cpuPct, u.cpuCount, u.memUsed, u.memTotal, u.netIn, u.netOut, u.at, u.fetchedAt, u.source], [77, 2, 2, 4, 9, 8, 1_000_000 - 20_000, 1_000_000, 'live']);
+  assert.equal(boxOf(s, 'm2').usage.cpuPct, 12);
+  assert.equal('usage' in boxOf(s, 'm3'), false);
+  clock.t += 2_000; await getState();
+  assert.equal(calls.length, 4);
+});
+
+test('at most 4 usage reads are in flight at once', async () => {
+  let now = 0, peak = 0;
+  const { getState, machines } = usageEnv({ metrics: async () => { now++; peak = Math.max(peak, now); await new Promise((r) => setTimeout(r, 5)); now--; return { samples: [], fetchedAt: 1 }; } });
+  for (let i = 0; i < 10; i++) machines.push({ id: `x${i}`, state: 'running', status: 'running', labels: {} });
+  await getState();
+  assert.equal(peak, 4);
+});
+
+test('a failed usage read shows the reason with its guide, keeps the last samples, and is not a zero', async () => {
+  let fail = false;
+  const { clock, getState, calls } = usageEnv({ metrics: async (id) => { if (fail) throw Object.assign(new Error('503 secret-detail'), { code: 'metrics_unavailable' }); return { samples: [{ t: 5, cpuPct: 40, cpuCount: 1, memUsed: 1, memTotal: 2 }], fetchedAt: 6 }; } });
+  assert.equal(boxOf(await getState(), 'm1').usage.cpuPct, 40);
+  fail = true; clock.t += 31_000;
+  const u = boxOf(await getState(), 'm1').usage;
+  assert.equal(u.error.code, 'metrics_unavailable');
+  assert.equal(typeof u.error.nextStep, 'string');
+  assert.equal(u.cpuPct, undefined);
+  assert.equal(calls.length, 4);
+  const kept = (await getState.metrics('m1'));
+  assert.equal(kept.samples.length, 1);
+  assert.equal(kept.error.code, 'metrics_unavailable');
+  fail = false; clock.t += 31_000;
+  assert.equal(boxOf(await getState(), 'm1').usage.error, undefined);
+});
+
+test('a machine that is gone gives machine_gone without guide text; no samples gives no_samples_yet', async () => {
+  const { getState } = usageEnv({ metrics: async (id) => { if (id === 'm1') throw Object.assign(new Error('x'), { code: 'not_found' }); return { samples: [], fetchedAt: 7 }; } });
+  const s = await getState();
+  assert.deepEqual(boxOf(s, 'm1').usage, { error: { code: 'machine_gone' } });
+  assert.deepEqual(boxOf(s, 'm2').usage, { none: 'no_samples_yet', fetchedAt: 7 });
+});
+
+test('a provider without metrics says metrics_unsupported once and makes no calls', async () => {
+  let n = 0;
+  const { getState, clock } = usageEnv({ provider: { name: 'self-hosted', keyName: 'K', caps: { hasMetrics: false }, metrics: async () => { n++; } } });
+  const u = boxOf(await getState(), 'm1').usage;
+  assert.equal(u.error.code, 'metrics_unsupported');
+  clock.t += 60_000; await getState();
+  assert.equal(n, 0);
+});
+
+test('/api/metrics gives a live box its samples, 404 for a stopped or unknown box, 401 without the token, and never a key', async () => {
+  const boxes = [{ id: 'a1', machine: 'm1', machineState: 'running', kind: 'agent' }, { id: 'b1', machine: 'm3', machineState: 'stopped', kind: 'agent' }];
+  const getMetrics = (m) => (m === 'm1' ? { samples: [{ t: 1, cpuPct: 3, note: 'sk-abcdefghijklmnop1234' }], fetchedAt: 9, source: 'live' } : undefined);
+  const { opts } = streamEnv(boxes, null, { getMetrics });
+  const ok = await api(opts, '/api/metrics?box=a1');
+  assert.equal(ok.status, 200);
+  assert.deepEqual([ok.json.box, ok.json.samples.length, ok.json.fetchedAt, ok.json.window, ok.json.source], ['a1', 1, 9, 3_600_000, 'live']);
+  assert.doesNotMatch(ok.body, /sk-abcdefghij/);
+  assert.equal((await api(opts, '/api/metrics?box=b1')).status, 404);
+  assert.equal((await api(opts, '/api/metrics?box=zzz')).status, 404);
+  const s = await serve(opts), { port } = s.address();
+  try {
+    assert.equal((await get(port, '/api/metrics?box=a1')).status, 401);
+    assert.equal((await get(port, `/api/metrics?box=a1&t=${TOKEN}`, 'evil.example')).status, 403);
+    assert.equal((await get(port, `/api/metrics?box=a1&t=${TOKEN}`, undefined, 'POST')).status, 405);
+  } finally { s.close(); }
+});
+
+test('the demo has usage for running boxes (one busy, one quiet) and a series at /api/metrics', async () => {
+  const demo = demoState(Date.now()), by = (id) => demo.boxes.find((b) => b.id === id);
+  assert.ok(by('7c1e90ab').usage.cpuPct > 60 && by('b42f0d17').usage.cpuPct < 15);
+  assert.equal('usage' in by('51d9ee02'), false);
+  assert.equal('usage' in by('a7716be4'), false);
+  const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
+  const r = (await api(opts, '/api/metrics?box=7c1e90ab')).json;
+  assert.equal(r.samples.length, 240);
+  assert.ok(r.samples.at(-1).t - r.samples[0].t >= 3_500_000);
+});
