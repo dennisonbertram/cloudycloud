@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createProvider } from '../src/providers/instabox.mjs';
+import { createLimiter } from '../src/limits.mjs';
 import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
 const KEY = 'ib-secret-key';
@@ -372,4 +373,89 @@ test('#89 shellArgv sends one quoted remote string that a shell parses back into
   const r = spawnSync('sh', ['-c', p.shellArgv('m1', ['sh', '-c', 'echo "a b" $(echo SUB); exit 7'])[7]], { encoding: 'utf8' });
   assert.equal(r.stdout, 'a b SUB\n');
   assert.equal(r.status, 7);
+});
+
+// ---- metrics (#116) ----
+const NOW = Date.parse('2026-03-01T12:00:00Z');
+const metricsProvider = (handler, extra = {}) => {
+  const f = fakeFetch(handler);
+  return { f, p: createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: f.f, now: () => NOW, sleep: async () => {}, ...extra }) };
+};
+const full = { timestamp: '2026-03-01T11:59:30Z', cpuUsedPct: 12.5, cpuCount: 2, memUsed: 100, memTotal: 400, diskTotal: 9, diskUsed: 3, netInBytesPerSec: 10, netOutBytesPerSec: 20, diskReadBytesPerSec: 30, diskWriteBytesPerSec: 40, gpuCount: 1 };
+const bare = { timestamp: '2026-03-01T11:59:00Z', cpuUsedPct: 1, cpuCount: 2, memUsed: 5, memTotal: 400, diskTotal: 9 };
+
+test('metrics: one GET with the key header and since as ISO; maps samples with and without optional fields', async () => {
+  const since = NOW - 600_000;
+  const { p, f } = metricsProvider(() => Response.json({ metrics: [bare, full] }));
+  const r = await p.metrics('m/1', { since });
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].url, `https://api.instabox.sh/v1/machines/m%2F1/metrics?since=${new Date(since).toISOString()}`);
+  assert.deepEqual(f.calls[0].headers, { 'X-API-Key': KEY });
+  assert.equal(f.calls[0].body, undefined);
+  assert.equal(f.calls[0].method ?? 'GET', 'GET');
+  assert.equal(r.fetchedAt, NOW);
+  assert.deepEqual(r.samples[0], { t: Date.parse(bare.timestamp), cpuPct: 1, cpuCount: 2, memUsed: 5, memTotal: 400, netIn: undefined, netOut: undefined, diskRead: undefined, diskWrite: undefined });
+  assert.deepEqual(r.samples[1], { t: Date.parse(full.timestamp), cpuPct: 12.5, cpuCount: 2, memUsed: 100, memTotal: 400, netIn: 10, netOut: 20, diskRead: 30, diskWrite: 40 });
+  assert.equal((await metricsProvider(() => Response.json({ metrics: [] })).p.metrics('m1')).samples.length, 0);
+  assert.equal(p.caps.hasMetrics, true);
+});
+
+test('metrics: since defaults to one hour and is clamped to 24 hours', async () => {
+  const { p, f } = metricsProvider(() => Response.json({ metrics: [] }));
+  await p.metrics('m1');
+  await p.metrics('m1', { since: NOW - 5 * 86_400_000 });
+  const sinceOf = (c) => Date.parse(new URL(c.url).searchParams.get('since'));
+  assert.equal(sinceOf(f.calls[0]), NOW - 3_600_000);
+  assert.equal(sinceOf(f.calls[1]), NOW - 86_400_000);
+});
+
+test('metrics: each error status maps to a code and no message contains the key', async () => {
+  const cases = [[404, { error: { code: 'not_found' } }, 'not_found'], [503, { error: { code: 'metrics_unavailable' } }, 'metrics_unavailable'], [403, { error: { code: 'missing_scope' } }, 'metrics_forbidden'], [403, { code: 'missing_scope' }, 'metrics_forbidden'], [401, {}, undefined], [500, {}, 'transient']];
+  for (const [status, body, code] of cases) {
+    const { p } = metricsProvider(() => new Response(JSON.stringify(body), { status }));
+    await assert.rejects(p.metrics('m1'), (e) => e.code === code && !String(e.message).includes(KEY) && !JSON.stringify(e).includes(KEY), `${status}`);
+  }
+});
+
+test('metrics: a response code or body containing the key never reaches the thrown error', async () => {
+  for (const body of [{ error: { code: `x_${KEY}`, message: KEY } }, { code: KEY }, `plain ${KEY}`]) {
+    const { p } = metricsProvider(() => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 400 }));
+    await assert.rejects(p.metrics('m1'), (e) => !JSON.stringify(e, Object.getOwnPropertyNames(e)).includes(KEY) && e.message === 'metrics request failed (HTTP 400)');
+  }
+});
+
+test('metrics: a fetch rejection carrying the key becomes a fixed transient error', async () => {
+  const { p } = metricsProvider(() => { throw Object.assign(new Error(`connect failed ${KEY}`), { cause: new Error(KEY), request: { headers: { 'X-API-Key': KEY } } }); });
+  await assert.rejects(p.metrics('m1'), (e) => e.code === 'transient' && e.cause === undefined && !JSON.stringify(e, Object.getOwnPropertyNames(e)).includes(KEY) && !String(e.stack).includes(KEY));
+});
+
+test('metrics: a stalled fetch times out as transient and frees the limiter slot', async () => {
+  const limiter = createLimiter(1);
+  const { p } = metricsProvider((url) => (url.includes('/metrics') ? new Promise(() => {}) : Response.json({})), { limiter, metricsTimeoutMs: 30 });
+  const t0 = Date.now();
+  const stalled = assert.rejects(p.metrics('m1'), { code: 'transient' });
+  assert.equal(await limiter.run(async () => 'ran'), 'ran'); // queued behind the stalled call
+  await stalled;
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('metrics: a future since is clamped to now', async () => {
+  const { p, f } = metricsProvider(() => Response.json({ metrics: [] }));
+  await p.metrics('m1', { since: NOW + 3_600_000 });
+  assert.equal(Date.parse(new URL(f.calls[0].url).searchParams.get('since')), NOW);
+});
+
+test('metrics: a 429 is retried through the limiter, and the call runs inside a limiter slot', async () => {
+  let n = 0, ran = 0;
+  const limiter = { run: (fn) => { ran++; return fn(); } };
+  const { p } = metricsProvider(() => (++n === 1 ? new Response('{}', { status: 429 }) : Response.json({ metrics: [bare] })), { limiter });
+  assert.equal((await p.metrics('m1')).samples.length, 1);
+  assert.equal(n, 2);
+  assert.equal(ran, 2);
+});
+
+test('metrics: no key is no_key and no request is made', async () => {
+  const f = fakeFetch();
+  await assert.rejects(createProvider({}, { sdk: fakeSdk().sdk, fetchFn: f.f }).metrics('m1'), { code: 'no_key' });
+  assert.equal(f.calls.length, 0);
 });

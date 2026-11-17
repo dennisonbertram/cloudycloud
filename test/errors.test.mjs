@@ -69,3 +69,10 @@ test('#92 machine codes exist; consent names the price and the env line; each na
   assert.doesNotMatch(PRICE.macos, /2026/);
   assert.match(guide('machine_kind_unsupported', { provider: 'self-hosted', kinds: 'linux' }), /self-hosted.*linux/s);
 });
+
+test('#116 metrics codes exist, name a command, and metrics_unsupported names the provider', () => {
+  for (const c of ['metrics_unavailable', 'metrics_forbidden', 'metrics_unsupported']) assert.ok(CODES.includes(c), c);
+  for (const c of ['metrics_unavailable', 'metrics_forbidden']) assert.ok(HUMAN_CODES.includes(c), c);
+  assert.match(guide('metrics_forbidden', {}), /machines:read.*cloudy-cloud setup/s);
+  assert.match(guide('metrics_unsupported', { provider: 'self-hosted', id: 'm1' }), /self-hosted[\s\S]*cloudy-cloud shell m1 -- top -bn1/);
+});

@@ -499,3 +499,11 @@ test('a coordinator started through the role option gets the Docker socket; a wo
   assert.equal(c[c.indexOf('-v') + 1], `${SOCK}:/var/run/docker.sock`);
   assert.ok(c.includes('cloudy-cloud.role=coordinator'));
 });
+
+test('self-hosted metrics rejects with metrics_unsupported and runs no command', async () => {
+  const calls = [];
+  const p = createProvider({}, { spawn: (...a) => { calls.push(a); throw new Error('no command expected'); } });
+  assert.equal(p.caps.hasMetrics, false);
+  await assert.rejects(p.metrics('m1'), (e) => e.code === 'metrics_unsupported' && e.provider === 'self-hosted');
+  assert.equal(calls.length, 0);
+});

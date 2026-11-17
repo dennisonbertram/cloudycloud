@@ -94,7 +94,7 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
-      machineKinds: ['linux'], hasShell: true, hasDisplay: false,
+      machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false,
     },
 
     async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind }) {
@@ -271,6 +271,7 @@ export function createProvider(env = process.env, deps = {}) {
     async displayLink() { throw noDisplay(); },
     async revokeDisplayLinks() { throw noDisplay(); },
     async screenshot() { throw noDisplay(); },
+    async metrics() { throw fail('metrics_unsupported', 'self-hosted machines have no usage numbers.', { provider: 'self-hosted' }); },
 
     text: {
       ssh: (machine, cmd) => (local ? `${bin} exec -it ${machine} ${cmd || 'bash'}`

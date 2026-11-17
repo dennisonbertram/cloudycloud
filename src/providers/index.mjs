@@ -16,6 +16,7 @@
  * @property {string[]} machineKinds     kind names (see src/machine.mjs KINDS) create accepts; always includes 'linux'
  * @property {boolean} hasShell          shellArgv works
  * @property {boolean} hasDisplay        displayLink, revokeDisplayLinks and screenshot work
+ * @property {boolean} hasMetrics        metrics works
  */
 
 /**
@@ -33,7 +34,7 @@
 /**
  * Errors thrown by a provider carry a normalised `code`: rate_limited (+ retryAfterSeconds), quota_exceeded,
  * not_found, no_key or transient, plus machine_kind_unsupported, display_unsupported,
- * display_forbidden, desktop_unavailable, machine_* (see src/errors.mjs). displayLink starts the desktop when it is not running.
+ * display_forbidden, desktop_unavailable, metrics_unavailable, metrics_forbidden, metrics_unsupported, machine_* (see src/errors.mjs). displayLink starts the desktop when it is not running.
  * @typedef {object} Provider
  * @property {string} name
  * @property {string} keyName            environment variable that holds the API key
@@ -49,6 +50,7 @@
  * @property {(id: string, port: string) => Promise<number>} unpublishPort
  * @property {(id: string, cmd?: string[]) => string[]} shellArgv   argv that opens an interactive shell on the machine, or runs cmd
  * @property {(id: string, o?: { control?: boolean, ttlSeconds?: number }) => Promise<{ url: string, expiresAt: Date|string }>} displayLink   a desktop link; starts the desktop when it is not running
+ * @property {(id: string, o?: { since?: number }) => Promise<{ samples: Array<{ t: number, cpuPct: number, cpuCount: number, memUsed: number, memTotal: number, netIn?: number, netOut?: number, diskRead?: number, diskWrite?: number }>, fetchedAt: number }>} metrics   since is a ms timestamp (default now - 1 h, at most 24 h back); t is ms, bytes and bytes per second as reported; oldest first; empty when the machine did not run in the window
  * @property {(id: string) => Promise<void>} revokeDisplayLinks
  * @property {(id: string) => Promise<Uint8Array>} screenshot   PNG bytes
  * @property {(hostname: string) => string} localMachineName   machine name for the host this runs on, or ''
