@@ -230,6 +230,10 @@ A coordinator is a subagent that can start subagents of its own, so one session 
 
 Both kinds of coordinator work from a git clone or an npm install: a coordinator ships cloudy-cloud to its machine from the checkout, or from the package's published files when there is no checkout. The [cloud-fleet skill](skills/cloud-fleet/SKILL.md) (copied by setup) teaches Claude to keep fleet output manageable: merge worker branches into one `fleet/<topic>` trunk instead of opening 100 PRs. Every machine in a tree counts against your Instabox machine limit. More in [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.html).
 
+## Autofix
+
+`cloud_agent` takes an optional `autofix: true` (workers only). After the worker pushes, the server opens a pull request for `cloudy-cloud/<id>` with `gh` in the sandbox, waits for the checks, and reads the failed logs, new review comments and merge conflicts. If anything is wrong it sends the problems to the same worker as a follow-up turn and repeats, up to 3 fix rounds (`CLOUDY_CLOUD_AUTOFIX_ROUNDS`). The caller sees one task. The result gives the pull request URL and says whether it is clean; if not, it lists what still fails and what to do next. A `gh` failure (no permission to create pull requests, gh missing) does not stop the agent: the result explains the fix. Autofix stops 10 minutes before the machine's delete time. Only review text from people with write access (checked per author with the collaborator permission API) reaches the worker; the result counts the comments it ignored. Comments by the pull request's own author are skipped, so the worker's replies do not start new rounds. A result is called clean only when checks, comments, reviews and mergeability were all read.
+
 ## Commands
 
 `cloudy-cloud --help` prints these. Any other arguments go to `claude`. The package installs two command names, `cloudy-cloud` and `cloudycloud`.

@@ -17,7 +17,7 @@ import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine,
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
-import { redact } from './events.mjs';
+import { redact, redactText } from './events.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
 
@@ -333,7 +333,7 @@ async function turn(a, message, ctx, t) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed };
+  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed, pushed: where.startsWith('Pushed to') };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -551,6 +551,162 @@ async function startGateway(a, ctx) {
   }
 }
 
+// Autofix: after a pushed turn, the server opens the PR, waits for checks and starts fix turns until the PR is clean or the cap is hit.
+// Every command is fixed text: only the branch (from the id), numbers from gh's own JSON and a validated ref go in a command string.
+// Text from GitHub (logs, comments, reviews) is untrusted: redacted before it is cut, and review text counts only from people with write access.
+// Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
+const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,state,headRefOid,baseRefName,mergeable,author,reviews';
+const REF = /^[A-Za-z0-9._/-]{1,100}$/, SHA = /^[0-9a-f]{40}$/, RUN = /\/actions\/runs\/(\d+)/, LINK = /^https:\/\/github\.com\/[A-Za-z0-9._/-]+$/, LOGIN = /^[A-Za-z0-9-]{1,39}(\[bot\])?$/, WRITE = new Set(['admin', 'maintain', 'write']);
+const nap = (ms, t) => { let id, off; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done, new Promise((r) => { t.abort.signal.addEventListener('abort', r, { once: true }); off = () => t.abort.signal.removeEventListener('abort', r); })]).finally(() => { clearTimeout(id); off(); }); };
+function autofix(a, ctx, t) {
+  const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`, cwd = `${a.home}/repo`;
+  const rounds = Number(ctx.env.CLOUDY_CLOUD_AUTOFIX_ROUNDS), cap = Number.isInteger(rounds) && rounds >= 0 ? Math.min(rounds, 10) : 3;
+  const poll = ctx.autofixPollMs ?? 20_000, grace = ctx.autofixGraceMs ?? 90_000, checksMs = ctx.autofixChecksMs ?? 25 * 60_000;
+  const halted = () => t.cancelled || t.status !== 'working' || a.status === 'stopped';
+  const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
+  const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
+  const seen = (a.autofixSeen ??= new Set());
+  let fixes = 0, lastPush = '', ignored = 0;
+  const say = (note) => { t.prefix = `autofix ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
+  const hand = `open or fix the pull request by hand (git fetch origin ${branch}), or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
+  const done = (text) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
+  const stop = (why) => done(`Autofix stopped: ${why}\nNext step: ${hand}`);
+  const bail = (result) => { throw Object.assign(new Error('autofix ends'), { result }); };
+  const exec = async (cmd, ms = GH_MS) => {
+    if (left() < 5000) bail(done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}.\nNext step: ${hand}`));
+    let r;
+    try { r = { ok: true, out: String((await a.sandbox.commands.run(cmd, { cwd, timeoutMs: Math.min(ms, left()), signal: t.abort.signal })).stdout ?? '') }; }
+    catch (e) { r = { ok: false, out: String(e?.stdout ?? ''), err: tail(e?.stderr || e?.message), code: e?.exitCode }; }
+    if (halted()) bail({ cancelled: true }); // an aborted call must never read as a result
+    if (!r.ok && typeof r.code !== 'number') { // the command did not run to its end: is the machine still there?
+      const alive = await a.sandbox.commands.run('true', { cwd, timeoutMs: 15_000 }).then(() => true, () => false);
+      if (halted()) bail({ cancelled: true });
+      if (!alive) bail({ gone: true, text: `The sandbox is no longer reachable during autofix (${r.err}). Only work the agent already pushed to origin ${branch} survives.` });
+    }
+    return r;
+  };
+  const gh = (cmd, ms) => exec(`gh ${cmd}`, ms);
+  const wait = async (ms) => { await nap(Math.min(ms, Math.max(left(), 0)), t); if (halted()) bail({ cancelled: true }); };
+  const headSha = async () => { const o = (await exec('git rev-parse HEAD')).out.trim(); if (!SHA.test(o)) bail(stop('could not read the commit the worker pushed.')); return o; };
+  const view = async () => { const r = await gh(`pr view ${branch} --json ${PR_FIELDS}`); try { return { pr: JSON.parse(r.out) }; } catch { return { err: r.err || tail(r.out) }; } };
+  // The PR must be open and show the commit just pushed; GitHub can lag behind a push.
+  const sync = async (sha) => {
+    const t0 = Date.now();
+    for (;;) {
+      const v = await view();
+      if ((v.pr?.state === 'OPEN' && v.pr.headRefOid === sha) || Date.now() - t0 >= grace) return v;
+      await wait(poll);
+    }
+  };
+  const go = async () => {
+    let sha = await headSha();
+    let v = await view();
+    if (!v.pr || v.pr.state !== 'OPEN') {
+      say('opening the pull request');
+      const c = await gh(`pr create --head ${branch} --title '${branch}' --body 'Opened by cloudy-cloud autofix.'`);
+      if (!c.ok) return stop(`gh could not create a pull request for ${branch}. gh said: ${c.err || tail(c.out)}`);
+    }
+    v = await sync(sha);
+    if (!v.pr) return stop(`gh could not read the pull request for ${branch}. gh said: ${v.err}`);
+    let pr = v.pr;
+    a.prUrl = pr.url;
+    const n = pr.number;
+    if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
+    const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
+    if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    const waitChecks = async () => {
+      const t0 = Date.now(), limit = Math.min(t0 + checksMs, Date.now() + left() - AUTOFIX_MARGIN_MS);
+      for (;;) {
+        const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
+        let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+        const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
+        if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
+        if (none && Date.now() - t0 >= grace) return { list: [] };
+        if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };
+        if (Date.now() >= limit) return { timeout: Math.round((Date.now() - t0) / 60_000) };
+        await wait(poll);
+      }
+    };
+    for (;;) {
+      say('waiting for checks');
+      const w = await waitChecks();
+      if (w.error) return stop(`gh could not read the checks. gh said: ${w.error}`);
+      if (w.timeout !== undefined) return done(`Autofix stopped: checks on ${pr.url} were still running after ${w.timeout} minutes.\nNext step: check ${pr.url} later; send cloud_agent_message to agent ${a.id} if something fails.`);
+      say('reading failures and review comments');
+      const problems = [], incomplete = [], pendingSeen = []; // comments sent are remembered only once a fix turn pushed a new commit
+      ignored = 0;
+      const bad = w.list.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel');
+      const logs = new Map();
+      for (const id of [...new Set(bad.map((c) => RUN.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3)) logs.set(id, tail(safe((await gh(`run view ${id} --log-failed`, 120_000)).out)));
+      for (const c of bad) {
+        const id = RUN.exec(c.link ?? '')?.[1];
+        problems.push(`Failed check "${safe(c.name).slice(0, 100)}"${c.bucket === 'cancel' ? ' (cancelled)' : ''}${LINK.test(c.link ?? '') ? ` (${c.link})` : ''}${id && logs.get(id) ? `. End of the failed log:\n${logs.get(id)}` : ''}`);
+        if (id) logs.delete(id); // one log per run
+      }
+      let r = await view();
+      for (let i = 0; r.pr?.mergeable === 'UNKNOWN' && i < 4; i++) { await wait(poll); r = await view(); }
+      if (!r.pr) incomplete.push(`gh could not refresh the pull request (${r.err})`);
+      else {
+        pr = r.pr;
+        if (pr.state !== 'OPEN') incomplete.push(`the pull request is ${pr.state}`);
+        else if (pr.headRefOid !== sha) incomplete.push('the pull request head is not the pushed commit');
+        if (pr.mergeable === 'UNKNOWN') incomplete.push('GitHub has not computed mergeability yet');
+        const mine = pr.author?.login;
+        const cand = []; // [id, login, text], newest first
+        const take = (id, login, text) => { if (login !== mine && !seen.has(id)) cand.push([id, login, text]); };
+        for (const rv of pr.reviews ?? []) if ((rv.state === 'CHANGES_REQUESTED' || rv.state === 'COMMENTED') && String(rv.body ?? '').trim()) take(rv.id, rv.author?.login, `Review by ${safe(rv.author?.login).slice(0, 40)}: ${safe(rv.body).slice(0, 500)}`);
+        // --paginate reads every page; --jq prints one compact JSON object per line (ponytail: no cap on pages, GitHub allows at most 1000 review comments)
+        const c = await gh(`api --paginate 'repos/{owner}/{repo}/pulls/${n}/comments?per_page=100' --jq '.[] | {id, login: .user.login, path, line, body, created_at} | tojson'`);
+        const inline = [];
+        for (const l of c.out.split('\n').filter(Boolean).slice(0, 2000)) { try { inline.push(JSON.parse(l)); } catch { inline.length = 0; inline.bad = true; break; } }
+        if (!c.ok || inline.bad) incomplete.push('the inline review comments could not be read');
+        else for (const x of inline.sort((p, q) => String(q.created_at).localeCompare(String(p.created_at)))) take(`c${x.id}`, x.login, `Comment by ${safe(x.login).slice(0, 40)} on ${safe(x.path).slice(0, 100)}${x.line ? `:${Number(x.line) || 0}` : ''}: ${safe(x.body).slice(0, 500)}`);
+        // Write access is asked of GitHub for each author (an owner, member or collaborator can still be read-only).
+        const perm = (a.autofixPerm ??= new Map());
+        const trusted = [];
+        for (const [id, login, text] of cand.slice(0, 30)) {
+          if (!LOGIN.test(login ?? '')) { ignored++; continue; }
+          if (!perm.has(login)) {
+            const q = await gh(`api 'repos/{owner}/{repo}/collaborators/${login}/permission' --jq .permission`);
+            if (q.ok && /^(admin|maintain|write|triage|read|none)$/.test(q.out.trim())) perm.set(login, WRITE.has(q.out.trim())); // a failed lookup is not cached: it counts as untrusted and is asked again
+          }
+          if (perm.get(login)) trusted.push([id, text]); else ignored++;
+        }
+        for (const [id, text] of trusted.slice(0, 10)) { pendingSeen.push(id); problems.push(text); }
+        if (pr.mergeable === 'CONFLICTING') problems.push(REF.test(pr.baseRefName ?? '') ? `Merge conflict with ${pr.baseRefName}. Fetch origin, merge origin/${pr.baseRefName} into your branch, resolve the conflicts, commit and push.` : 'Merge conflict with the base branch. Fetch origin, merge the pull request base branch into your branch, resolve the conflicts, commit and push.');
+      }
+      const why = incomplete.length ? `\nNot confirmed: ${incomplete.join('; ')}.` : '';
+      if (!problems.length) {
+        if (incomplete.length) return done(`Autofix: pull request ${pr.url} could not be confirmed clean after ${fixes} fix round${fixes === 1 ? '' : 's'}: ${incomplete.join('; ')}.\nNext step: look at ${pr.url}, or ${hand}`);
+        return done(`Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.`);
+      }
+      const list = problems.map((p) => `- ${p}`).join('\n');
+      const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
+      if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`);
+      if (left() <= AGENT_MS + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
+      fixes++;
+      say('worker is fixing');
+      t.note = '';
+      t.progress = PROGRESS[harnessOf(a)]();
+      if (halted()) return { cancelled: true };
+      const res = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
+      if (res.cancelled || halted()) return { cancelled: true };
+      if (res.gone) return { gone: true, text: res.text };
+      lastPush = /^(Pushed to origin|Push failed).*$/m.exec(res.text)?.[0] ?? lastPush;
+      if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
+      const was = sha;
+      sha = await headSha();
+      if (sha !== was) pendingSeen.forEach((id) => seen.add(id));
+      if (sha === was) return done(`Autofix stopped: the worker pushed no new commits, so the checks cannot change. Still failing on ${pr.url}:\n${list}\n${next}`);
+      v = await sync(sha);
+      if (!v.pr) return stop(`gh could not read the pull request after the fix. gh said: ${v.err}`);
+      pr = v.pr;
+      if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    }
+  };
+  return go().catch((e) => { if (e?.result) return e.result; throw e; });
+}
+
 // Background job for one turn. Never throws; records the outcome and wakes waiters.
 async function work(a, message, first, ctx, t) {
   let r;
@@ -561,6 +717,11 @@ async function work(a, message, first, ctx, t) {
     r = await turn(a, message, ctx, t);
     if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
+    if (a.autofix && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
+      const f = await autofix(a, ctx, t).catch((e) => ({ text: `Autofix stopped on an unexpected error: ${ctx.scrub(e?.message)}` }));
+      t.prefix = t.note = '';
+      r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
+    }
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
     r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
@@ -592,7 +753,7 @@ function statusOf(t, ctx) {
   if (t.status === 'working') {
     const a = t.agent, ahead = ctx.queue.ahead(a);
     m = a.status === 'queued' ? queuedText(a, ctx.queue)
-      : a.status === 'starting' ? 'starting machine…' : statusLine(t.progress);
+      : a.status === 'starting' ? 'starting machine…' : `${t.prefix ?? ''}${t.note || statusLine(t.progress)}`;
   }
   else if (t.status === 'completed') m = statusLine(t.progress);
   else m = `${t.status}: ${t.result?.text ?? ''}`;
@@ -675,8 +836,10 @@ export async function runSubagent(args, deps) {
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
-  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker' } = args;
+  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
+  if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
+  if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v === undefined) continue;
@@ -743,7 +906,7 @@ export async function runSubagent(args, deps) {
   }
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
