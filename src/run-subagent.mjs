@@ -549,7 +549,7 @@ async function startGateway(a, ctx) {
 // Every gh call is a fixed command: only the branch (from the id) and numbers from gh's own JSON go in a command string.
 // Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
 const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,baseRefName,mergeable,author,reviews';
-const nap = (ms, t) => { let id; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done]).finally(() => clearTimeout(id)); };
+const nap = (ms, t) => { let id, off; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done, new Promise((r) => { t.abort.signal.addEventListener('abort', r, { once: true }); off = () => t.abort.signal.removeEventListener('abort', r); })]).finally(() => { clearTimeout(id); off(); }); };
 async function autofix(a, ctx, t) {
   const { scrub } = ctx, branch = `cloudy-cloud/${a.id}`;
   const rounds = Number(ctx.env.CLOUDY_CLOUD_AUTOFIX_ROUNDS), cap = Number.isInteger(rounds) && rounds >= 0 ? Math.min(rounds, 10) : 3;
@@ -582,9 +582,9 @@ async function autofix(a, ctx, t) {
     const t0 = Date.now(), limit = Math.min(t0 + checksMs, a.deleteAt ? a.deleteAt - AUTOFIX_MARGIN_MS : Infinity);
     for (;;) {
       if (halted()) return { halted: true };
-      const r = await gh(`pr checks ${n} --json name,bucket,link`); // exits 8 while pending, 1 on a failure; the JSON is still on stdout
+      const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
       let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
-      const none = /no checks reported/i.test(`${r.out}${r.err}`) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
+      const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
       if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
       if (none && Date.now() - t0 >= grace) return { list: [] };
       if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };

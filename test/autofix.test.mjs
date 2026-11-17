@@ -35,7 +35,12 @@ async function setup(g = {}, env = {}) {
     g.calls.push(cmd);
     if (cmd.startsWith('gh pr view')) { if (!g.hasPr) throw fail('no pull requests found'); return JSON.stringify(g.view()); }
     if (cmd.startsWith('gh pr create')) { if (g.createError) throw fail(g.createError); g.hasPr = true; return `${PR}\n`; }
-    if (cmd.startsWith('gh pr checks')) return JSON.stringify(g.checks[Math.min(checkCalls++, g.checks.length - 1)]);
+    if (cmd.startsWith('gh pr checks')) {
+      const list = g.checks[Math.min(checkCalls++, g.checks.length - 1)];
+      // Instabox rejects a nonzero exit with only exitCode (no stdout), unless the command itself always exits 0.
+      if (g.strictExit && !cmd.endsWith('; true') && list.some((c) => c.bucket !== 'pass')) throw Object.assign(new Error('x'), { exitCode: list.some((c) => c.bucket === 'pending') ? 8 : 1 });
+      return JSON.stringify(list);
+    }
     if (cmd.startsWith('gh run view')) return g.log ?? '';
     if (cmd.startsWith('gh api')) return JSON.stringify(g.inline ?? []);
     return '';
@@ -158,4 +163,30 @@ test('autofix must be a boolean', async () => {
   const r = await runSubagent({ description: 'd', prompt: 'hi', autofix: 'yes' }, deps);
   assert.equal(r.isError, true);
   assert.match(text(r), /invalid autofix/);
+});
+
+test('autofix: pending and failing checks work when the provider drops stdout of a nonzero exit', async () => {
+  const { g, start, wait } = await setup({ strictExit: true, checks: [[{ name: 'test', bucket: 'pending', link: RUN_LINK }], [{ name: 'test', bucket: 'fail', link: RUN_LINK }], [{ name: 'test', bucket: 'pass', link: RUN_LINK }]], log: 'boom' });
+  const id = await start({ autofix: true });
+  const r = await wait([id]);
+  assert.doesNotMatch(r, /could not read the checks/);
+  assert.equal(turns(g), 2);
+  assert.match(r, /is clean/);
+});
+
+test('autofix: a follow-up turn cancelled mid-wait ends within 2 s even with the default poll', async () => {
+  const { g, deps, start, wait } = await setup({ checks: [[{ name: 'test', bucket: 'pass', link: RUN_LINK }]], deps: { autofixPollMs: 20_000, autofixGraceMs: 0 } });
+  g.checks = [[{ name: 'test', bucket: 'pass', link: RUN_LINK }]];
+  const id = await start({ autofix: true });
+  await wait([id]);
+  g.checks = [[{ name: 'test', bucket: 'pending', link: RUN_LINK }]];
+  deps.asTask = true;
+  const { taskId } = await messageAgent({ agent_id: id, message: 'again' }, deps);
+  const t0 = Date.now();
+  while (g.calls.filter((c) => c.startsWith('gh pr checks')).length < 2 && Date.now() - t0 < 20_000) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 200));
+  const t1 = Date.now();
+  const v = await cancelTask(taskId, deps);
+  assert.ok(Date.now() - t1 < 2000, `took ${Date.now() - t1} ms`);
+  assert.equal(v.status, 'cancelled');
 });
