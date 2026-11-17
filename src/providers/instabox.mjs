@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, resolve } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
 import { guide } from '../errors.mjs';
@@ -84,21 +84,21 @@ const SSH = (machine, rest) => `npx --yes instabox@latest ssh ${machine}${rest ?
 const NPX_CLI = ['npx', '--yes', 'instabox@latest'];
 // The floor is the CLI version Cloudy Cloud is tested with; raise it when a newer CLI flag is needed.
 const MIN_INSTABOX_CLI = '0.8.289';
-const newEnough = (f) => {
+const newEnough = (f, PATH) => {
   try {
-    const v = /(\d+)\.(\d+)\.(\d+)/.exec(execFileSync(f, ['--version'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: process.env.PATH } }));
+    const v = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/.exec(execFileSync(f, ['--version'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { PATH } }));
     const min = MIN_INSTABOX_CLI.split('.').map(Number);
     if (!v) return false;
     for (let i = 0; i < 3; i++) if (Number(v[i + 1]) !== min[i]) return Number(v[i + 1]) > min[i];
-    return true;
+    return !v[4]; // numbers equal the floor: a prerelease is below it
   } catch { return false; }
 };
 // An executable `instabox` file on PATH at or above the floor is spawned directly (no npm registry round trip); otherwise npx.
 const findInstabox = (PATH = '') => {
   for (const dir of PATH.split(delimiter)) {
     if (!dir) continue;
-    const f = join(dir, 'instabox');
-    try { if (statSync(f).isFile()) { accessSync(f, constants.X_OK); if (newEnough(f)) return [f]; } } catch { /* next */ }
+    const f = resolve(dir, 'instabox');
+    try { if (statSync(f).isFile()) { accessSync(f, constants.X_OK); if (newEnough(f, PATH)) return [f]; } } catch { /* next */ }
   }
   return NPX_CLI;
 };

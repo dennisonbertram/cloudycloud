@@ -570,3 +570,24 @@ test('the installed instabox is used only when its --version is at least 0.8.289
   for (const out of ['echo instabox 0.8.289+abc', 'echo instabox 0.9.0', 'echo instabox 0.10.1']) { const [a, bin] = argv0(out); assert.equal(a, bin, out); }
   for (const out of ['echo instabox 0.8.87', 'echo instabox 0.8.288+x', 'echo not a version', 'exit 1']) assert.equal(argv0(out)[0], 'npx', out);
 });
+
+test('the version probe runs with the provider PATH, so a stub that needs a provider-only helper works', () => {
+  const helperDir = binDir(null), h = pjoin(helperDir, 'ibx-helper');
+  writeFileSync(h, '#!/bin/sh\necho instabox 0.8.289\n'); chmodSync(h, 0o755);
+  const d = binDir(0o755, 'ibx-helper'), bin = pjoin(d, 'instabox');
+  assert.deepEqual(createProvider({ PATH: [d, helperDir].join(':') }, {}).shellArgv('m1'), [bin, 'ssh', 'm1']);
+});
+
+test('a relative PATH entry resolves to an absolute argv[0]', () => {
+  const d = binDir(0o755), cwd = process.cwd();
+  try {
+    process.chdir(d);
+    assert.deepEqual(createProvider({ PATH: '.' }, {}).shellArgv('m1'), [pjoin(process.cwd(), 'instabox'), 'ssh', 'm1']);
+  } finally { process.chdir(cwd); }
+});
+
+test('a prerelease of the floor is below it; a prerelease of a newer version is accepted', () => {
+  const argv0 = (out) => { const d = binDir(0o755, out); return [createProvider({ PATH: d }, {}).shellArgv('m1')[0], pjoin(d, 'instabox')]; };
+  assert.equal(argv0('echo instabox 0.8.289-rc.1')[0], 'npx');
+  const [a, bin] = argv0('echo instabox 0.8.290-rc.1'); assert.equal(a, bin);
+});
