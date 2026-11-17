@@ -111,7 +111,9 @@
   .usage svg.spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   .usage .cpu { stroke: var(--accent); } .usage .mem { stroke: var(--text-2); stroke-dasharray: 4 3; }
   .usage .key { color: var(--text-3); font-size: 12px; }
-  .usage .fine { color: var(--text-3); font-size: 12px; }
+  .usage .fine { color: var(--text-3); font-size: 12px; } .usage details.fine summary { cursor: pointer; }
+  .usage .axis { display: flex; justify-content: space-between; color: var(--text-3); font-size: 12px; margin-top: -2px; }
+  .usage .prop .pv { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
   .usage .prop { display: flex; gap: 12px; align-items: baseline; } .usage .prop .pl { flex: none; width: 64px; }
   .push.failed { color: var(--s-failed); }
   .pl { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
@@ -196,7 +198,7 @@
   .tile .top .rel { margin-left: auto; }
   .tile .d { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .tile .m { font: 400 12px/1.4 "JetBrains Mono", monospace; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tile .m.use { white-space: normal; }
+  .tile .m.use { white-space: nowrap; }
 
   .state h2:focus { outline: none; }
   .state { margin: auto; max-width: 440px; text-align: center; padding: 40px 24px; font-size: 14px; color: var(--text-2); }
@@ -339,7 +341,7 @@
     const a = lastAct(b), t = stamp(b), kids = S.kids[b.id], open = kids && !S.collapsed.has(b.id);
     // Status in words (the dot colour alone is not enough); the deadline only when it is under an hour away.
     const parts = [];
-    if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: b.status }));
+    if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: statusWord(b.status) }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
     const kb = kindBadge(b); if (kb) parts.push(h('span', { class: 'tag', title: 'Machine kind', text: kb }));
     if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
@@ -348,12 +350,12 @@
     const ul = usageLine(b);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
     const el = h('div', { class: 'row' + (lvl > 1 ? ' child' : ''), role: 'treeitem', 'aria-level': String(lvl), 'aria-expanded': kids ? String(open) : null, 'data-id': b.id,
-      'aria-label': [b.status, titleOf(b), b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
+      'aria-label': [statusWord(b.status), titleOf(b), b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
       'aria-description': a ? ((a.tool || '') + a.text).trim().slice(0, 140) : null, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
       h('div', { class: 'l1' }, kids && h('span', { class: 'chev', 'aria-hidden': 'true', title: open ? 'Hide workers' : 'Show workers', text: open ? '▾' : '▸', onclick: (e) => { e.stopPropagation(); setOpen(b.id, !open); } }), dot(b.status), h('span', { class: 'title', text: titleOf(b) }), t && live('rel', t, 'rel', 'Time since last activity')),
       h('div', { class: 'l2' }, l2),
-      ul && h('div', { class: 'l2 mono', text: ul }),
+      ul && h('div', { class: 'l2 mono' }, ul, quietTag(b) && ' ', quietTag(b)),
       b.waiting && h('div', { class: 'l3 err' }, h('b', { text: b.fatal ? 'Not working: ' : 'Waiting on a prompt: ' }), b.waiting, b.fatal ? ' · sign in again or check the plan, then restart it · ' : ' · ', h('code', { text: 'cloudy-cloud coordinator attach ' + (b.labels && b.labels.name || b.id) })),
       a && h('div', { class: 'l3' + (a.err ? ' err' : '') }, a.tool && h('b', { text: a.tool }), a.text));
     return el;
@@ -438,7 +440,12 @@
   const rate = (n) => (n < 10 * 1024 ? (n / 1024).toFixed(1) : String(Math.round(n / 1024))) + ' KB/s';
   const hasUsage = (b) => !!b.usage && b.status !== 'stopped' && b.status !== 'failed'; // nothing for finished agents
   const memText = (u) => fin(u.memUsed) && fin(u.memTotal) && u.memTotal > 0 ? 'mem ' + (u.memUsed / 2 ** 30).toFixed(1) + ' of ' + gib(u.memTotal) + ' GiB' : null;
-  const usageLine = (b) => hasUsage(b) && fin(b.usage.cpuPct) ? ['cpu ' + Math.round(b.usage.cpuPct) + '%', memText(b.usage)].filter(Boolean).join(' · ') : null;
+  const memShort = (u) => fin(u.memUsed) && fin(u.memTotal) && u.memTotal > 0 ? (u.memUsed / 2 ** 30).toFixed(1) + '/' + gib(u.memTotal) + ' GiB' : null;
+  const usageLine = (b, short) => hasUsage(b) && fin(b.usage.cpuPct) ? ['cpu ' + Math.round(b.usage.cpuPct) + '%', short ? memShort(b.usage) : memText(b.usage)].filter(Boolean).join(' · ') : null;
+  // The server decides "quiet" (src/dashboard.mjs isQuiet, from its stored samples); list, fleet and detail all read the same flag.
+  const isQuiet = (b) => b.status === 'running' && hasUsage(b) && b.usage.quiet === true;
+  const quietTag = (b) => isQuiet(b) && h('span', { class: 'tag', title: 'Marked running, but under 3 % CPU and almost no network for 10 minutes. It may be waiting on something.', text: 'quiet' });
+  const statusWord = (st) => st === 'idle' ? 'waiting for you' : st; // "idle" is the turn finished, not the machine doing nothing
   const hs = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
   const clean = (samples) => (samples || []).filter((x) => x && fin(x.t) && fin(x.cpuPct)).sort((a, c) => a.t - c.t);
   // pure:begin (the tests run this block on its own; it uses only fin and dur)
@@ -446,15 +453,9 @@
   const safeId = (id) => typeof id === 'string' && SAFE_ID.test(id) ? id : null;
   const metricsCmdFor = (machine) => safeId(machine) && "npx --yes instabox@latest metrics '" + machine + "' --since 6h";
   const netKnown = (x) => fin(x.netIn) && fin(x.netOut);
-  const sampleQuiet = (x) => fin(x.cpuPct) && x.cpuPct < 3 && netKnown(x) && x.netIn + x.netOut < 1024;
-  // Quiet: marked running; the newest sample is fresh and is the one shown above; the last 10 minutes are covered without a
-  // gap over 90 s (at least 18 samples); every sample is under 3 % CPU with known network under 1 KB/s.
-  const quietHint = (b, ss, t) => {
-    const last = ss.at(-1), u = b.usage;
-    if (b.status !== 'running' || !last || t - last.t > 120_000 || !u || !fin(u.at) || last.t < u.at || !sampleQuiet(u)) return false;
-    const from = last.t - 10 * 60_000, w = ss.filter((x) => x.t >= from);
-    return w.length >= 18 && w[0].t - from <= 90_000 && w.every((x, i) => (i === 0 || x.t - w[i - 1].t <= 90_000) && sampleQuiet(x));
-  };
+  // Flat: the history spans (nearly) the whole hour and CPU never reached 3 %.
+  const flatHour = (ss) => ss.length >= 2 && ss.at(-1).t - ss[0].t >= 55 * 60_000 && ss.every((x) => x.cpuPct < 3);
+  const quietText = (u) => 'Quiet for 10 minutes while marked running: under 3 % CPU' + (netKnown(u) ? ' and almost no network' : '; network not reported yet') + '. It may be waiting on something; check its Activity tab, or ask Claude to stop it with cloud_agent_stop if you no longer need it.';
   const KEEP_METRICS = 10;
   const pruneMetrics = (cache, ids) => {
     for (const id of Object.keys(cache)) if (!ids.has(id)) delete cache[id];
@@ -475,15 +476,16 @@
     const u = b.usage, m = S.metrics[b.id], ss = clean(m?.samples), kids = [h('div', { class: 'pl', text: 'Usage' })];
     const empty = (t) => h('div', { class: 'note', text: t });
     if (u.error) { kids.push(empty(guide(u.error))); return h('div', { class: 'usage' }, kids); }
-    if (u.none) { kids.push(empty('No samples yet. A new machine reports its first sample about 90 seconds after it starts.')); return h('div', { class: 'usage' }, kids); }
+    if (u.none) { kids.push(empty('No samples yet. A new machine reports its first sample within about a minute of starting.')); return h('div', { class: 'usage' }, kids); }
     const net = fin(u.netIn) && fin(u.netOut) ? ' · network ' + rate(u.netIn) + ' in, ' + rate(u.netOut) + ' out' : '';
     kids.push(h('div', { text: (fin(u.cpuPct) ? 'CPU ' + Math.round(u.cpuPct) + '%' + (fin(u.cpuCount) ? ' of ' + u.cpuCount + ' vCPUs' : '') : 'CPU unknown') + (memText(u) ? ' · memory ' + memText(u).slice(4) : '') + net }));
-    if (ss.length >= 2) kids.push(sparkline(ss), h('div', { class: 'key', text: 'Last hour: solid line CPU (0 to 100 %), dashed line memory (share of the machine).' }));
+    if (flatHour(ss)) kids.push(h('div', { class: 'key', text: 'CPU flat all hour: under 3 %, latest ' + Math.round(ss.at(-1).cpuPct) + ' %.' }));
+    else if (ss.length >= 2) kids.push(sparkline(ss), h('div', { class: 'axis' }, h('span', { text: '1h ago' }), h('span', { text: 'now: CPU ' + Math.round(ss.at(-1).cpuPct) + '%' + (fin(ss.at(-1).memUsed) && fin(ss.at(-1).memTotal) && ss.at(-1).memTotal > 0 ? ' · memory ' + Math.round(ss.at(-1).memUsed / ss.at(-1).memTotal * 100) + '%' : '') })), h('div', { class: 'key', text: 'Last hour: solid line CPU (0 to 100 %), dashed line memory (share of the machine).' }));
     else if (m?.error) kids.push(empty(guide(m.error)));
     const hn = historyNote(m, now()); if (hn) kids.push(h('div', { class: 'note', role: 'status', text: hn }));
     kids.push(h('div', { class: 'fine' }, fin(u.at) ? ['Newest sample ', live('ago', u.at)] : 'Newest sample time unknown', u.source === 'cache' && ' · from the saved copy', b.machineState !== 'running' && ' · paused or stopped since then'));
-    if (!m?.stale && quietHint(b, ss, now())) kids.push(h('div', { class: 'note', text: 'Quiet for 10 minutes while marked running: under 3 % CPU and almost no network. It may be waiting on something; check its Activity tab.' }));
-    kids.push(h('div', { class: 'fine', text: 'Measured by Instabox on the host every 30 seconds. Network leaves out SSH and public-port traffic. Memory is what the machine has touched, so it falls only when memory is reclaimed. Reading this never wakes a paused machine.' }));
+    if (isQuiet(b)) kids.push(h('div', { class: 'note', text: quietText(u) }));
+    kids.push(h('details', { class: 'fine' }, h('summary', { text: 'How this is measured' }), 'Measured by Instabox on the host every 30 seconds. Network leaves out SSH and public-port traffic. Memory is what the machine has touched, so it falls only when memory is reclaimed. Reading this never wakes a paused machine.'));
     const mc = metricsCmdFor(b.machine), cmd = mc && prop('History', h('span', { class: 'mono', text: mc }), copyBtn(mc, 'metrics command'));
     if (cmd) { cmd.querySelector('.pv').title = 'Prints the full history (up to 24 hours), or --json for the samples.'; kids.push(cmd); }
     return h('div', { class: 'usage' }, kids);
@@ -671,7 +673,7 @@
       h('div', { class: 'crumb' }, (b.kind === 'agent' ? 'Subagent' : b.kind[0].toUpperCase() + b.kind.slice(1)) + ' · ', h('span', { class: 'mono', text: b.id })),
       h('h1', { tabindex: '-1', text: titleOf(b) === '(no description)' ? b.id : titleOf(b) }),
       h('div', { class: 'props' },
-        prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: b.status })),
+        prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: statusWord(b.status) })),
         prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') })),
@@ -753,9 +755,9 @@
     for (const [name, list] of groupsOf(boxes)) {
       g.append(grp(name, list.length));
       const tile = (b) => h('button', { class: 'tile ' + b.status, 'data-id': b.id, type: 'button', onclick: () => { setView('list'); S.from = 'fleet'; select(b.id, true); $('rail').querySelector('[data-id="' + CSS.escape(b.id) + '"]')?.focus(); } },
-        h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: b.status }), stamp(b) && live('rel', stamp(b), 'rel')),
+        h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: statusWord(b.status) }), quietTag(b), stamp(b) && live('rel', stamp(b), 'rel')),
         h('span', { class: 'd', text: b.title || b.description || label(b) }),
-        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), usageLine(b) && h('span', { class: 'm use', text: usageLine(b) }), soonTag(b));
+        h('span', { class: 'm', text: b.id + ' · ' + label(b) }), usageLine(b, true) && h('span', { class: 'm use', text: usageLine(b, true) }), soonTag(b));
       g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map(tile)));
       for (const c of list) if (S.kids[c.id]) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(S.kids[c.id].length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, S.kids[c.id].map(tile)));
     }
@@ -766,7 +768,7 @@
   function summary(boxes) {
     const c = (f) => boxes.filter(f).length;
     const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
-    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Idle', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
+    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Waiting for you', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
     items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
     put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)));
     return { failed, idle };
@@ -788,7 +790,7 @@
     const d = S.data, main = $('main');
     banner();
     $('demo').hidden = !(d && d.demo);
-    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' idle'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' waiting for you'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
     setTitle();
     main.classList.toggle('stale', !!d && S.net !== 'ok');
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
@@ -823,7 +825,7 @@
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(roots)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at])])]);
+      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, b.usage?.quiet, (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at, c.usage?.quiet])])]);
       if (S.sigs.f !== f) {
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
@@ -835,11 +837,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, b.usage?.quiet])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sb.usage?.quiet, sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();

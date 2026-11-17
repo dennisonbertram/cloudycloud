@@ -50,7 +50,7 @@ const tools = [
   },
   {
     name: 'cloud_agent_list',
-    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step), plus CPU and memory use of each running or idle machine (usage n/a when it cannot be read). With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
+    description: 'List every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time, current step), plus CPU and memory use of each running or idle machine, with the sample age (usage n/a (timeout|unavailable|none yet) when it cannot be read). Status idle means the turn finished and the agent waits for a message; it does not mean the machine does nothing. Stop agents you no longer need with cloud_agent_stop, especially quiet ones (under 3 % CPU for 10 minutes while running). With all: true, list every cloudy-cloud machine on the provider (including other sessions and coordinators) grouped by parent.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'List every cloudy-cloud machine from the provider, grouped by parent' } } },
     annotations: { readOnlyHint: true },
   },

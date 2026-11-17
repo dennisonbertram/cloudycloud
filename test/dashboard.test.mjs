@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
-import { buildState, createHandler, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
+import { buildState, createHandler, isQuiet, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
 import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -878,6 +878,7 @@ test('/api/metrics gives a live box its samples, 404 for a stopped or unknown bo
 test('the demo has usage for running boxes (one busy, one quiet) and a series at /api/metrics', async () => {
   const demo = demoState(Date.now()), by = (id) => demo.boxes.find((b) => b.id === id);
   assert.ok(by('7c1e90ab').usage.cpuPct > 60 && by('b42f0d17').usage.cpuPct < 15);
+  assert.equal(by('c3d4e5f6').usage.quiet, true); assert.equal(by('7c1e90ab').usage.quiet, undefined);
   assert.equal('usage' in by('51d9ee02'), false);
   assert.equal('usage' in by('a7716be4'), false);
   const { opts } = streamEnv(demo.boxes, null, { getReader: undefined, demo: demoStream });
@@ -981,11 +982,10 @@ test('the page shows usage: list text, sparkline from numbers, quiet hint, fresh
   assert.match(script, /createElementNS\(NS, tag\)/); assert.match(script, /hs\('polyline'/, 'the sparkline is built with createElementNS');
   assert.match(script, /Number\.isFinite/, 'sparkline points are checked as finite numbers');
   assert.match(script, /stroke-dasharray/, 'memory line is dashed');
-  assert.match(script, /cpuPct < 3/); assert.match(script, /< 1024/); assert.match(script, /10 \* 60_000/);
-  assert.match(script, /Quiet for 10 minutes while marked running/);
+    assert.match(script, /Quiet for 10 minutes while marked running/);
   assert.match(script, /Newest sample/); assert.match(script, /paused or stopped since then/);
   assert.match(script, /never wakes a paused machine/);
-  assert.match(script, /about 90 seconds after it starts/);
+  assert.match(script, /within about a minute of starting/);
   assert.match(script, /whatHappened/); assert.match(script, /nextStep/);
   assert.match(script, /usage\?\.cpuPct/, 'usage fields are in the rebuild signatures');
 });
@@ -994,11 +994,10 @@ test('the page shows usage: list text, sparkline from numbers, quiet hint, fresh
 const pure = (() => {
   const src = PAGE.slice(PAGE.indexOf('// pure:begin'), PAGE.indexOf('// pure:end'));
   const dur = (ms) => Math.round(ms / 60_000) + 'm';
-  return new Function('fin', 'dur', `${src}\nreturn { safeId, metricsCmdFor, quietHint, pruneMetrics, historyNote };`)((n) => typeof n === 'number' && Number.isFinite(n), dur);
+  return new Function('fin', 'dur', `${src}\nreturn { safeId, metricsCmdFor, quietText, flatHour, pruneMetrics, historyNote };`)((n) => typeof n === 'number' && Number.isFinite(n), dur);
 })();
 const NOW = 10_000_000;
 const series = (o = {}) => Array.from({ length: 40 }, (_, k) => ({ t: NOW - (39 - k) * 30_000, cpuPct: 1, netIn: 100, netOut: 50, ...o }));
-const runBox = (ss, over = {}) => ({ status: 'running', usage: { at: ss.at(-1).t, cpuPct: 1, netIn: 100, netOut: 50 }, ...over });
 
 test('page: the copied metrics command is shown only for a safe machine id, and single-quoted', () => {
   assert.equal(pure.metricsCmdFor('m-7c1e90ab'), "npx --yes instabox@latest metrics 'm-7c1e90ab' --since 6h");
@@ -1008,26 +1007,58 @@ test('page: the copied metrics command is shown only for a safe machine id, and 
   assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\)\) return null/);
 });
 
-test('page: the quiet hint needs 10 continuous minutes, every sample quiet, known network, and the newest usage sample covered', () => {
+test('server: quiet needs 10 continuous minutes under 3 % CPU, a fresh newest sample, and low network where it is reported', () => {
   const ss = series();
-  assert.equal(pure.quietHint(runBox(ss), ss, NOW), true);
-  assert.equal(pure.quietHint(runBox(ss, { status: 'idle' }), ss, NOW), false);
+  assert.equal(isQuiet(ss, NOW), true);
   const gap = ss.filter((x, i) => i < 20 || i > 24); // a 150 s hole
-  assert.equal(pure.quietHint(runBox(gap), gap, NOW), false);
-  const short = ss.slice(-15); assert.equal(pure.quietHint(runBox(short), short, NOW), false);
-  const late = series().map((x, i) => (i < 5 ? { ...x, cpuPct: 50 } : x)); assert.equal(pure.quietHint(runBox(late), late, NOW), true, 'a busy sample older than 10 minutes does not count');
-  const busy = series().map((x, i) => (i === 30 ? { ...x, cpuPct: 3 } : x)); assert.equal(pure.quietHint(runBox(busy), busy, NOW), false);
-  const noNet = series().map((x, i) => (i === 30 ? { ...x, netIn: undefined } : x)); assert.equal(pure.quietHint(runBox(noNet), noNet, NOW), false);
-  const loud = series({ netIn: 1000, netOut: 100 }); assert.equal(pure.quietHint(runBox(loud), loud, NOW), false);
-  assert.equal(pure.quietHint(runBox(ss), ss, NOW + 130_000), false, 'stale newest sample');
+  assert.equal(isQuiet(gap, NOW), false);
+  assert.equal(isQuiet(ss.slice(-15), NOW), false);
+  assert.equal(isQuiet(series().map((x, i) => (i < 5 ? { ...x, cpuPct: 50 } : x)), NOW), true, 'a busy sample older than 10 minutes does not count');
+  assert.equal(isQuiet(series().map((x, i) => (i === 30 ? { ...x, cpuPct: 3 } : x)), NOW), false);
+  assert.equal(isQuiet(series({ netIn: 1000, netOut: 100 }), NOW), false);
+  assert.equal(isQuiet(ss, NOW + 130_000), false, 'stale newest sample');
+  const noNet = series({ netIn: undefined, netOut: undefined });
+  assert.equal(isQuiet(noNet, NOW), true, 'network not reported yet: CPU alone decides');
+  assert.equal(isQuiet(noNet.map((x, i) => (i === 30 ? { ...x, cpuPct: 20 } : x)), NOW), false);
 });
 
-test('page: the hint is suppressed when the shown usage is newer than the history or is not quiet', () => {
-  const ss = series();
-  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW + 30_000, cpuPct: 1, netIn: 1, netOut: 1 } }), ss, NOW), false);
-  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW, cpuPct: 80, netIn: 1, netOut: 1 } }), ss, NOW), false);
-  assert.equal(pure.quietHint(runBox(ss, { usage: { at: NOW, cpuPct: 1 } }), ss, NOW), false);
-  assert.equal(pure.quietHint(runBox(ss, { usage: undefined }), ss, NOW), false);
+test('server: the state marks only running machines quiet, from the stored samples', async () => {
+  const clock0 = 10_000_000;
+  const quietSeries = Array.from({ length: 40 }, (_, k) => ({ t: clock0 - (39 - k) * 30_000, cpuPct: 1, cpuCount: 2, memUsed: 1, memTotal: 4 }));
+  const { getState, clock } = usageEnv({ metrics: async (id) => ({ samples: id === 'm1' ? quietSeries : quietSeries.map((x) => ({ ...x, cpuPct: 50 })), fetchedAt: clock0 }) });
+  clock.t = clock0;
+  const s = await fresh(getState);
+  assert.equal(boxOf(s, 'm1').usage.quiet, true);
+  assert.equal(boxOf(s, 'm2').usage.quiet, undefined);
+});
+
+test('page: list rows and fleet cards show a quiet tag from usage.quiet, fleet text is short, idle reads as waiting for you', () => {
+  assert.match(PAGE, /isQuiet = \(b\) => b\.status === 'running' && hasUsage\(b\) && b\.usage\.quiet === true/);
+  assert.match(PAGE, /text: 'quiet'/);
+  assert.equal((PAGE.match(/quietTag\(b\)/g) || []).length >= 3, true, 'list row and fleet card use the tag');
+  assert.match(PAGE, /usageLine\(b, true\)/); assert.match(PAGE, /'\/' \+ gib\(u\.memTotal\) \+ ' GiB'/);
+  assert.match(PAGE, /st === 'idle' \? 'waiting for you'/);
+  assert.match(PAGE, /'Waiting for you', idle/);
+  assert.match(PAGE, /usage\?\.quiet/, 'the quiet flag is in the rebuild signatures');
+});
+
+test('page: quiet hint wording depends on whether network is reported, and mentions stopping', () => {
+  assert.match(pure.quietText({ netIn: 1, netOut: 1 }), /under 3 % CPU and almost no network\./);
+  assert.match(pure.quietText({}), /under 3 % CPU; network not reported yet\./);
+  assert.match(pure.quietText({}), /cloud_agent_stop/);
+});
+
+test('page: the graph is labelled, and a flat hour becomes one note', () => {
+  const hour = (cpu) => Array.from({ length: 120 }, (_, k) => ({ t: NOW - (119 - k) * 30_000, cpuPct: cpu }));
+  assert.equal(pure.flatHour(hour(1)), true);
+  assert.equal(pure.flatHour(hour(3)), false);
+  assert.equal(pure.flatHour(hour(1).slice(-20)), false, 'ten minutes of history is not "all hour"');
+  assert.match(PAGE, /text: '1h ago'/); assert.match(PAGE, /'now: CPU '/); assert.match(PAGE, /CPU flat all hour/);
+});
+
+test('page: the measurement footnote is a disclosure, the history command wraps', () => {
+  assert.match(PAGE, /h\('details', \{ class: 'fine' \}, h\('summary', \{ text: 'How this is measured' \}\)/);
+  assert.match(PAGE, /\.usage \.prop \.pv \{ white-space: normal; overflow-wrap: anywhere/);
 });
 
 test('page: a failed history read keeps the old samples, marks them stale and says how old, or says history is unavailable', () => {
@@ -1036,7 +1067,6 @@ test('page: a failed history read keeps the old samples, marks them stale and sa
   assert.equal(pure.historyNote({ stale: false }, NOW), null);
   assert.equal(pure.historyNote(undefined, NOW), null);
   assert.equal((PAGE.match(/stale: true, okAt: prev\?\.okAt \?\? null/g) || []).length, 2, 'non-OK and network error both mark stale');
-  assert.match(PAGE, /!m\?\.stale && quietHint/);
 });
 
 test('page: the history cache drops agents that left the state and keeps only the 10 most recent', () => {
