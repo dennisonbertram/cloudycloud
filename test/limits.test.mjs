@@ -42,3 +42,29 @@ test('limiter never runs more than its cap, with 100 agents', async () => {
   assert.equal(l.peak, 24);
   assert.equal(l.active, 0);
 });
+
+test('perMin may be a function; a rate learned after the queue exists applies to the next grant', async () => {
+  const c = clock();
+  let n = 5;
+  const q = createStartQueue({ perMin: () => n, now: c.now, sleep: c.sleep });
+  for (let i = 0; i < 5; i++) await q.create({}, async () => {});
+  n = 30;
+  await q.create({}, async () => {});
+  assert.equal(c.t, 0, 'the sixth create waited although the rate had risen');
+});
+
+test('poke: a rate raised while starts wait releases them at once; a lowered rate releases nothing extra', async () => {
+  let t = 0, n = 1;
+  const never = () => new Promise(() => {}); // the sleep until the oldest start is a minute old
+  const q = createStartQueue({ perMin: () => n, now: () => t, sleep: never });
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const started = [];
+  const go = (i) => q.create({}, async () => { started.push(i); });
+  go(0); go(1); go(2);
+  await tick();
+  assert.deepEqual(started, [0]);
+  n = 30; q.poke(); await tick();
+  assert.deepEqual(started, [0, 1, 2]);
+  n = 1; q.poke(); go(3); await tick();
+  assert.deepEqual(started, [0, 1, 2], 'a lower rate must not release a start');
+});

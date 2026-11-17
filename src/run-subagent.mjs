@@ -83,7 +83,21 @@ function helpers(env, literals, keyName, tool) {
   return { scrub, ok, fail: (text) => ({ ...ok(/^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
-export const startQueue = (env, provider) => createStartQueue({ perMin: Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || provider?.caps.startsPerMin || 25 });
+// The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
+// q.learnPlan() reads the plan once (fire and forget from runSubagent); a failed read keeps the default.
+export const startQueue = (env, provider) => {
+  let plan, learning;
+  const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
+  const q = createStartQueue({ perMin: pace });
+  q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
+    if (!p) return;
+    plan = p;
+    q.poke(); // starts already waiting for the old, lower rate may go now
+    const per = (n) => (n > 0 ? `${n}` : 'no limit');
+    log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${p.tier}: ${per(p.startsPerMinute)} starts/min (using ${pace()}), ${per(p.maxRunning)} running at once, sizes ${p.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
+  }).catch(() => {}));
+  return q;
+};
 const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
   deps.queue ??= startQueue(deps.env, deps.provider);
@@ -619,6 +633,7 @@ export async function cancelTask(taskId, deps) {
 export async function runSubagent(args, deps) {
   deps.refreshEnv?.(); // keys added to the env file since startup apply to this agent
   const ctx = ctxOf(deps, 'cloud_agent');
+  ctx.queue.learnPlan?.(); // fire and forget; the pace follows once the plan arrives
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);

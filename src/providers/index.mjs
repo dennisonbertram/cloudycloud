@@ -51,6 +51,7 @@
  * @property {(id: string, cmd?: string[]) => string[]} shellArgv   argv that opens an interactive shell on the machine, or runs cmd
  * @property {(id: string, o?: { control?: boolean, ttlSeconds?: number }) => Promise<{ url: string, expiresAt: Date|string }>} displayLink   a desktop link; starts the desktop when it is not running
  * @property {(id: string, o?: { since?: number }) => Promise<{ samples: Array<{ t: number, cpuPct: number, cpuCount: number, memUsed: number, memTotal: number, netIn?: number, netOut?: number, diskRead?: number, diskWrite?: number }>, fetchedAt: number }>} metrics   since is a ms timestamp (default now - 1 h, at most 24 h back); t is ms, bytes and bytes per second as reported; oldest first; empty when the machine did not run in the window
+ * @property {(o?: { refresh?: boolean }) => Promise<{ tier: string, specs: Array<{ vcpus: number, memMiB: number }>, startsPerMinute: number, maxRunning: number, maxMachines: number, fetchedAt: number }|null>} plan   the account's plan, cached for the process; 0 in a limit means no limit; null when there is no plan or it could not be read (never throws)
  * @property {(id: string) => Promise<void>} revokeDisplayLinks
  * @property {(id: string) => Promise<Uint8Array>} screenshot   PNG bytes
  * @property {(hostname: string) => string} localMachineName   machine name for the host this runs on, or ''

@@ -170,6 +170,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
         ...(i < 4 && { netIn: 1000 * (5 - i), netOut: 500 * (5 - i), diskRead: 0, diskWrite: 2048 }) })).filter((s) => s.t >= since);
       return { samples, fetchedAt };
     },
+    async plan() { return null; },
     async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
     async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
     localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),

@@ -271,6 +271,7 @@ export function createProvider(env = process.env, deps = {}) {
     async displayLink() { throw noDisplay(); },
     async revokeDisplayLinks() { throw noDisplay(); },
     async screenshot() { throw noDisplay(); },
+    async plan() { return null; }, // no plan: machines are your own
     async metrics() { throw fail('metrics_unsupported', 'self-hosted machines have no usage numbers.', { provider: 'self-hosted' }); },
 
     text: {

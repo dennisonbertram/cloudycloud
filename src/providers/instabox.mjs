@@ -227,36 +227,67 @@ export function createProvider(env, deps = {}) {
     throw normalize(last ?? new Error(`Delete of ${id} failed`));
   }
 
-  // Raw fetch: SDK 0.6.0 does not type the network and disk I/O fields. Goes through the same limiter and 429 retry as SDK calls.
-  async function fetchMetrics(id, { since } = {}) {
-    const t = now();
-    const from = Math.min(t, Math.max(t - 86_400_000, since ?? t - 3_600_000)); // within the last 24 h, never in the future
+  // Raw GET: SDK 0.6.0 does not type some fields. Goes through the same limiter and 429 retry as SDK calls, with a 15 s deadline.
+  // Errors are built from fixed text and allow-listed codes; neither the response text nor the key is ever echoed.
+  // `coded(status, code)` words an error that carries an allowed code; `tag(err, status, code)` sets err.code.
+  async function rawGet(url, what, { codes = [], coded, tag } = {}) {
     const key = apiKey();
     const scrub = (s) => String(s).split(key).join('[redacted]');
     const known = new WeakSet(); // errors built here from fixed text; anything else (a fetch rejection) is replaced
     const mk = (message, props) => { const e = Object.assign(new Error(scrub(message)), props); known.add(e); return e; };
     const attempt = async (signal) => {
-      const res = await fetchFn(`${API}/${encodeURIComponent(id)}/metrics?since=${new Date(from).toISOString()}`, { headers: { 'X-API-Key': key }, signal });
+      const res = await fetchFn(url, { headers: { 'X-API-Key': key }, signal });
       if (res.ok) return res.json();
       let j = {};
       try { j = JSON.parse(await res.text()); } catch { /* not JSON */ }
       const raw = (j.error && typeof j.error === 'object' ? j.error : j).code;
-      const code = ['not_found', 'metrics_unavailable', 'missing_scope'].find((c) => c === raw); // allow-list; never echo the response
-      const err = mk(code ? `Could not read metrics of ${id}: HTTP ${res.status} ${code}` : `metrics request failed (HTTP ${res.status})`, { status: res.status });
-      if (res.status === 503 && code === 'metrics_unavailable') err.code = 'metrics_unavailable';
-      else if (res.status === 403 && code === 'missing_scope') err.code = 'metrics_forbidden';
+      const code = codes.find((c) => c === raw); // allow-list; never echo the response
+      const err = mk(code && coded ? coded(res.status, code) : `${what} request failed (HTTP ${res.status})`, { status: res.status });
+      tag?.(err, res.status, code);
       throw err;
     };
-    const body = await callWith(MAX_429_TRIES)(async () => {
+    return callWith(MAX_429_TRIES)(async () => {
       const ac = new AbortController();
       let timer;
-      const deadline = new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(mk('metrics request timed out', { code: 'transient' })); }, deps.metricsTimeoutMs ?? 15_000); });
-      try { return await Promise.race([attempt(ac.signal), deadline]); } catch (e) { throw known.has(e) ? e : mk('metrics request failed (network error)', { code: 'transient' }); } finally { clearTimeout(timer); }
+      const deadline = new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(mk(`${what} request timed out`, { code: 'transient' })); }, deps.metricsTimeoutMs ?? 15_000); });
+      try { return await Promise.race([attempt(ac.signal), deadline]); } catch (e) { throw known.has(e) ? e : mk(`${what} request failed (network error)`, { code: 'transient' }); } finally { clearTimeout(timer); }
+    });
+  }
+
+  async function fetchMetrics(id, { since } = {}) {
+    const t = now();
+    const from = Math.min(t, Math.max(t - 86_400_000, since ?? t - 3_600_000)); // within the last 24 h, never in the future
+    const body = await rawGet(`${API}/${encodeURIComponent(id)}/metrics?since=${new Date(from).toISOString()}`, 'metrics', {
+      codes: ['not_found', 'metrics_unavailable', 'missing_scope'],
+      coded: (status, code) => `Could not read metrics of ${id}: HTTP ${status} ${code}`,
+      tag: (err, status, code) => { if (status === 503 && code === 'metrics_unavailable') err.code = 'metrics_unavailable'; else if (status === 403 && code === 'missing_scope') err.code = 'metrics_forbidden'; },
     });
     const samples = (body.metrics ?? []).map((m) => ({ t: +new Date(m.timestamp), cpuPct: m.cpuUsedPct, cpuCount: m.cpuCount, memUsed: m.memUsed, memTotal: m.memTotal,
       netIn: m.netInBytesPerSec, netOut: m.netOutBytesPerSec, diskRead: m.diskReadBytesPerSec, diskWrite: m.diskWriteBytesPerSec }));
     return { samples, fetchedAt: t };
   }
+
+  // The account's plan: GET /v1/me for the org id, then GET /v1/orgs/<id> for its limits. Cached for the process (successes only);
+  // { refresh: true } fetches again. Any failure resolves null, so a missing plan never stops a start.
+  let planCache, planInflight, planLogged;
+  async function plan({ refresh } = {}) {
+    if (planCache && !refresh) return planCache;
+    planInflight ??= (async () => {
+      try {
+        const me = await rawGet('https://api.instabox.sh/v1/me', 'plan');
+        if (typeof me?.org?.id !== 'string') throw new Error('no org id');
+        const org = await rawGet(`https://api.instabox.sh/v1/orgs/${encodeURIComponent(me.org.id)}`, 'plan');
+        const l = org.limits ?? {};
+        const sizes = (org.allowedSpecs?.length ? org.allowedSpecs : me.allowedSpecs ?? []).map((x) => ({ vcpus: x.vcpus, memMiB: x.memMiB }));
+        return (planCache = { tier: me.org.tier, specs: sizes, startsPerMinute: l.startsPerMinute ?? 0, maxRunning: l.maxRunning ?? 0, maxMachines: l.maxMachines ?? 0, fetchedAt: now() });
+      } catch (e) {
+        if (!planLogged) { planLogged = true; console.error('[cloudy-cloud] could not read the Instabox plan:', String(e?.message ?? 'error').split(apiKeyOrEmpty()).join('[redacted]')); }
+        return null;
+      } finally { planInflight = undefined; }
+    })();
+    return planInflight;
+  }
+  const apiKeyOrEmpty = () => { try { return apiKey(); } catch { return '\0'; } };
 
   const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
 
@@ -326,6 +357,7 @@ export function createProvider(env, deps = {}) {
     },
     revokeDisplayLinks(id) { return this.desktop(id, (d) => d.revokeStreamUrls()); },
     metrics: fetchMetrics,
+    plan,
     screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
     // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command.
     shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', '-T', cmd.map(shq).join(' ')] : [])],
