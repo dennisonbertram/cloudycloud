@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createProvider } from '../src/providers/instabox.mjs';
+import { createLimiter } from '../src/limits.mjs';
 import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
 const KEY = 'ib-secret-key';
@@ -414,6 +415,34 @@ test('metrics: each error status maps to a code and no message contains the key'
     const { p } = metricsProvider(() => new Response(JSON.stringify(body), { status }));
     await assert.rejects(p.metrics('m1'), (e) => e.code === code && !String(e.message).includes(KEY) && !JSON.stringify(e).includes(KEY), `${status}`);
   }
+});
+
+test('metrics: a response code or body containing the key never reaches the thrown error', async () => {
+  for (const body of [{ error: { code: `x_${KEY}`, message: KEY } }, { code: KEY }, `plain ${KEY}`]) {
+    const { p } = metricsProvider(() => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 400 }));
+    await assert.rejects(p.metrics('m1'), (e) => !JSON.stringify(e, Object.getOwnPropertyNames(e)).includes(KEY) && e.message === 'metrics request failed (HTTP 400)');
+  }
+});
+
+test('metrics: a fetch rejection carrying the key becomes a fixed transient error', async () => {
+  const { p } = metricsProvider(() => { throw Object.assign(new Error(`connect failed ${KEY}`), { cause: new Error(KEY), request: { headers: { 'X-API-Key': KEY } } }); });
+  await assert.rejects(p.metrics('m1'), (e) => e.code === 'transient' && e.cause === undefined && !JSON.stringify(e, Object.getOwnPropertyNames(e)).includes(KEY) && !String(e.stack).includes(KEY));
+});
+
+test('metrics: a stalled fetch times out as transient and frees the limiter slot', async () => {
+  const limiter = createLimiter(1);
+  const { p } = metricsProvider((url) => (url.includes('/metrics') ? new Promise(() => {}) : Response.json({})), { limiter, metricsTimeoutMs: 30 });
+  const t0 = Date.now();
+  const stalled = assert.rejects(p.metrics('m1'), { code: 'transient' });
+  assert.equal(await limiter.run(async () => 'ran'), 'ran'); // queued behind the stalled call
+  await stalled;
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('metrics: a future since is clamped to now', async () => {
+  const { p, f } = metricsProvider(() => Response.json({ metrics: [] }));
+  await p.metrics('m1', { since: NOW + 3_600_000 });
+  assert.equal(Date.parse(new URL(f.calls[0].url).searchParams.get('since')), NOW);
 });
 
 test('metrics: a 429 is retried through the limiter, and the call runs inside a limiter slot', async () => {

@@ -230,18 +230,28 @@ export function createProvider(env, deps = {}) {
   // Raw fetch: SDK 0.6.0 does not type the network and disk I/O fields. Goes through the same limiter and 429 retry as SDK calls.
   async function fetchMetrics(id, { since } = {}) {
     const t = now();
-    const from = Math.max(t - 86_400_000, since ?? t - 3_600_000);
+    const from = Math.min(t, Math.max(t - 86_400_000, since ?? t - 3_600_000)); // within the last 24 h, never in the future
     const key = apiKey();
-    const body = await callWith(MAX_429_TRIES)(async () => {
-      const res = await fetchFn(`${API}/${encodeURIComponent(id)}/metrics?since=${new Date(from).toISOString()}`, { headers: { 'X-API-Key': key } });
+    const scrub = (s) => String(s).split(key).join('[redacted]');
+    const known = new WeakSet(); // errors built here from fixed text; anything else (a fetch rejection) is replaced
+    const mk = (message, props) => { const e = Object.assign(new Error(scrub(message)), props); known.add(e); return e; };
+    const attempt = async (signal) => {
+      const res = await fetchFn(`${API}/${encodeURIComponent(id)}/metrics?since=${new Date(from).toISOString()}`, { headers: { 'X-API-Key': key }, signal });
       if (res.ok) return res.json();
       let j = {};
       try { j = JSON.parse(await res.text()); } catch { /* not JSON */ }
-      const code = (j.error && typeof j.error === 'object' ? j.error : j).code;
-      const err = Object.assign(new Error(`Could not read metrics of ${id}: HTTP ${res.status}${code ? ` ${code}` : ''}`), { status: res.status });
+      const raw = (j.error && typeof j.error === 'object' ? j.error : j).code;
+      const code = ['not_found', 'metrics_unavailable', 'missing_scope'].find((c) => c === raw); // allow-list; never echo the response
+      const err = mk(code ? `Could not read metrics of ${id}: HTTP ${res.status} ${code}` : `metrics request failed (HTTP ${res.status})`, { status: res.status });
       if (res.status === 503 && code === 'metrics_unavailable') err.code = 'metrics_unavailable';
       else if (res.status === 403 && code === 'missing_scope') err.code = 'metrics_forbidden';
       throw err;
+    };
+    const body = await callWith(MAX_429_TRIES)(async () => {
+      const ac = new AbortController();
+      let timer;
+      const deadline = new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(mk('metrics request timed out', { code: 'transient' })); }, deps.metricsTimeoutMs ?? 15_000); });
+      try { return await Promise.race([attempt(ac.signal), deadline]); } catch (e) { throw known.has(e) ? e : mk('metrics request failed (network error)', { code: 'transient' }); } finally { clearTimeout(timer); }
     });
     const samples = (body.metrics ?? []).map((m) => ({ t: +new Date(m.timestamp), cpuPct: m.cpuUsedPct, cpuCount: m.cpuCount, memUsed: m.memUsed, memTotal: m.memTotal,
       netIn: m.netInBytesPerSec, netOut: m.netOutBytesPerSec, diskRead: m.diskReadBytesPerSec, diskWrite: m.diskWriteBytesPerSec }));
