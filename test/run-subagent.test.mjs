@@ -1030,7 +1030,7 @@ test('a plain worker without mcp.json runs the same claude command (now inside t
   const sbx = sandboxes[0];
   const inner = /\{ (.*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
   assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
-    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt \'HINT\' < /home/user/prompt.txt');
+    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --mcp-config \'{"mcpServers":{}}\' --strict-mcp-config --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
@@ -1147,7 +1147,7 @@ test('with no mcp.json at all the footer has no MCP line and no secrets are pass
   await rm(file);
   const r = await wait([await start({})]);
   assert.doesNotMatch(r, /MCP/);
-  assert.ok(!claudeCmd(sandboxes[0]).includes('--mcp-config'));
+  assert.match(claudeCmd(sandboxes[0]), /--verbose --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config /); // an image-preconfigured server is never loaded (#145)
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
 });
 
