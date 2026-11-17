@@ -1715,3 +1715,63 @@ test('a provider that offers only linux rejects machine android, naming the prov
   assert.match(text(r), /provider fake cannot start a android machine/);
   assert.equal(provider.log.create.length, 0);
 });
+
+// ---- #118: cpu and memory use on each open agent's line ----
+const usageSetup = async (metrics, over = {}) => {
+  const s = await setup(over);
+  const ids = [await s.start({ description: 'one' }), await s.start({ description: 'two' })];
+  await s.wait(ids);
+  let n = 0;
+  for (const a of s.open.values()) a.sandbox.id ??= `m${n++}`;
+  s.deps.provider.metrics = metrics;
+  return { ...s, ids };
+};
+const SAMPLE = { samples: [{ t: 1, cpuPct: 3, cpuCount: 2, memUsed: 1e9, memTotal: 4e9 }, { t: 2, cpuPct: 12.4, cpuCount: 2, memUsed: 2.04e9, memTotal: 8.59e9 }], fetchedAt: 2 };
+
+test('list adds cpu and memory from the newest sample, and usage n/a on an error', async () => {
+  const { deps, text, ids, open } = await usageSetup(async (id) => { if (id === open.get(ids[1]).sandbox.id) throw new Error('boom secret'); return SAMPLE; });
+  const out = text(await listAgents({}, deps));
+  const lines = out.split('\n').filter((l) => l.startsWith(ids[0]) || l.startsWith(ids[1]));
+  assert.match(lines[0], /  one  cpu 12%  mem 1\.9\/8 GiB$/);
+  assert.match(lines[1], /  two  usage n\/a$/);
+  assert.doesNotMatch(out, /boom|secret/);
+});
+
+test('list says usage n/a when the samples are empty, and when metrics exceed the time budget', async () => {
+  const empty = await usageSetup(async () => ({ samples: [], fetchedAt: 1 }));
+  assert.match(text0(await listAgents({}, empty.deps)), /two  usage n\/a/);
+  const slow = await usageSetup(() => new Promise(() => {}), { usageBudgetMs: 50 });
+  const t0 = Date.now();
+  assert.match(text0(await listAgents({}, slow.deps)), /one  usage n\/a/);
+  assert.ok(Date.now() - t0 < 2000);
+});
+const text0 = (r) => r.content[0].text;
+
+test('list adds no usage segment without hasMetrics and never calls metrics', async () => {
+  let calls = 0;
+  const { deps } = await usageSetup(async () => { calls++; return SAMPLE; });
+  deps.provider.caps.hasMetrics = false;
+  const out = text0(await listAgents({}, deps));
+  assert.equal(calls, 0);
+  assert.doesNotMatch(out, /usage|cpu|GiB/);
+});
+
+test('list does not touch stopped or queued agents and asks for a short window', async () => {
+  const seen = [];
+  const { deps, ids, open } = await usageSetup(async (id, o) => { seen.push({ id, since: o.since }); return SAMPLE; });
+  open.get(ids[1]).status = 'stopped';
+  const before = Date.now();
+  const out = text0(await listAgents({}, deps));
+  assert.deepEqual(seen.map((x) => x.id), [open.get(ids[0]).sandbox.id]);
+  assert.ok(seen[0].since >= before - 120_000 - 1000 && seen[0].since <= Date.now() - 119_000);
+  assert.match(out, new RegExp(`${ids[1]}  stopped[^\\n]*two\\n`));
+});
+
+test('list reads at most 4 machines at a time', async () => {
+  let now = 0, max = 0;
+  const { deps, open } = await usageSetup(async () => { max = Math.max(max, ++now); await new Promise((r) => setTimeout(r, 20)); now--; return SAMPLE; });
+  const proto = [...open.values()][0];
+  for (let i = 0; i < 8; i++) open.set(`x${i}`, { ...proto, id: `x${i}`, sandbox: { id: `x${i}` } });
+  await listAgents({}, deps);
+  assert.equal(max, 4);
+});
