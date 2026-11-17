@@ -76,7 +76,7 @@
 <p class="lede">This page lists every <code>cloudy-cloud</code> command and flag, the five tools Claude uses to run cloud agents, and the environment variables and files that change how they behave.</p>
 
 <h2 id="cli">Command line</h2>
-<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
+<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>shell</code>, <code>display</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
 
 <h3 id="cli-session">cloudy-cloud</h3>
 <pre><code>cloudy-cloud [claude arguments]</code></pre>
@@ -144,6 +144,27 @@ cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; --unshare</code></pre
 </table>
 <p>Example:</p>
 <pre><code>cloudy-cloud open 3f9a1c2e 5173</code></pre>
+
+<h3 id="cli-shell">cloudy-cloud shell</h3>
+<pre><code>cloudy-cloud shell &lt;agent-id-or-machine&gt; [-- command [args...]]</code></pre>
+<p>Opens an interactive login shell on a cloud machine. With <code>-- command</code> it runs that command, streams its output and exits with the command's exit code. Each argument after <code>--</code> reaches the machine unchanged. Do not put secrets in the command. The first argument works as in <a href="#cli-open">open</a>, and the machine must be running. Without a command it needs a terminal.</p>
+<pre><code>cloudy-cloud shell 3f9a1c2e -- uname -a</code></pre>
+
+<h3 id="cli-display">cloudy-cloud display</h3>
+<pre><code>cloudy-cloud display &lt;agent-id-or-machine&gt; [--control] [--ttl SECONDS]
+cloudy-cloud display &lt;agent-id-or-machine&gt; --screenshot FILE
+cloudy-cloud display &lt;agent-id-or-machine&gt; --unshare</code></pre>
+<p>Prints a link to the desktop of an <code>android</code>, <code>gpu</code> or <code>macos</code> machine. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An <code>omarchy</code> machine has no display. The first desktop start on a <code>gpu</code> machine takes about 2 minutes.</p>
+<table>
+<thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>(none)</td><td>A view-only link that lasts 1 hour.</td></tr>
+<tr><td><code>--control</code></td><td>The viewer can click and type.</td></tr>
+<tr><td><code>--ttl SECONDS</code></td><td>Link lifetime, 60 to 86400. Not combined with <code>--screenshot</code> or <code>--unshare</code>.</td></tr>
+<tr><td><code>--screenshot FILE</code></td><td>Write a PNG of the screen to a new file (an existing file or symlink is refused) and print the path.</td></tr>
+<tr><td><code>--unshare</code></td><td>Revoke every display link for the machine, including viewers already connected.</td></tr>
+</tbody>
+</table>
 
 <h3 id="cli-coordinator">cloudy-cloud coordinator</h3>
 <pre><code>cloudy-cloud coordinator image [--save]
@@ -228,6 +249,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>model</code></td><td>string</td><td>no</td><td>the Claude default</td><td>A Claude model name, such as <code>haiku</code>. For a non-Claude model, use <code>profile</code> instead. It may contain only letters, digits and <code>. _ : -</code>. When <code>profile</code> is also set, <code>/</code> is allowed too.</td></tr>
 <tr><td><code>profile</code></td><td>string</td><td>no</td><td>Claude</td><td>Runs the worker on another model. Built in: <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code>, <code>omp-glm</code>, <code>omp-deepseek</code>, <code>omp-particle</code> and <code>openrouter</code>. You can add names in <code>profiles.json</code>. An unknown name, or a profile whose key is missing, makes the call fail at once. See <a href="models.html">Models and keys</a>.</td></tr>
 <tr><td><code>role</code></td><td>string, <code>worker</code> or <code>coordinator</code></td><td>no</td><td><code>worker</code></td><td>A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A coordinator cannot use a <code>pi-</code> profile.</td></tr>
+<tr><td><code>machine</code></td><td>string</td><td>no</td><td><code>linux</code></td><td>The kind of machine: <code>linux</code>, <code>android</code>, <code>omarchy</code>, <code>gpu</code>, <code>gpu:TYPE</code>, <code>gpu:TYPE:COUNT</code> (COUNT 1 to 8), <code>macos</code> or <code>macos:MODEL</code>. <code>gpu</code> and <code>macos</code> cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until <code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code> in <code>~/.config/cloudy-cloud/env</code> names them (for example <code>gpu,macos</code>). Only on Instabox.</td></tr>
 <tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code>. It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
 </tbody>
 </table>
@@ -274,6 +296,20 @@ cloudy-cloud mcp rm NAME</code></pre>
 <li>Instabox deletes every machine the tool creates after <code>CLOUDY_CLOUD_WORKER_HOURS</code> hours, even if <code>cloudy-cloud</code> has died.</li>
 </ul>
 
+<h2 id="machine-kinds">Kinds of machines</h2>
+<p>The <code>machine</code> argument of <a href="#tool-cloud-agent">cloud_agent</a> picks the machine. Prices are Instabox's (<a href="https://instabox.sh/docs/account/pricing.md">pricing</a>). Live facts are from one run on 2026-11-15.</p>
+<table>
+<thead><tr><th>machine</th><th>What it is</th><th>Price</th><th>Consent</th><th>Display</th></tr></thead>
+<tbody>
+<tr><td><code>linux</code></td><td>The standard machine (default).</td><td>Your plan</td><td>no</td><td>no</td></tr>
+<tr><td><code>android</code></td><td>Android emulator with <code>adb</code>. Its desktop starts in about 1 second.</td><td>Not checked</td><td>no</td><td>yes</td></tr>
+<tr><td><code>gpu</code></td><td>NVIDIA GPU (one L4 by default). The first desktop start takes about 2 minutes.</td><td>$0.765 per GPU-hour (NVIDIA L4)</td><td>yes</td><td>yes</td></tr>
+<tr><td><code>omarchy</code></td><td>Omarchy Linux with a Hyprland desktop. <code>display</code> and <code>--screenshot</code> are refused; <code>shell</code> works.</td><td>Not checked</td><td>no</td><td>no</td></tr>
+<tr><td><code>macos</code></td><td>A Mac, for Xcode builds. Experimental, not yet run live.</td><td>$0.45 to $1.25 per hour, 24-hour minimum lease</td><td>yes</td><td>yes</td></tr>
+</tbody>
+</table>
+<p>See <a href="#cli-shell">cloudy-cloud shell</a> and <a href="#cli-display">cloudy-cloud display</a> to look at a machine.</p>
+
 <h2 id="environment">Environment variables and files</h2>
 <p>Environment variables win over values in the config file. An empty value counts as unset.</p>
 
@@ -295,6 +331,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <thead><tr><th>Variable</th><th>Default</th><th>Meaning</th></tr></thead>
 <tbody>
 <tr><td><code>CLOUDY_CLOUD_CONFIG</code></td><td><code>~/.config/cloudy-cloud/env</code></td><td>Path of the config file.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code></td><td>none</td><td>Comma-separated machine kinds you allow although they cost much more: <code>gpu</code>, <code>macos</code>. Without it, <code>cloud_agent</code> refuses those kinds and starts nothing.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_PROVIDER</code></td><td><code>instabox</code></td><td>Sandbox provider: <code>instabox</code> or <code>self-hosted</code>.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SSH_HOST</code></td><td>none</td><td>Self-hosted: the SSH address of your machine, <code>user@host</code>.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SSH_KEY</code></td><td>none</td><td>Self-hosted: path to the SSH key. Optional.</td></tr>
