@@ -994,7 +994,7 @@ test('the page shows usage: list text, sparkline from numbers, quiet hint, fresh
 const pure = (() => {
   const src = PAGE.slice(PAGE.indexOf('// pure:begin'), PAGE.indexOf('// pure:end'));
   const dur = (ms) => Math.round(ms / 60_000) + 'm';
-  return new Function('fin', 'dur', `${src}\nreturn { safeId, metricsCmdFor, quietText, flatHour, pruneMetrics, historyNote };`)((n) => typeof n === 'number' && Number.isFinite(n), dur);
+  return new Function('fin', 'dur', `${src}\nreturn { safeId, metricsCmdFor, quietText, quietTitle, quietFresh, flatHour, pruneMetrics, historyNote };`)((n) => typeof n === 'number' && Number.isFinite(n), dur);
 })();
 const NOW = 10_000_000;
 const series = (o = {}) => Array.from({ length: 40 }, (_, k) => ({ t: NOW - (39 - k) * 30_000, cpuPct: 1, netIn: 100, netOut: 50, ...o }));
@@ -1033,13 +1033,13 @@ test('server: the state marks only running machines quiet, from the stored sampl
 });
 
 test('page: list rows and fleet cards show a quiet tag from usage.quiet, fleet text is short, idle reads as waiting for you', () => {
-  assert.match(PAGE, /isQuiet = \(b\) => b\.status === 'running' && hasUsage\(b\) && b\.usage\.quiet === true/);
+  assert.match(PAGE, /isQuiet = \(b\) => b\.status === 'running' && hasUsage\(b\) && quietFresh\(b\.usage, now\(\)\)/);
   assert.match(PAGE, /text: 'quiet'/);
   assert.equal((PAGE.match(/quietTag\(b\)/g) || []).length >= 3, true, 'list row and fleet card use the tag');
   assert.match(PAGE, /usageLine\(b, true\)/); assert.match(PAGE, /'\/' \+ gib\(u\.memTotal\) \+ ' GiB'/);
   assert.match(PAGE, /st === 'idle' \? 'waiting for you'/);
   assert.match(PAGE, /'Waiting for you', idle/);
-  assert.match(PAGE, /usage\?\.quiet/, 'the quiet flag is in the rebuild signatures');
+  assert.equal((PAGE.match(/isQuiet\((b|c|sb)\)\]?[,\]]/g) || []).length >= 3, true, 'the quiet state is in the rebuild signatures');
 });
 
 test('page: quiet hint wording depends on whether network is reported, and mentions stopping', () => {
@@ -1048,11 +1048,24 @@ test('page: quiet hint wording depends on whether network is reported, and menti
   assert.match(pure.quietText({}), /cloud_agent_stop/);
 });
 
+test('page: the quiet flag is trusted only while the usage sample is under 2 minutes old, and the tooltip depends on network', () => {
+  assert.equal(pure.quietFresh({ quiet: true, at: NOW - 119_000 }, NOW), true);
+  assert.equal(pure.quietFresh({ quiet: true, at: NOW - 121_000 }, NOW), false);
+  assert.equal(pure.quietFresh({ quiet: true }, NOW), false);
+  assert.match(pure.quietTitle({ netIn: 1, netOut: 1 }), /almost no network/);
+  assert.match(pure.quietTitle({}), /network not reported yet/);
+  assert.doesNotMatch(pure.quietTitle({}), /almost no network/);
+  assert.match(PAGE, /b\.usage\?\.quiet, now\(\)|quietFresh\(b\.usage, now\(\)\)/);
+  assert.equal(/usage\?\.quiet/.test(PAGE), false, 'signatures use the age-aware isQuiet, so tags re-render as samples age');
+});
+
 test('page: the graph is labelled, and a flat hour becomes one note', () => {
   const hour = (cpu) => Array.from({ length: 120 }, (_, k) => ({ t: NOW - (119 - k) * 30_000, cpuPct: cpu }));
   assert.equal(pure.flatHour(hour(1)), true);
   assert.equal(pure.flatHour(hour(3)), false);
   assert.equal(pure.flatHour(hour(1).slice(-20)), false, 'ten minutes of history is not "all hour"');
+  assert.equal(pure.flatHour([{ t: NOW - 56 * 60_000, cpuPct: 1 }, { t: NOW, cpuPct: 1 }]), false, 'two low samples are not an hour');
+  assert.equal(pure.flatHour(hour(1).filter((x, i) => i < 50 || i > 54)), false, 'a gap over 90 s');
   assert.match(PAGE, /text: '1h ago'/); assert.match(PAGE, /'now: CPU '/); assert.match(PAGE, /CPU flat all hour/);
 });
 

@@ -443,8 +443,8 @@
   const memShort = (u) => fin(u.memUsed) && fin(u.memTotal) && u.memTotal > 0 ? (u.memUsed / 2 ** 30).toFixed(1) + '/' + gib(u.memTotal) + ' GiB' : null;
   const usageLine = (b, short) => hasUsage(b) && fin(b.usage.cpuPct) ? ['cpu ' + Math.round(b.usage.cpuPct) + '%', short ? memShort(b.usage) : memText(b.usage)].filter(Boolean).join(' · ') : null;
   // The server decides "quiet" (src/dashboard.mjs isQuiet, from its stored samples); list, fleet and detail all read the same flag.
-  const isQuiet = (b) => b.status === 'running' && hasUsage(b) && b.usage.quiet === true;
-  const quietTag = (b) => isQuiet(b) && h('span', { class: 'tag', title: 'Marked running, but under 3 % CPU and almost no network for 10 minutes. It may be waiting on something.', text: 'quiet' });
+  const isQuiet = (b) => b.status === 'running' && hasUsage(b) && quietFresh(b.usage, now()); // age rule: a retained flag is not trusted when polling fails
+  const quietTag = (b) => isQuiet(b) && h('span', { class: 'tag', title: quietTitle(b.usage), text: 'quiet' });
   const statusWord = (st) => st === 'idle' ? 'waiting for you' : st; // "idle" is the turn finished, not the machine doing nothing
   const hs = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
   const clean = (samples) => (samples || []).filter((x) => x && fin(x.t) && fin(x.cpuPct)).sort((a, c) => a.t - c.t);
@@ -454,7 +454,10 @@
   const metricsCmdFor = (machine) => safeId(machine) && "npx --yes instabox@latest metrics '" + machine + "' --since 6h";
   const netKnown = (x) => fin(x.netIn) && fin(x.netOut);
   // Flat: the history spans (nearly) the whole hour and CPU never reached 3 %.
-  const flatHour = (ss) => ss.length >= 2 && ss.at(-1).t - ss[0].t >= 55 * 60_000 && ss.every((x) => x.cpuPct < 3);
+  // Flat: the history covers the hour (at least 100 samples, 50+ minutes, no gap over 90 s) and CPU never reached 3 %.
+  const flatHour = (ss) => ss.length >= 100 && ss.at(-1).t - ss[0].t >= 50 * 60_000 && ss.every((x, i) => x.cpuPct < 3 && (i === 0 || x.t - ss[i - 1].t <= 90_000));
+  const quietFresh = (u, t) => !!u && u.quiet === true && fin(u.at) && t - u.at <= 120_000;
+  const quietTitle = (u) => 'Marked running, but under 3 % CPU' + (netKnown(u) ? ' and almost no network' : ' (network not reported yet)') + ' for 10 minutes. It may be waiting on something.';
   const quietText = (u) => 'Quiet for 10 minutes while marked running: under 3 % CPU' + (netKnown(u) ? ' and almost no network' : '; network not reported yet') + '. It may be waiting on something; check its Activity tab, or ask Claude to stop it with cloud_agent_stop if you no longer need it.';
   const KEEP_METRICS = 10;
   const pruneMetrics = (cache, ids) => {
@@ -825,7 +828,7 @@
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(roots)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, b.usage?.quiet, (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at, c.usage?.quiet])])]);
+      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b), (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at, isQuiet(c)])])]);
       if (S.sigs.f !== f) {
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
@@ -837,11 +840,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, b.usage?.quiet])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sb.usage?.quiet, sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sisQuiet(b), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();
