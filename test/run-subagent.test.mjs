@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
-import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { startQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -1799,4 +1799,23 @@ test('list puts the usage segment on the first line when the description has a n
   open.get(ids[0]).description = 'first\nsecond';
   const out = text0(await listAgents({}, deps));
   assert.match(out, new RegExp(`${ids[0]}  [^\\n]*first  cpu 12%  mem 1\\.9/8 GiB\\nsecond`));
+});
+
+test('the start pace follows the provider plan (minus 10 %), CLOUDY_CLOUD_STARTS_PER_MIN wins, no plan means 25', async () => {
+  const pace = async (planResult, env = {}) => {
+    const provider = { ...createFakeProvider(), plan: async () => planResult };
+    const q = startQueue(env, provider);
+    await q.learnPlan();
+    return q.pace();
+  };
+  assert.equal(await pace({ startsPerMinute: 10 }), 9);
+  assert.equal(await pace({ startsPerMinute: 1 }), 1);
+  assert.equal(await pace({ startsPerMinute: 10 }, { CLOUDY_CLOUD_STARTS_PER_MIN: '3' }), 3);
+  assert.equal(await pace({ startsPerMinute: 0 }), 25);
+  assert.equal(await pace(null), 25);
+  const boom = { ...createFakeProvider(), plan: async () => { throw new Error('x'); } };
+  const q = startQueue({}, boom);
+  await q.learnPlan();
+  assert.equal(q.pace(), 25);
+  assert.equal(startQueue({}, createFakeProvider()).pace(), 25); // no plan() at all
 });

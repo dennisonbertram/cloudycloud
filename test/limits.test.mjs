@@ -42,3 +42,13 @@ test('limiter never runs more than its cap, with 100 agents', async () => {
   assert.equal(l.peak, 24);
   assert.equal(l.active, 0);
 });
+
+test('perMin may be a function; a rate learned after the queue exists applies to the next grant', async () => {
+  const c = clock();
+  let n = 5;
+  const q = createStartQueue({ perMin: () => n, now: c.now, sleep: c.sleep });
+  for (let i = 0; i < 5; i++) await q.create({}, async () => {});
+  n = 30;
+  await q.create({}, async () => {});
+  assert.equal(c.t, 0, 'the sixth create waited although the rate had risen');
+});

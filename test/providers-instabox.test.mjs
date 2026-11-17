@@ -459,3 +459,53 @@ test('metrics: no key is no_key and no request is made', async () => {
   await assert.rejects(createProvider({}, { sdk: fakeSdk().sdk, fetchFn: f.f }).metrics('m1'), { code: 'no_key' });
   assert.equal(f.calls.length, 0);
 });
+
+// ---- plan (#127) ----
+const ME = { org: { id: 'org-secret-id', tier: 'pro' }, allowedSpecs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 2, memMiB: 4096 }], plans: [] };
+const ORG = { id: 'org-secret-id', allowedSpecs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], limits: { startsPerMinute: 30, maxRunning: 0, maxMachines: 100, maxVCPUs: 64 }, usage: { running: 1 } };
+const planHandler = (org = () => Response.json(ORG)) => (url) => (url.endsWith('/v1/me') ? Response.json(ME) : org());
+
+test('plan: GET /v1/me then /v1/orgs/<id> with the key header only; maps the fields; no identifiers in the result', async () => {
+  const { p, f } = metricsProvider(planHandler());
+  const r = await p.plan();
+  assert.deepEqual(f.calls.map((c) => c.url), ['https://api.instabox.sh/v1/me', 'https://api.instabox.sh/v1/orgs/org-secret-id']);
+  assert.ok(f.calls.every((c) => c.headers['X-API-Key'] === KEY && Object.keys(c.headers).length === 1));
+  assert.deepEqual(r, { tier: 'pro', specs: [{ vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }], startsPerMinute: 30, maxRunning: 0, maxMachines: 100, fetchedAt: NOW });
+  assert.ok(!JSON.stringify(r).includes('org-secret-id'));
+});
+
+test('plan: cached for the process; refresh fetches again', async () => {
+  const { p, f } = metricsProvider(planHandler());
+  await p.plan(); await p.plan();
+  assert.equal(f.calls.length, 2);
+  await p.plan({ refresh: true });
+  assert.equal(f.calls.length, 4);
+});
+
+test('plan: specs fall back to /v1/me allowedSpecs when the org lists none', async () => {
+  const { p } = metricsProvider(planHandler(() => Response.json({ ...ORG, allowedSpecs: undefined })));
+  assert.deepEqual((await p.plan()).specs, ME.allowedSpecs);
+});
+
+test('plan: 401, 403, 500, a missing org id, a timeout and a network error all resolve null; the key is never logged', async () => {
+  const lines = [];
+  const orig = console.error; console.error = (...a) => lines.push(a.join(' '));
+  try {
+    for (const status of [401, 403, 500]) {
+      const { p } = metricsProvider(() => new Response(JSON.stringify({ error: { code: KEY } }), { status }));
+      assert.equal(await p.plan(), null, `${status}`);
+    }
+    assert.equal(await metricsProvider(() => Response.json({ allowedSpecs: [] })).p.plan(), null);
+    assert.equal(await metricsProvider(() => { throw new Error(`down ${KEY}`); }).p.plan(), null);
+    assert.equal(await metricsProvider(() => new Promise(() => {}), { metricsTimeoutMs: 10 }).p.plan(), null);
+    assert.equal(await createProvider({}, { sdk: fakeSdk().sdk }).plan(), null);
+  } finally { console.error = orig; }
+  assert.ok(lines.length >= 1 && lines.every((l) => !l.includes(KEY)), lines.join('|'));
+});
+
+test('plan: a failure is not cached, so the next call can succeed', async () => {
+  let n = 0;
+  const { p } = metricsProvider((url) => (n++ < 1 ? new Response('{}', { status: 500 }) : planHandler()(url)));
+  assert.equal(await p.plan(), null);
+  assert.equal((await p.plan()).tier, 'pro');
+});

@@ -27,7 +27,7 @@ const code = (e) => `${e?.code ?? ''} ${e?.message ?? ''}`;
 export const isRateLimited = (e) => /rate_limited/.test(code(e));
 export const isQuotaExceeded = (e) => /quota_exceeded/.test(code(e));
 
-// Start queue: at most perMin machine creates per rolling minute, in arrival order.
+// Start queue: at most perMin (a number or a function returning one) machine creates per rolling minute, in arrival order.
 // create(a, fn) waits for a slot, runs fn (the machine create) and retries it on rate_limited / quota_exceeded.
 // a.status is 'queued' while it waits and 'starting' while fn runs. cancel(a) makes a pending create() reject.
 export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES } = {}) {
@@ -35,13 +35,14 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   const stamps = []; // times of recent create attempts
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
   let pumping = false;
-  const q = { waiting };
+  const rate = () => (typeof perMin === 'function' ? perMin() : perMin); // read on every grant, so a rate learned later applies
+  const q = { waiting, pace: rate };
   const pump = async () => {
     if (pumping) return;
     pumping = true;
     while (waiting.length) {
       while (stamps.length && now() - stamps[0] >= MINUTE) stamps.shift();
-      if (stamps.length < perMin) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await sleep(stamps[0] + MINUTE - now());
+      if (stamps.length < rate()) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await sleep(stamps[0] + MINUTE - now());
     }
     pumping = false;
   };
