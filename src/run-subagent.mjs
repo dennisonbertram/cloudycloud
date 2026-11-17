@@ -92,6 +92,7 @@ export const startQueue = (env, provider) => {
   q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
     if (!p) return;
     plan = p;
+    q.poke(); // starts already waiting for the old, lower rate may go now
     const per = (n) => (n > 0 ? `${n}` : 'no limit');
     log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${p.tier}: ${per(p.startsPerMinute)} starts/min (using ${pace()}), ${per(p.maxRunning)} running at once, sizes ${p.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
   }).catch(() => {}));

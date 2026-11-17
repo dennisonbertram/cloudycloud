@@ -36,13 +36,14 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
   let pumping = false;
   const rate = () => (typeof perMin === 'function' ? perMin() : perMin); // read on every grant, so a rate learned later applies
-  const q = { waiting, pace: rate };
+  let wake; // ends the pump's wait for the oldest start to age out
+  const q = { waiting, pace: rate, poke: () => wake?.() }; // poke: the rate changed, so recheck now
   const pump = async () => {
     if (pumping) return;
     pumping = true;
     while (waiting.length) {
       while (stamps.length && now() - stamps[0] >= MINUTE) stamps.shift();
-      if (stamps.length < rate()) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await sleep(stamps[0] + MINUTE - now());
+      if (stamps.length < rate()) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await Promise.race([sleep(stamps[0] + MINUTE - now()), new Promise((r) => { wake = r; })]);
     }
     pumping = false;
   };
