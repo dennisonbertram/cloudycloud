@@ -44,3 +44,12 @@ test('parseSize reads NxM, rejects other forms, and ignores an empty value', asy
   assert.match(SIZE_PRICE(2, 4), /\$0\.017 an hour/);
   assert.deepEqual([planFor(8), planFor(16), planFor(32), planFor(64)], ['pro', 'builder', 'team', undefined]);
 });
+
+test('#128 planFor needs both the vCPUs and the memory to fit; planFee gives the monthly fee', async () => {
+  const { planFor, planFee } = await import('../src/machine.mjs');
+  assert.equal(planFor(8, 16384), 'pro');
+  assert.equal(planFor(8, 32768), 'builder');
+  assert.equal(planFor(16, 65536), 'team');
+  assert.equal(planFor(64, 131072), undefined);
+  assert.deepEqual(['pro', 'builder', 'team', 'x'].map(planFee), [20, 100, 500, undefined]);
+});

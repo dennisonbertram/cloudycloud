@@ -1896,3 +1896,32 @@ test('#128 bad forms, gpu and macos, and providers without sizes are refused wit
   assert.match(text(r), /provider has one machine size/);
   assert.equal(sh.log.create.length, 0);
 });
+
+test('#128 task mode shows the size cost at start and in the completion result, and nothing without a size', async () => {
+  const { deps, wait } = await sizeSetup(proPlan, { asTask: true });
+  const t = await runSubagent({ description: 'd', prompt: 'hi', size: '8x16' }, deps);
+  assert.match(t.statusMessage, /8x16 costs about \$0\.068 an hour/);
+  await wait([t.taskId.split('-')[1]]);
+  assert.match(getTask(t.taskId, deps).result.content[0].text, /8x16 costs about \$0\.068 an hour/);
+  const d = await sizeSetup(proPlan, { asTask: true });
+  assert.doesNotMatch((await runSubagent({ description: 'd', prompt: 'hi' }, d.deps)).statusMessage, /an hour/);
+});
+
+test('#128 a size that is not on the plan: 8x32 on pro names builder and its fee', async () => {
+  const { deps, text } = await sizeSetup(proPlan);
+  const r = text(await runSubagent({ description: 'd', prompt: 'hi', size: '8x32' }, deps));
+  assert.match(r, /builder plan \(\$100\/month/);
+  assert.doesNotMatch(r, /pro plan/);
+});
+
+test('#128 a provider-side size_not_allowed reads the plan for the tier and sizes; an unreadable plan gives the generic text', async () => {
+  for (const [plan, want] of [[(o, n) => (n === 1 ? { ...proPlan, specs: [...SPECS, { vcpus: 16, memMiB: 32768 }] } : proPlan), /\(pro\)[\s\S]*allows: 2x4 4x8 8x16/], [null, /Likely the plan does not include it/]]) {
+    const s = await sizeSetup(plan);
+    s.provider.create = async () => { throw Object.assign(new Error('not allowed'), { code: 'size_not_allowed' }); };
+    const id = s.text(await runSubagent({ description: 'd', prompt: 'hi', size: '16x32' }, s.deps)).match(/agent_id: (\w+)/)[1];
+    await waitAgents({ agent_ids: [id], timeout_seconds: 10 }, s.deps);
+    const res = s.text(await resultAgent({ agent_id: id }, s.deps));
+    assert.match(res, want);
+    assert.match(res, /builder plan \(\$100\/month/);
+  }
+});

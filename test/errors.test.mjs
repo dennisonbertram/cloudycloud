@@ -88,3 +88,10 @@ test('#128 size_not_allowed names the tier, the sizes, the plan and the upgrade 
   assert.ok(!t.includes('ib-secret'));
   assert.match(guide('size_not_allowed', { size: '16x32' }), /Likely the plan does not include it/);
 });
+
+test('#128 size_not_allowed names the monthly fee and the pricing link; no plan says larger than any plan', () => {
+  const t = guide('size_not_allowed', { size: '16x32', plan: 'builder', fee: 100 });
+  assert.match(t, /builder plan \(\$100\/month, which includes usage equal to the fee\)/);
+  assert.match(t, /instabox\.sh\/pricing/);
+  assert.match(guide('size_not_allowed', { size: '64x128' }), /larger plan than any listed/);
+});

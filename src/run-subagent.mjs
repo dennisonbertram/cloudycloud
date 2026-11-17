@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES } from './limits.mjs';
-import { parseMachine, parseSize, sizeLabel, planFor, SIZE_PRICE, EXPENSIVE, PRICE } from './machine.mjs';
+import { parseMachine, parseSize, sizeLabel, planFor, planFee, SIZE_PRICE, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
@@ -548,7 +548,7 @@ async function work(a, message, first, ctx, t) {
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? guide('size_not_allowed', { size: a.size.label, plan: planFor(a.size.vcpus) }) : guide(classify(e?.message), { message: e?.message })) };
+    r = { error: true, text: limitText(e) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
   }
   if (a.status === 'stopped') return;
   // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
@@ -581,8 +581,23 @@ function statusOf(t, ctx) {
 }
 const iso = (ms) => new Date(ms).toISOString();
 
+// The size_not_allowed guide. With `read`, the plan is read first (cached, else refreshed once); an unreadable plan gives the generic text.
+function sizeGuide(size, planOrProvider, read) {
+  const build = (plan) => {
+    const sorted = (plan?.specs ?? []).slice().sort((x, y) => x.vcpus - y.vcpus || x.memMiB - y.memMiB).map(sizeLabel);
+    const p = planFor(size.vcpus, size.memMiB);
+    return guide('size_not_allowed', { size: size.label, plan: p, fee: planFee(p), ...(sorted.length && { tier: plan.tier, sizes: sorted.join(' '), largest: sorted.at(-1) }) });
+  };
+  if (!read) return build(planOrProvider);
+  return (async () => {
+    let plan = await planOrProvider.plan?.().catch(() => null);
+    if (!plan?.specs?.length) plan = await planOrProvider.plan?.({ refresh: true }).catch(() => null);
+    return build(plan);
+  })();
+}
+
 // What cloud_agent and cloud_agent_message answer with in task mode.
-const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : '');
+const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : a.size ? SIZE_PRICE(a.size.vcpus, a.size.memMiB / 1024) : '');
 const priceNote = (t) => priceOf(t.agent);
 function taskAnswer(t, ctx) {
   return {
@@ -669,8 +684,7 @@ export async function runSubagent(args, deps) {
     let plan = await ctx.provider.plan?.().catch(() => null);
     if (plan?.specs && !has(plan)) plan = await ctx.provider.plan({ refresh: true }).catch(() => null); // the plan may have been upgraded since it was cached
     if (plan?.specs && !has(plan)) {
-      const sorted = [...plan.specs].sort((x, y) => x.vcpus - y.vcpus || x.memMiB - y.memMiB).map(sizeLabel);
-      return fail(guide('size_not_allowed', { size: size.label, tier: plan.tier, sizes: sorted.join(' '), plan: planFor(size.vcpus), largest: sorted.at(-1) }));
+      return fail(sizeGuide(size, plan));
     }
   }
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
