@@ -2009,3 +2009,26 @@ test('#135 a provider-side size_not_allowed for a size the current plan lists sa
   assert.match(res, /refused/);
   assert.doesNotMatch(res, /upgrade|larger plan than any/i);
 });
+
+test('#139 cloud_agent_list ends with the usage line; no plan, a failing plan or no usage add nothing; a stale plan is refreshed', async () => {
+  const mk = (plan) => createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true, plan });
+  const fresh = (usage) => () => ({ tier: 'pro', fetchedAt: Date.now(), usage });
+  const list = async (provider) => {
+    const { start, wait, deps, text } = await setup({ provider });
+    await wait([await start()]);
+    return text(await listAgents({}, deps));
+  };
+  const base = await list(mk(null));
+  assert.doesNotMatch(base, /Instabox this month/);
+  const over = await list(mk(fresh({ costUSD: 66.12, allowanceUSD: 16.61, overageUSD: 49.51 })));
+  assert.equal(over.split('\n').at(-1), 'Instabox this month: $66.12 used, $16.61 included, $49.51 beyond it (pay as you go)');
+  assert.equal((await list(mk(fresh({ costUSD: 12.4, allowanceUSD: 20, overageUSD: 0 })))).split('\n').at(-1), 'Instabox this month: $12.40 of $20.00 included used');
+  for (const p of [fresh(undefined), () => { throw new Error('boom'); }, () => ({ tier: 'free', fetchedAt: Date.now(), usage: { costUSD: 'NaN' } })]) {
+    const t = await list(mk(p));
+    assert.doesNotMatch(t, /Instabox this month|NaN|undefined/);
+    assert.equal(t.split('\n').length, base.split('\n').length);
+  }
+  const stale = mk((o) => ({ tier: 'pro', fetchedAt: o?.refresh ? Date.now() : Date.now() - 31 * 60_000, usage: { costUSD: o?.refresh ? 2 : 1, allowanceUSD: 20 } }));
+  assert.match(await list(stale), /\$2\.00 of \$20\.00 included used$/);
+  assert.equal(stale.log.planRefresh, 1);
+});

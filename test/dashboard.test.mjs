@@ -1095,3 +1095,27 @@ test('the demo has one truly quiet running agent: under 3 % CPU and 1 KB/s for t
   assert.equal(s.length, 120);
   assert.ok(s.every((x) => x.cpuPct < 3 && x.netIn + x.netOut < 1024));
 });
+
+test('#139 /api/state carries usage from the plan, refreshes a stale plan, and omits it otherwise', async () => {
+  const state = async (plan) => {
+    const provider = createFakeProvider({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { plan });
+    return { provider, s: await liveState({ FAKE_API_KEY: 'fakekeyvalue-0123456789' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0 })() };
+  };
+  const u = { costUSD: 66.12, allowanceUSD: 16.61, overageUSD: 49.51, ratedUntil: '2026-11-17T10:00:00Z', creditRemainingUSD: 0, periodEnd: 'x' };
+  const a = await state(() => ({ fetchedAt: Date.now(), usage: u }));
+  assert.deepEqual(a.s.usage, { costUSD: 66.12, allowanceUSD: 16.61, overageUSD: 49.51, ratedUntil: '2026-11-17T10:00:00Z' });
+  for (const p of [null, () => ({ fetchedAt: Date.now() }), () => { throw new Error('x'); }, () => ({ fetchedAt: Date.now(), usage: { costUSD: 'n' } })]) assert.ok(!('usage' in (await state(p)).s));
+  const st = await state((o) => ({ fetchedAt: o?.refresh ? Date.now() : 0, usage: { costUSD: o?.refresh ? 5 : 1 } }));
+  assert.equal(st.s.usage.costUSD, 5);
+  assert.equal(st.provider.log.planRefresh, 1);
+});
+
+test('#139 page: #summary appends the same sentence as the server formatter when state.usage is present; demo data has usage', async () => {
+  const { usageLine } = await import('../src/machine.mjs');
+  assert.match(PAGE, /usageSentence\(S\.data && S\.data\.usage\)/);
+  const f = new Function(`${pageLine('const usageSentence')}\nreturn usageSentence;`)();
+  for (const usage of [{ costUSD: 12.4, allowanceUSD: 20, overageUSD: 0 }, { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42 }, { costUSD: 3.1, allowanceUSD: 0 }, { costUSD: 0.005, allowanceUSD: 16.666 }]) assert.equal(f(usage), usageLine({ usage }));
+  for (const bad of [undefined, null, {}, { costUSD: 'x' }]) assert.equal(f(bad), null);
+  const { demoState } = await import('../src/dashboard-demo.mjs');
+  assert.ok(usageLine({ usage: demoState().usage }));
+});
