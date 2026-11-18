@@ -1,9 +1,9 @@
 // Tells the user when a newer cloudycloud is on npm. The launcher runs `node update-check.mjs` once per session start.
 // It only reads a cache file; a detached `refresh` process updates the cache at most once a day, so startup never waits.
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DAY = 24 * 3600 * 1000;
@@ -26,6 +26,10 @@ export function isNewer(a, b) {
   return x.pre.length > y.pre.length;
 }
 
+// The path for `cd`: ~ replaces the home folder only at a path boundary; odd characters are single-quoted (after ~/ so ~ still expands).
+const q = (p) => (/^[A-Za-z0-9_./-]*$/.test(p) ? p : `'${p.replaceAll("'", "'\\''")}'`);
+const shown = (root, home) => (root === home ? '~' : root.startsWith(home + sep) ? `~/${q(root.slice(home.length + 1))}` : q(root));
+
 // An unreadable or invalid cache (not an object, bad or future checkedAt) counts as missing.
 const readCache = (home, now = Date.now()) => {
   try {
@@ -41,7 +45,7 @@ export function check({ version, env = process.env, home = homedir(), isTTY = pr
     if (!isTTY || env.CI || env.CLOUDY_CLOUD_NO_UPDATE_CHECK === '1') return;
     const c = readCache(home, now);
     if (typeof c.latest === 'string' && isNewer(c.latest, version)) {
-      const how = /[\\/]node_modules[\\/]/.test(root) ? 'npm install -g cloudycloud@latest' : `cd ${root.startsWith(home) ? `~${root.slice(home.length)}` : root} && git pull && npm install`;
+      const how = existsSync(join(root, '.git')) ? `cd ${shown(root, home)} && git pull && npm install` : 'npm install -g cloudycloud@latest';
       write(`Cloudy Cloud ${c.latest} is available (you have ${version}). Update: ${how}\n`);
     }
     if (!(now - c.checkedAt < DAY)) startRefresh();

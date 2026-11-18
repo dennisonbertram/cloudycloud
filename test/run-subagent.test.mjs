@@ -550,7 +550,7 @@ test('task mode: a starting agent says "starting machine…"; the final line end
   const { deps, wait } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); }, asTask: true, provider: proxyProvider(), env: PROXY_ENV });
   const t = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
   assert.equal(t.resultType, 'task');
-  assert.equal(t.statusMessage, 'starting machine…');
+  assert.match(t.statusMessage, /^starting machine… It will push to cloudy-cloud\/[0-9a-f]{8}\.$/);
   assert.equal(getTask(t.taskId, deps).statusMessage, 'starting machine…');
   release();
   const id = t.taskId.split('-')[1];

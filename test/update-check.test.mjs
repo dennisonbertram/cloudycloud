@@ -39,13 +39,20 @@ test('a cached newer version prints one line; a fresh cache starts no refresh', 
   assert.equal(r.refreshed, 0);
 });
 
-test('an npm install keeps the npm command; a clone or link says how to pull', () => {
+test('an npm install keeps the npm command; a clone (has .git) says how to pull', () => {
   const c = { checkedAt: NOW - 1000, latest: '0.3.0' };
-  assert.match(run(c, { root: '/usr/lib/node_modules/cloudycloud' }).out[0], /Update: npm install -g cloudycloud@latest\n$/);
   const h = home(c);
-  const out = []; check({ version: '0.2.0', home: h, env: {}, isTTY: true, now: NOW, write: (s) => out.push(s), startRefresh() {}, root: join(h, 'src/cloudy') });
-  assert.equal(out[0], 'Cloudy Cloud 0.3.0 is available (you have 0.2.0). Update: cd ~/src/cloudy && git pull && npm install\n');
-  assert.match(run(c, { root: '/opt/cloudy' }).out[0], /Update: cd \/opt\/cloudy && git pull && npm install\n$/);
+  const clone = (rel, git = true) => { const r = join(h, rel); mkdirSync(r, { recursive: true }); if (git) mkdirSync(join(r, '.git')); return r; };
+  const say = (root, homeDir = h) => { const out = []; check({ version: '0.2.0', home: homeDir, env: {}, isTTY: true, now: NOW, write: (s) => out.push(s), startRefresh() {}, root }); return out[0]; };
+  const head = 'Cloudy Cloud 0.3.0 is available (you have 0.2.0). Update: ';
+  assert.equal(say(clone('x/node_modules/cloudycloud', false)), `${head}npm install -g cloudycloud@latest\n`);
+  assert.equal(say(clone('src/cloudy')), `${head}cd ~/src/cloudy && git pull && npm install\n`);
+  assert.equal(say(clone('linked/node_modules/cloudycloud')), `${head}cd ~/linked/node_modules/cloudycloud && git pull && npm install\n`); // a linked clone is still a clone
+  assert.equal(say(clone('my repo/it\'s')), `${head}cd ~/'my repo/it'\\''s' && git pull && npm install\n`);
+  mkdirSync(join(h, '.git'));
+  assert.equal(say(h), `${head}cd ~ && git pull && npm install\n`);
+  const sib = h + '-other'; mkdirSync(join(sib, '.git'), { recursive: true });
+  assert.equal(say(sib), `${head}cd ${sib} && git pull && npm install\n`); // a sibling folder that merely starts with the home path
 });
 
 test('nothing is printed when current, in CI, opted out, or not a TTY', () => {

@@ -811,9 +811,9 @@ function sizeGuide(size, planOrProvider, read) {
 // What cloud_agent and cloud_agent_message answer with in task mode.
 const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : a.size ? [sizeCostLine(a.size.vcpus, a.size.memMiB / 1024), a.sizeNote].filter(Boolean).join(' ') : '');
 const priceNote = (t) => priceOf(t.agent);
-function taskAnswer(t, ctx) {
+function taskAnswer(t, ctx, note) {
   return {
-    resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), priceNote(t)].filter(Boolean).join(' '),
+    resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), note, priceNote(t)].filter(Boolean).join(' '),
     createdAt: iso(t.createdAt), lastUpdatedAt: iso(Date.now()), ttlMs: null, pollIntervalMs: POLL_MS,
   };
 }
@@ -946,7 +946,7 @@ export async function runSubagent(args, deps) {
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, prompt, true, ctx, t);
-  if (ctx.asTask) return taskAnswer(t, ctx);
+  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.`);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
   return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
