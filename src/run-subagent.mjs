@@ -245,7 +245,11 @@ async function safetyPush(a, ctx) {
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
     const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
     if (marker('NOCHANGE')) return { where: `No changes, no branch pushed.${dirty}` };
-    if (marker('PUSHOK')) return { where: `Pushed to origin ${branch} at ${sha}. Fetch with: git fetch origin ${branch}.${dirty}` };
+    if (marker('PUSHOK')) {
+      const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
+      const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
+      return { where: `Pushed to origin ${branch} at ${sha}. ${get}${dirty}` };
+    }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
     return { failed: true, where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
@@ -889,9 +893,9 @@ function sizeGuide(size, planOrProvider, read) {
 // What cloud_agent and cloud_agent_message answer with in task mode.
 const priceOf = (a) => (EXPENSIVE.includes(a.kind?.name) ? `${PRICE[a.kind.name]}. Stop it with cloud_agent_stop as soon as it is done.` : a.size ? [sizeCostLine(a.size.vcpus, a.size.memMiB / 1024), a.sizeNote].filter(Boolean).join(' ') : '');
 const priceNote = (t) => priceOf(t.agent);
-function taskAnswer(t, ctx) {
+function taskAnswer(t, ctx, note) {
   return {
-    resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), priceNote(t)].filter(Boolean).join(' '),
+    resultType: 'task', taskId: t.id, status: 'working', statusMessage: [statusOf(t, ctx), note, priceNote(t)].filter(Boolean).join(' '),
     createdAt: iso(t.createdAt), lastUpdatedAt: iso(Date.now()), ttlMs: null, pollIntervalMs: POLL_MS,
   };
 }
@@ -1086,9 +1090,9 @@ export async function runSubagent(args, deps) {
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, msg, true, ctx, t);
-  if (ctx.asTask) return taskAnswer(t, ctx);
+  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.`);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
