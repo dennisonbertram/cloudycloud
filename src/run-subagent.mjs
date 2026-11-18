@@ -817,7 +817,7 @@ async function work(a, message, first, ctx, t) {
   if (a.status === 'stopped') return;
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
   const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
-  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
@@ -1127,7 +1127,7 @@ export async function resultAgent(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_result');
   const id = idList(args)[0];
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
-  if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id }));
+  if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id, branch: a?.branch }));
   if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
   return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`);
 }

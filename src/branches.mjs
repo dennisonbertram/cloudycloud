@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const run = promisify(execFile);
-const OURS = /^cloudy-cloud\/[0-9a-f]{8}$/;
+const OURS = /^cloudy-cloud\/(issue-\d{1,10}-)?[0-9a-f]{8}$/; // cloudy-cloud/<id> or, for a worker started from an issue, cloudy-cloud/issue-<n>-<id>
 const USAGE = 'Usage: cloudy-cloud branches prune [--yes] [--dry-run]\n  Lists cloudy-cloud/<id> branches on origin that are empty or merged into the default branch.\n  Nothing is deleted unless you pass --yes.';
 
 export async function main(argv, { cwd = process.cwd(), out = console.log, err = console.error } = {}) {
