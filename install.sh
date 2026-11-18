@@ -424,8 +424,8 @@ check_setup() {
       break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
-    elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
-    else bad "No worker credential is saved, so cloud_agent has no profile it can use" "run $(rerun_cmd) and save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or the Codex login file"; fails=1; fi
+    elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd)$(case $plain in CLAUDE*|ANTHROPIC*) ;; *) printf ' --more' ;; esac) to store it as a proxy secret"; fails=1
+    else bad "No worker credential is saved, so cloud_agent has no profile it can use" "run $(rerun_cmd) --more and save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or the Codex login file"; fails=1; fi
   else
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
     if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
@@ -640,6 +640,7 @@ link_command() { # link_command ROOT
 KEYLEN=56   # length of an Instabox key: ibk_ plus 52 characters
 TOKLEN=108  # usual length of a token from claude setup-token
 STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked"; STATUS_COORD="not set up"
+INCOMPLETE=""
 LOCAL_ACCOUNT=""
 
 # rerun_cmd: the command that runs setup again.
@@ -907,7 +908,7 @@ setup_claude() {
     hint "Subagents use the Claude account the token was made with${acct:+ ($acct)}."
     return
   done
-  if [ -n "$saved" ]; then warn "Stopped the Claude step after 3 tries. Your saved token is unchanged. Run $(rerun_cmd) again to retry."
+  if [ -n "$saved" ]; then STATUS_CLAUDE="OK ($(mask sk-ant-oat01- "$saved"), unchanged)"; warn "Stopped the Claude step after 3 tries. Your saved token is unchanged. Run $(rerun_cmd) again to retry."
   else warn "Stopped the Claude step after 3 tries. No token is saved. Run $(rerun_cmd) again to retry."; fi
 }
 
@@ -924,7 +925,7 @@ store_coordinator_key() {
 }
 
 # have_tty: true when setup can show a question and read the answer (tests replace it).
-have_tty() { [ -t 0 ]; }
+have_tty() { [ -t 0 ] && [ -t 1 ]; }
 
 # Optional (setup --more): cloud coordinators. "coordinator image" handles the sign-in, retry, saving and progress itself,
 # so it runs with the terminal attached and nothing captured. It writes CLOUDY_CLOUD_SNAPSHOT_ACCOUNT when it saves.
@@ -942,7 +943,8 @@ setup_coordinators() {
   else
     yn "Set up cloud coordinators now? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes." || return 0
   fi
-  if "$root/bin/cloudy-cloud" coordinator image; then
+  # Ready only when the saved image changed: a command that exits 0 without saving one (no terminal) is not a success.
+  if "$root/bin/cloudy-cloud" coordinator image && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ] && [ "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" != "$snap" ]; then
     acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
     STATUS_COORD="ready${acct:+ ($acct)}"
   else
@@ -1084,7 +1086,7 @@ setup_provider() { # setup_provider NAME LABEL WHERE [WORKERS [EXTRA HINT]]
   keep_key "$name" "$key"
   ok "Saved the $label key" "$(mask "" "$key")"
   if is_proxied "$name"; then hint "Stored as an Instabox secret: worker machines see a placeholder, not the key."
-  elif [ "${PROVIDER:-}" = instabox ]; then hint "Not stored as a secret: workers that need this key are refused until you store it (run $(rerun_cmd) again)."
+  elif [ "${PROVIDER:-}" = instabox ]; then hint "Not stored as a secret: workers that need this key are refused until you store it (run $(rerun_cmd) --more again)."
   else hint "Unlike GH_TOKEN, this key is stored on the worker machines that use it."; fi
 }
 
@@ -1098,25 +1100,27 @@ summary_row() {
   esac
 }
 
-# choose_provider [NAME]: sets PROVIDER to instabox or self-hosted, asking unless NAME is given.
+# choose_provider [NAME [DEFAULT]]: sets PROVIDER to instabox or self-hosted, asking unless NAME is given. Enter means DEFAULT (instabox).
+# Nothing is saved here; a changed provider is written once its own step has what it needs.
 choose_provider() {
-  local a
+  local a def=${2:-instabox} d1="" d2=""
   case ${1:-} in
     instabox|self-hosted) PROVIDER=$1; return 0 ;;
     "") ;;
     *) bad "Unknown provider \"$1\"" "use --provider instabox or --provider self-hosted" >&2; exit 1 ;;
   esac
+  if [ "$def" = self-hosted ]; then d2=" (saved, Enter keeps it)"; else d1=" (default)"; fi
   drain_tty
-  ask "Where should subagents run?" "1  Instabox cloud (default)" "2  your own machine over SSH (a Mac or Linux box you control)"
-  ask_line "Type 1 or 2 (Enter for 1):"
+  ask "Where should subagents run?" "1  Instabox cloud$d1" "2  your own machine over SSH (a Mac or Linux box you control)$d2"
+  ask_line "Type 1 or 2 (Enter for $([ "$def" = self-hosted ] && echo 2 || echo 1)):"
   IFS= read -r a </dev/tty || a=""
-  case $a in 2) PROVIDER=self-hosted ;; *) PROVIDER=instabox ;; esac
+  case $a in 1) PROVIDER=instabox ;; 2) PROVIDER=self-hosted ;; *) PROVIDER=$def ;; esac
 }
 
 # choose_agents: sets AGENTS without asking when it can: the saved choice, else claude if found, else the agents found on PATH.
-# It asks only when none is found (Enter then means claude).
+# It asks only when none is found, or in setup --more (MORE=1), where Enter keeps the current list (claude when none is saved).
 choose_agents() {
-  local a c det="" input tries=0 unknown parts list saved
+  local a c det="" input tries=0 unknown parts list saved def
   for a in claude codex opencode pi free-pi; do
     c=$a; [ "$a" != free-pi ] || c=free-pi-cli
     ! command -v "$c" >/dev/null || det="${det:+$det,}$a"
@@ -1125,14 +1129,15 @@ choose_agents() {
   # Claude is the default agent and needs nothing saved, so finding claude means claude; other agents are saved when they are all that is found.
   AGENTS=${saved:-$det}
   [ -n "$saved" ] || ! agents_has claude || AGENTS=claude
-  if [ -z "$AGENTS" ]; then
+  if [ -z "$AGENTS" ] || [ "${MORE:-0}" = 1 ]; then
+    def=${AGENTS:-claude}; AGENTS=""
     while [ "$tries" -lt 3 ]; do
       drain_tty
-      ask "Which agents do you run locally?" "Choose from: claude, codex, opencode, pi, free-pi (several, separated by spaces)." "None was found on this computer. Only what these agents need is asked for."
-      ask_line "Enter for claude, or type your choice:"
+      ask "Which agents do you run locally?" "Choose from: claude, codex, opencode, pi, free-pi (several, separated by spaces)." "${saved:+Saved: $saved. }Found on this computer: ${det:-none}. Only what these agents need is asked for."
+      ask_line "Enter for $def, or type your choice:"
       IFS= read -r input </dev/tty || input=""
       input=${input//,/ }
-      [ -n "${input//[[:space:]]/}" ] || input=claude
+      [ -n "${input//[[:space:]]/}" ] || input=${def//,/ }
       read -ra parts <<<"$input"
       unknown=""; list=""
       for a in "${parts[@]}"; do
@@ -1153,7 +1158,7 @@ choose_agents() {
   fi
   ok "Agents: $AGENTS"
   if agents_has claude && ! command -v claude >/dev/null; then
-    bad "Claude Code is missing" "Install it: https://code.claude.com, or run $(rerun_cmd) again without claude"; exit 1
+    bad "Claude Code is missing" "Install it: https://code.claude.com, or run $(rerun_cmd) --more and remove claude from your agents"; exit 1
   fi
 }
 
@@ -1163,33 +1168,54 @@ setup_self_hosted() {
   else bad "Self-hosted setup did not finish. Run $(rerun_cmd) again." >&2; exit 1; fi
 }
 
-# has_worker_key: a credential for a non-Claude worker is saved (an env line, an Instabox secret, or the Codex login file).
-has_worker_key() {
-  local k
-  for k in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-    [ -z "$(get_saved $k)" ] && ! is_proxied $k || return 0
+# worker_usable: some credential can start a first worker on this provider (Instabox needs a proxy secret; a self-hosted box takes a saved value).
+worker_usable() {
+  local n
+  # With claude among the agents, the Claude step above already handled the Claude credential (saved, or declined by you).
+  if agents_has claude; then
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || is_proxied $n; } && return 0; done
+  fi
+  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
+    is_proxied $n && return 0
+    [ "$PROVIDER" != self-hosted ] || [ -z "$(get_saved $n)" ] || return 0
   done
   [ -f "$(codex_auth_file)" ]
 }
 
+# incomplete WHAT: records a step that did not finish. Setup then ends with "Setup incomplete" and exit status 1.
+incomplete() { INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$1"; }
+
+# ask_worker_keys: the keys an agent needs (OpenAI for codex; Particle.ai and OpenRouter for the others).
+ask_worker_keys() {
+  ! agents_has codex || setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
+  setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
+  setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
+}
+
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted] [--check-only]" >&2; }
+
 main() {
-  local provider_arg="" host acct more=0
-  while [ $# -gt 0 ] && [ "$1" != --check-only ]; do
+  local provider_arg="" host acct more=0 check_only=0 saved_provider
+  while [ $# -gt 0 ]; do
     case $1 in
-      --provider) [ $# -ge 2 ] || { bad "--provider needs instabox or self-hosted" >&2; exit 1; }; provider_arg=$2; shift 2 ;;
+      --provider) [ $# -ge 2 ] || { usage; exit 2; }; provider_arg=$2; shift 2 ;;
       --more) more=1; shift ;;
-      *) break ;;
+      --check-only) check_only=1; shift ;;
+      *) usage; exit 2 ;;
     esac
   done
-  if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
+  case $provider_arg in ""|instabox|self-hosted) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox or --provider self-hosted" >&2; exit 2 ;; esac
+  MORE=$more
+  [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
+  if [ "$check_only" = 0 ] && [ ! -t 0 ]; then
     case $0 in */node_modules/*) echo "Setup asks for keys, so run it in a terminal: cloudy-cloud setup" ;;
       *) echo "install.sh asks for keys, so run it in a terminal: ./install.sh" ;; esac; exit 1
   fi
   trap 'cleanup_capture; ui_cleanup; stty echo 2>/dev/null' EXIT
   trap 'exit 130' INT TERM
-  [ "${1:-}" = --check-only ] || banner
+  [ "$check_only" = 1 ] || banner
   step 1 Tools
-  if [ "${1:-}" = --check-only ]; then AGENTS=$(eff CLOUDY_CLOUD_AGENTS); [ -n "$AGENTS" ] || AGENTS=claude; check_prereqs || PREREQ_FAIL=1; check_setup; exit $?; fi
+  if [ "$check_only" = 1 ]; then AGENTS=$(eff CLOUDY_CLOUD_AGENTS); [ -n "$AGENTS" ] || AGENTS=claude; check_prereqs || PREREQ_FAIL=1; check_setup; exit $?; fi
   check_prereqs || exit 1
   ok "git, node, npm and curl are installed"
 
@@ -1209,9 +1235,10 @@ main() {
   link_command "$root"
   link_skill "$root"
 
-  # Instabox is the default; the question appears only when a self-hosted choice is saved and no --provider is given.
-  if [ -z "$provider_arg" ] && [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" != self-hosted ]; then provider_arg=instabox; fi
-  choose_provider "$provider_arg"
+  # Instabox is the default; the question appears only when a self-hosted choice is saved and no --provider is given. Enter keeps the saved one.
+  saved_provider=$(get_saved CLOUDY_CLOUD_PROVIDER)
+  if [ -z "$provider_arg" ] && [ "$saved_provider" != self-hosted ]; then provider_arg=instabox; fi
+  choose_provider "$provider_arg" "$saved_provider"
   choose_agents
   if agents_has claude; then
     LOCAL_ACCOUNT=$(claude_account)
@@ -1223,23 +1250,36 @@ main() {
     step 2 "Your own machine"
     setup_self_hosted "$root"
   else
-    [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" != self-hosted ] || write_env CLOUDY_CLOUD_PROVIDER instabox
     step 2 "Instabox key"
     setup_instabox
     [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
-    store_coordinator_key || true # whether or not you build a coordinator image: nested coordinators need it too
+    [ "$saved_provider" != self-hosted ] || write_env CLOUDY_CLOUD_PROVIDER instabox # only now that the switch has a working key
   fi
-  if agents_has claude; then step 3 "Claude token"; setup_claude
+  if agents_has claude; then
+    step 3 "Claude token"; setup_claude
+    case $STATUS_CLAUDE in OK*) ;; *) incomplete "no Claude token is saved" ;; esac
   else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
   if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
+  [ "$PROVIDER" = self-hosted ] || case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac
   if [ "$more" = 1 ]; then
     [ "$PROVIDER" = self-hosted ] || setup_alerts
-    ! agents_has codex || setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
-    setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
-    setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
-    offer_coordinators "$root"
+    # The OpenAI key is offered when codex is chosen or installed, even if claude was chosen too.
+    if ! agents_has codex && command -v codex >/dev/null; then
+      setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
+    fi
+    ask_worker_keys
+    if [ "$PROVIDER" != self-hosted ]; then
+      store_coordinator_key || true # the coordinator copy of your Instabox key; nested coordinators need it even if you build no image now
+      offer_coordinators "$root"
+    fi
+    case $STATUS_COORD in failed*) incomplete "the coordinator image was not saved" ;; esac
+  elif ! worker_usable; then
+    # A first worker needs some credential. Ask for the keys the chosen agents use.
+    hint "No worker credential is saved yet, so a first worker cannot start."
+    ask_worker_keys
   fi
+  worker_usable || incomplete "no worker credential (a Claude token, or an OpenAI, Particle.ai or OpenRouter key)"
   # A saved image counts as ready on a plain run too.
   if [ "$STATUS_COORD" = "not set up" ] && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then
     acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT); STATUS_COORD="ready${acct:+ ($acct)}"
@@ -1259,9 +1299,6 @@ main() {
   fi
   box_close
   echo
-  if ! agents_has claude && ! has_worker_key; then
-    warn "No worker credential is saved yet, so workers cannot start" "run $(rerun_cmd) --more and save an OpenAI, Particle.ai or OpenRouter key, or set up claude"
-  fi
   if from_npm "$root"; then
     hint "To update, run: npm install -g cloudycloud@latest"
   else
@@ -1271,6 +1308,11 @@ main() {
   fi
   hint "To change a key later, run: cloudy-cloud setup"
   hint "Restart any open cloudy-cloud session to use the new keys."
+  if [ -n "$INCOMPLETE" ]; then
+    echo
+    printf '  %s\n' "Setup incomplete: $INCOMPLETE. Next: cloudy-cloud setup --more"
+    exit 1
+  fi
   box_open Next
   box_text "In a repo with a github.com origin, run:"
   host=${AGENTS%%,*}; [ "$host" != claude ] || host=""

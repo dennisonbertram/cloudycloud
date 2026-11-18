@@ -230,11 +230,11 @@ test('capture_token extracts a wrapped, escaped token and always deletes the tem
 
 // A stub folder with bin/cloudy-cloud that records its calls and its stdin/stdout state, and an npx that records its calls.
 // The stub plays the part of the one-command "coordinator image": it writes the account to the config like the real one does.
-function coordStub({ fail = false, account = 'coord@example.com' } = {}) {
+function coordStub({ fail = false, noSave = false, account = 'coord@example.com' } = {}) {
   const dir = tmp();
   const root = join(dir, 'root'); const bin = join(root, 'bin');
   execFileSync('mkdir', ['-p', bin]);
-  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\necho "image output reaches the terminal"\n${fail ? 'exit 1' : `echo CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=${account} >> "$CLOUDY_CLOUD_CONFIG"`}\n`);
+  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\necho "image output reaches the terminal"\n${fail ? 'exit 1' : noSave ? 'exit 0' : `printf 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=snap-new\\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=${account}\\n' >> "$CLOUDY_CLOUD_CONFIG"`}\n`);
   chmodSync(join(bin, 'cloudy-cloud'), 0o755);
   writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\n`);
   chmodSync(join(dir, 'npx'), 0o755);
@@ -243,6 +243,19 @@ function coordStub({ fail = false, account = 'coord@example.com' } = {}) {
 import { execFileSync } from 'node:child_process';
 
 const TTY = 'have_tty() { return 0; };';
+test('coordinators: an exit 0 that saved no new image (for example no terminal) is not reported as ready', () => {
+  const s = coordStub({ noSave: true });
+  const r = fn(`${TTY} yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') }));
+  assert.match(r.stdout, /failed \(run (cloudy-cloud setup|\.\/install\.sh) --more again\)/);
+  assert.doesNotMatch(r.stdout, /ready/);
+});
+
+test('coordinators: needs both stdin and stdout on a terminal', () => {
+  const r = fn('have_tty < /dev/null; echo "in=$?"; have_tty <<<x; echo "x=$?"');
+  assert.match(r.stdout, /in=1/);
+  assert.match(r.stdout, /x=1/);
+});
+
 test('coordinators: skipped on N; yes runs "coordinator image" alone and reads the saved account', () => {
   const s = coordStub();
   const cfg = join(tmp(), 'env');
@@ -307,7 +320,8 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   writeFileSync(join(cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *secrets*) echo '${secrets}' ;;\n *) echo '[{"id":"o1","personal":true}]' ;;\nesac\n`);
   writeFileSync(join(cl, 'npm'), '#!/bin/sh\n[ "$1" = prefix ] && echo /nowhere\nexit 0\n');
   writeFileSync(join(cl, 'npx'), '#!/bin/sh\nexit 0\n');
-  for (const n of ['curl', 'npm', 'npx']) chmodSync(join(cl, n), 0o755);
+  writeFileSync(join(cl, 'codex'), '#!/bin/sh\nexit 0\n'); // codex is always on PATH here, so --more offers the OpenAI key
+  for (const n of ['curl', 'npm', 'npx', 'codex']) chmodSync(join(cl, n), 0o755);
   symlinkSync(resolve('bin/cloudy-cloud'), join(cl, 'cloudy-cloud'));
   const tdir = tmp();
   const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
@@ -388,7 +402,10 @@ test('pty: Enter keeps the saved token', () => {
 
 test('pty: a rejected token is retried at most 3 times and not saved', () => {
   const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { fail: '401 invalid authentication\n' } });
-  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n']]);
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']]);
+  assert.equal(r.code, 1, r.text);
+  assert.match(r.text, /Setup incomplete: no Claude token is saved.*Next: cloudy-cloud setup --more/);
+  assert.doesNotMatch(r.text, /Setup complete/);
   assert.match(r.text, /Claude rejected this token: 401 invalid authentication/);
   assert.match(r.text, /Stopped the Claude step after 3 tries\. No token is saved/);
   assert.ok(!readFileSync(g.cfg, 'utf8').includes('CLAUDE_CODE_OAUTH_TOKEN'));
@@ -840,12 +857,15 @@ test('a changed Instabox key replaces the coordinator secret even when it is alr
   assert.ok(!/secrets set/.test(calls(run(false))));
 });
 
-test('pty: declining the coordinator image still stores the coordinator secret', () => {
-  const g = rig({ saved: savedBoth });
+test('pty: the coordinator copy of the Instabox key is stored only in --more, even when the image is declined', () => {
+  const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
   const log = join(g.cl, 'npx-argv'); const stdin = join(g.cl, 'npx-stdin');
   writeFileSync(join(g.cl, 'npx'), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"secrets set"*) cat >> "${stdin}" ;; esac\nexit 0\n`);
   writeFileSync(join(g.cl, 'curl'), `#!/bin/sh\ncat >/dev/null\ncase "$*" in\n *"-w"*) printf 200 ;;\n *secrets*) echo '[{"name":"CLAUDE_CODE_OAUTH_TOKEN","hosts":["api.anthropic.com"]},{"name":"GH_TOKEN","hosts":["github.com","api.github.com"]},{"name":"${COORD_SECRET}","hosts":["api.instabox.sh"]}]' ;;\n *) echo '[{"id":"o1","personal":true}]' ;;\nesac\n`);
-  const r = g.run(answers);
+  const plain = g.run(answers);
+  assert.equal(plain.code, 0, plain.text);
+  assert.ok(!existsSync(log) || !/secrets set CLOUDY_CLOUD_INSTABOX_API_KEY/.test(readFileSync(log, 'utf8')), 'plain setup stores no coordinator secret');
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinators now.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.match(readFileSync(log, 'utf8'), /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY --host api\.instabox\.sh/);
   assert.equal(readFileSync(stdin, 'utf8'), KEY);
@@ -1073,10 +1093,12 @@ const NO_CLAUDE_WORKERS = ['Also run Claude Code workers', 'n\n'];
 // A PATH with the setup tools but no claude command.
 const noClaudePath = (g) => stubDir(['git', 'curl', 'npm', 'npx', 'node'], { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, curl: readFileSync(join(g.cl, 'curl'), 'utf8'), npm: readFileSync(join(g.cl, 'npm'), 'utf8') }) + ':/usr/bin:/bin';
 
-test('pty: a Codex-only user finishes setup with no Claude token and no claude command', () => {
+test('pty: a Codex-only user with no key saved is asked for it, then told setup is incomplete (exit 1)', () => {
   const g = rig();
-  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n']] });
-  assert.equal(r.code, 0, r.text);
+  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  assert.equal(r.code, 1, r.text); // no worker credential saved: setup is not complete
+  assert.match(r.text, /Setup incomplete: no worker credential.*Next: cloudy-cloud setup --more/);
+  assert.doesNotMatch(r.text, /Setup complete/);
   assert.doesNotMatch(r.text, /Claude token for subagents|Claude token works|Claude Code is missing/);
   const cfg = readFileSync(g.cfg, 'utf8');
   assert.ok(cfg.includes('CLOUDY_CLOUD_AGENTS=codex\n'), cfg);
@@ -1084,7 +1106,7 @@ test('pty: a Codex-only user finishes setup with no Claude token and no claude c
   assert.doesNotMatch(cfg, /CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
   assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
   assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK/);
-  assert.doesNotMatch(r.text.split('Summary')[1], /Claude token/);
+  assert.doesNotMatch(r.text.split('Summary')[1], /Claude token\s+(OK|not)/);
 });
 
 test('pty: choosing claude with no claude command stops with the install link', () => {
@@ -1158,9 +1180,10 @@ test('check-only finds a ChatGPT login at CLOUDY_CLOUD_CODEX_AUTH, as the runtim
 
 test('pty: --more asks for usage alerts, Particle.ai and OpenRouter keys, then coordinators, after the base steps', () => {
   const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
-  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators now.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators now.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Particle\.ai key/);
+  assert.match(r.text, /OpenAI key/);
   assert.match(r.text, /OpenRouter key/);
   assert.match(r.text, /Set up cloud coordinators now\? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes\./);
   assert.equal(readFileSync(g.cfg, 'utf8').includes('PARTICLE'), false);
@@ -1171,4 +1194,45 @@ test('pty: plain setup on a configured machine never asks about the --more items
   const r = g.run(answers);
   assert.doesNotMatch(r.text, /Particle\.ai key|OpenRouter key|usage alert emails|coordinators now/);
   assert.match(readFileSync(g.cfg, 'utf8'), /PARTICLE_API_KEY=pk-test-value/);
+});
+
+// ---- arguments, saved provider, --more details ----
+test('arguments: unknown ones print usage and exit 2 before any work, in any order with --check-only', () => {
+  for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
+    const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
+    assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\] \[--check-only\]/);
+    assert.doesNotMatch(r.stdout, /\[1\/4\]/);
+  }
+});
+
+test('--check-only honours --provider (self-hosted on a fresh config checks the SSH host, not an Instabox key)', () => {
+  const r = spawnSync('/bin/bash', [script, '--more', '--provider', 'self-hosted', '--check-only'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
+  assert.match(r.stdout, /No SSH host is saved/);
+  assert.doesNotMatch(r.stdout, /No Instabox key is saved/);
+});
+
+test('choose_provider: Enter keeps the saved provider and writes nothing', () => {
+  const cfg = join(tmp(), 'env');
+  const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider "" self-hosted; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1', CLOUDY_CLOUD_CONFIG: cfg }, steps: [['Type 1 or 2', '\n']] });
+  assert.match(p.text, /Enter for 2/);
+  assert.match(p.text, /PROVIDER=self-hosted/);
+  assert.ok(!existsSync(cfg));
+});
+
+test('pty: a saved self-hosted machine stays self-hosted when Enter answers the provider question', () => {
+  const g = rig({ saved: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\n` });
+  const spy = nodeSpy(g, { stub: true });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '\n'], ['Replace it\\? \\[y/N\\]', 'n\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.ok(existsSync(spy.log), 'self-hosted script ran');
+  assert.match(readFileSync(g.cfg, 'utf8'), /CLOUDY_CLOUD_PROVIDER=self-hosted/);
+});
+
+test('pty: --more offers the OpenAI key when codex is installed even though claude is the agent list', () => {
+  const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinators now.*\\[y/N\\]', 'n\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Saved: claude\./);
+  assert.match(r.text, /OpenAI key for Codex workers/);
 });
