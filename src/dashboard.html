@@ -732,7 +732,6 @@
   }
   async function streamPoll(st) {
     st.busy = true; st.timer = 0;
-    const nextBefore = st.next;
     const before = [st.events.length, st.source?.kind, st.source?.reason, st.err, st.loaded].join();
     try {
       const r = await fetch('/api/stream?t=' + enc(T) + '&box=' + enc(st.box) + '&turn=' + st.turn + '&from=' + st.next, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
@@ -745,9 +744,10 @@
     st.busy = false;
     if (S.st !== st) return;
     const b = selBox();
-    // An active box is polled every 2 s. A finished one is read back to back while the server says the stream is not complete and `next` moved (a remote read returns a bounded amount), at most 60 times.
-    const more = b && !active(b) && !st.err && !st.complete && st.next > nextBefore && ++st.hops <= 60;
-    if (b && shown(b) && (active(b) || more)) st.timer = setTimeout(() => { st.timer = 0; if (S.st === st && shown(selBox())) streamPoll(st); }, more ? 0 : 2000);
+    // An active box is polled every 2 s. A finished one keeps polling while the server says its stream is not complete — a remote
+    // read returns a bounded chunk and the reader answers from its cache inside its own ~3 s interval — at most 60 hops.
+    const more = b && !active(b) && !st.err && !st.complete && ++st.hops <= 60;
+    if (b && shown(b) && (active(b) || more)) st.timer = setTimeout(() => { st.timer = 0; if (S.st === st && shown(selBox())) streamPoll(st); }, more ? 3000 : 2000);
     if (before !== [st.events.length, st.source?.kind, st.source?.reason, st.err, st.loaded].join()) redo(); else if (b) updateBadge(b);
   }
 

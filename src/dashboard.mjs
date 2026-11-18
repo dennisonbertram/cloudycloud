@@ -80,7 +80,7 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
       all.push(...msgs);
       let b = boxes.find((x) => x !== c && (x.id === w.id || x.labels?.agent === w.id));
       if (b && b.source !== 'machine') continue; // this session's own log knows it better
-      if (b) { delete b.note; Object.assign(b, { messages: w.messages, description: w.description ?? b.description, title: w.description ?? b.title, titleSource: w.description ? 'log' : b.titleSource, profile: w.profile, model: w.model, branch: w.branch, push: w.push, turns: w.turns, source: 'coordinator-log' }); }
+      if (b) { delete b.note; Object.assign(b, { messages: w.messages, description: w.description ?? b.description, title: w.description ?? b.title, titleSource: w.description ? 'log' : b.titleSource, profile: w.profile, model: w.model, branch: w.branch, push: w.push, turns: w.turns, harness: w.harness, autofix: w.autofix, source: 'coordinator-log' }); }
       else boxes.push(b = { ...w, kind: 'agent', pid: undefined, status: w.status === 'failed' ? 'failed' : 'stopped', title: w.description, titleSource: 'log', source: 'coordinator-log', turns: w.turns });
       b.parent = c.id;
       (c.children ??= []).push(b.id);
@@ -124,15 +124,17 @@ export function fleetsOf(boxes, merged) {
 const FLEET_MERGED_MS = 30_000;
 const execP = promisify(execFile);
 // The origin/cloudy-cloud/* remote branches merged into origin/<trunk>, as a Set of short branch names, or null when
-// git cannot answer (not a repo, no remote). Runs `git branch -r` via execFile — never a shell — in the dashboard's
-// cwd and caches each trunk's answer about 30 s so a poll loop does not spawn git every time.
-export function makeMergedCheck({ now = Date.now, run = (args) => execP('git', args) } = {}) {
+// git cannot answer (not a repo, no remote). Runs `git fetch` then `git branch -r` via execFile — never a shell — in
+// the dashboard's cwd so the remote-tracking ref is fresh, and caches each trunk's answer about 30 s so a poll loop
+// does not spawn git every time. A failed fetch is an unknown answer, not the stale one.
+export function makeMergedCheck({ now = Date.now, run = (args, opts) => execP('git', args, opts) } = {}) {
   const cache = new Map();
   return async (trunk) => {
     let c = cache.get(trunk);
     if (!c || now() - c.at >= FLEET_MERGED_MS) {
       let list = null;
       try {
+        await run(['fetch', '--quiet', 'origin', trunk], { timeout: 15_000 });
         const { stdout } = await run(['branch', '-r', '--merged', 'origin/' + trunk, '--list', 'origin/cloudy-cloud/*']);
         list = new Set(stdout.split('\n').map((l) => l.trim().replace(/^origin\//, '')).filter(Boolean));
       } catch { /* no answer: merged stays null */ }

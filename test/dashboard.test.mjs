@@ -469,6 +469,19 @@ test('a coordinator box is filled from its machine\'s events.jsonl and streams, 
   } finally { s.close(); }
 });
 
+test('a machine-listed worker box takes the coordinator log\'s harness and autofix too, like profile and push', () => {
+  const lab = (o) => ({ purpose: 'cloudy-cloud', ...o });
+  const machines = [
+    { id: 'mc', name: 'coord', role: 'coordinator', state: 'running', status: 'running', startedAt: 1, labels: lab({ role: 'coordinator', name: 'coord' }) },
+    { id: 'mw', name: 'wm', state: 'running', status: 'running', startedAt: 2, labels: lab({ agent: 'aaaa1111', role: 'worker', parent: 'coord' }) },
+  ];
+  const coordLogs = { mc: [{ id: 'aaaa1111', description: 'w', status: 'stopped', messages: [], harness: 'codex', autofix: { state: 'clean', round: 1, pr: 'https://github.com/a/b/pull/1' } }] };
+  const b = buildState({ events: [], machines, alive: () => true, coordLogs }).boxes.find((x) => x.id === 'aaaa1111');
+  assert.equal(b.source, 'coordinator-log');
+  assert.equal(b.harness, 'codex');
+  assert.deepEqual(b.autofix, { state: 'clean', round: 1, pr: 'https://github.com/a/b/pull/1' });
+});
+
 test('demo state has a coordinator with two workers, tool-call streams, and a box with no stream', () => {
   const d = demoState(), by = Object.fromEntries(d.boxes.map((b) => [b.id, b]));
   const coord = d.boxes.find((b) => b.kind === 'coordinator' && b.children?.length >= 2);
@@ -622,8 +635,10 @@ test('page: an event with no timestamp renders without a time element instead of
   assert.equal(timeEl('btime', Date.now()).tag, 'time');
 });
 
-test('page: an inactive agent keeps fetching its stream while the server says it is not complete and next advances, within a bound', () => {
-  assert.match(PAGE, /!st\.complete && st\.next > nextBefore && \+\+st\.hops <= 60/);
+test('page: an inactive agent keeps polling while the server says its stream is incomplete, even when a chunk adds no events', () => {
+  assert.match(PAGE, /!st\.err && !st\.complete && \+\+st\.hops <= 60/);
+  assert.doesNotMatch(PAGE, /st\.next > nextBefore/, 'a chunk with no new events must not stop the polling: bytes may still remain');
+  assert.match(PAGE, /more \? 3000 : 2000/, 'catch-up polls wait the reader interval, they are not back to back');
 });
 
 test('page: a turn\'s messages come from the retained outgoing messages offset by the dropped ones, never the whole history', () => {
@@ -1283,19 +1298,25 @@ test('fleetsOf lists each valid trunk with the agent ids whose branch merged int
   assert.deepEqual(fleetsOf(boxes, new Map()), [{ trunk: 'fleet/x', merged: null }]);
 });
 
-test('the merged check runs git branch -r via execFile on the validated trunk and caches about 30 s', async () => {
+test('the merged check fetches the trunk first, then runs git branch -r via execFile, and caches about 30 s', async () => {
   const clock = { t: 1_000_000 }, calls = [];
-  const run = async (args) => { calls.push(args); return { stdout: '  origin/cloudy-cloud/a\n  origin/cloudy-cloud/b\n' }; };
+  const run = async (args, opts) => { calls.push([args, opts]); return { stdout: '  origin/cloudy-cloud/a\n  origin/cloudy-cloud/b\n' }; };
   const check = makeMergedCheck({ run, now: () => clock.t });
   assert.deepEqual([...(await check('fleet/x'))].sort(), ['cloudy-cloud/a', 'cloudy-cloud/b']);
-  assert.deepEqual(calls[0], ['branch', '-r', '--merged', 'origin/fleet/x', '--list', 'origin/cloudy-cloud/*']);
+  assert.deepEqual(calls[0], [['fetch', '--quiet', 'origin', 'fleet/x'], { timeout: 15_000 }]);
+  assert.deepEqual(calls[1], [['branch', '-r', '--merged', 'origin/fleet/x', '--list', 'origin/cloudy-cloud/*'], undefined]);
   await check('fleet/x');
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2, 'within the cache period no second fetch runs');
   clock.t += 31_000;
   await check('fleet/x');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 4);
   const fail = makeMergedCheck({ run: async () => { throw new Error('not a git repository'); }, now: () => clock.t });
   assert.equal(await fail('fleet/x'), null);
+});
+
+test('a failed trunk fetch makes the merge status unknown, not the stale local answer', async () => {
+  const check = makeMergedCheck({ run: async (args) => { if (args[0] === 'fetch') throw new Error('offline'); return { stdout: 'origin/cloudy-cloud/a\n' }; } });
+  assert.equal(await check('fleet/x'), null);
 });
 
 test('liveState exposes fleets from the merged check, and null when git cannot answer', async () => {

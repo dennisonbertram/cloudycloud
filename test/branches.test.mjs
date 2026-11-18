@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,4 +53,58 @@ test('unknown arguments print usage and exit 2', async () => {
   const f = fixture();
   assert.equal((await run(['prune', '--all'], f.work)).code, 2);
   assert.equal((await run([], f.work)).code, 2);
+});
+
+test('--yes skips a branch that changed since it was listed: the delete carries a lease', async () => {
+  const f = fixture();
+  const real = sh('/', 'command -v git');
+  const bin = mkdtempSync(join(tmpdir(), 'git-shim-'));
+  // A git shim: on a delete push it first advances the target branch, like a worker racing the prune.
+  writeFileSync(join(bin, 'git'), `#!/bin/sh
+t=""; p=""
+for a in "$@"; do
+  case "$a" in :refs/heads/*) t=\${a#:refs/heads/};; esac
+  [ "$p" = "--delete" ] && t="$a"
+  p="$a"
+done
+if [ -n "$t" ]; then
+  "${real}" -C "${f.work}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m race
+  "${real}" -C "${f.work}" push -q origin "HEAD:refs/heads/$t"
+fi
+exec "${real}" "$@"
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let r;
+  try { r = await run(['prune', '--yes'], f.work); } finally { process.env.PATH = path; }
+  assert.equal(r.code, 0);
+  assert.match(r.out, /cloudy-cloud\/00000001 skipped \(changed since check\)/);
+  assert.match(r.out, /cloudy-cloud\/issue-12-00000004 skipped \(changed since check\)/);
+  const after = f.branches();
+  for (const b of ['cloudy-cloud/00000001', 'cloudy-cloud/00000002', 'cloudy-cloud/issue-12-00000004']) assert.ok(after.includes(b), `${b} must survive a racing push`);
+});
+
+test('--yes refuses to delete when origin pushes somewhere other than it fetches', async () => {
+  const f = fixture();
+  const before = f.branches();
+  sh(f.work, 'git remote set-url --push origin https://elsewhere.example/repo.git');
+  const r = await run(['prune', '--yes'], f.work);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /push/);
+  assert.match(r.err, /refus/i);
+  assert.deepEqual(f.branches(), before);
+  const dry = await run(['prune'], f.work); // listing is still fine: nothing is deleted
+  assert.equal(dry.code, 0);
+  assert.match(dry.out, /Dry run/);
+});
+
+test('--yes refuses to delete when origin has several push URLs', async () => {
+  const f = fixture();
+  const before = f.branches();
+  sh(f.work, `git remote set-url --push origin ${f.bare}`);
+  sh(f.work, 'git remote set-url --push --add origin https://second.example/repo.git');
+  const r = await run(['prune', '--yes'], f.work);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /refus/i);
+  assert.deepEqual(f.branches(), before);
 });
