@@ -110,7 +110,7 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
@@ -120,8 +120,9 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   return {
     name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
-      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true },
+      maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true, hasEgressPolicy },
     async create(opts) {
+      if (opts.egress && !hasEgressPolicy) throw Object.assign(new Error('fake cannot limit where a machine connects.'), { code: 'egress_unsupported' });
       needKey();
       const k = opts.kind?.name ?? 'linux';
       if (!machineKinds.includes(k)) throw Object.assign(new Error(`fake does not offer ${k} machines`), { code: 'machine_kind_unsupported' });
