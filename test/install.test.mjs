@@ -228,34 +228,45 @@ test('capture_token extracts a wrapped, escaped token and always deletes the tem
   assert.deepEqual(readdirSync(t), []);
 });
 
-// A stub folder with bin/cloudy-cloud and an npx that records its calls.
-function coordStub({ imageOut = 'Image machine img-1 is ready and cloudy-cloud is installed on it.', sshFail = false, saveFail = false } = {}) {
+// A stub folder with bin/cloudy-cloud that records its calls and its stdin/stdout state, and an npx that records its calls.
+// The stub plays the part of the one-command "coordinator image": it writes the account to the config like the real one does.
+function coordStub({ fail = false, account = 'coord@example.com' } = {}) {
   const dir = tmp();
   const root = join(dir, 'root'); const bin = join(root, 'bin');
   execFileSync('mkdir', ['-p', bin]);
-  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\ncase "$*" in\n *--save*) ${saveFail ? 'echo save failed; exit 1' : 'echo saved'} ;;\n *) echo "${imageOut}" ;;\nesac\n`);
+  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\necho "image output reaches the terminal"\n${fail ? 'exit 1' : `echo CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=${account} >> "$CLOUDY_CLOUD_CONFIG"`}\n`);
   chmodSync(join(bin, 'cloudy-cloud'), 0o755);
-  writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\ncase "$*" in\n *"auth login"*) ${sshFail ? 'exit 1' : 'exit 0'} ;;\n *"auth status"*) echo '{"email":"coord@example.com"}' ;;\nesac\n`);
+  writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\n`);
   chmodSync(join(dir, 'npx'), 0o755);
   return { dir, root };
 }
 import { execFileSync } from 'node:child_process';
 
-test('coordinators: skipped on N; full flow signs in on the machine, saves, and records the account', () => {
+const TTY = 'have_tty() { return 0; };';
+test('coordinators: skipped on N; yes runs "coordinator image" alone and reads the saved account', () => {
   const s = coordStub();
   const cfg = join(tmp(), 'env');
-  const skip = fn(`yn() { return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLOUDY_CLOUD_CONFIG: cfg });
-  assert.equal(out1(skip), 'not set up');
+  const skip = fn(`${TTY} yn() { echo "ASKED: $1"; return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLOUDY_CLOUD_CONFIG: cfg });
+  assert.match(skip.stdout, /ASKED: Set up cloud coordinators now\? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes\./);
+  assert.match(skip.stdout, /not set up/);
   assert.ok(!existsSync(join(s.dir, 'calls')));
-  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
+  const r = fn(`${TTY} yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
   assert.match(r.stdout, /ready \(coord@example\.com\)/);
   const calls = readFileSync(join(s.dir, 'calls'), 'utf8');
-  assert.match(calls, /npx --yes instabox@latest ssh img-1 -- -t claude auth login/);
-  assert.match(calls, /coordinator image --save/);
-  assert.match(readFileSync(cfg, 'utf8'), /CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=coord@example\.com/);
+  assert.equal(calls.trim(), 'cc coordinator image'); // one call, no flags
+  assert.match(r.stdout, /image output reaches the terminal/); // not captured
+  assert.doesNotMatch(calls, /npx|--save|auth login/);
 });
 
-// The coordinator step of main, run on an npm-style root (inside node_modules, no .git) with a git stub that logs its calls.
+test('coordinators: with no terminal, one line says how to set them up later and nothing runs', () => {
+  const s = coordStub();
+  const r = fn(`have_tty() { return 1; }; yn() { echo ASKED; return 0; }; setup_coordinators "$1"`, [s.root], { CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') });
+  assert.match(r.stdout, /Set up coordinators later on a terminal: cloudy-cloud coordinator image/);
+  assert.doesNotMatch(r.stdout, /ASKED/);
+  assert.ok(!existsSync(join(s.dir, 'calls')));
+});
+
+// The coordinator step on an npm-style root (inside node_modules, no .git) with a git stub that logs its calls.
 test('coordinators from an npm install: the step is offered, never says it needs a clone, and makes no git call', () => {
   const s = coordStub();
   const root = join(s.dir, 'node_modules/cloudycloud');
@@ -264,19 +275,18 @@ test('coordinators from an npm install: the step is offered, never says it needs
   writeFileSync(join(s.dir, 'git'), `#!/bin/sh\necho "git $@" >> "${s.dir}/gitcalls"\n`);
   chmodSync(join(s.dir, 'git'), 0o755);
   const cfg = join(tmp(), 'env');
-  const r = fn(`PROVIDER=instabox; yn() { echo "ASKED: $1"; return 0; }; offer_coordinators "$1"; echo "$STATUS_COORD"`, [root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
+  const r = fn(`${TTY} PROVIDER=instabox; yn() { echo "ASKED: $1"; return 0; }; offer_coordinators "$1"; echo "$STATUS_COORD"`, [root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
   assert.match(r.stdout, /ASKED: Set up cloud coordinators/);
   assert.match(r.stdout, /ready \(coord@example\.com\)/);
   assert.doesNotMatch(r.stdout + r.stderr, /needs a git clone|from a clone/);
   assert.ok(!existsSync(join(s.dir, 'gitcalls')), 'no git call on the package root');
 });
 
-test('coordinators: a failed sign-in removes the image machine and says how to retry', () => {
-  const s = coordStub({ sshFail: true });
-  const r = fn(`yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') }));
-  assert.match(r.stdout, /failed \(run (cloudy-cloud setup|\.\/install\.sh) again\)/);
-  assert.match(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx --yes instabox@latest rm --yes img-1/);
-  assert.ok(!/--save/.test(readFileSync(join(s.dir, 'calls'), 'utf8')));
+test('coordinators: a failed "coordinator image" says how to retry and removes nothing itself', () => {
+  const s = coordStub({ fail: true });
+  const r = fn(`${TTY} yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') }));
+  assert.match(r.stdout, /failed \(run (cloudy-cloud setup|\.\/install\.sh) --more again\)/);
+  assert.doesNotMatch(readFileSync(join(s.dir, 'calls'), 'utf8'), /npx/);
 });
 
 // ---- the real script through a pty ----
@@ -286,9 +296,8 @@ const pty = (spec) => {
   return { text: r.stdout, code: m ? Number(m[1]) : -1 };
 };
 
-// The first question of every run: Enter keeps the default, Instabox.
-const WHERE = ['Where should subagents run', '\n'];
-const AGENTS = ['Which agents do you run', 'claude\n']; // the agent question: this suite's default is the Claude flow
+// A plain run asks no provider or agent question: Instabox is the default and claude is found on PATH.
+const AGENTS = ['Which agents do you run', 'claude\n']; // asked only when no agent is found
 function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   const cl = claudeStub(claudeExtra);
   const cfgDir = tmp(); const cfg = join(cfgDir, 'env');
@@ -302,11 +311,11 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   symlinkSync(resolve('bin/cloudy-cloud'), join(cl, 'cloudy-cloud'));
   const tdir = tmp();
   const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
-  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps: [WHERE, AGENTS, ...steps] });
+  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps: [...steps] });
   return { cl, cfg, tdir, run, env };
 }
 const P_IB = ['Paste it', null]; // placeholders, built per test
-const tail = [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const tail = [['Replace it\\? \\[y/N\\]', 'n\n']];
 const MOVE = ['Move CLAUDE_CODE_OAUTH_TOKEN into', 'n\n']; // saved Claude token in the env file: decline moving it, so the old flow is unchanged
 const savedBoth = `INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n`;
 
@@ -326,7 +335,8 @@ test('pty: a two-line paste gives the full token; live check runs; token is not 
   assert.ok(!readFileSync(join(g.cl, 'argv'), 'utf8').includes(TOKEN));
   assert.equal(readFileSync(join(g.cl, 'seen'), 'utf8').split('\n')[0], TOKEN);
   assert.ok(!r.text.includes(TOKEN) && !r.text.includes(KEY)); // nothing secret on screen
-  assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK[\s\S]*Claude token\s+OK[\s\S]*Coordinators\s+not set up/);
+  assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK[\s\S]*Claude token\s+OK/);
+  assert.doesNotMatch(r.text, /Coordinators/);
 });
 
 test('pty: pasted export lines and quoted values work', () => {
@@ -378,7 +388,7 @@ test('pty: Enter keeps the saved token', () => {
 
 test('pty: a rejected token is retried at most 3 times and not saved', () => {
   const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { fail: '401 invalid authentication\n' } });
-  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']]);
+  const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n']]);
   assert.match(r.text, /Claude rejected this token: 401 invalid authentication/);
   assert.match(r.text, /Stopped the Claude step after 3 tries\. No token is saved/);
   assert.ok(!readFileSync(g.cfg, 'utf8').includes('CLAUDE_CODE_OAUTH_TOKEN'));
@@ -401,9 +411,9 @@ function uiRig(opts, env = {}) {
   const g = rig(opts);
   const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLOUDY_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
   for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
-  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [WHERE, AGENTS, ...steps], ...extra }) };
+  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [...steps], ...extra }) };
 }
-const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
+const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n']];
 const NOANIM = { CLOUDY_CLOUD_NO_ANIMATION: '1' };
 
 test('piped output has no escape sequences and uses ASCII marks', () => {
@@ -491,7 +501,7 @@ test('animation: Ctrl-C restores the cursor and echo', () => {
 
 test('animation: a key pressed during it skips it and does not reach the first prompt', () => {
   const g = uiRig({ saved: savedBoth });
-  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, AGENTS, ['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -554,7 +564,7 @@ test('link_command (npm mode): a cloudy-cloud found only in the npx cache does n
   const bin = join(cache, '.bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, 'cloudy-cloud'), 0o755);
-  const run = (path) => fn(`yn() { echo ASKED; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${path}:${nodeDir()}:/usr/bin:/bin` }).stdout;
+  const run = (path) => fn(`yn_yes() { echo ASKED; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${path}:${nodeDir()}:/usr/bin:/bin` }).stdout;
   const npx = run(bin);
   assert.match(npx, /ASKED/);
   assert.doesNotMatch(npx, /already on your PATH/);
@@ -570,7 +580,7 @@ test('link_command (npm mode): a cloudy-cloud that is not the npm global install
   const old = tmp(); mkdirSync(join(old, 'bin'), { recursive: true }); // an old worktree link
   writeFileSync(join(old, 'bin/cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(old, 'bin/cloudy-cloud'), 0o755);
   const s = npmStub(false);
-  const run = (answer) => fn(`yn() { case "$1" in Install*) return 1 ;; *) return ${answer} ;; esac; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${join(old, 'bin')}:${s.dir}:/usr/bin:/bin` });
+  const run = (answer) => fn(`yn_yes() { return 1; }; yn() { return ${answer}; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${join(old, 'bin')}:${s.dir}:/usr/bin:/bin` });
   const no = run(1);
   assert.match(no.stdout, /Left it in place[^\n]*npm install -g cloudycloud/);
   assert.doesNotMatch(readFileSync(s.calls, 'utf8'), /install -g/);
@@ -636,7 +646,7 @@ esac
 ` });
   return { dir, calls, link };
 }
-const runLink = (stub, answer) => fn(`yn() { case "$1" in Install*) return 0 ;; *) return ${answer} ;; esac; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${stub.dir}:/usr/bin:/bin` }); // no real cloudy-cloud on PATH
+const runLink = (stub, answer) => fn(`yn_yes() { return 0; }; yn() { return ${answer}; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${stub.dir}:/usr/bin:/bin` }); // no real cloudy-cloud on PATH
 
 test('link_command (npm mode): npm install failure explains the fix and setup continues', () => {
   const s = npmStub(false);
@@ -689,26 +699,30 @@ function nodeSpy(g, { stub }) {
 test('pty: answer 1 (the default) is the Instabox flow and never runs the self-hosted script', () => {
   const g = rig({ saved: savedBoth });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [WHERE, AGENTS, ...answers] });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [...answers] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Instabox key saved and working/);
+  assert.match(r.text, /Agents: claude/);
+  assert.doesNotMatch(r.text, /Where should subagents run|Which agents|Particle|OpenRouter|usage alert emails|coordinators now/i);
+  assert.match(r.text, /Setup complete\. More: cloudy-cloud setup --more/);
+  assert.ok(r.text.lastIndexOf('Next') < r.text.indexOf('cloudy-cloud protect') && r.text.indexOf('cloudy-cloud protect') < r.text.indexOf('Setup complete'), 'Next box, protect hint, final line in order');
   assert.ok(!existsSync(spy.log), 'self-hosted script was called');
 });
 
 test('pty: answer 2 runs the self-hosted script, skips every Instabox step and keeps the Claude step', () => {
-  const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\n` });
+  const g = rig({ saved: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\n` });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '2\n'], AGENTS, ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '2\n'], ['Replace it\\? \\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.equal(readFileSync(spy.log, 'utf8').trim().endsWith('self-hosted-setup.mjs setup'), true);
-  assert.ok(!/Instabox API key|Instabox key saved|GH_TOKEN|coordinators/i.test(r.text), r.text);
+  assert.ok(!/Instabox API key|Instabox key saved|GH_TOKEN|Coordinators  /i.test(r.text), r.text);
   assert.match(r.text, /Your machine\s+OK \(me@mac-studio, 4 at once\)/);
 });
 
 test('pty: --provider self-hosted skips the question', () => {
   const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n` });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'self-hosted'], env: spy.env, steps: [AGENTS, ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'self-hosted'], env: spy.env, steps: [['Replace it\\? \\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/Where should subagents run/.test(r.text));
   assert.ok(existsSync(spy.log));
@@ -1061,7 +1075,7 @@ const noClaudePath = (g) => stubDir(['git', 'curl', 'npm', 'npx', 'node'], { nod
 
 test('pty: a Codex-only user finishes setup with no Claude token and no claude command', () => {
   const g = rig();
-  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [WHERE, CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.doesNotMatch(r.text, /Claude token for subagents|Claude token works|Claude Code is missing/);
   const cfg = readFileSync(g.cfg, 'utf8');
@@ -1075,7 +1089,7 @@ test('pty: a Codex-only user finishes setup with no Claude token and no claude c
 
 test('pty: choosing claude with no claude command stops with the install link', () => {
   const g = rig();
-  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [WHERE, AGENTS] });
+  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [AGENTS] });
   assert.notEqual(r.code, 0);
   assert.match(r.text, /Claude Code is missing/);
 });
@@ -1140,4 +1154,21 @@ test('check-only finds a ChatGPT login at CLOUDY_CLOUD_CODEX_AUTH, as the runtim
   writeFileSync(auth, '{}', { mode: 0o600 });
   const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=codex\n`, { CLOUDY_CLOUD_CODEX_AUTH: auth }, { stub: npxStub({ secrets: gh }) });
   assert.equal(r.status, 0, r.stdout);
+});
+
+test('pty: --more asks for usage alerts, Particle.ai and OpenRouter keys, then coordinators, after the base steps', () => {
+  const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators now.*\\[y/N\\]', 'n\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /Particle\.ai key/);
+  assert.match(r.text, /OpenRouter key/);
+  assert.match(r.text, /Set up cloud coordinators now\? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes\./);
+  assert.equal(readFileSync(g.cfg, 'utf8').includes('PARTICLE'), false);
+});
+
+test('pty: plain setup on a configured machine never asks about the --more items', () => {
+  const g = rig({ saved: savedBoth + 'PARTICLE_API_KEY=pk-test-value\nOPENROUTER_API_KEY=sk-or-test-value\nCLOUDY_CLOUD_COORDINATOR_SNAPSHOT=snap-1\n' });
+  const r = g.run(answers);
+  assert.doesNotMatch(r.text, /Particle\.ai key|OpenRouter key|usage alert emails|coordinators now/);
+  assert.match(readFileSync(g.cfg, 'utf8'), /PARTICLE_API_KEY=pk-test-value/);
 });

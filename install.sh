@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sets up cloudy-cloud: checks tools, links the command, and asks for each key.
+# Sets up cloudy-cloud: checks tools, links the command, and asks for the keys the first agent run needs (--more adds the rest).
 # Run it from a clone, in a terminal: ./install.sh
 # Secrets are handled with shell builtins only (read, printf) and never appear in argv.
 
@@ -602,7 +602,7 @@ link_command() { # link_command ROOT
       fi
       return
     fi
-    if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
+    if yn_yes "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
       install_global
     else
       warn "Skipped. Run it with npx cloudycloud, or install later: npm install -g cloudycloud"
@@ -923,20 +923,16 @@ store_coordinator_key() {
   else warn "Could not store $name, so coordinator start will refuse to run" "run $(rerun_cmd) again to retry"; return 1; fi
 }
 
-# Removes the image machine so nothing keeps running, or says how to.
-coordinator_cleanup() {
-  if npx --yes instabox@latest rm --yes "$1" </dev/null >/dev/null 2>&1; then
-    ok "Removed the image machine $1" >&2
-  else
-    warn "The image machine $1 may still be running" "remove it with: npx instabox@latest rm $1 (it also deletes itself after a while)" >&2
-  fi
-}
+# have_tty: true when setup can show a question and read the answer (tests replace it).
+have_tty() { [ -t 0 ]; }
 
-# Optional: cloud coordinators. Builds the image machine, opens the Claude sign-in on it, and saves the snapshot.
+# Optional (setup --more): cloud coordinators. "coordinator image" handles the sign-in, retry, saving and progress itself,
+# so it runs with the terminal attached and nothing captured. It writes CLOUDY_CLOUD_SNAPSHOT_ACCOUNT when it saves.
 setup_coordinators() {
-  local root=$1 snap marker out name rc=0 acct saveout
+  local root=$1 snap marker acct
   snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
   marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
+  if ! have_tty; then hint "Set up coordinators later on a terminal: cloudy-cloud coordinator image"; return 0; fi
   if [ -n "$snap" ]; then
     STATUS_COORD="ready${marker:+ ($marker)}"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
@@ -944,41 +940,15 @@ setup_coordinators() {
     fi
     yn "Cloud coordinators use the Claude account saved in their image${marker:+ ($marker)}. Sign in again to use a different account?" || return 0
   else
-    yn "Set up cloud coordinators (they keep working when your laptop is closed)?" || return 0
+    yn "Set up cloud coordinators now? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes." || return 0
   fi
-  hint "This can take a few minutes."
-  spin_start "Building the coordinator image machine"
-  out=$("$root/bin/cloudy-cloud" coordinator image 2>&1) || rc=$?
-  spin_stop
-  name=$(printf '%s\n' "$out" | sed -n 's/^Image machine \([^ ]*\) is ready.*/\1/p; s/.*already exists (\([^)]*\)).*/\1/p' | head -n 1)
-  if [ -z "$name" ]; then
-    printf '%s\n' "$out" | tail -n 5 >&2
-    bad "Could not create the image machine. Run $(rerun_cmd) again to retry." >&2
-    STATUS_COORD="failed (run $(rerun_cmd) again)"; return 0
+  if "$root/bin/cloudy-cloud" coordinator image; then
+    acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
+    STATUS_COORD="ready${acct:+ ($acct)}"
+  else
+    bad "Coordinator setup did not finish. Run $(rerun_cmd) --more again to retry." >&2
+    STATUS_COORD="failed (run $(rerun_cmd) --more again)"
   fi
-  ok "Image machine $name is ready" "$SPIN_T"
-  hint "Opening the Claude sign-in on it; use the account coordinators should use."
-  if ! npx --yes instabox@latest ssh "$name" -- -t claude auth login; then
-    bad "The sign-in on the image machine did not finish." >&2
-    coordinator_cleanup "$name"
-    STATUS_COORD="failed (run $(rerun_cmd) again)"; return 0
-  fi
-  spin_start "Reading the signed-in account"
-  acct=$(npx --yes instabox@latest ssh "$name" -- claude auth status </dev/null 2>/dev/null | node -e '
-    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));console.log(j.email||(j.account&&j.account.email)||"")}catch{console.log("")}})' 2>/dev/null) || acct=""
-  spin_stop
-  spin_start "Saving the coordinator image"
-  if ! saveout=$("$root/bin/cloudy-cloud" coordinator image --save 2>&1); then
-    spin_stop
-    printf '%s\n' "$saveout" | tail -n 5 >&2
-    bad "Saving the image failed. To retry: $root/bin/cloudy-cloud coordinator image --save" >&2
-    coordinator_cleanup "$name"
-    STATUS_COORD="failed (run $(rerun_cmd) again)"; return 0
-  fi
-  spin_stop
-  if [[ $acct =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then write_env CLOUDY_CLOUD_SNAPSHOT_ACCOUNT "$acct"; else acct=""; del_env CLOUDY_CLOUD_SNAPSHOT_ACCOUNT; fi
-  STATUS_COORD="ready${acct:+ ($acct)}"
-  ok "Coordinator image saved" "${acct:+$acct, }$SPIN_T"
 }
 
 # Cloud coordinators are for Instabox only. They work from a clone or an npm install alike.
@@ -1143,39 +1113,45 @@ choose_provider() {
   case $a in 2) PROVIDER=self-hosted ;; *) PROVIDER=instabox ;; esac
 }
 
-# choose_agents: sets AGENTS from what you run locally. Enter accepts the saved choice, else the agents found on PATH, else claude.
+# choose_agents: sets AGENTS without asking when it can: the saved choice, else claude if found, else the agents found on PATH.
+# It asks only when none is found (Enter then means claude).
 choose_agents() {
-  local a c det="" def input tries=0 unknown parts list
+  local a c det="" input tries=0 unknown parts list saved
   for a in claude codex opencode pi free-pi; do
     c=$a; [ "$a" != free-pi ] || c=free-pi-cli
     ! command -v "$c" >/dev/null || det="${det:+$det,}$a"
   done
-  def=$(get_saved CLOUDY_CLOUD_AGENTS); [ -n "$def" ] || def=$det; [ -n "$def" ] || def=claude
-  while [ "$tries" -lt 3 ]; do
-    drain_tty
-    ask "Which agents do you run locally?" "Choose from: claude, codex, opencode, pi, free-pi (several, separated by spaces)." "Found on this computer: ${det:-none}. Only what these agents need is asked for."
-    ask_line "Enter for $def, or type your choice:"
-    IFS= read -r input </dev/tty || input=""
-    input=${input//,/ }
-    [ -n "${input//[[:space:]]/}" ] || input=${def//,/ }
-    read -ra parts <<<"$input"
-    unknown=""; list=""
-    for a in "${parts[@]}"; do
-      case $a in
-        claude|codex|opencode|pi|free-pi) case ",$list," in *",$a,"*) ;; *) list="${list:+$list,}$a" ;; esac ;;
-        *) unknown=$a ;;
-      esac
+  saved=$(get_saved CLOUDY_CLOUD_AGENTS)
+  # Claude is the default agent and needs nothing saved, so finding claude means claude; other agents are saved when they are all that is found.
+  AGENTS=${saved:-$det}
+  [ -n "$saved" ] || ! agents_has claude || AGENTS=claude
+  if [ -z "$AGENTS" ]; then
+    while [ "$tries" -lt 3 ]; do
+      drain_tty
+      ask "Which agents do you run locally?" "Choose from: claude, codex, opencode, pi, free-pi (several, separated by spaces)." "None was found on this computer. Only what these agents need is asked for."
+      ask_line "Enter for claude, or type your choice:"
+      IFS= read -r input </dev/tty || input=""
+      input=${input//,/ }
+      [ -n "${input//[[:space:]]/}" ] || input=claude
+      read -ra parts <<<"$input"
+      unknown=""; list=""
+      for a in "${parts[@]}"; do
+        case $a in
+          claude|codex|opencode|pi|free-pi) case ",$list," in *",$a,"*) ;; *) list="${list:+$list,}$a" ;; esac ;;
+          *) unknown=$a ;;
+        esac
+      done
+      if [ -n "$unknown" ]; then bad "Unknown agent \"$unknown\"" "choose from claude, codex, opencode, pi, free-pi"; tries=$((tries + 1)); continue; fi
+      AGENTS=$list; break
     done
-    if [ -n "$unknown" ]; then bad "Unknown agent \"$unknown\"" "choose from claude, codex, opencode, pi, free-pi"; tries=$((tries + 1)); continue; fi
-    AGENTS=$list; break
-  done
-  [ -n "$AGENTS" ] || stop_empty
-  if ! agents_has claude && yn "Also run Claude Code workers in the cloud? (needs a Claude token)"; then AGENTS="$AGENTS,claude"; fi
-  # Claude alone is the default when nothing is saved, so an existing Claude user's config stays as it was.
-  if [ "$AGENTS" != claude ] || [ -n "$(get_saved CLOUDY_CLOUD_AGENTS)" ]; then
-  write_env CLOUDY_CLOUD_AGENTS "$AGENTS" || { bad "Could not write $(cfg)." >&2; exit 1; }
+    [ -n "$AGENTS" ] || stop_empty
+    if ! agents_has claude && yn "Also run Claude Code workers in the cloud? (needs a Claude token)"; then AGENTS="$AGENTS,claude"; fi
   fi
-  ok "Agents" "$AGENTS"
+  # Claude alone is the default when nothing is saved, so an existing Claude user's config stays as it was.
+  if [ "$AGENTS" != "$saved" ] && { [ "$AGENTS" != claude ] || [ -n "$saved" ]; }; then
+    write_env CLOUDY_CLOUD_AGENTS "$AGENTS" || { bad "Could not write $(cfg)." >&2; exit 1; }
+  fi
+  ok "Agents: $AGENTS"
   if agents_has claude && ! command -v claude >/dev/null; then
     bad "Claude Code is missing" "Install it: https://code.claude.com, or run $(rerun_cmd) again without claude"; exit 1
   fi
@@ -1197,11 +1173,14 @@ has_worker_key() {
 }
 
 main() {
-  local provider_arg="" host
-  if [ "${1:-}" = --provider ]; then
-    [ $# -ge 2 ] || { bad "--provider needs instabox or self-hosted" >&2; exit 1; }
-    provider_arg=$2; shift 2
-  fi
+  local provider_arg="" host acct more=0
+  while [ $# -gt 0 ] && [ "$1" != --check-only ]; do
+    case $1 in
+      --provider) [ $# -ge 2 ] || { bad "--provider needs instabox or self-hosted" >&2; exit 1; }; provider_arg=$2; shift 2 ;;
+      --more) more=1; shift ;;
+      *) break ;;
+    esac
+  done
   if [ "${1:-}" != --check-only ] && [ ! -t 0 ]; then
     case $0 in */node_modules/*) echo "Setup asks for keys, so run it in a terminal: cloudy-cloud setup" ;;
       *) echo "install.sh asks for keys, so run it in a terminal: ./install.sh" ;; esac; exit 1
@@ -1230,6 +1209,8 @@ main() {
   link_command "$root"
   link_skill "$root"
 
+  # Instabox is the default; the question appears only when a self-hosted choice is saved and no --provider is given.
+  if [ -z "$provider_arg" ] && [ "$(get_saved CLOUDY_CLOUD_PROVIDER)" != self-hosted ]; then provider_arg=instabox; fi
   choose_provider "$provider_arg"
   choose_agents
   if agents_has claude; then
@@ -1247,16 +1228,22 @@ main() {
     setup_instabox
     [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
     store_coordinator_key || true # whether or not you build a coordinator image: nested coordinators need it too
-    setup_alerts
   fi
   if agents_has claude; then step 3 "Claude token"; setup_claude
   else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
-  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token, optional keys and coordinators"; setup_github; fi
+  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
-  ! agents_has codex || setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
-  setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
-  setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
-  offer_coordinators "$root"
+  if [ "$more" = 1 ]; then
+    [ "$PROVIDER" = self-hosted ] || setup_alerts
+    ! agents_has codex || setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
+    setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
+    setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
+    offer_coordinators "$root"
+  fi
+  # A saved image counts as ready on a plain run too.
+  if [ "$STATUS_COORD" = "not set up" ] && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then
+    acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT); STATUS_COORD="ready${acct:+ ($acct)}"
+  fi
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
   sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null)
@@ -1268,12 +1255,12 @@ main() {
     summary_row "Instabox key" "$STATUS_INSTABOX"
     ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
     summary_row "GitHub token" "$STATUS_GH"
-    summary_row "Coordinators" "$STATUS_COORD"
+    [ "$more" = 0 ] && [ "$STATUS_COORD" = "not set up" ] || summary_row "Coordinators" "$STATUS_COORD"
   fi
   box_close
   echo
   if ! agents_has claude && ! has_worker_key; then
-    warn "No worker credential is saved yet, so workers cannot start" "run $(rerun_cmd) again and save an OpenAI, Particle.ai or OpenRouter key, or choose claude"
+    warn "No worker credential is saved yet, so workers cannot start" "run $(rerun_cmd) --more and save an OpenAI, Particle.ai or OpenRouter key, or set up claude"
   fi
   if from_npm "$root"; then
     hint "To update, run: npm install -g cloudycloud@latest"
@@ -1284,8 +1271,6 @@ main() {
   fi
   hint "To change a key later, run: cloudy-cloud setup"
   hint "Restart any open cloudy-cloud session to use the new keys."
-  warn "Recommended: block direct pushes to your main branch on GitHub"
-  hint "Subagents can push to any branch the token reaches. In a repo, run: cloudy-cloud protect"
   box_open Next
   box_text "In a repo with a github.com origin, run:"
   host=${AGENTS%%,*}; [ "$host" != claude ] || host=""
@@ -1294,6 +1279,9 @@ main() {
   box_text "  use a subagent to run hostname, write it to proof.txt," "$C_ACC"
   box_text "  commit and push, and tell me the result" "$C_ACC"
   box_close
+  hint "Recommended: block direct pushes to your main branch. In a repo, run: cloudy-cloud protect"
+  echo
+  printf '  %s\n' "Setup complete. More: cloudy-cloud setup --more adds coordinators, usage alerts and other model keys."
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
