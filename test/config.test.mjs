@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { envRefresher, loadEnv, defaultWorkerNote } from '../src/config.mjs';
+import { envRefresher, loadEnv, defaultWorkerNote, egressAllow } from '../src/config.mjs';
 
 test('saved keys load, environment wins, empty means unset, other names ignored', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
@@ -49,6 +49,29 @@ test('the profile cap and provider retry keys load from the env file', () => {
   assert.equal(env.CLOUDY_CLOUD_PROVIDER_RETRIES, '2');
 });
 
+
+test('egressAllow parses a comma- or space-separated host list; unset and empty are an empty list', () => {
+  assert.deepEqual(egressAllow({}), { list: [] });
+  assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: '  ' }), { list: [] });
+  assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'api.example.com, *.example.org other.net ,another.io' }), { list: ['api.example.com', '*.example.org', 'other.net', 'another.io'] });
+});
+
+test('egressAllow rejects entries that are not plain host names', () => {
+  for (const bad of ['*.com', 'http://x', 'a.com:443', 'a/b', 'localhost']) {
+    const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `ok.example.com ${bad}` });
+    assert.ok(r.error && r.error.includes(`invalid host "${bad}"`), `${bad}: ${r.error ?? r.list}`);
+    assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
+  }
+});
+
+test('the egress and microsandbox keys load from the env file', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com,*.example.org\nCLOUDY_CLOUD_MSB_BIN=/opt/msb/bin\nCLOUDY_CLOUD_MSB_SLOTS=4\n');
+  const env = loadEnv({ CLOUDY_CLOUD_CONFIG: file });
+  assert.equal(env.CLOUDY_CLOUD_EGRESS_ALLOW, 'api.example.com,*.example.org');
+  assert.equal(env.CLOUDY_CLOUD_MSB_BIN, '/opt/msb/bin');
+  assert.equal(env.CLOUDY_CLOUD_MSB_SLOTS, '4');
+});
 
 test('defaultWorkerNote recommends only a profile that resolveProfile accepts under the provider\'s rules', () => {
   const base = { CLOUDY_CLOUD_PROFILES: '/nonexistent', CLOUDY_CLOUD_CODEX_AUTH: '/nonexistent/auth.json' };

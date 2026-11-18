@@ -94,10 +94,11 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       hasServerTTL: true, hasProxySecrets: false, hasConsentedSecrets: consented, hasSnapshots: true, hasPortForward: true,
       hasPublish: false, maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
-      machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false, hasSizes: false,
+      machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false, hasSizes: false, hasEgressPolicy: false,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind, egress } = {}) {
+      if (egress) throw fail('egress_unsupported', 'self-hosted cannot limit where a machine connects.');
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `self-hosted runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`);
       getSsh();
       const vars = { ...envs };

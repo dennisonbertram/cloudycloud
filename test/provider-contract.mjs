@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes', 'hasSizes'];
+const CAPS = ['hasServerTTL', 'hasProxySecrets', 'hasSnapshots', 'hasPortForward', 'hasPublish', 'maxForegroundMs', 'maxTtlSeconds', 'startsPerMin', 'maxConcurrentCalls', 'uploadMaxBytes', 'hasSizes', 'hasEgressPolicy'];
 const create = (p, labels, extra = {}) => p.create({ image: 'agent-browser', envs: {}, labels, ttlSeconds: 3600, ...extra });
 
 // kindsSkip: a reason to skip the kinds check explicitly (shown as skipped) for an adapter that does not have the caps yet.
@@ -55,6 +55,12 @@ export function contractSuite(name, makeProvider, { kindsSkip } = {}) {
       const row = (await p.list({ owner: 'o1' }))[0];
       assert.ok(['starting', 'running', 'stopped', 'failed'].includes(row.status));
     } finally { await a.kill(); await b.kill(); }
+  });
+
+  test(`${name}: an egress allow list follows caps.hasEgressPolicy`, async () => {
+    const p = makeProvider({ withKey: true });
+    assert.equal(typeof p.caps.hasEgressPolicy, 'boolean');
+    if (!p.caps.hasEgressPolicy) await assert.rejects(create(p, {}, { egress: { allow: ['example.com'] } }), (e) => e.code === 'egress_unsupported');
   });
 
   test(`${name}: metrics follows caps.hasMetrics`, async () => {
