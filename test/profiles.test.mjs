@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { preflightProfile, resetPreflightCache, resolveProfile, loadProfiles, profileKeyNames, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
@@ -189,4 +189,60 @@ test('preflightProfile: 404 fails with the key removed, 429 and network errors p
   assert.equal((await preflightProfile(p, env, o)).ok, true);
   assert.equal((await preflightProfile({ ...p, proxied: true }, env, o)).skipped, true);
   assert.equal(calls, 3);
+});
+
+test('preflightProfile skips codex and default-model profiles: the codex harness uses the Responses API, not /chat/completions', async () => {
+  resetPreflightCache();
+  let calls = 0;
+  const fetchFn = async () => { calls++; return { status: 404, text: async () => 'no' }; };
+  const e = { OPENAI_API_KEY: 'sk-x', KEY_API_KEY: 'sk-y' };
+  assert.equal((await preflightProfile({ name: 'codex', harness: 'codex', format: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'default', keyName: 'OPENAI_API_KEY' }, e, { fetchFn })).skipped, true);
+  assert.equal((await preflightProfile({ name: 'codex-openrouter', harness: 'codex', format: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'o/m', keyName: 'KEY_API_KEY' }, e, { fetchFn })).skipped, true);
+  assert.equal((await preflightProfile({ name: 'd', format: 'openai', baseUrl: 'https://api.example.com/v1', model: 'default', keyName: 'KEY_API_KEY' }, e, { fetchFn })).skipped, true);
+  assert.equal(calls, 0);
+});
+
+test('preflightProfile does not send the key over plain http, except to loopback', async () => {
+  resetPreflightCache();
+  let calls = 0;
+  const fetchFn = async () => { calls++; return { status: 200, text: async () => '' }; };
+  const e = { KEY_API_KEY: 'sk-y' };
+  const p = { format: 'openai', model: 'm', keyName: 'KEY_API_KEY' };
+  assert.equal((await preflightProfile({ ...p, name: 'h0', baseUrl: 'http://api.example.com/v1' }, e, { fetchFn })).skipped, true);
+  assert.equal(calls, 0, 'the key must not be sent in cleartext to a remote http host');
+  let n = 1;
+  for (const baseUrl of ['http://127.0.0.1:4000/v1', 'http://localhost:4000/v1', 'http://[::1]:4000/v1']) {
+    await preflightProfile({ ...p, name: `h${n++}`, baseUrl }, e, { fetchFn });
+    assert.equal(calls, n - 1, `loopback ${baseUrl} is still probed`);
+  }
+});
+
+test('preflightProfile cache is keyed by baseUrl and the key value, without storing the key', async () => {
+  resetPreflightCache();
+  let calls = 0;
+  const fetchFn = async () => { calls++; return { status: 200, text: async () => '' }; };
+  const p = { name: 'c', format: 'openai', baseUrl: 'https://api.example.com/v1', model: 'm', keyName: 'KEY_API_KEY' };
+  await preflightProfile(p, { KEY_API_KEY: 'k-one' }, { fetchFn });
+  await preflightProfile(p, { KEY_API_KEY: 'k-one' }, { fetchFn });
+  assert.equal(calls, 1);
+  await preflightProfile(p, { KEY_API_KEY: 'k-two' }, { fetchFn });
+  assert.equal(calls, 2, 'a changed key is a new cache entry');
+  await preflightProfile({ ...p, baseUrl: 'https://other.example.com/v1' }, { KEY_API_KEY: 'k-two' }, { fetchFn });
+  assert.equal(calls, 3, 'a changed baseUrl is a new cache entry');
+});
+
+test('a chatgpt profile validates and keeps fallback and maxConcurrent on the logged-in and missing-login paths', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-'));
+  const auth = join(dir, 'auth.json');
+  writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'a'.repeat(32), refresh_token: 'r'.repeat(32) } }));
+  chmodSync(auth, 0o600);
+  const mk = (extra) => file({ cg: { harness: 'codex', format: 'openai', baseUrl: 'https://chatgpt.com/backend-api/codex', model: 'default', auth: 'chatgpt', ...extra } });
+  const e = (a) => ({ CLOUDY_CLOUD_PROFILES: mk({ fallback: ['glm'], maxConcurrent: 2 }), CLOUDY_CLOUD_CODEX_AUTH: a });
+  const ok = resolveProfile('cg', undefined, e(auth)).ok;
+  assert.deepEqual([ok.fallback, ok.maxConcurrent], [['glm'], 2]);
+  const miss = resolveProfile('cg', undefined, e(join(dir, 'missing.json')));
+  assert.match(miss.error, /not found/);
+  assert.deepEqual(miss.fallback, ['glm'], 'a missing login still reports the fallback list so the caller can move on');
+  const bad = { ...e(auth), CLOUDY_CLOUD_PROFILES: mk({ fallback: 'glm' }) };
+  assert.match(resolveProfile('cg', undefined, bad).error, /fallback must be a list/);
 });
