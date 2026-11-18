@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -104,14 +105,43 @@ export function resolveProfile(name, model, env = process.env, { proxyOnly = fal
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (!chatgpt && (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName))) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
+  if (p.fallback !== undefined && !(Array.isArray(p.fallback) && p.fallback.every((n) => typeof n === 'string' && NAME.test(n)))) return { error: `profile ${name}: fallback must be a list of profile names.\nNext step: edit profiles.json so "fallback" looks like ["pi-glm", "pi-particle"].` };
+  if (p.maxConcurrent !== undefined && !(Number.isInteger(p.maxConcurrent) && p.maxConcurrent > 0)) return { error: `profile ${name}: maxConcurrent must be a positive whole number.\nNext step: edit profiles.json so "maxConcurrent" is a number such as 6, or remove it.` };
+  const extra = { ...(p.fallback && { fallback: p.fallback }), ...(p.maxConcurrent && { maxConcurrent: p.maxConcurrent }) };
   if (chatgpt) {
     const a = codexAuth(env);
-    return a.error ? { error: `Profile ${name}: ${a.error}` } : { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, auth: 'chatgpt', proxied: false } };
+    return a.error ? { fallback: Array.isArray(p.fallback) ? p.fallback : undefined, error: `Profile ${name}: ${a.error}` } : { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, auth: 'chatgpt', proxied: false, ...extra } };
   }
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
-  if (!env[p.keyName] && !proxied) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
+  if (!env[p.keyName] && !proxied) return { fallback: Array.isArray(p.fallback) ? p.fallback : undefined, missingKey: true, error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
-  return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName, proxied } };
+  return { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, keyName: p.keyName, proxied, ...extra } };
+}
+
+// Preflight (#55): one one-token request from this machine before any machine is created, so a dead profile fails in seconds.
+// Only a real key in the environment can be used (a proxy secret's value never reaches this machine). 404, 401 and 403 fail;
+// 429, 5xx, timeouts and network errors pass, because those are transient and the turn retry handles them. Cached for 60 s.
+const preflightCache = new Map();
+export const resetPreflightCache = () => preflightCache.clear();
+export async function preflightProfile(p, env = process.env, { fetchFn = fetch, now = Date.now, timeoutMs = 5000 } = {}) {
+  const key = p.keyName && env[p.keyName];
+  // Codex profiles are skipped: they call the Responses API, not /chat/completions, and "default" passes no model.
+  // A plain-http probe would send the key in cleartext, so only a loopback http target is probed.
+  const u = URL.canParse(p.baseUrl) ? new URL(p.baseUrl) : undefined;
+  const cleartext = u?.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  if (p.format !== 'openai' || p.auth === 'chatgpt' || p.proxied || !key || p.harness === 'codex' || p.model === 'default' || cleartext) return { ok: true, skipped: true };
+  const ck = `${p.name}|${p.model}|${p.baseUrl}|${createHash('sha256').update(key).digest('hex')}`, hit = preflightCache.get(ck);
+  if (hit && now() - hit.at < 60_000) return hit.r;
+  let r = { ok: true };
+  try {
+    const res = await fetchFn(`${p.baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ model: p.model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }), signal: AbortSignal.timeout(timeoutMs) });
+    if ([404, 401, 403].includes(res.status)) {
+      const body = String(await res.text().catch(() => '')).split(key).join('[redacted]').slice(0, 300);
+      r = { ok: false, status: res.status, error: `Profile ${p.name}: ${profileHost(p)} answered ${res.status} for model ${p.model}: ${body}\n${guide('model_not_found', { profiles: p.name })}` };
+    }
+  } catch { /* timeout or network error: let the machine start; the turn retry reports it */ }
+  preflightCache.set(ck, { at: now(), r });
+  return r;
 }
 
 export const GATEWAY_PORT = 4000;

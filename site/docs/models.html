@@ -194,6 +194,13 @@ Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have
 }</code></pre>
 <p><code>format</code> is <code>anthropic</code> or <code>openai</code>. <code>keyName</code> must be a key in your env file whose name ends in <code>_API_KEY</code>. An optional <code>"harness"</code> is <code>"claude"</code> (the default), <code>"pi"</code>, <code>"omp"</code>, <code>"codex"</code> or <code>"opencode"</code>. It picks the agent that runs on the machine. The <code>codex</code> and <code>opencode</code> harnesses need <code>"format": "openai"</code>, and <code>codex</code> needs a provider that offers the Responses API. A <code>codex</code> profile can use <code>"auth": "chatgpt"</code> instead of <code>keyName</code>. Replace <code>MODEL-ID</code> with a model id from your provider.</p>
 
+<p>Two more optional fields on any profile:</p>
+<ul>
+<li><code>"fallback"</code>: a list of profile names. When the profile has no key, or the provider refuses a one-token check before the machine starts, the server tries these profiles in order. The result says which profile ran. A <code>fallback</code> argument on <code>cloud_agent</code> overrides it, and <code>"preflight": false</code> on the call skips the check.</li>
+<li><code>"maxConcurrent"</code>: a positive whole number, the most agents this profile runs at once. Extra agents wait in the queue. <code>CLOUDY_CLOUD_PROFILE_MAX</code> sets the same cap for every profile that has no <code>maxConcurrent</code>.</li>
+</ul>
+<pre><code>{ "my-openrouter": { "format": "anthropic", "baseUrl": "https://openrouter.ai/api", "model": "MODEL-ID", "keyName": "OPENROUTER_API_KEY", "fallback": ["glm"], "maxConcurrent": 6 } }</code></pre>
+
 <h2 id="change-keys">Adding or changing keys later</h2>
 <ul>
 <li>Run <code>cloudy-cloud setup</code> again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for <code>OPENAI_API_KEY</code> when you choose codex, and does not set up the Codex login file: see <a href="#codex-profiles">The codex profiles</a>.</li>

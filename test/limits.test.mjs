@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLimiter, createStartQueue } from '../src/limits.mjs';
+import { createLimiter, createStartQueue, classifyProviderError, providerDetail } from '../src/limits.mjs';
 
 // Fake clock: sleep advances time at once.
 function clock() {
@@ -147,4 +147,33 @@ test('capacity wait: every waiting agent gets its note once, and the grant clear
     assert.equal(last.status, 'starting');
     assert.equal(last.note, undefined);
   }
+});
+
+test('classifyProviderError: transient errors retry, rejected requests do not', () => {
+  const k = (s) => classifyProviderError(s);
+  assert.deepEqual(k('404: {"code":"model_not_found"}'), { kind: 'model_not_found', status: 404, retryable: true });
+  assert.deepEqual([k('429 slow down').kind, k('429 slow down').retryable], ['rate_limited', true]);
+  assert.deepEqual([k('503 unavailable').kind, k('503 unavailable').retryable], ['server_error', true]);
+  assert.equal(k('request failed: ECONNRESET').retryable, true);
+  assert.equal(k('401 invalid api key').retryable, false);
+  assert.equal(k('400 bad request').retryable, false);
+  assert.equal(k('I fixed the bug'), null);
+  assert.equal(providerDetail('502 bad gateway'), 'Provider status: 502 server_error');
+  assert.equal(providerDetail('all fine'), '');
+});
+
+test('profileBusy holds the head, labels it, and releases it when the cap clears', async () => {
+  let busy = 'waiting for a free pi-x slot (2 of 2 running)', release;
+  const q = createStartQueue({ profileBusy: () => busy, sleep: () => new Promise((r) => { release = r; }) });
+  const a = { id: 'a', emit() {} };
+  let started = false;
+  const p = q.create(a, async () => { started = true; });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(started, false);
+  assert.equal(a.status, 'queued');
+  assert.match(q.reason(a), /pi-x slot/);
+  busy = undefined;
+  release();
+  await p;
+  assert.ok(started);
 });
