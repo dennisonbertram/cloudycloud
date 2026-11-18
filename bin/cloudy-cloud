@@ -204,6 +204,10 @@ find_missing() {
     elif [ -z "$(printenv CLOUDY_CLOUD_SSH_HOST)" ] && ! grep -q '^CLOUDY_CLOUD_SSH_HOST=.' "$config" 2>/dev/null; then
       missing='self-hosted machine (CLOUDY_CLOUD_SSH_HOST)'
     fi
+  elif [ "$provider" = microsandbox ]; then
+    if [ -z "$(printenv CLOUDY_CLOUD_MSB_BIN)" ] && ! grep -q '^CLOUDY_CLOUD_MSB_BIN=.' "$config" 2>/dev/null; then
+      missing='microsandbox CLI (CLOUDY_CLOUD_MSB_BIN)'
+    fi
   # The Instabox key counts from the environment or the file.
   elif [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
     missing='Instabox API key'

@@ -5,6 +5,8 @@
  * @typedef {object} Caps
  * @property {boolean} hasServerTTL      the server deletes a machine at its deadline
  * @property {boolean} hasProxySecrets   secrets reach the machine as placeholders, never as values
+ * @property {boolean} hasEgressPolicy   create accepts an egress allowlist and the provider enforces it
+ * @property {boolean} hasSizes          create accepts a size option
  * @property {boolean} hasSnapshots
  * @property {boolean} hasPortForward
  * @property {boolean} hasPublish
@@ -39,7 +41,7 @@
  * @property {string} name
  * @property {string} keyName            environment variable that holds the API key
  * @property {Caps} caps
- * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean, retry?: boolean, kind?: { name: string, gpu?: string, model?: string } }) => Promise<Sandbox>} create   kind absent means linux
+ * @property {(o: { image: string, envs: Record<string, string>, labels: Record<string, string>, name?: string, ttlSeconds: number, secrets?: string[], neverSuspend?: boolean, retry?: boolean, kind?: { name: string, gpu?: string, model?: string }, egress?: { allow?: string[] } }) => Promise<Sandbox>} create   kind absent means linux; egress.allow is a hostname allowlist (with '*.suffix' wildcards) for providers with hasEgressPolicy
  * @property {(id: string, o?: { retry?: boolean }) => Promise<Sandbox>} connect
  * @property {(labels?: Record<string, string>, opts?: { sdk?: boolean, onError?: (e: Error) => void }) => Promise<Array<{ id: string, name: string, labels: Record<string, string>, state: string, status: 'starting'|'running'|'stopped'|'failed', startedAt: number, archiveAt?: number, deleteAt?: string }>>} list
  * @property {(id: string, opts?: { sdk?: boolean, retries?: number, log?: (line: string) => void }) => Promise<void>} delete   a 404 counts as deleted
@@ -63,6 +65,7 @@
 const REGISTRY = {
   instabox: () => import('./instabox.mjs'),
   'self-hosted': () => import('./self-hosted.mjs'),
+  microsandbox: () => import('./microsandbox.mjs'),
 };
 
 /**
