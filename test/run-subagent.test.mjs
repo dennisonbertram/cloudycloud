@@ -11,9 +11,10 @@ import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm, stat } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
+import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
-import { startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -37,7 +38,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -102,7 +103,7 @@ test('wait returns the result once, then marks it reported; agent stays open', a
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
-  assert.match(first, /Pushed to origin cloudy-cloud\//);
+  assert.match(first, /No changes, no branch pushed/);
   const second = await wait([id]);
   assert.match(second, /already delivered; call cloud_agent_result/);
   assert.doesNotMatch(second, /hello/);
@@ -240,6 +241,37 @@ test('unparseable output returns the raw stdout and says so', async () => {
   const r = await wait([id]);
   assert.match(r, /not json/);
   assert.match(r, /Could not parse/);
+  assert.match(r, /status: failed/); // no final result and no session id: the turn failed and cannot be resumed
+});
+
+test('a first turn with a session but no final result is an error, and the agent stays open and resumable', async () => {
+  let sbx, first = true;
+  const { start, wait, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => {
+        if (cmd.includes('claude -p') && first) {
+          first = false;
+          o?.onStdout?.(`{"type":"system","subtype":"init","session_id":"${SID}"}\n`);
+          return Promise.resolve({ stdout: `{"type":"system","subtype":"init","session_id":"${SID}"}\n`, stderr: '', exitCode: 0 });
+        }
+        return run(cmd, o);
+      };
+      sbx = s;
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /ERROR/);
+  assert.match(r, /Could not parse/);
+  assert.equal(open.get(id).status, 'idle');
+  await msg(id, 'hi');
+  assert.match(await wait([id]), /status: idle[\s\S]*hello/);
+  assert.ok(sbx.cmds.some((c) => c.includes(`--resume ${SID}`)), 'the kept session id resumes the next turn');
 });
 
 test('a failed turn reports error, scrubs secrets, still pushes commits; agent with no session is failed', async () => {
@@ -398,7 +430,7 @@ test('a bundle over the limit is thin: the machine fetches the commits GitHub ha
   assert.ok(i > s.cmds.indexOf('gh auth setup-git'), 'prerequisites are fetched after gh auth');
   assert.match(s.cmds[i], /git fetch -q origin [0-9a-f]{40} && git fetch -q \.\.\/in\.bundle /);
   assert.ok(s.cmds[0].includes('git remote add origin') && !s.cmds[0].includes('in.bundle'));
-  assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'local');
+  assert.equal(deps.open.get(id).sha, await sh(repo, 'git rev-parse HEAD'));
 });
 
 test('changes too large even for a thin bundle fail with a clear error', async () => {
@@ -423,11 +455,12 @@ test('first-turn command is stream-json output with the commit-and-push hint; id
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
   assert.match(cmd, /--output-format stream-json --verbose/);
-  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then.'`));
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then. This turn ends at ${cmd.match(/This turn ends at (\S+?);/)[1]}; commit, push and finish before then.'`));
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name cloudy-cloud') && c.includes('user.email cloudy-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b cloudy-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
-  assert.ok(created[0].cmds.includes(`git push -q -u origin cloudy-cloud/${id}`));
+  assert.ok(created[0].cmds.some((c) => c.startsWith('git ls-remote') && c.includes(`branch.cloudy-cloud/${id}.merge`)));
+  assert.ok(!created[0].cmds.some((c) => c.includes('git push -q -u')));
 });
 
 test('origin: https accepted, ssh converted, missing or non-GitHub or malicious rejected before any sandbox', async () => {
@@ -479,8 +512,7 @@ test('uncommitted files are listed, not committed', async () => {
   const r = await wait([id]);
   assert.match(r, /Uncommitted changes left in the sandbox \(ask the agent to commit and push\): .*notes\.txt/);
   assert.match(r, /a\.txt/);
-  assert.equal(await remote(`git ls-tree -r --name-only cloudy-cloud/${id}`), 'a.txt');
-  assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'orig');
+  assert.equal(await remote('git branch --list "cloudy-cloud/*"'), '');
   assert.ok(!created[0].cmds.some((c) => /git (add|commit)/.test(c)), 'the server never commits for the agent');
 });
 
@@ -492,7 +524,7 @@ test('a push failure is reported; the agent stays idle and messageable', async (
   await msg(id, 'UNPUSHED');
   const r = await wait([id]);
   assert.match(r, /status: idle/);
-  assert.doesNotMatch(r, /ERROR/);
+  assert.match(r, /ERROR/); // a rejected push is an error the caller sees; the agent stays open and resumable
   assert.match(r, /Push failed: .*denied by test.*; the agent is still open, ask it to push\./s);
   assert.ok(open.has(id));
   await rejectPushes(false);
@@ -501,14 +533,11 @@ test('a push failure is reported; the agent stays idle and messageable', async (
   assert.equal(await remote(`git show cloudy-cloud/${id}:unpushed.txt`), 'unpushed');
 });
 
-test('a failed first push fails the agent with a clear, scrubbed message', async () => {
-  const { start, wait, rejectPushes, created } = await setup({ provider: proxyProvider(), env: PROXY_ENV });
-  await rejectPushes(true);
+test('a failed GitHub check fails the agent with a clear, scrubbed message', async () => {
+  const { start, wait } = await setup({ ...flakyFirstPush(9, 'remote: denied by test. fatal: 403'), provider: proxyProvider(), env: PROXY_ENV });
   const r = await wait([await start()]);
   assert.match(r, /status: failed/);
-  assert.match(r, /first push.*GH_TOKEN.*RUNBOOK\.md, step 2\.4.*denied by test/s);
-  assert.ok(created[0].killed);
-  assert.ok(!created[0].cmds.some((c) => c.includes('claude -p')));
+  assert.match(r, /GitHub access check.*GH_TOKEN.*RUNBOOK\.md, step 2\.4.*denied by test/s);
 });
 
 test('a missing gh fails the agent with a clear message', async () => {
@@ -567,7 +596,9 @@ test('claude runs with background tasks disabled on the first turn and on a resu
   await wait([id]);
   await msg(id, 'again');
   await wait([id]);
-  assert.equal(await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8'), '1 1680000 1680000\n1 1680000 1680000\n');
+  const envlog = (await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8')).trim().split('\n');
+  assert.equal(envlog.length, 2);
+  for (const line of envlog) assert.match(line, /^1 (1680000|167\d{4}) \1$/); // the shared turn deadline shaves a few ms off 28 min
   assert.ok(created[0].cmds.filter((c) => c.includes('claude -p')).length === 2);
 });
 
@@ -597,7 +628,7 @@ function flakyFirstPush(n, stderr) {
   const createSandbox = async () => {
     const s = await fakeSandbox();
     const run = s.commands.run;
-    s.commands.run = (cmd, o) => (cmd.startsWith('git push -q -u') && fails++ < n
+    s.commands.run = (cmd, o) => (cmd.startsWith('git ls-remote') && fails++ < n
       ? Promise.reject(Object.assign(new Error('exit'), { exitCode: 1, stderr }))
       : run(cmd, o));
     return s;
@@ -636,7 +667,7 @@ test('without proxy secrets an auth failure on the first push gives the provider
   const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
   const { start, wait } = await setup({ ...f, provider });
   const r = await wait([await start()]);
-  assert.match(r, /first push to origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
+  assert.match(r, /GitHub access check for origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
   assert.ok(!r.includes('step 2.4'));
 });
 
@@ -654,10 +685,43 @@ test('the safety push retries once', async () => {
       return s;
     },
   });
-  const r = await wait([await start()]);
+  const r = await wait([await start({ prompt: 'EDIT' })]);
   assert.match(r, /Pushed to origin cloudy-cloud\//);
   assert.equal(pushes, 2);
   assert.equal(sleeps.length, 1);
+});
+
+test('a finished turn whose safety push cannot reach the sandbox reports the agent gone', async () => {
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' })) : run(cmd, o));
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /could not be reached to push/);
+  assert.equal(open.get(id).status, 'failed');
+});
+
+test('a file name containing NOCHANGE is not read as the push result', async () => {
+  const { start, wait } = await setup({
+    sleep: async () => {},
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
+      return s;
+    },
+  });
+  const r = await wait([await start({ prompt: 'EDIT' })]);
+  assert.match(r, /Push failed/);
+  assert.doesNotMatch(r, /No changes, no branch pushed/);
 });
 
 // ---- model profiles ----
@@ -707,7 +771,7 @@ test('an openai profile writes a key-free config, starts the gateway, waits for 
   const i = sbx.cmds.findIndex((c) => c.includes('litellm --config'));
   const j = sbx.cmds.findIndex((c) => c.includes('health/liveliness'));
   const k = sbx.cmds.findIndex((c) => c.includes('claude -p'));
-  assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git push -q -u')) && j > i && k > j, 'order: push, gateway, health, claude');
+  assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git ls-remote')) && j > i && k > j, 'order: push, gateway, health, claude');
   assert.match(sbx.cmds[i], /nohup uvx --from 'litellm\[proxy\]' litellm .*--port 4000 > .*gateway\.log/);
   const c = sbx.cmds[k];
   for (const v of ['ANTHROPIC_BASE_URL=http://127.0.0.1:4000', 'ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY"', 'ANTHROPIC_API_KEY= ', 'ANTHROPIC_MODEL=worker', 'ANTHROPIC_SMALL_FAST_MODEL=worker']) assert.ok(c.includes(v), v);
@@ -906,11 +970,11 @@ test('a pi follow-up resumes the session by id', async () => {
   assert.match(lines[1], /PROMPT=again/);
 });
 
-test('a pi run whose final assistant message is an error fails the turn', async () => {
+test('a pi run whose final assistant message is an error fails the turn and leaves the agent open', async () => {
   const { start, wait } = await profileSetup();
   const id = await start({ profile: 'pi-particle', prompt: 'PIERR now' });
   const r = await wait([id]);
-  assert.match(r, /status: failed/);
+  assert.match(r, /status: idle/); // the session event was seen, so the agent stays open (#49)
   assert.match(r, /ERROR: .*401 invalid api key/);
 });
 
@@ -1968,6 +2032,19 @@ test('buildServer wires the live-agent count into its queue', async () => {
   await assert.rejects(p, /cancelled/);
 });
 
+test('a stopped issue agent still names its issue branch when cloud_agent_result is a separate MCP request', async () => {
+  const { deps } = await setup({ fetchIssue: async () => ({ title: 't', body: 'b' }) });
+  const server = buildServer(deps);
+  // The same path every MCP tool request takes: the registered handler gets a fresh copy of the shared deps.
+  // Calling the exported handlers with `deps` itself would create the shared maps up front and mask the bug.
+  const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
+  const text = (r) => r.content[0].text;
+  const id = text(await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' })).match(/agent_id: ([0-9a-f]{8})/)[1];
+  assert.match(text(await call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 60 })), /status: idle/);
+  assert.match(text(await call('cloud_agent_stop', { agent_ids: [id] })), /stopped/);
+  assert.match(text(await call('cloud_agent_result', { agent_id: id })), new RegExp(`git fetch origin cloudy-cloud/issue-12-${id}`));
+});
+
 // ---- plan UX (#135 #136 #126) ----
 test('#135 3x5 on pro says the size is not offered and does not suggest an upgrade', async () => {
   const { deps, text } = await sizeSetup(proPlan);
@@ -2067,4 +2144,400 @@ test('#139 review: the all and no-agents listings end with the usage line too', 
   await listAgents({}, deps); await planSettled(provider);
   assert.equal(text(await listAgents({}, deps)), 'No agents.\nInstabox this month: $3.00 of $20.00 included used');
   assert.match(text(await listAgents({ all: true }, deps)), /No cloudy-cloud machines\.\nInstabox this month: \$3\.00 of/);
+});
+
+// ---- #49 resumable after a failed first turn, #50 turn limit ----
+const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: SID, model: 'x' });
+// A sandbox whose claude run streams an init event, then hits the command timeout (an error with no exit code).
+const timeoutSandbox = (over = {}) => async () => {
+  const sbx = await fakeSandbox(getGithub());
+  const real = sbx.commands.run;
+  sbx.commands.run = async (cmd, o) => {
+    if (/(claude|bin\/cloudy-cloud) -p /.test(cmd) && /TIMEOUT/.test(sbx.mode ?? 'TIMEOUT')) {
+      sbx.cmds.push(cmd); sbx.agentRuns = [...(sbx.agentRuns ?? []), { cmd, o }];
+      if (!over.noInit) await o.onStdout?.(`${INIT}\n`);
+      throw new Error('job still running after 1740000 ms');
+    }
+    if (/(claude|bin\/cloudy-cloud) -p /.test(cmd)) sbx.agentRuns = [...(sbx.agentRuns ?? []), { cmd, o }];
+    return real(cmd, o);
+  };
+  return sbx;
+};
+
+test('#49 a first turn that times out after the init event leaves the agent idle and resumable', async () => {
+  let sbx;
+  const { start, wait, msg, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()) });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /still open/);
+  assert.match(r, /Next step:[^]*cloud_agent_message/);
+  assert.equal(sbx.killed, false);
+  assert.ok(open.has(id));
+  sbx.mode = 'OK'; // the next turn works
+  assert.equal((await msg(id, 'continue')).isError, undefined);
+  assert.match(await wait([id]), /status: idle/);
+  assert.match(sbx.agentRuns.at(-1).cmd, new RegExp(`--resume ${SID}`));
+});
+
+test('#49 a first turn that times out before any stream event still fails the agent', async () => {
+  let sbx;
+  const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.equal(sbx.killed, true);
+});
+
+test('#49 a pi turn that ends with a provider error after the session event stays open and resumable', async () => {
+  const { start, wait, msg, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'pi-particle', prompt: 'PIERR now' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /401 invalid api key/);
+  assert.match(r, /Next step:/);
+  assert.equal(sandboxes[0].killed, false);
+  await msg(id, 'again');
+  await wait([id]);
+  assert.match(await readFile(join(sandboxes[0].dir, 'home', 'pi.log'), 'utf8'), /--session 11111111-2222-3333-4444-555555555555 /);
+});
+
+test('#49 a coordinator whose turn times out stays open and runs no worker clean-up', async () => {
+  let sbx;
+  const { start, wait, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()), env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_MAX_DEPTH: '3' } });
+  const id = await start({ role: 'coordinator' });
+  assert.match(await wait([id]), /status: idle/);
+  assert.equal(sbx.killed, false);
+  assert.equal(open.get(id).status, 'idle');
+});
+
+test('#49 the failed and still-open errors each carry a next step', async () => {
+  const { guide } = await import('../src/errors.mjs');
+  for (const k of ['agent_failed', 'turn_failed_open']) assert.match(guide(k, { id: 'abc12345', minutes: 29 }), /Next step:/);
+  assert.match(guide('agent_failed', { id: 'abc12345' }), /cannot be resumed/);
+});
+
+test('#50 CLOUDY_CLOUD_TURN_MINUTES sets the command timeout, the Bash timeouts and a UTC deadline in the hint', async () => {
+  for (const [env, minutes] of [[{}, 29], [{ CLOUDY_CLOUD_TURN_MINUTES: '45' }, 45]]) {
+    let sbx;
+    const before = Date.now();
+    const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()), env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', ...env } });
+    await wait([await start()]);
+    const { cmd, o } = sbx.agentRuns[0];
+    assert.ok(o.timeoutMs <= minutes * 60_000 && o.timeoutMs > (minutes - 1) * 60_000, `timeoutMs ${o.timeoutMs} is the ${minutes}-minute deadline minus elapsed time`);
+    const bash = Number(cmd.match(/BASH_DEFAULT_TIMEOUT_MS=(\d+)/)?.[1]);
+    assert.ok(bash <= (minutes - 1) * 60_000 && bash > (minutes - 2) * 60_000, `BASH timeout ${bash} is a minute under the turn deadline`);
+    assert.match(cmd, /BASH_DEFAULT_TIMEOUT_MS=(\d+) BASH_MAX_TIMEOUT_MS=\1/);
+    const deadline = cmd.match(/This turn ends at (\d{4}-\d\d-\d\dT[\d:.]+Z); commit, push and finish before then\./)?.[1];
+    assert.ok(deadline, 'hint has the deadline');
+    assert.ok(Math.abs(Date.parse(deadline) - (before + minutes * 60_000)) < 60_000);
+    assert.match(cmd, new RegExp(`CLOUDY_CLOUD_TURN_DEADLINE=${deadline} `));
+  }
+});
+
+test('#50 an out-of-range or non-numeric turn limit is rejected with the range and the fix', async () => {
+  for (const bad of ['4', '9999', 'abc', '30.5']) {
+    const { deps } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_TURN_MINUTES: bad } });
+    const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+    assert.equal(r.isError, true, bad);
+    assert.match(r.content[0].text, /CLOUDY_CLOUD_TURN_MINUTES[^]*5[^]*Next step:/);
+  }
+});
+
+test('#50 the cloud_agent tool descriptions state the turn limit and the resume path', async () => {
+  const { buildServer: _b } = await import('../src/mcp.mjs');
+  const src = await readFile(new URL('../src/mcp.mjs', import.meta.url), 'utf8');
+  for (const name of ['cloud_agent', 'cloud_agent_message']) {
+    const d = src.match(new RegExp(`name: '${name}',\\s*description: '([^]*?)',\\n`))[1];
+    assert.match(d, /29 minutes/);
+    assert.match(d, /CLOUDY_CLOUD_TURN_MINUTES/);
+  }
+});
+
+// ---- provider resilience (#51, #55) ----
+const ERR_FIXTURE = (msg) => readFile(new URL('./fixtures/pi-json-error.jsonl', import.meta.url), 'utf8').then((s) => s.replaceAll('401 invalid api key', msg.replaceAll('"', '\\"')));
+// A pi worker whose first `fails` pi runs print a provider error with `msg`; sleeps are recorded, not waited.
+async function retrySetup(fails, msg, extra = {}) {
+  const errOut = await ERR_FIXTURE(msg), sleeps = [], events = [];
+  let piRuns = 0;
+  const s = await setup({
+    env: { ...pEnv, ...extra.env }, sleep: async (ms) => { sleeps.push(ms); }, events: (e) => events.push(e),
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => (cmd.includes('pi --mode json') && ++piRuns <= fails ? { stdout: errOut, stderr: '', exitCode: 0 } : real(cmd, o));
+      return sbx;
+    },
+    ...extra.deps,
+  });
+  return { ...s, sleeps, events, piRuns: () => piRuns };
+}
+const NOT_FOUND = '404: {"code":"model_not_found","message":"no capacity"}';
+
+test('a pi turn that fails twice with model_not_found is rerun and succeeds, waiting 30s then 60s', async () => {
+  answeredProfiles.add('pi-glm');
+  const { start, wait, sleeps, events, piRuns } = await retrySetup(2, NOT_FOUND);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /status: idle[\s\S]*hello from pi/);
+  assert.ok(!/ERROR/.test(r));
+  assert.equal(piRuns(), 3);
+  assert.deepEqual(sleeps, [30_000, 60_000]);
+  assert.ok(events.some((e) => e.type === 'progress' && /retrying .*attempt 2 of 4/.test(e.text)));
+  assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
+});
+
+test('a 401 from the provider fails at once, without waiting', async () => {
+  const { start, wait, sleeps, piRuns } = await retrySetup(9, '401 invalid api key');
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /ERROR/);
+  assert.equal(piRuns(), 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test('model_not_found for a profile that never answered fails at once with a model-not-available message', async () => {
+  answeredProfiles.clear();
+  const { start, wait, sleeps, piRuns } = await retrySetup(9, NOT_FOUND);
+  const r = await wait([await start({ profile: 'pi-deepseek' })]);
+  assert.match(r, /ERROR[\s\S]*not available to this key[\s\S]*Next step:/);
+  assert.equal(piRuns(), 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test('when the retries run out the result names the provider status and a next step, and holds no key', async () => {
+  answeredProfiles.add('pi-glm');
+  const { start, wait, sleeps, piRuns } = await retrySetup(99, `502 bad gateway ${PKEY}`);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(piRuns(), 4);
+  assert.deepEqual(sleeps, [30_000, 60_000, 120_000]);
+  assert.match(r, /Provider status: 502 server_error[\s\S]*Gave up after 4 attempts[\s\S]*Next step:/);
+  assert.ok(!r.includes(PKEY));
+});
+
+test('a push failure after a successful pi turn is not rerun as a provider retry', async () => {
+  let piRuns = 0, pushes = 0;
+  const { start, wait } = await setup({
+    env: pEnv, sleep: async () => {},
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => {
+        if (cmd.includes('pi --mode json')) piRuns++;
+        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\n', stderr: '', exitCode: 0 }; }
+        return real(cmd, o);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /Push failed/);
+  assert.equal(piRuns, 1); // the finished run is never replayed: only harness/provider failures may be retried
+  assert.equal(pushes, 2); // the safety push still used its own retry
+});
+
+test('provider retries share one deadline: a later attempt gets only the time left, and a retry needs five minutes', async () => {
+  answeredProfiles.add('pi-glm');
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    const errOut = await ERR_FIXTURE('503 overloaded');
+    const timeouts = [];
+    let piRuns = 0;
+    const { start, wait } = await setup({
+      env: { ...pEnv, CLOUDY_CLOUD_TURN_MINUTES: '6' },
+      sleep: async (ms) => { now += ms; }, // the fake clock spends the backoff for real
+      createSandbox: async (envs) => {
+        const sbx = await fakeSandbox(getGithub());
+        sbx.envs = envs;
+        const real = sbx.commands.run;
+        sbx.commands.run = async (cmd, o) => {
+          if (!cmd.includes('pi --mode json')) return real(cmd, o);
+          timeouts.push(o.timeoutMs);
+          piRuns++;
+          return { stdout: errOut, stderr: '', exitCode: 0 };
+        };
+        return sbx;
+      },
+    });
+    const r = await wait([await start({ profile: 'pi-glm' })]);
+    assert.deepEqual(timeouts, [360_000, 330_000]); // attempt 2 gets the 30 s the wait already spent, not a fresh clock
+    assert.equal(piRuns, 2); // 60 s more was slept, then under five minutes remained: no third attempt
+    assert.match(r, /Gave up after 2 attempts/);
+  } finally { Date.now = real; }
+});
+
+test('a cancel during the provider retry wait ends the turn instead of running another attempt', async () => {
+  answeredProfiles.add('pi-glm');
+  const errOut = await ERR_FIXTURE('503 overloaded');
+  let piRuns = 0;
+  const { start, wait, msg, deps } = await setup({
+    env: pEnv,
+    sleep: () => new Promise(() => {}), // only cancellation may end the wait
+    cancelWaitMs: 50,
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => (cmd.includes('pi --mode json') && ++piRuns >= 2 ? { stdout: errOut, stderr: '', exitCode: 0 } : real(cmd, o));
+      return sbx;
+    },
+  });
+  const id = await start({ profile: 'pi-glm' });
+  assert.match(await wait([id]), /status: idle/); // turn 1 (pi run 1) is fine
+  await msg(id, 'again');
+  for (let i = 0; piRuns < 2 && i < 100; i++) await tick(10); // turn 2's first run fails, then the backoff begins
+  await cancelTask(`cc-${id}-t2`, deps);
+  const r = await wait([id], 5);
+  assert.match(r, /status: idle/);
+  assert.match(r, /Turn cancelled/);
+  assert.equal(piRuns, 2); // no retry ran after the cancelled wait
+});
+
+test('a successful omp turn marks the profile answered, even though omp never reports progress.answered', async () => {
+  answeredProfiles.delete('omp-glm');
+  const { start, wait } = await profileSetup();
+  await wait([await start({ profile: 'omp-glm' })]);
+  assert.ok(answeredProfiles.has('omp-glm'));
+});
+
+// ---- preflight, fallback ----
+const fetchWith = (status, body = '{"error":{"code":"model_not_found"}}', log = []) => async (url, o) => { log.push({ url, o }); return { status, text: async () => body }; };
+
+test('a preflight 404 fails before any machine is created, with the provider text, no key, and a next step', async () => {
+  resetPreflightCache();
+  const log = [];
+  let created = 0;
+  const { text, deps } = await setup({ env: pEnv, fetchFn: fetchWith(404, `{"error":"model_not_found ${PKEY}"}`, log), createSandbox: async () => { created++; return fakeSandbox(); } });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /answered 404[\s\S]*Next step:/);
+  assert.ok(!text(r).includes(PKEY));
+  assert.equal(created, 0);
+  assert.equal(log.length, 1);
+  assert.match(log[0].url, /^https:\/\/api\.particle\.ai\/v1\/chat\/completions$/);
+  const r2 = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', preflight: false }, deps);
+  assert.ok(!r2.isError);
+  assert.equal(log.length, 1);
+});
+
+test('a profile whose preflight fails falls back to the next profile and says so on the first line', async () => {
+  resetPreflightCache();
+  const fetchFn = async (url, o) => (JSON.parse(o.body).model === 'z-ai/glm-5.3-flash' ? { status: 404, text: async () => 'model_not_found' } : { status: 200, text: async () => '{}' });
+  const { start, wait } = await setup({ env: pEnv, fetchFn });
+  const r = await wait([await start({ profile: 'pi-glm', fallback: ['pi-particle'] })]);
+  assert.match(r, /status: idle\s*\nran on pi-particle \(pi-glm unavailable: Profile pi-glm: api\.particle\.ai answered 404/);
+  assert.match(r, /hello from pi/);
+});
+
+test('a profile with no key falls back to the profiles.json fallback list', async () => {
+  resetPreflightCache();
+  const dir = await mkdtemp(join(tmpdir(), 'cc-prof-'));
+  const file = join(dir, 'profiles.json');
+  await writeFile(file, JSON.stringify({ 'pi-nokey': { harness: 'pi', format: 'openai', baseUrl: 'https://example.com/v1', model: 'm1', keyName: 'NOKEY_API_KEY', fallback: ['pi-glm'] } }));
+  const { start, wait } = await setup({ env: { ...pEnv, CLOUDY_CLOUD_PROFILES: file }, fetchFn: fetchWith(200) });
+  const r = await wait([await start({ profile: 'pi-nokey' })]);
+  assert.match(r, /ran on pi-glm \(pi-nokey unavailable: Profile pi-nokey needs NOKEY_API_KEY/);
+});
+
+test('when every profile fails the error lists each one', async () => {
+  resetPreflightCache();
+  const { text, deps } = await setup({ env: pEnv, fetchFn: fetchWith(401, 'bad key') });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', fallback: ['pi-particle'] }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /No profile could start[\s\S]*pi-glm:[\s\S]*pi-particle:[\s\S]*Next step:/);
+});
+
+// ---- per-profile cap ----
+test('a profile at its maxConcurrent cap queues the next start with a status line, and starts it when a slot frees', async () => {
+  const open = new Map([['a', { id: 'a', status: 'running', profile: { name: 'pi-x' } }], ['b', { id: 'b', status: 'idle', profile: { name: 'pi-x' } }]]);
+  let release;
+  const q = startQueue({}, undefined, () => open.values(), { sleep: () => new Promise((r) => { release = r; }) });
+  const me = { id: 'c', status: 'starting', profile: { name: 'pi-x', maxConcurrent: 2 }, emit() {} };
+  let started = false;
+  const p = q.create(me, async () => { started = true; });
+  await tick(5);
+  assert.equal(started, false);
+  assert.match(q.reason(me), /waiting for a free pi-x slot \(2 of 2 running/);
+  open.get('b').status = 'stopped';
+  release();
+  await p;
+  assert.ok(started);
+  const other = { id: 'd', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
+  await q.create(other, async () => {}); // no cap on another profile
+});
+
+test('the profile cap counts only running or starting machines from provider.list', async () => {
+  for (const [rows, shouldRun] of [
+    [[{ id: 'm1', state: 'stopped', status: 'stopped' }], true],
+    [[{ id: 'm1', state: 'running', status: 'running' }], false],
+    [[{ id: 'm1', state: 'starting', status: 'starting' }], false],
+  ]) {
+    const provider = { name: 'fake', caps: { startsPerMin: 25 }, list: async () => rows };
+    const open = new Map();
+    const q = startQueue({}, provider, () => open.values(), { sleep: () => new Promise(() => {}) });
+    const me = (id) => ({ id, status: 'starting', profile: { name: 'pi-x', maxConcurrent: 1 }, emit() {} });
+    await q.create(me('a'), async () => {}); // triggers the provider.list lookup; its answer lands for the next check
+    await tick(20);
+    let started = false;
+    const p = q.create(me('b'), async () => { started = true; });
+    await Promise.race([p, tick(100)]); // a held slot would wait forever on the injected sleep
+    assert.equal(started, shouldRun, `rows=${JSON.stringify(rows)}`);
+  }
+});
+
+test('an agent that commits nothing leaves no cloudy-cloud branch on the remote', async () => {
+  const { start, wait, remote } = await setup();
+  const id = await start();
+  assert.match(await wait([id]), /No changes, no branch pushed/);
+  assert.equal(await remote('git branch --list "cloudy-cloud/*"'), '');
+});
+
+test('base starts the worker from another branch, not the local HEAD', async () => {
+  const { start, wait, repo, created } = await setup();
+  await sh(repo, 'git checkout -q -b other && echo o > o.txt && git add -A && git commit -qm other && git checkout -q -');
+  const tip = await sh(repo, 'git rev-parse other'), head = await sh(repo, 'git rev-parse HEAD');
+  assert.notEqual(tip, head);
+  const id = await start({ base: 'other' });
+  await wait([id]);
+  assert.ok(created[0].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)));
+  const id2 = await start({ base: tip.slice(0, 10) });
+  await wait([id2]);
+  assert.ok(created[1].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)));
+});
+
+test('an unknown or invalid base fails before any machine is created', async () => {
+  const { deps, text, created } = await setup();
+  for (const base of ['nope', '--upload-pack=x', 'a..b', 'a//b', 'x.lock', 5]) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', base }, deps);
+    assert.ok(r.isError, `${base}`);
+    assert.match(text(r), /base/);
+  }
+  assert.equal(created.length, 0);
+});
+
+// Host-side git talks to the fake GitHub through the same insteadOf rewrite the sandbox uses.
+const rewriteGithub = (repo, github) => sh(repo, `git config url.${github}/.insteadOf https://github.com/`);
+
+test('base that exists only on origin resolves to the sha ls-remote reported, not the local HEAD', async () => {
+  const { start, wait, repo, bare, github, created } = await setup();
+  await rewriteGithub(repo, github);
+  await sh(repo, `git push -q ${bare} HEAD:refs/heads/remoteonly`);
+  const tip = await sh(repo, 'git rev-parse HEAD');
+  await sh(repo, 'echo later > later.txt && git add -A && git commit -qm later'); // local HEAD moves past the branch
+  const id = await start({ base: 'remoteonly' });
+  await wait([id]);
+  assert.ok(created[0].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)), 'checked out the remote tip');
+});
+
+test('a base missing on origin fails cleanly; a stale remote-tracking ref or FETCH_HEAD is never used', async () => {
+  const { repo, bare, github, deps, text, created } = await setup();
+  await rewriteGithub(repo, github);
+  await sh(repo, `git push -q ${bare} HEAD:refs/heads/remoteonly`);
+  await sh(repo, `git update-ref refs/remotes/origin/ghost HEAD`);
+  await sh(repo, `git fetch -q origin remoteonly`); // poisons FETCH_HEAD with an unrelated branch
+  const r = await runSubagent({ description: 'd', prompt: 'hi', base: 'ghost' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /base ghost was not found locally or on origin/);
+  assert.equal(created.length, 0);
 });

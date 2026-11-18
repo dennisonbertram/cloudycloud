@@ -7,10 +7,21 @@ import { resolveProfile } from './profiles.mjs';
 // The key of the default provider (Instabox), which a coordinator's machine loads: it is sent no CLOUDY_CLOUD_PROVIDER.
 export const DEFAULT_PROVIDER_KEY = 'INSTABOX_API_KEY';
 export const PROVIDER_KEY = /^[A-Z][A-Z0-9_]{2,63}_API_KEY$/;
-const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS'];
+const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_TURN_MINUTES', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS', 'CLOUDY_CLOUD_PROFILE_MAX', 'CLOUDY_CLOUD_PROVIDER_RETRIES'];
 
 // Names of the Instabox secrets that hold the Claude token and provider keys (comma-separated). Names only, never values.
 export const proxySecrets = (env = process.env) => new Set(String(env.CLOUDY_CLOUD_PROXY_SECRETS ?? '').split(/[\s,]+/).filter(Boolean));
+
+// Minutes one agent turn may run: CLOUDY_CLOUD_TURN_MINUTES, default 29, a whole number from 5 up to the machine's TTL minus 30 minutes.
+// Returns { minutes } or { error }.
+export const TURN_DEFAULT_MINUTES = 29;
+export function turnMinutes(env = process.env, maxTtlSeconds = 86_400) {
+  const raw = String(env.CLOUDY_CLOUD_TURN_MINUTES ?? '').trim();
+  if (!raw) return { minutes: TURN_DEFAULT_MINUTES };
+  const max = Math.floor(maxTtlSeconds / 60) - 30, n = Number(raw);
+  if (/^\d+$/.test(raw) && n >= 5 && n <= max) return { minutes: n };
+  return { error: `CLOUDY_CLOUD_TURN_MINUTES is "${raw.slice(0, 20)}", but it must be a whole number from 5 to ${max}.\nNext step: set CLOUDY_CLOUD_TURN_MINUTES to a whole number from 5 to ${max} in ~/.config/cloudy-cloud/env, or remove the line to use the default ${TURN_DEFAULT_MINUTES}, then call cloud_agent again.` };
+}
 
 // Extra Debian packages for the worker image (space-separated). Returns { list } or { error }.
 const APT_NAME = /^[a-z0-9][a-z0-9.+-]*$/;

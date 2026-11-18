@@ -8,6 +8,26 @@ while [ -h "$self" ]; do
 done
 root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
 
+# `cloudy-cloud help <command>` and `cloudy-cloud <command> --help|-h` print that command's help. They never run it
+# or ask for setup. `--help` counts only as the last argument with no `--` before it (so `--task '--help'` is a task),
+# and `help -p` still goes to claude. For mcp, only `mcp`, `mcp add|ls|rm` are ours; `mcp list -h` is Claude Code's.
+case ${1:-} in
+  help) if [ $# -gt 1 ]; then case $2 in -*) ;; *) shift; exec node "$root/src/cli-help.mjs" "$@" ;; esac; fi ;;
+  setup|--setup|coordinator|shell|display|open|mcp|protect|doctor|dashboard)
+    case $1:${2:-} in mcp:''|mcp:--help|mcp:-h|mcp:add|mcp:ls|mcp:rm) ;; mcp:*) n=-1 ;; esac
+    [ "${n:-}" = -1 ] || n=0
+    [ "$n" = -1 ] || for a in "$@"; do
+      n=$((n + 1))
+      case $a in
+        --) break ;;
+        --help|-h) if [ "$n" -eq $# ]; then
+          if [ "$1" = --setup ]; then shift; set -- setup "$@"; fi
+          exec node "$root/src/cli-help.mjs" "$@"
+        fi ;;
+      esac
+    done ;;
+esac
+
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
 if [ "${1:-}" = dashboard ]; then
   shift
@@ -42,6 +62,12 @@ fi
 if [ "${1:-}" = protect ]; then
   shift
   exec node "$root/src/protect.mjs" "$@"
+fi
+
+# `cloudy-cloud branches prune [--yes]` deletes empty or merged cloudy-cloud/* branches on origin (dry run by default).
+if [ "${1:-}" = branches ]; then
+  shift
+  exec node "$root/src/branches.mjs" "$@"
 fi
 
 # update_notice: one line when a newer version is on npm. Interactive terminals only; no node starts when opted out.
@@ -88,30 +114,45 @@ if [ $# -eq 1 ]; then
       cat <<'EOF'
 Cloudy Cloud: give every subagent of your coding agent its own cloud machine.
 
-Usage: cloudy-cloud [command]
+Usage: cloudy-cloud [command] [options]
 
-  (no command)           start a Claude Code session
-  setup [--check-only]   check your tools and save your keys (--provider instabox|self-hosted)
-  doctor                 check your own machine when subagents run there
-  dashboard              open a read-only web page about your cloud machines
-  open <agent> <port>    reach an app running on a cloud machine
-  shell <agent> [-- cmd] open a shell on a cloud machine, or run one command there
-  display <agent>        print a link to a cloud machine's desktop (or --screenshot FILE)
-  protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
-  codex [args]           start the Codex CLI with the cloud_agent tools instead of Claude Code
-  opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
-  pi [args]              start pi as the main session with the cloud_agent tools
-  free-pi [args]         start free-pi as the main session with the cloud_agent tools
-  coordinator            manage cloud coordinators (coordinator --help for details)
-  mcp add|ls|rm          choose which MCP servers cloud subagents get
-  --version              print the version
+  (no command)            Start a Claude Code session
+  codex [args]            Start the Codex CLI with the cloud_agent tools
+  opencode [args]         Start opencode with the cloud_agent tools
+  pi [args]               Start pi as the main session (with cloud_agent)
+  free-pi [args]          Start free-pi as the main session (with cloud_agent)
+  setup [--check-only]    Check your tools and save your keys
+  coordinator             Manage always-on cloud coordinators
+  shell <agent> [-- cmd]  Open a shell on a cloud machine, or run one command
+  display <agent>         Print a link to a cloud machine's desktop
+  open <agent> <port>     Reach an app running on a cloud machine
+  mcp add|ls|rm           Choose which MCP servers cloud subagents get
+  branches prune          Delete empty or merged cloudy-cloud/* branches
+  dashboard               Open a read-only web page about your cloud machines
+  protect [owner/repo]    Block direct pushes to the default branch (asks first)
+  doctor                  Check your own machine (self-hosted provider)
+  --version               Print the version
 
+More on one command: cloudy-cloud <command> --help
 Any other arguments go to claude, for example: cloudy-cloud -p "<prompt>"
 
 Docs: https://cloudycloud.tech/docs/
 Claude Code's own options: claude --help
 EOF
       exit 0 ;;
+  esac
+fi
+
+# One bare word on its own that is not a command (for example `cloudy-cloud ls`) is most likely a typo, not a prompt.
+# A prompt with spaces, any option, more than one argument and Claude Code's own subcommands keep working.
+if [ $# -eq 1 ]; then
+  case $1 in
+    -*|*[[:space:]]*|codex|mcp|agents|attach|auth|auto-mode|gateway|import|install|logs|plugin|plugins|purge|respawn|rm|sessions|setup-token|stop|kill|ultrareview|update|upgrade|config) ;;
+    *)
+      printf 'cloudy-cloud: "%s" is not a command. See: cloudy-cloud --help\n' "$1" >&2
+      # Suggest -p only when the word is safe to paste inside double quotes.
+      case $1 in *[!A-Za-z0-9._/@:+=,-]*) ;; *) printf 'To send it to Claude as a prompt: cloudy-cloud -p "%s"\n' "$1" >&2 ;; esac
+      exit 2 ;;
   esac
 fi
 

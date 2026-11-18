@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
+import { helpText } from './cli-help.mjs';
 import { redact } from './events.mjs';
 import { checkServer, cleanEntry, HOST_RE, isLiteralSecret, mcpConfigText, mcpFile, secretArgs } from './mcpsync.mjs';
 
@@ -44,7 +45,7 @@ function findSource(name, env, cwd) {
 
 async function add(name, ctx, allowLiteral = false) {
   const { env, out, err } = ctx;
-  if (!name) { err('Usage: cloudy-cloud mcp add <name>'); return 1; }
+  if (!name) { err(helpText('mcp', true)); return 1; }
   const src = findSource(name, env, ctx.cwd);
   if (!src) { err(`No MCP server named ${name} in your Claude Code config. See: claude mcp list`); return 1; }
   const e = JSON.parse(JSON.stringify(src.entry));
@@ -164,7 +165,7 @@ export async function main(argv, ctx = {}) {
     if (cmd === 'ls') return ls(ctx);
     if (cmd === 'rm') return rm(name, ctx);
   } catch (e) { ctx.err(e.message); return 1; }
-  ctx.err('Usage: cloudy-cloud mcp add <name> [--allow-literal] | ls | rm <name>');
+  ctx.err(helpText('mcp', true));
   return 1;
 }
 

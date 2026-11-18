@@ -33,6 +33,7 @@ Suggested work packages. Each owns separate files so merges stay clean.
 1. <package name>: owns `<paths>`. <one-line goal>
 2. <package name>: owns `<paths>`. <one-line goal>
 Run later packages after earlier ones are merged if they depend on them (waves).
+Each `cloud_agent` turn is limited to 29 minutes by default (`CLOUDY_CLOUD_TURN_MINUTES`; the prompt states the end time). Size packages to fit one turn, or have the worker commit and push in steps. A turn that hits the limit leaves the agent open: continue it with `cloud_agent_message`.
 
 ## Models
 - Coordinator: Claude.
@@ -113,3 +114,4 @@ One PR from fleet/importer-ts to main, and FLEET_REPORT.md on the trunk.
 ## Reaching the user
 Remote Control only. Never wait for an answer.
 ```
+

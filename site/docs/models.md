@@ -154,6 +154,15 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 
 `format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness"` is `"claude"` (the default), `"pi"`, `"omp"`, `"codex"` or `"opencode"`. It picks the agent that runs on the machine. The `codex` and `opencode` harnesses need `"format": "openai"`, and `codex` needs a provider that offers the Responses API. A `codex` profile can use `"auth": "chatgpt"` instead of `keyName`. Replace `MODEL-ID` with a model id from your provider.
 
+Two more optional fields on any profile:
+
+- `"fallback"`: a list of profile names. When the profile has no key, or the provider refuses a one-token check before the machine starts, the server tries these profiles in order. The result says which profile ran. A `fallback` argument on `cloud_agent` overrides it, and `"preflight": false` on the call skips the check.
+- `"maxConcurrent"`: a positive whole number, the most agents this profile runs at once. Extra agents wait in the queue. `CLOUDY_CLOUD_PROFILE_MAX` sets the same cap for every profile that has no `maxConcurrent`.
+
+```
+{ "my-openrouter": { "format": "anthropic", "baseUrl": "https://openrouter.ai/api", "model": "MODEL-ID", "keyName": "OPENROUTER_API_KEY", "fallback": ["glm"], "maxConcurrent": 6 } }
+```
+
 ## Adding or changing keys later
 
 - Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for `OPENAI_API_KEY` when you choose codex, and does not set up the Codex login file: see The codex profiles.

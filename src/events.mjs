@@ -59,6 +59,7 @@ export function readEvents(file) {
 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const ACTIVE = new Set(['queued', 'starting', 'running']);
+const HARNESSES = new Set(['claude', 'pi', 'omp', 'codex', 'opencode']);
 const IDLE_MS = 60 * 60_000; // run-subagent.mjs stops an agent after 60 idle minutes
 const DEFAULT_WORKER_MS = 6 * 60 * 60_000; // default server delete time (CLOUDY_CLOUD_WORKER_HOURS) when an old log has no deleteAt
 
@@ -70,6 +71,26 @@ export function pushOf(text) {
     if (m) return { sha: m[2], branch: m[1] };
     if (line.startsWith('Push failed:') || line.startsWith('The sandbox could not be reached to push.')) return { failed: true };
   }
+}
+
+// A GitHub pull request URL, the only PR link the autofix lines may carry.
+const GH_PULL = /https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}(?![\d/])/;
+// The autofix progress and result lines run-subagent.mjs writes (progress "autofix [PR #n ]round N/CAP: <note>" —
+// and the older "autofix N/CAP: <note>" — plus the reply's "Autofix: ..." / "Autofix stopped: ..." lines);
+// the last matching line wins.
+// Returns { state: 'running'|'clean'|'not clean'|'stopped', round?, cap?, pr? } — fields only when known — or undefined.
+export function autofixOf(text) {
+  let out;
+  for (const line of String(text).split('\n')) {
+    const pr = GH_PULL.exec(line)?.[0];
+    let m;
+    if ((m = /^autofix (?:(?:PR #\d+ )?round )?(\d+)\/(\d+): /.exec(line))) out = { state: 'running', round: Number(m[1]), cap: Number(m[2]) };
+    else if ((m = /^Autofix: pull request \S+ is clean .+ after (\d+) fix rounds?\./.exec(line))) out = { state: 'clean', round: Number(m[1]), ...(pr && { pr }) };
+    else if ((m = /^Autofix: pull request \S+ is NOT clean after (\d+) fix rounds? \(the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=(\d+)\)/.exec(line))) out = { state: 'not clean', round: Number(m[1]), cap: Number(m[2]), ...(pr && { pr }) };
+    else if ((m = /^Autofix: pull request \S+ could not be confirmed clean(?: after (\d+) fix rounds?)?/.exec(line))) out = { state: 'stopped', ...(m[1] !== undefined && { round: Number(m[1]) }), ...(pr && { pr }) };
+    else if (line.startsWith('Autofix stopped: ')) out = { state: 'stopped', ...(pr && { pr }) };
+  }
+  return out;
 }
 
 // Folds events into one record per agent: { id, description, status, profile, role, model, branch, machine, startedAt,
@@ -85,6 +106,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
     a.lastActivity = e.t;
     if (e.type === 'agent') {
       Object.assign(a, { description: e.description, profile: e.profile, role: e.role, model: e.model, branch: e.branch, startedAt: e.t });
+      if (HARNESSES.has(e.harness)) a.harness = e.harness;
       a.mcp = Array.isArray(e.mcp) ? e.mcp.filter((n) => typeof n === 'string') : undefined; // names only
     } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {
@@ -93,8 +115,8 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
     } else if (e.type === 'message') { a.turns = (a.turns ?? 0) + 1; a.messages.push({ t: e.t, kind: 'out', text: e.text }); } // `turns` counts every message; `messages` keeps the last 300
-    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; }
-    else if (e.type === 'progress') a.messages.push({ t: e.t, kind: 'progress', text: e.text });
+    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; const f = autofixOf(e.text); if (f) a.autofix = f; }
+    else if (e.type === 'progress') { a.messages.push({ t: e.t, kind: 'progress', text: e.text }); const f = autofixOf(e.text); if (f) a.autofix = f; }
   }
   for (const a of agents.values()) {
     if (ACTIVE.has(a.status) && a.pid && !alive(a.pid)) { a.status = 'stopped'; a.stoppedAt = a.lastActivity; a.sessionEnded = true; }
