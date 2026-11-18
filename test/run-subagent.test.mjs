@@ -1095,7 +1095,7 @@ test('a plain worker without mcp.json runs the same claude command (now inside t
   await wait([await start({})]);
   const sbx = sandboxes[0];
   const inner = /\{ ([\s\S]*); echo \$\? > \$D\/t1\.exit; \}/.exec(claudeCmd(sbx))[1];
-  assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'"),
+  assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'").replace(/CLOUDY_CLOUD_TURN_DEADLINE=\S+ /, ''),
     MERGE + ' CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --mcp-config $D/mcp.json --strict-mcp-config --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
   assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });

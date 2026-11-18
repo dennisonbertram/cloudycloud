@@ -5,6 +5,9 @@
     ],
     "calls": [
       {
+        "cli": "npx --yes instabox@latest secrets ls --json"
+      },
+      {
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
@@ -90,6 +93,9 @@
     ],
     "calls": [
       {
+        "cli": "npx --yes instabox@latest secrets ls --json"
+      },
+      {
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
@@ -146,6 +152,9 @@
           "role": "coordinator",
           "name": "boss"
         }
+      },
+      {
+        "cli": "npx --yes instabox@latest secrets ls --json"
       },
       {
         "http": "POST",
@@ -286,6 +295,9 @@
           "role": "coordinator",
           "name": "boss"
         }
+      },
+      {
+        "cli": "npx --yes instabox@latest secrets ls --json"
       },
       {
         "http": "POST",

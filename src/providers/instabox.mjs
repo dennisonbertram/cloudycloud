@@ -4,7 +4,7 @@ import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
-import { guide } from '../errors.mjs';
+import { guide, SECRET_HOSTS } from '../errors.mjs';
 const ARCHIVE_MS = 8 * 60 * 60_000; // backstop; agents are normally stopped sooner.
 const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 minutes.
 const WAIT_SLICE_MS = 20_000; // one job.wait() holds a request slot, so wait in short slices.
@@ -114,12 +114,13 @@ function normalize(e) {
   return e;
 }
 
-const defaultSpawn = (argv, { inherit, env } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } });
+const defaultSpawn = (argv, { inherit, env, input } = {}) => new Promise((resolve) => {
+  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : [input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'], env: { ...process.env, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } });
   let stdout = '', stderr = '';
   p.stdout?.on('data', (d) => (stdout += d));
   p.stderr?.on('data', (d) => (stderr += d));
   p.on('error', (e) => resolve({ code: 1, stdout, stderr: String(e.message) }));
+  if (input !== undefined) { p.stdin?.on('error', () => {}); p.stdin?.end(input); }
   p.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
 });
 
@@ -447,6 +448,30 @@ export function createProvider(env, deps = {}) {
       return { url: url ?? r.stdout.trim() };
     },
     async unpublishPort(id, port) { return (await spawn([...INSTABOX_CLI, 'port', 'unpublish', id, port])).code; },
+
+    // Stores an org secret through `instabox secrets set`: the value goes on stdin (never argv) and the output is
+    // dropped — the same mechanism `cloudy-cloud setup` uses. Needs the instabox login session, like setup.
+    async storeSecret(name, value) {
+      const host = SECRET_HOSTS[name];
+      if (!host) throw Object.assign(new Error(`no host is known for the secret ${name}`), { code: 'unknown_secret' });
+      const r = await spawn([...INSTABOX_CLI, 'secrets', 'set', name, '--host', host], { input: String(value) });
+      if (r.code !== 0) {
+        const detail = (r.stderr || r.stdout || '').split(String(value)).join('[redacted]').split(apiKeyOrEmpty()).join('[redacted]').trim().slice(0, 200);
+        throw Object.assign(new Error(`Could not store the ${name} secret (exit ${r.code})${detail ? `: ${detail}` : ''}`), { exitCode: r.code });
+      }
+    },
+
+    // The effective org's secret names, through the same CLI and env as storeSecret (`instabox secrets ls --json`).
+    // Names only — a secret value never appears here. Used to check CLOUDY_CLOUD_INSTABOX_API_KEY before writing it.
+    async listSecrets() {
+      const r = await spawn([...INSTABOX_CLI, 'secrets', 'ls', '--json']);
+      if (r.code !== 0) throw Object.assign(new Error(`Could not list the Instabox secrets (exit ${r.code})`), { exitCode: r.code });
+      let j;
+      try { j = JSON.parse(r.stdout); } catch { throw new Error('Could not read the Instabox secrets list (not JSON).'); }
+      const a = Array.isArray(j) ? j : (j.items ?? j.data ?? j.secrets);
+      if (!Array.isArray(a)) throw new Error('Could not read the Instabox secrets list (unexpected shape).');
+      return new Set(a.map((x) => x?.name).filter((n) => typeof n === 'string'));
+    },
 
     localMachineName: (hostname) => (hostname.startsWith('instabox-') ? hostname.slice('instabox-'.length) : ''),
 

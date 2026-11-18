@@ -8,7 +8,7 @@ Cloudy Cloud is open-source software (MIT license, install with `npx cloudycloud
 
 [Website](https://cloudycloud.tech) · [Docs](https://cloudycloud.tech/docs/) · [npm](https://www.npmjs.com/package/cloudycloud)
 
-![The Cloudy Cloud website: "Your subagents, up in the clouds", with the setup command npx -y cloudycloud setup](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/website.jpg)
+![The Cloudy Cloud website: "Your subagents, up in the clouds", with the setup command npx -y cloudycloud setup](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/website.jpg)
 
 You run `cloudy-cloud` instead of `claude`. It starts an ordinary Claude Code session. When that session uses a subagent, the subagent runs as its own Claude Code on its own cloud machine by default. Your main session can also be Codex, opencode, pi or free-pi, and a worker can run Claude Code, pi, oh-my-pi, Codex or opencode (see [Supported agents](#supported-agents)). It commits and pushes its work to a branch on your GitHub repo, and it stays open for follow-up messages until it is stopped. Plain `claude` is not affected.
 
@@ -45,14 +45,14 @@ npx -y cloudycloud setup
 | Instabox API key (`ibk_...`) | [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). Setup checks it with Instabox before saving. |
 | Claude token (`sk-ant-oat01-...`), only if you chose claude or want Claude workers | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
 | OpenAI key (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
-| GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
+| GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions and Commit statuses set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
 
 `cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (Particle.ai, OpenRouter). Plain setup never asks about them. It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
 
 The Claude step runs only if claude is one of your agents or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass (for example `codex`, which needs `OPENAI_API_KEY` or the ChatGPT login file) and prints the same next step on start. Setup warns at the end if no worker credential is saved at all. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
- The Instabox key is saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600) and stays on your computer. The Claude token and the provider keys are stored as Instabox proxy secrets, so worker machines see a placeholder; setup asks before moving keys that are already in the env file. Run `cloudy-cloud setup` again from any folder to change a key.
+ The Instabox key is saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600) and stays on your computer. The Claude token and the provider keys are stored as Instabox proxy secrets, so worker machines see a placeholder; setup asks before moving keys that are already in the env file. Run `cloudy-cloud setup` (`setup --more` for the extra keys) again from any folder to change a key.
 
-![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/setup.jpg)
+![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/setup.jpg)
 
 You can also run `npx skills add dennisonbertram/cloudycloud`, then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run the setup command yourself, because setup asks for secret keys.
 
@@ -88,7 +88,7 @@ Then merge, cherry-pick or open a pull request with ordinary git. To fetch every
 git fetch origin 'refs/heads/cloudy-cloud/*:refs/remotes/origin/cloudy-cloud/*'
 ```
 
-![Terminal output: three agents each pushed a branch named cloudy-cloud/<id>, with one commit that changes README.md](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/results.jpg)
+![Terminal output: three agents each pushed a branch named cloudy-cloud/<id>, with one commit that changes README.md](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/results.jpg)
 
 To run once without the interactive UI, pass `-p`. Nobody is there to approve permission prompts, so allow the commands you need:
 
@@ -161,9 +161,9 @@ cloudy-cloud dashboard
 
 This opens a read-only web page on your own machine (`127.0.0.1`) that lists every subagent and coordinator with its status. For subagents started from your session it also shows the model, branch, deadline and the messages between your session and the subagent. Cloud coordinators and machines with no local log show only their status. Add `--demo` to see sample data, `--no-open` to only print the link, or `--port N` to pick a port (default 4477).
 
-![Dashboard in list view with demo data: a list of subagents on the left and the activity of one running subagent on the right](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/dashboard.jpg)
+![Dashboard in list view with demo data: a list of subagents on the left and the activity of one running subagent on the right](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/dashboard.jpg)
 
-![Dashboard in fleet view with demo data: one card per subagent, grouped as Needs you, Active and Finished](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/feat/claude-cloud/docs/images/dashboard-fleet.jpg)
+![Dashboard in fleet view with demo data: one card per subagent, grouped as Needs you, Active and Finished](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/dashboard-fleet.jpg)
 
 Both screenshots show demo data (`--demo`). Each box shows the harness that runs it, and an autofix status with a link to its pull request when it has one. In the fleet view, boxes whose brief names a `fleet/<topic>` trunk are grouped under it with their merged state. Details: [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.html).
 
@@ -310,7 +310,7 @@ In a terminal session, `/tasks` lists each subagent with a progress line. Select
 ## Security
 
 - **GitHub token:** it never reaches the machine. The machine gets a placeholder, and Instabox's proxy swaps in the real token for requests to GitHub. A subagent can still push to any branch the token can reach, so protect your main branch with `cloudy-cloud protect OWNER/REPO`.
-- **Claude credential and provider keys:** `cloudy-cloud setup` stores your Claude token, `PARTICLE_API_KEY` and `OPENROUTER_API_KEY` as Instabox secrets limited to their API host (`api.anthropic.com`, `api.particle.ai`, `openrouter.ai`). The machine sees only a placeholder, which Instabox replaces in requests to that host, so a prompt injection can use the key against that host but cannot read it. A subagent on a profile gets the provider key (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`), never the Claude token. The `codex-chatgpt` profile instead copies your ChatGPT login file to the machine. On Instabox, a key that is still a plain value in your config file is refused with a message telling you to run `cloudy-cloud setup`; on a self-hosted box, keys go in as values.
+- **Claude credential and provider keys:** `cloudy-cloud setup` stores your Claude token, `PARTICLE_API_KEY` and `OPENROUTER_API_KEY` as Instabox secrets limited to their API host (`api.anthropic.com`, `api.particle.ai`, `openrouter.ai`). The machine sees only a placeholder, which Instabox replaces in requests to that host, so a prompt injection can use the key against that host but cannot read it. A subagent on a profile gets the provider key (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`), never the Claude token. The `codex-chatgpt` profile instead copies your ChatGPT login file to the machine. On Instabox, a key that is still a plain value in your config file is refused with a message telling you to run `cloudy-cloud setup` (`setup --more` for the other model keys); on a self-hosted box, keys go in as values.
 - **Instabox API key:** for ordinary subagents it stays on your computer, in the config file and the local server.
 - **MCP server tokens:** for servers you add with `cloudy-cloud mcp add`, the token stays in Instabox as the secret `MCP_<NAME>_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host you named, so a subagent can use the token against that host but cannot read it. Create the secret with `--host`; without it, a prompt injection could send the token to any host. With `--allow-literal` the real token is on the machine instead (a coordinator's session, not its workers), and you confirm that at the prompt.
 - **Coordinators:** a coordinator starts machines itself, so it needs the Instabox key, your Claude credential and the provider keys that profiles use. On Instabox it gets all of them as placeholders: the Instabox key is stored as the secret `CLOUDY_CLOUD_INSTABOX_API_KEY` (host `api.instabox.sh`), and its config file on the machine holds only the secret names. Other `*_API_KEY` variables in your shell are not sent. A coordinator can still use those keys against their hosts, for example to start machines, so use keys you can revoke.

@@ -1,6 +1,6 @@
 // Terminal styling for the coordinator commands. Same look as install.sh.
-// Styling is on only for a colour terminal: not piped, no NO_COLOR, CLICOLOR not 0, TERM not dumb.
-// Callers keep their plain text for the off case (`ui.on`), so scripts that read the output do not change.
+// `ui.term` is a terminal that takes escapes (TTY, TERM not dumb); `ui.on` is term plus colour allowed
+// (no NO_COLOR, CLICOLOR not 0). Callers keep their script text for piped output, so it does not change.
 // Width of one character in terminal cells: 0 for combining marks and control characters, 2 for East Asian wide and emoji, else 1.
 const charWidth = (cp) => (cp < 32 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x300 && cp <= 0x36f) || cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) ? 0
   : (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f)
@@ -15,13 +15,17 @@ export const fitCells = (str, max) => {
 };
 
 export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = process.stdout.columns } = {}) {
-  const on = Boolean(tty) && !env.NO_COLOR && (env.TERM || 'dumb') !== 'dumb' && env.CLICOLOR !== '0';
+  // term: the output is a terminal that takes escapes (TTY, TERM not dumb). on: colour is allowed too
+  // (no NO_COLOR, CLICOLOR not 0). Callers key the script format off `term`, not `on`.
+  const term = Boolean(tty) && (env.TERM || 'dumb') !== 'dumb';
+  const on = term && !env.NO_COLOR && env.CLICOLOR !== '0';
   const utf = /utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '');
-  const wide = on && (/256/.test(env.TERM || '') || Boolean(env.COLORTERM));
-  const code = (n256, basic) => (on ? `\x1b[${wide ? `38;5;${n256}` : basic}m` : '');
-  const col = { acc: code(75, 36), dim: wide ? code(245) : on ? '\x1b[2m' : '', ok: code(42, 32), warn: code(214, 33), err: code(203, 31), bold: on ? '\x1b[1m' : '' };
+  // The basic 16 colours are themed by the terminal, so they stay readable on light and dark
+  // backgrounds where a fixed colour cannot. Marks carry the meaning; colour supports it.
+  const at = (a) => (on ? `\x1b[${a}m` : '');
+  const col = { acc: at('1;34'), dim: at(2), ok: at(32), warn: at(33), err: at(31), bold: at(1) };
   const x = on ? '\x1b[0m' : '';
-  const paint = (c, s) => (on ? `${c}${s}${x}` : String(s));
+  const paint = (c, s) => (on && c ? `${c}${s}${x}` : String(s));
   const mark = { ok: utf ? '✔' : '[ok]', err: utf ? '✖' : '[x]', warn: utf ? '▲' : '!', hint: utf ? '›' : '>' };
   const width = Math.min(cols || 80, 100);
 
@@ -49,9 +53,9 @@ export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = p
     return [`  ${paint(col.bold, title)}`, ...rows.map(([l, v, d]) => `    ${paint(col.acc, l.padEnd(w))}   ${v}${d ? `\n    ${' '.repeat(w)}   ${paint(col.dim, d)}` : ''}`)].join('\n');
   };
 
-  return { on, utf, col, mark, width, paint, rel, table, block, dim: (s) => paint(col.dim, s), bold: (s) => paint(col.bold, s),
+  return { on, term, utf, col, mark, width, paint, rel, table, block, dim: (s) => paint(col.dim, s), bold: (s) => paint(col.bold, s),
     ok: (m, d) => line('ok', m, d), err: (m, d) => line('err', m, d), warn: (m, d) => line('warn', m, d),
     hint: (m) => `  ${paint(col.dim, `${mark.hint} ${m}`)}`,
-    // The one command to run next. Plain "Next: ..." when colour is off.
-    next: (cmd) => (on ? `  ${paint(col.acc, `${utf ? '→' : '->'} Next: ${cmd}`)}` : `Next: ${cmd}`) };
+    // The one command to run next. Plain "Next: ..." for piped output.
+    next: (cmd) => (term ? `  ${paint(col.acc, `${utf ? '→' : '->'} Next: ${cmd}`)}` : `Next: ${cmd}`) };
 }
