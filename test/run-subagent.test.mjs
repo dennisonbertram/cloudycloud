@@ -359,7 +359,7 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.match(text(r), /status: running/);
   const out = await wait([id]);
   assert.match(out, new RegExp(`resumed ${SID} edited2`));
-  assert.match(out, new RegExp(`Pushed to origin cloudy-cloud/${id} at [0-9a-f]{7}\\. Fetch with: git fetch origin cloudy-cloud/${id}`));
+  assert.match(out, new RegExp(`Pushed to origin cloudy-cloud/${id} at [0-9a-f]{7}\\. Review: https://github\\.com/\\S+/compare/cloudy-cloud/${id}\\?expand=1 Or fetch: git fetch origin cloudy-cloud/${id}\\.`));
   assert.equal(await remote(`git merge-base --is-ancestor ${tip1} cloudy-cloud/${id} && echo yes`), 'yes');
   assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'more');
   const cmd = created[0].cmds.filter((c) => c.includes('claude -p')).pop();

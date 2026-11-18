@@ -226,7 +226,11 @@ async function safetyPush(a, ctx) {
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
     const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
-    if (out.includes('PUSHOK')) return { where: `Pushed to origin ${branch} at ${sha}. Fetch with: git fetch origin ${branch}.${dirty}` };
+    if (out.includes('PUSHOK')) {
+      const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // no base branch is recorded, so GitHub compares against the default branch
+      const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
+      return { where: `Pushed to origin ${branch} at ${sha}. ${get}${dirty}` };
+    }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
     return { where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
@@ -944,7 +948,7 @@ export async function runSubagent(args, deps) {
   work(a, prompt, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.

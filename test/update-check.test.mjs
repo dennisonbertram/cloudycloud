@@ -34,9 +34,18 @@ test('isNewer compares numeric parts and ranks a prerelease below its release', 
 });
 
 test('a cached newer version prints one line; a fresh cache starts no refresh', () => {
-  const r = run({ checkedAt: NOW - 1000, latest: '0.3.0' });
+  const r = run({ checkedAt: NOW - 1000, latest: '0.3.0' }, { root: '/x/node_modules/cloudycloud' });
   assert.deepEqual(r.out, ['Cloudy Cloud 0.3.0 is available (you have 0.2.0). Update: npm install -g cloudycloud@latest\n']);
   assert.equal(r.refreshed, 0);
+});
+
+test('an npm install keeps the npm command; a clone or link says how to pull', () => {
+  const c = { checkedAt: NOW - 1000, latest: '0.3.0' };
+  assert.match(run(c, { root: '/usr/lib/node_modules/cloudycloud' }).out[0], /Update: npm install -g cloudycloud@latest\n$/);
+  const h = home(c);
+  const out = []; check({ version: '0.2.0', home: h, env: {}, isTTY: true, now: NOW, write: (s) => out.push(s), startRefresh() {}, root: join(h, 'src/cloudy') });
+  assert.equal(out[0], 'Cloudy Cloud 0.3.0 is available (you have 0.2.0). Update: cd ~/src/cloudy && git pull && npm install\n');
+  assert.match(run(c, { root: '/opt/cloudy' }).out[0], /Update: cd \/opt\/cloudy && git pull && npm install\n$/);
 });
 
 test('nothing is printed when current, in CI, opted out, or not a TTY', () => {
