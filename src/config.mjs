@@ -33,14 +33,17 @@ export function aptPackages(env = process.env) {
 
 // Hosts a worker machine may connect to (comma- or space-separated; *.example.com covers the domain and its
 // subdomains). No ports, schemes or paths; labels are at most 63 characters and may not start or end in a hyphen.
-// Unset means no policy ({ list: [] }); a value that is set but names nothing is an error, so a blank override
-// cannot silently switch a saved policy off. Returns { list } (lowercased) or { error }.
+// Unset means no policy ({ list: [] }), and "off" or "none" says so on purpose (the per-command opt-out:
+// CLOUDY_CLOUD_EGRESS_ALLOW=off ahead of a coordinator command). A value that is set but names nothing is an
+// error, so a blank override cannot silently switch a saved policy off. Returns { list } (lowercased) or { error }.
 const EGRESS_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
 const EGRESS_HOST = new RegExp(`^(\\*\\.)?${EGRESS_LABEL}(\\.${EGRESS_LABEL})+$`);
 export function egressAllow(env = process.env) {
   const raw = env.CLOUDY_CLOUD_EGRESS_ALLOW;
   if (raw === undefined || raw === null) return { list: [] };
-  const parts = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2').split(/[\s,]+/).filter(Boolean);
+  const value = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2');
+  if (/^(off|none)$/i.test(value)) return { list: [] };
+  const parts = value.split(/[\s,]+/).filter(Boolean);
   if (!parts.length) return { error: `CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env or remove it.` };
   const bad = parts.find((n) => !EGRESS_HOST.test(n));
   return bad ? { error: `CLOUDY_CLOUD_EGRESS_ALLOW has an invalid host "${bad.slice(0, 60)}". Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list: parts.map((h) => h.toLowerCase()) };
@@ -91,9 +94,14 @@ export function defaultWorkerNote(env) {
   const proxied = proxySecrets(env);
   const has = (k) => env[k] || proxied.has(k);
   if (has('CLAUDE_CODE_OAUTH_TOKEN') || has('ANTHROPIC_API_KEY')) return '';
-  const proxyOnly = (env.CLOUDY_CLOUD_PROVIDER || 'instabox') !== 'self-hosted';
+  // self-hosted keeps consented values on the machine and microsandbox substitutes local values into matching
+  // requests (caps.localSecrets), so a plain key is usable on both; everywhere else it must be a proxy secret.
+  const proxyOnly = !['self-hosted', 'microsandbox'].includes(env.CLOUDY_CLOUD_PROVIDER || 'instabox');
   const profile = [['codex'], ['codex-chatgpt'], ['pi-glm'], ['openrouter', ' (also pass model, an OpenRouter model id)']].find(([n]) => resolveProfile(n, 'x', env, { proxyOnly }).ok);
   const head = 'No Claude token is saved, so a cloud_agent call without a profile is refused.';
+  const step = proxyOnly
+    ? 'run: cloudy-cloud setup --more (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY as a proxy secret, or a Claude token).'
+    : `add OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY (or a Claude token) to ~/.config/cloudy-cloud/env; the ${env.CLOUDY_CLOUD_PROVIDER} provider reads the value on this computer.`;
   return profile ? `${head}\nNext step: pass profile: ${profile[0]}${profile[1] ?? ''} on every cloud_agent call.`
-    : `${head}\nNext step: run: cloudy-cloud setup --more (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY as a proxy secret, or a Claude token).`;
+    : `${head}\nNext step: ${step}`;
 }

@@ -76,6 +76,13 @@ test('egressAllow lowercases the list so case folds into the built-in hosts', ()
   assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'GITHUB.COM Example.COM' }), { list: ['github.com', 'example.com'] });
 });
 
+test('egressAllow: off and none are an explicit opt-out with no policy; blank still errors', () => {
+  for (const off of ['off', 'none', 'OFF', 'None']) assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: off }), { list: [] }, off);
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'offs' }).error ?? '', /invalid host/, 'offs');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'off api.example.com' }).error ?? '', /invalid host/, 'off is not a host when mixed into a list');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: ' ' }).error ?? '', /lists no hosts/);
+});
+
 test('the egress and microsandbox keys load from the env file', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
   writeFileSync(file, 'CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com,*.example.org\nCLOUDY_CLOUD_MSB_BIN=/opt/msb/bin\nCLOUDY_CLOUD_MSB_SLOTS=4\n');
@@ -94,5 +101,7 @@ test('defaultWorkerNote recommends only a profile that resolveProfile accepts un
   assert.match(defaultWorkerNote({ ...base, OPENAI_API_KEY: 'sk-real-value-123456' }), /cloudy-cloud setup/, 'nothing usable: the exact next step is setup');
   // self-hosted keeps real values on the machine, so the plain key is usable there
   assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROVIDER: 'self-hosted', OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
+  // microsandbox substitutes local values into matching requests, so the plain key is usable there too
+  assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROVIDER: 'microsandbox', OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
   assert.equal(defaultWorkerNote({ ...base, CLAUDE_CODE_OAUTH_TOKEN: 'x' }), '');
 });

@@ -3,13 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { spawn as realSpawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { spawn as realSpawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, connect } from 'node:net';
 import { contractSuite } from './provider-contract.mjs';
-import { createProvider } from '../src/providers/microsandbox.mjs';
+import { createProvider, resolveMsbBin } from '../src/providers/microsandbox.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
 import { missingSetup } from '../src/host-pi.mjs';
 
@@ -127,11 +127,12 @@ contractSuite('microsandbox', ({ withKey }) => createProvider(withKey ? ENV : {}
 
 const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 600, ...extra });
 
-test('caps and identity: linux only, proxy secrets, egress, no snapshots/publish/display/metrics', () => {
+test('caps and identity: linux only, proxy secrets, local substitution, egress, no snapshots/publish/display/metrics', () => {
   const p = createProvider(ENV, { spawn: fakeMsb().spawn });
   assert.equal(p.name, 'microsandbox');
   assert.equal(p.keyName, 'CLOUDY_CLOUD_MSB_BIN');
   assert.equal(p.caps.hasProxySecrets, true);
+  assert.equal(p.caps.localSecrets, true); // a plain local value is attached by name; no CLOUDY_CLOUD_PROXY_SECRETS line needed
   assert.equal(p.caps.hasEgressPolicy, true);
   assert.equal(p.caps.hasServerTTL, false); // --max-duration stops the sandbox but does not remove it
   assert.deepEqual([p.caps.hasSnapshots, p.caps.hasPublish, p.caps.hasDisplay, p.caps.hasMetrics, p.caps.hasSizes], [false, false, false, false, false]);
@@ -161,7 +162,8 @@ test('secret validation: env/secret name collision, unknown host, and missing va
   const { box, provider } = make({ MCP_X_TOKEN: 'mcp-x' });
   await assert.rejects(mk(provider, { envs: { GH_TOKEN: 'dup' } }), /also attached as a secret/);
   await assert.rejects(mk(provider, { secrets: ['MCP_X_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('MCP_X_TOKEN') && e.message.includes('cloudy-cloud mcp rm') && e.message.includes('CLOUDY_CLOUD_PROVIDER=instabox'));
-  await assert.rejects(mk(provider, { secrets: ['CLAUDE_CODE_OAUTH_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('has no value') && e.message.includes('api.anthropic.com') && e.message.includes('CLOUDY_CLOUD_PROXY_SECRETS'));
+  await assert.rejects(mk(provider, { secrets: ['WHATEVER_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('WHATEVER_TOKEN') && e.message.includes('credential name microsandbox knows') && !e.message.includes('mcp rm'));
+  await assert.rejects(mk(provider, { secrets: ['CLAUDE_CODE_OAUTH_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('has no value') && e.message.includes('api.anthropic.com') && e.message.includes('~/.config/cloudy-cloud/env') && !e.message.includes('CLOUDY_CLOUD_PROXY_SECRETS'), 'the value stays local: no proxy-secret line is needed');
   assert.equal(box.table.size, 0, 'nothing was created');
 });
 
@@ -228,7 +230,7 @@ test('slots full gives quota_exceeded naming the count; raising the env lets it 
   const put = (n, status = 'Running') => box.table.set(`cc-${n}`, { name: `cc-${n}`, status, created_at: 'x', image: IMAGE, labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' }, env: {} });
   put(1); put(2, 'Starting'); // a still-starting sandbox also holds a slot
   const p = createProvider(ENV, { spawn: box.spawn });
-  await assert.rejects(mk(p), (e) => e.code === 'quota_exceeded' && e.message === 'All 2 microsandbox slots on this computer are in use. Stop an agent or raise CLOUDY_CLOUD_MSB_SLOTS.');
+  await assert.rejects(mk(p), (e) => e.code === 'quota_exceeded' && e.message === 'All 2 microsandbox slots on this computer are in use.\nNext step: stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over 2> to ~/.config/cloudy-cloud/env.');
   put(3);
   const p3 = createProvider({ ...ENV, CLOUDY_CLOUD_MSB_SLOTS: '3' }, { spawn: box.spawn });
   await assert.rejects(mk(p3), (e) => e.code === 'quota_exceeded' && e.message.startsWith('All 3 '));
@@ -238,12 +240,63 @@ test('slots full gives quota_exceeded naming the count; raising the env lets it 
   await mk(p9);
 });
 
-test('an unset CLOUDY_CLOUD_MSB_BIN is no_key with the install text; spawn ENOENT maps to the same', async () => {
-  const p = createProvider({}, { spawn: fakeMsb().spawn });
-  await assert.rejects(mk(p), (e) => e.code === 'no_key' && e.message.includes('curl -fsSL https://install.microsandbox.dev | sh') && e.message.includes('CLOUDY_CLOUD_MSB_BIN'));
+test('msb binary resolution: CLOUDY_CLOUD_MSB_BIN, then ~/.local/bin/msb, then PATH', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-msbbin-'));
+  roots.push(root);
+  const home = join(root, 'home'), pathdir = join(root, 'pathdir');
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  mkdirSync(pathdir, { recursive: true });
+  writeFileSync(join(home, '.local/bin/msb'), '#!/bin/sh\n');
+  writeFileSync(join(pathdir, 'msb'), '#!/bin/sh\n');
+  chmodSync(join(home, '.local/bin/msb'), 0o755);
+  chmodSync(join(pathdir, 'msb'), 0o755);
+  const empty = join(root, 'empty');
+  assert.equal(resolveMsbBin({ CLOUDY_CLOUD_MSB_BIN: '/x/msb' }), '/x/msb');
+  assert.equal(resolveMsbBin({ HOME: home, PATH: '' }), join(home, '.local/bin/msb'));
+  assert.equal(resolveMsbBin({ HOME: empty, PATH: pathdir }), join(pathdir, 'msb'));
+  assert.equal(resolveMsbBin({ HOME: home, PATH: pathdir }), join(home, '.local/bin/msb'), 'the default location wins over PATH');
+  assert.equal(resolveMsbBin({ HOME: empty, PATH: '' }), '');
+  chmodSync(join(home, '.local/bin/msb'), 0o644); // present but not executable does not count
+  assert.equal(resolveMsbBin({ HOME: home, PATH: '' }), '');
+});
+
+test('the launcher resolves msb itself: MSB_BIN, ~/.local/bin, then PATH; missing reports msb', () => {
+  const launcher = new URL('../bin/cloudy-cloud', import.meta.url).pathname;
+  const root = mkdtempSync(join(tmpdir(), 'cc-launch-msb-'));
+  roots.push(root);
+  const home = join(root, 'home'), bindir = join(root, 'bin'), msbdir = join(root, 'msbdir');
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  mkdirSync(bindir, { recursive: true });
+  mkdirSync(msbdir, { recursive: true });
+  const argvFile = join(root, 'argv');
+  writeFileSync(join(bindir, 'claude'), `#!/bin/sh\n: > "${argvFile}"\n`);
+  writeFileSync(join(home, '.local/bin/msb'), '#!/bin/sh\n');
+  writeFileSync(join(msbdir, 'msb'), '#!/bin/sh\n');
+  for (const p of [join(bindir, 'claude'), join(home, '.local/bin/msb'), join(msbdir, 'msb')]) chmodSync(p, 0o755);
+  const cfg = join(root, 'env');
+  writeFileSync(cfg, 'CLOUDY_CLOUD_PROVIDER=microsandbox\nCLAUDE_CODE_OAUTH_TOKEN=cc-tok\nGH_TOKEN=x\n');
+  const run = (env) => { rmSync(argvFile, { force: true }); return spawnSync('/bin/sh', [launcher], { cwd: root, env: { PATH: `${bindir}:/usr/bin:/bin`, HOME: home, CLOUDY_CLOUD_CONFIG: cfg, ...env }, input: '', encoding: 'utf8' }); };
+  const started = (r) => r.status === 0 && existsSync(argvFile);
+  assert.ok(started(run({})), 'msb at ~/.local/bin was not found');
+  rmSync(join(home, '.local/bin/msb'));
+  assert.ok(started(run({ PATH: `${msbdir}:${bindir}:/usr/bin:/bin` })), 'msb on PATH was not found');
+  assert.ok(started(run({ CLOUDY_CLOUD_MSB_BIN: '/any/path/msb' })), 'CLOUDY_CLOUD_MSB_BIN was not honoured');
+  const r = run({});
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not set up yet/);
+  assert.match(r.stderr, /microsandbox CLI \(msb\)/);
+});
+
+test('an unset CLOUDY_CLOUD_MSB_BIN is no_key with the install text on its own lines; spawn ENOENT maps to the same', async () => {
+  const none = { HOME: mkdtempSync(join(tmpdir(), 'cc-nohome-')), PATH: '' };
+  roots.push(none.HOME);
+  const p = createProvider(none, { spawn: fakeMsb().spawn });
+  await assert.rejects(mk(p), (e) => e.code === 'no_key' && e.message.includes('\n  curl -fsSL https://install.microsandbox.dev | sh\n') && e.message.includes('CLOUDY_CLOUD_MSB_BIN'));
   const calls = [];
   const p2 = createProvider(ENV, { spawn: (...a) => { calls.push(a); return enoentSpawn(); } });
   await assert.rejects(mk(p2), (e) => e.code === 'no_key' && e.message.includes('install.microsandbox.dev'));
+  // with nothing resolved, shellArgv still prints a runnable command
+  assert.deepEqual(p.shellArgv('cc-1').slice(0, 3), ['msb', 'exec', '-t']);
 });
 
 test('commands.run: exit code, timeout, cwd, env from -e, onStdout streaming', async () => {

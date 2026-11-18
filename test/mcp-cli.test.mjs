@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/mcp-cli.mjs';
 
-function setup(claude, { project } = {}) {
+function setup(claude, { project, provider } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'mcpcli-'));
-  const env = { HOME: home, CLOUDY_CLOUD_MCP: join(home, '.config/cloudy-cloud/mcp.json'), CLOUDY_CLOUD_CLAUDE_JSON: join(home, '.claude.json') };
+  const env = { HOME: home, CLOUDY_CLOUD_MCP: join(home, '.config/cloudy-cloud/mcp.json'), CLOUDY_CLOUD_CLAUDE_JSON: join(home, '.claude.json'), CLOUDY_CLOUD_CONFIG: join(home, '.config/cloudy-cloud/env') };
   writeFileSync(env.CLOUDY_CLOUD_CLAUDE_JSON, JSON.stringify(claude));
+  if (provider) { mkdirSync(join(home, '.config/cloudy-cloud'), { recursive: true }); writeFileSync(env.CLOUDY_CLOUD_CONFIG, `CLOUDY_CLOUD_PROVIDER=${provider}\n`); }
   if (project) writeFileSync(join(home, '.mcp.json'), JSON.stringify(project));
   return { home, env };
 }
@@ -41,6 +42,37 @@ test('add: user-scope http server with a Bearer header is stored as a reference'
   assert.ok(!text.includes(TOKEN) && !r.out.includes(TOKEN) && !r.err.includes(TOKEN));
   assert.equal(statSync(env.CLOUDY_CLOUD_MCP).mode & 0o777, 0o600);
   assert.equal(statSync(join(home, '.config/cloudy-cloud')).mode & 0o777, 0o700);
+});
+
+test('add: on microsandbox the secret instruction warns that tokens do not reach workers yet', async () => {
+  const { home, env } = setup({ mcpServers: { notion } }, { provider: 'microsandbox' });
+  const r = await run(['add', 'notion'], env, home);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /written as \$\{MCP_NOTION_TOKEN\}/);
+  assert.match(r.out, /MCP server tokens do not reach workers on the microsandbox provider yet/);
+  assert.match(r.out, /cloudy-cloud mcp add notion --allow-literal/);
+  assert.ok(!r.out.includes('instabox') && !r.out.includes('Instabox'), r.out);
+  assert.match(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8'), /Bearer \$\{MCP_NOTION_TOKEN\}/);
+  assert.ok(!r.out.includes(TOKEN) && !r.err.includes(TOKEN));
+});
+
+test('add: on self-hosted the secret instruction names the consent path, not Instabox', async () => {
+  const { home, env } = setup({ mcpServers: { notion } }, { provider: 'self-hosted' });
+  const r = await run(['add', 'notion'], env, home);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /self-hosted provider has no secret store/);
+  assert.match(r.out, /cloudy-cloud mcp add notion --allow-literal/);
+  assert.ok(!r.out.includes('secrets set') && !r.out.includes('Instabox'), r.out);
+  assert.match(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8'), /Bearer \$\{MCP_NOTION_TOKEN\}/);
+});
+
+test('add: a secret-free server prints no secret block whatever the provider', async () => {
+  for (const provider of [undefined, 'microsandbox', 'self-hosted']) {
+    const { home, env } = setup({ mcpServers: { c7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] } } }, { provider });
+    const r = await run(['add', 'c7'], env, home);
+    assert.equal(r.code, 0, `${provider}: ${r.err}`);
+    assert.ok(!r.out.includes('sends a secret') && !r.out.includes('instabox'), `${provider}: ${r.out}`);
+  }
 });
 
 test('add: local scope wins over user scope', async () => {

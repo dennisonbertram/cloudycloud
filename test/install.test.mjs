@@ -1301,7 +1301,7 @@ test('arguments: unknown ones print usage and exit 2 before any work, in any ord
   for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
     const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
     assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
-    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\] \[--check-only\]/);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\] \[--check-only\]/);
     assert.doesNotMatch(r.stdout, /\[1\/4\]/);
   }
 });
@@ -1335,4 +1335,130 @@ test('pty: --more offers the OpenAI key when codex is installed even though clau
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Saved: claude\./);
   assert.match(r.text, /OpenAI key for Codex workers/);
+});
+
+// ---- microsandbox provider (r3-msb) ----
+// A stub msb: --version and ls answer, `image inspect` succeeds only for the packaged worker image.
+const PKG_VERSION = JSON.parse(readFileSync(resolve('package.json'), 'utf8')).version;
+function msbStub({ image = true, version = true, ls = true, log } = {}) {
+  const dir = tmp();
+  writeFileSync(join(dir, 'msb'), `#!/bin/sh\necho "msb $@" >> "${log ?? join(dir, 'msb-calls')}"\ncase "$1" in
+  --version) ${version ? 'echo "msb 0.0.0-test"' : 'exit 1'} ;;
+  ls) ${ls ? "echo '[]'" : 'exit 1'} ;;
+  image) [ "$2 $3" = "inspect cloudy-cloud-worker:${PKG_VERSION}" ] && ${image ? 'exit 0' : 'exit 1'} || exit 1 ;;
+  *) exit 1 ;;
+esac\n`);
+  chmodSync(join(dir, 'msb'), 0o755);
+  return dir;
+}
+// A check-only run on microsandbox: stubs cover the setup tools (node is real, so the egress parse can run).
+const msbCheck = (cfgText, env = {}, { msb, extra = '' } = {}) => {
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `CLOUDY_CLOUD_PROVIDER=microsandbox\n${cfgText}`, { mode: 0o600 });
+  const path = `${stubDir(all, { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n` })}${msb ? `:${msb}` : ''}${extra ? `:${extra}` : ''}`;
+  return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${path}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, ...env } });
+};
+
+test('msb_bin: CLOUDY_CLOUD_MSB_BIN wins, then the saved value, then ~/.local/bin/msb, then PATH', () => {
+  assert.equal(fn('msb_bin', [], { CLOUDY_CLOUD_MSB_BIN: '/custom/msb', PATH: '/usr/bin:/bin' }).stdout, '/custom/msb');
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, 'CLOUDY_CLOUD_MSB_BIN=/saved/msb\n', { mode: 0o600 });
+  assert.equal(fn('msb_bin', [], { CLOUDY_CLOUD_CONFIG: cfg, PATH: '/usr/bin:/bin' }).stdout, '/saved/msb');
+  const home = tmp();
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  writeFileSync(join(home, '.local/bin/msb'), '#!/bin/sh\n'); chmodSync(join(home, '.local/bin/msb'), 0o755);
+  assert.equal(fn('msb_bin', [], { HOME: home, PATH: '/usr/bin:/bin' }).stdout, join(home, '.local/bin/msb'));
+  const bin = stubDir(['msb']);
+  const onPath = fn('msb_bin', [], { PATH: `${bin}:/usr/bin:/bin` }).stdout;
+  assert.match(onPath, /msb$/);
+  assert.ok(onPath.startsWith(bin), onPath); // PATH entry, not ~/.local/bin
+  assert.equal(fn('msb_bin', [], { PATH: '/usr/bin:/bin' }).stdout, '');
+});
+
+test('check-only on microsandbox checks msb, the worker image and local keys — never Instabox', () => {
+  const good = 'GH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+  const r = msbCheck(good, {}, { msb: msbStub() });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /The microsandbox CLI works/);
+  assert.match(r.stdout, new RegExp(`The worker image cloudy-cloud-worker:${PKG_VERSION} is loaded`));
+  assert.match(r.stdout, /A Claude credential is saved/);
+  assert.match(r.stdout, /GH_TOKEN is saved/);
+  assert.match(r.stdout, /Check passed/);
+  assert.doesNotMatch(r.stdout, /Instabox|instabox/); // no Instabox checks on this provider
+});
+
+test('check-only on microsandbox fails each missing piece with a local fix, not a setup rerun', () => {
+  const base = 'GH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+  const noMsb = msbCheck(base);
+  assert.equal(noMsb.status, 1, noMsb.stdout);
+  assert.match(noMsb.stdout, /The microsandbox CLI \(msb\) was not found/);
+  assert.match(noMsb.stdout, /curl -fsSL https:\/\/install\.microsandbox\.dev \| sh/);
+  const noImage = msbCheck(base, {}, { msb: msbStub({ image: false }) });
+  assert.equal(noImage.status, 1, noImage.stdout);
+  assert.match(noImage.stdout, new RegExp(`The worker image cloudy-cloud-worker:${PKG_VERSION} is not loaded`));
+  const noKeys = msbCheck('', {}, { msb: msbStub() });
+  assert.equal(noKeys.status, 1, noKeys.stdout);
+  assert.match(noKeys.stdout, /No Claude token is saved/);
+  assert.match(noKeys.stdout, /GH_TOKEN is not saved/);
+  assert.match(noKeys.stdout, /Add CLAUDE_CODE_OAUTH_TOKEN=<your Claude token> to .+env/);
+  for (const r of [noMsb, noImage, noKeys]) {
+    assert.doesNotMatch(r.stdout, /proxy secret|secrets set|Instabox/); // nothing points at Instabox remediation
+    assert.doesNotMatch(r.stdout, /run (cloudy-cloud setup|npx cloudycloud setup|\.\/install\.sh)/); // setup cannot fix msb
+  }
+});
+
+test('check-only on microsandbox parses CLOUDY_CLOUD_EGRESS_ALLOW and accepts off', () => {
+  const keys = 'GH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+  const msb = msbStub();
+  const bad = msbCheck(`${keys}CLOUDY_CLOUD_EGRESS_ALLOW=https://api.example.com\n`, {}, { msb });
+  assert.equal(bad.status, 1, bad.stdout);
+  assert.match(bad.stdout, /CLOUDY_CLOUD_EGRESS_ALLOW does not parse/);
+  assert.match(bad.stdout, /invalid host "https:\/\/api\.example\.com"/);
+  const off = msbCheck(`${keys}CLOUDY_CLOUD_EGRESS_ALLOW=off\n`, {}, { msb });
+  assert.equal(off.status, 0, off.stdout);
+  assert.match(off.stdout, /The egress allow list parses/);
+  const noneSet = msbCheck(keys, {}, { msb });
+  assert.equal(noneSet.status, 0, noneSet.stdout);
+  assert.match(noneSet.stdout, /No egress allow list is set/);
+  const blank = msbCheck(`${keys}CLOUDY_CLOUD_EGRESS_ALLOW=\n`, {}, { msb });
+  assert.equal(blank.status, 1, blank.stdout);
+  assert.match(blank.stdout, /CLOUDY_CLOUD_EGRESS_ALLOW does not parse/);
+});
+
+test('plain setup with microsandbox saved does not walk the Instabox flow and changes nothing', () => {
+  // spawnSync has no tty: the microsandbox exit must also come before the "run it in a terminal" refusal.
+  for (const args of [[], ['--more'], ['--provider', 'microsandbox']]) {
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, 'CLOUDY_CLOUD_PROVIDER=microsandbox\nGH_TOKEN=ghp_x\n', { mode: 0o600 });
+    const run = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: `${msbStub()}:${process.env.PATH}`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, NO_COLOR: '1' } });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /The provider is microsandbox/);
+    assert.match(run.stdout, /Run on this computer with microsandbox/);
+    assert.match(run.stdout, /--check-only/);
+    assert.doesNotMatch(run.stdout + run.stderr, /Instabox|Paste it|Where should subagents run|run it in a terminal/);
+    assert.equal(readFileSync(cfg, 'utf8'), 'CLOUDY_CLOUD_PROVIDER=microsandbox\nGH_TOKEN=ghp_x\n'); // provider untouched
+  }
+});
+
+test('--provider microsandbox --check-only checks the named provider, not the saved one', () => {
+  // The flag exports CLOUDY_CLOUD_PROVIDER, so eff sees it even without a saved line.
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, 'GH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n', { mode: 0o600 });
+  const path = `${stubDir(all, { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n` })}:${msbStub()}`;
+  const r = spawnSync('/bin/bash', [script, '--provider', 'microsandbox', '--check-only'], { encoding: 'utf8', env: { PATH: `${path}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /The microsandbox CLI works/);
+  assert.match(r.stdout, /Check passed/);
+  assert.doesNotMatch(r.stdout, /Instabox/);
+  assert.equal(readFileSync(cfg, 'utf8'), 'GH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n'); // check-only saves nothing
+});
+
+test('coordinators_offered is false on microsandbox even with docker on PATH', () => {
+  const docker = stubDir(['docker']);
+  const r = fn('coordinators_offered; echo "offered=$?"', [], { PATH: `${docker}:${process.env.PATH}`, CLOUDY_CLOUD_PROVIDER: 'microsandbox' });
+  assert.match(r.stdout, /offered=1/);
+  const saved = join(tmp(), 'env');
+  writeFileSync(saved, 'CLOUDY_CLOUD_PROVIDER=microsandbox\n', { mode: 0o600 });
+  const r2 = fn('coordinators_offered; echo "offered=$?"', [], { PATH: `${docker}:${process.env.PATH}`, CLOUDY_CLOUD_CONFIG: saved });
+  assert.match(r2.stdout, /offered=1/);
 });
