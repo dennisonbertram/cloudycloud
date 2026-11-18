@@ -59,6 +59,7 @@ export function readEvents(file) {
 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const ACTIVE = new Set(['queued', 'starting', 'running']);
+const HARNESSES = new Set(['claude', 'pi', 'omp', 'codex', 'opencode']);
 const IDLE_MS = 60 * 60_000; // run-subagent.mjs stops an agent after 60 idle minutes
 const DEFAULT_WORKER_MS = 6 * 60 * 60_000; // default server delete time (CLOUDY_CLOUD_WORKER_HOURS) when an old log has no deleteAt
 
@@ -85,6 +86,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
     a.lastActivity = e.t;
     if (e.type === 'agent') {
       Object.assign(a, { description: e.description, profile: e.profile, role: e.role, model: e.model, branch: e.branch, startedAt: e.t });
+      if (HARNESSES.has(e.harness)) a.harness = e.harness;
       a.mcp = Array.isArray(e.mcp) ? e.mcp.filter((n) => typeof n === 'string') : undefined; // names only
     } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {

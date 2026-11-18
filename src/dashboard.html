@@ -298,6 +298,7 @@
   const kindBadge = (b) => { const [k, t] = (b.machineKind || '').split(':'); return k && k !== 'linux' ? (k === 'gpu' && t ? 'gpu:' + t : k) : null; };
   const kindBase = (b) => (b.machineKind || '').split(':')[0];
   const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
+  const harnessTag = (b) => b.harness ? h('span', { class: 'tag', title: 'The harness this worker runs', text: b.harness }) : null;
   const titleOf = (b) => b.title || b.description || '(no description)';
   const stamp = (b) => b.lastActivity || b.startedAt;
 
@@ -344,6 +345,7 @@
     const parts = [];
     if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: statusWord(b.status) }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
+    const ht = harnessTag(b); if (ht) parts.push(ht);
     const kb = kindBadge(b); if (kb) parts.push(h('span', { class: 'tag', title: 'Machine kind', text: kb }));
     if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
     else if (lvl === 1 && b.startedBy && b.startedBy !== 'this session') parts.push(h('span', { text: 'started by ' + b.startedBy }));
@@ -680,7 +682,7 @@
         prop('Status', dot(b.status), h('span', { class: 'st ' + b.status, text: statusWord(b.status) })),
         prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
-        prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') })),
+        prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') }), harnessTag(b)),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
         prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) })),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
@@ -845,11 +847,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.harness, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, sisQuiet(b), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();

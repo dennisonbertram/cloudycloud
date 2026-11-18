@@ -1183,3 +1183,23 @@ test('/api/stream shows a codex answer that follows retry error notices, not a f
     assert.notEqual(res.is_error, true);
   } finally { s.close(); }
 });
+
+// ---- harness and profile per worker ----
+test('foldAgents copies the agent event\'s harness (claude|pi|omp|codex|opencode), else undefined', () => {
+  const ev = (harness) => [{ type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker', ...(harness !== undefined && { harness }) }];
+  assert.equal(foldAgents(ev('codex'), { alive: () => true })[0].harness, 'codex');
+  assert.equal(foldAgents(ev('pi'), { alive: () => true })[0].harness, 'pi');
+  assert.equal(foldAgents(ev('omp'), { alive: () => true })[0].harness, 'omp');
+  assert.equal(foldAgents(ev('opencode'), { alive: () => true })[0].harness, 'opencode');
+  assert.equal(foldAgents(ev('weird'), { alive: () => true })[0].harness, undefined);
+  assert.equal(foldAgents(ev(), { alive: () => true })[0].harness, undefined);
+});
+
+test('the agent event carries the harness, the demo shows all five, and the page tags it by the profile', () => {
+  const src = readFileSync(new URL('../src/run-subagent.mjs', import.meta.url), 'utf8');
+  assert.match(src, /harness: harnessOf\(a\)/);
+  const have = new Set(demoState().boxes.map((b) => b.harness).filter(Boolean));
+  for (const harness of ['claude', 'pi', 'omp', 'codex', 'opencode']) assert.ok(have.has(harness), harness);
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.ok((html.match(/harnessTag\(b\)/g) || []).length >= 2, 'rail row and panel both use the tag');
+});

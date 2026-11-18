@@ -36,7 +36,7 @@ export function demoState(now = Date.now()) {
   });
   const boxes = [
     box({
-      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'],
+      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, harness: 'claude', model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'],
       startedAt: ago(18 * M), lastActivity: ago(9_000), deadline: ago(18 * M) + 8 * H,
       messages: [
         { t: ago(18 * M), kind: 'out', text: 'Add exponential backoff with jitter to src/upload/client.ts. Retry only on 429 and 5xx, at most 5 tries. Add tests next to the existing ones and push to your branch.' },
@@ -49,7 +49,7 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', model: 'z-ai/glm-5.3-flash',
+      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash',
       startedAt: ago(52 * M), lastActivity: ago(14 * M), idleSince: ago(14 * M), deadline: ago(14 * M) + H,
       messages: [
         { t: ago(52 * M), kind: 'out', text: 'Read src/billing/webhook.ts and list any way two deliveries of the same event could be applied twice. Do not change code yet.' },
@@ -62,17 +62,17 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', model: 'claude-sonnet-5-5',
+      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', profile: 'pi-glm', harness: 'pi', model: 'z-ai/glm-5.3-flash',
       startedAt: ago(40_000), lastActivity: ago(5_000), deadline: ago(40_000) + 8 * H,
       messages: [{ t: ago(40_000), kind: 'out', text: 'Replace the hand-written inputs in app/settings/page.tsx with the shared Form, Field and Switch components. Keep the page behaviour the same.' }],
     }),
     box({
-      id: '51d9ee02', description: 'Fix flaky checkout e2e test', status: 'queued', profile: 'deepseek', model: 'deepseek-ai/deepseek-v41-flash-1017',
+      id: '51d9ee02', description: 'Fix flaky checkout e2e test', status: 'queued', profile: 'deepseek', harness: 'claude', model: 'deepseek-ai/deepseek-v41-flash-1017',
       startedAt: ago(12_000), lastActivity: ago(12_000), deadline: ago(12_000) + 8 * H,
       messages: [{ t: ago(12_000), kind: 'out', text: 'The checkout e2e test fails about one run in five. Find out why and fix the cause, not with a longer timeout.' }],
     }),
     box({
-      id: '90aa13fc', description: 'Migrate the date helpers off moment', status: 'failed', model: 'claude-sonnet-5-5',
+      id: '90aa13fc', description: 'Migrate the date helpers off moment', status: 'failed', profile: 'omp-deepseek', harness: 'omp', model: 'deepseek-ai/deepseek-v41-flash-1017',
       startedAt: ago(3 * H), lastActivity: ago(2.6 * H), stoppedAt: ago(2.6 * H),
       messages: [
         { t: ago(3 * H), kind: 'out', text: 'Replace moment with date-fns in src/lib/dates.ts and every caller.' },
@@ -81,7 +81,7 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'a7716be4', description: 'Write the changelog for 2.4', status: 'stopped', model: 'claude-sonnet-5-5',
+      id: 'a7716be4', description: 'Write the changelog for 2.4', status: 'stopped', profile: 'codex', harness: 'codex', model: 'gpt-5.3-codex',
       startedAt: ago(5 * H), lastActivity: ago(4.2 * H), stoppedAt: ago(4.2 * H),
       messages: [
         { t: ago(5 * H), kind: 'out', text: 'Read the commits since v2.3.0 and draft CHANGELOG.md for 2.4 in the existing style.' },
@@ -89,17 +89,17 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: '3e5b7a60', description: 'Add dark mode tokens to the design system', status: 'stopped', profile: 'openrouter', model: 'anthropic/claude-haiku-5',
+      id: '3e5b7a60', description: 'Add dark mode tokens to the design system', status: 'stopped', profile: 'openrouter', harness: 'claude', model: 'anthropic/claude-haiku-5',
       startedAt: ago(7 * H), lastActivity: ago(6.5 * H), stoppedAt: ago(6.5 * H),
       messages: [{ t: ago(7 * H), kind: 'out', text: 'Add a dark palette to tokens.css behind prefers-color-scheme.' }, { t: ago(6.6 * H), kind: 'reply', text: 'Added 24 tokens and a dark block.\n\nPushed to origin cloudy-cloud/3e5b7a60 at e4410aa. Fetch with: git fetch origin cloudy-cloud/3e5b7a60.\nModel: anthropic/claude-haiku-5\nTotal: 3 tool uses, 5.1k in / 1.2k out tokens, 1m 8s' }],
     }),
     box({
-      id: 'c3d4e5f6', description: 'Check the onboarding flow on a phone', status: 'running', model: 'claude-sonnet-5-5', machineKind: 'android',
+      id: 'c3d4e5f6', description: 'Check the onboarding flow on a phone', status: 'running', profile: 'opencode-glm', harness: 'opencode', model: 'z-ai/glm-5.3-flash', machineKind: 'android',
       startedAt: ago(25 * M), lastActivity: ago(40_000), deadline: ago(25 * M) + 8 * H,
       messages: [{ t: ago(25 * M), kind: 'out', text: 'Install the debug APK on the Android machine and walk through onboarding. Report any screen that clips text.' }, { t: ago(40_000), kind: 'progress', text: 'Bash adb install app-debug.apk' }],
     }),
     box({
-      id: 'd4e5f607', description: 'Fine-tune the reranker on the new pairs', status: 'idle', model: 'claude-sonnet-5-5', machineKind: 'gpu:l4',
+      id: 'd4e5f607', description: 'Fine-tune the reranker on the new pairs', status: 'idle', harness: 'claude', model: 'claude-sonnet-5-5', machineKind: 'gpu:l4',
       startedAt: ago(70 * M), lastActivity: ago(20 * M), idleSince: ago(20 * M), deadline: ago(20 * M) + H,
       messages: [{ t: ago(70 * M), kind: 'out', text: 'Train the reranker for one epoch on data/pairs.jsonl and report eval loss.' }, { t: ago(20 * M), kind: 'reply', text: 'One epoch done. Eval loss 0.41, down from 0.58.\nModel: claude-sonnet-5-5\nTotal: 6 tool uses, 18.0k in / 2.0k out tokens, 41m 2s' }],
     }),
