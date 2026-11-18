@@ -8,6 +8,7 @@ const PARTICLE = 'https://api.particle.ai/v1';
 // Workers on the pi harness talk to the OpenAI-format provider directly, with no LiteLLM gateway.
 const pi = (model) => ({ harness: 'pi', format: 'openai', baseUrl: PARTICLE, model, keyName: 'PARTICLE_API_KEY' });
 const omp = (model) => ({ ...pi(model), harness: 'omp' });
+const opencode = (model, p = pi(model)) => ({ ...p, harness: 'opencode' });
 const BUILTIN = {
   glm: { format: 'openai', baseUrl: PARTICLE, model: 'z-ai/glm-5.3-flash', keyName: 'PARTICLE_API_KEY' },
   deepseek: { format: 'openai', baseUrl: PARTICLE, model: 'deepseek-ai/deepseek-v41-flash-1017', keyName: 'PARTICLE_API_KEY' },
@@ -18,6 +19,10 @@ const BUILTIN = {
   'omp-glm': omp('z-ai/glm-5.3-flash'),
   'omp-deepseek': omp('deepseek-ai/deepseek-v41-flash-1017'),
   'omp-particle': omp('particle-ai/particle-1'),
+  'opencode-glm': opencode('z-ai/glm-5.3-flash'),
+  'opencode-deepseek': opencode('deepseek-ai/deepseek-v41-flash-1017'),
+  'opencode-particle': opencode('particle-ai/particle-1'),
+  'opencode-openrouter': { harness: 'opencode', format: 'openai', baseUrl: 'https://openrouter.ai/api/v1', keyName: 'OPENROUTER_API_KEY' }, // model: per call or in profiles.json
   openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', keyName: 'OPENROUTER_API_KEY' }, // model: per call or in profiles.json
 };
 export const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -81,9 +86,10 @@ export function resolveProfile(name, model, env = process.env, { proxyOnly = fal
   if (!p || typeof p !== 'object') return { error: `unknown profile "${name}". Known profiles: ${Object.keys(profiles).join(', ')}` };
   const m = model ?? p.model;
   const harness = p.harness ?? 'claude';
-  if (!['claude', 'pi', 'omp'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi" or "omp"` };
+  if (!['claude', 'pi', 'omp', 'opencode'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi", "omp" or "opencode"` };
   if (!['anthropic', 'openai'].includes(p.format)) return { error: `profile ${name}: format must be "anthropic" or "openai"` };
   if (harness === 'omp' && p.format !== 'openai') return { error: `profile ${name}: the omp harness only supports format "openai" (omp models are written as openai-completions)` };
+  if (harness === 'opencode' && p.format !== 'openai') return { error: `profile ${name}: the opencode harness only supports format "openai" (the provider is written as openai-compatible)` };
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
