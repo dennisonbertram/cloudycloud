@@ -78,6 +78,7 @@ Usage: cloudy-cloud [command]
   shell <agent> [-- cmd] open a shell on a cloud machine, or run one command there
   display <agent>        print a link to a cloud machine's desktop (or --screenshot FILE)
   protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
+  codex [args]           start the Codex CLI with the cloud_agent tools instead of Claude Code
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
@@ -90,6 +91,11 @@ EOF
       exit 0 ;;
   esac
 fi
+
+# `cloudy-cloud codex [codex args]` starts the Codex CLI (instead of Claude Code) with the same cloud_agent tools. It is a subcommand
+# rather than --agent codex because claude already has its own --agent flag, which every other argument is passed to.
+agent=claude
+if [ "${1:-}" = codex ]; then agent=codex; shift; fi
 
 # Messages use the same look as install.sh: colour only on a colour terminal (not with NO_COLOR, CLICOLOR=0 or TERM=dumb).
 say_init() {
@@ -141,7 +147,8 @@ find_missing() {
   # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
   # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
   # A Claude secret named in CLOUDY_CLOUD_PROXY_SECRETS (stored as an Instabox secret) counts too.
-  if [ -z "$missing" ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
+  # A Codex host needs no Claude login; a worker that does needs it is refused with its own next step.
+  if [ -z "$missing" ] && [ "$agent" = claude ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
     && { [ "$provider" = self-hosted ] || ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | tr -d ' \t' | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; }; then
     missing='Claude token'
   fi
@@ -168,6 +175,7 @@ case $root in *'"'*|*'\'*) warn "cloudy-cloud: install path contains a quote or 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
 # CLOUDY_CLOUD_CONFIG is included so the server reads the same file as this launcher.
 export CLOUDY_CLOUD_CONFIG="$config"
+if [ "$agent" = codex ]; then exec node "$root/src/host-codex.mjs" "$@"; fi
 envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","CLOUDY_CLOUD_PROVIDER":"${CLOUDY_CLOUD_PROVIDER:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}","CLOUDY_CLOUD_PROXY_SECRETS":"${CLOUDY_CLOUD_PROXY_SECRETS:-}","CLOUDY_CLOUD_APT_PACKAGES":"${CLOUDY_CLOUD_APT_PACKAGES:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
 settings='{"permissions":{"allow":["mcp__cloud__cloud_agent","mcp__cloud__cloud_agent_message","mcp__cloud__cloud_agent_wait","mcp__cloud__cloud_agent_result","mcp__cloud__cloud_agent_list","mcp__cloud__cloud_agent_stop"],"deny":["Agent","Workflow"]}}'

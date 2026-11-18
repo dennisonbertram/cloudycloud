@@ -31,6 +31,15 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Cloud coordinators | `src/coordinator.mjs` | `coordinator image` (sign in once, then snapshot), `start`, `attach`, `ls` and `stop`. They are long-lived, never pause and run Remote Control. |
 | Fleet skill | `skills/cloud-fleet/SKILL.md` | Teaches Claude flat fan-out, trunk merging into `fleet/<topic>`, waves, model choice per level, briefs and safety. |
 
+## Codex support (branch feat/agent-codex, not yet merged)
+
+| Part | Where | What |
+|---|---|---|
+| Host | `bin/cloudy-cloud`, `src/host-codex.mjs` | `cloudy-cloud codex [codex args]` starts the Codex CLI with the cloud_agent tools (`-c mcp_servers.cloud.*` overrides, so `~/.codex/config.toml` is untouched) and instructions in `developer_instructions`. It is a subcommand because `claude` already has an `--agent` flag. Codex has no MCP task support, so it uses the `cloud_agent_wait` flow. A Codex host does not need a Claude token. Observed 2026-11-17 with codex-cli 0.166.0: `cloudy-cloud codex exec` listed `mcp__cloud__cloud_agent`, `_list`, `_message`, `_result`, `_stop` and `_wait`. |
+| Worker | `src/harness-codex.mjs`, `src/progress-codex.mjs` | Profiles `codex` (OPENAI_API_KEY), `codex-chatgpt` (your ChatGPT login) and `codex-openrouter` (OPENROUTER_API_KEY, model per call), or `"harness": "codex"` in `profiles.json`. Pinned `@openai/codex@0.166.0` is installed under `~/.local`; it runs `codex exec --json --dangerously-bypass-approvals-and-sandbox` with `CODEX_HOME=~/codex-home`, and `codex exec resume <thread_id>` for follow-ups. Config and MCP servers are in `~/codex-home/config.toml`. Codex only speaks the Responses API, and Particle has none, so there is no `codex-glm`. |
+| ChatGPT login | `~/.config/cloudy-cloud/codex-auth.json` | Copy of `~/.codex/auth.json` (mode 600, `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`). It is the one real credential sent to a machine as a file, even on Instabox; its tokens are scrubbed from replies. The machine may refresh the token. |
+| Not proven | | No live worker run yet: this laptop's env file has no `OPENAI_API_KEY` proxy secret and no `codex-auth.json`. `codex-openrouter` was not run (no OpenRouter key here). Resume and the ChatGPT-login error path were recorded locally with `codex exec` only. |
+
 ## Proven live
 
 | Behaviour | Evidence |

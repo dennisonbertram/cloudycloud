@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets } from './config.mjs';
 import { guide } from './errors.mjs';
+import { codexAuth } from './harness-codex.mjs';
 
 const PARTICLE = 'https://api.particle.ai/v1';
 // Workers on the pi harness talk to the OpenAI-format provider directly, with no LiteLLM gateway.
@@ -18,6 +19,10 @@ const BUILTIN = {
   'omp-glm': omp('z-ai/glm-5.3-flash'),
   'omp-deepseek': omp('deepseek-ai/deepseek-v41-flash-1017'),
   'omp-particle': omp('particle-ai/particle-1'),
+  // codex harness: Codex needs the Responses API, which Particle does not offer, so there is no codex-glm. model 'default' passes no -m.
+  codex: { harness: 'codex', format: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'default', keyName: 'OPENAI_API_KEY' },
+  'codex-chatgpt': { harness: 'codex', format: 'openai', baseUrl: 'https://chatgpt.com/backend-api/codex', model: 'default', auth: 'chatgpt' },
+  'codex-openrouter': { harness: 'codex', format: 'openai', baseUrl: 'https://openrouter.ai/api/v1', keyName: 'OPENROUTER_API_KEY' }, // model: per call
   openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', keyName: 'OPENROUTER_API_KEY' }, // model: per call or in profiles.json
 };
 export const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -81,12 +86,18 @@ export function resolveProfile(name, model, env = process.env, { proxyOnly = fal
   if (!p || typeof p !== 'object') return { error: `unknown profile "${name}". Known profiles: ${Object.keys(profiles).join(', ')}` };
   const m = model ?? p.model;
   const harness = p.harness ?? 'claude';
-  if (!['claude', 'pi', 'omp'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi" or "omp"` };
+  if (!['claude', 'pi', 'omp', 'codex'].includes(harness)) return { error: `profile ${name}: harness must be "claude", "pi", "omp" or "codex"` };
+  const chatgpt = harness === 'codex' && p.auth === 'chatgpt'; // the ChatGPT login file instead of a provider key
   if (!['anthropic', 'openai'].includes(p.format)) return { error: `profile ${name}: format must be "anthropic" or "openai"` };
+  if (harness === 'codex' && p.format !== 'openai') return { error: `profile ${name}: the codex harness only supports format "openai" (a provider with the Responses API)` };
   if (harness === 'omp' && p.format !== 'openai') return { error: `profile ${name}: the omp harness only supports format "openai" (omp models are written as openai-completions)` };
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
-  if (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName)) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
+  if (!chatgpt && (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName))) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
+  if (chatgpt) {
+    const a = codexAuth(env);
+    return a.error ? { error: `Profile ${name}: ${a.error}` } : { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, auth: 'chatgpt', proxied: false } };
+  }
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
   if (!env[p.keyName] && !proxied) return { error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
