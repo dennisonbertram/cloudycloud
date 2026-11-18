@@ -423,7 +423,7 @@ test('first-turn command is stream-json output with the commit-and-push hint; id
   await wait([id]);
   const cmd = created[0].cmds.find((c) => c.includes('claude -p'));
   assert.match(cmd, /--output-format stream-json --verbose/);
-  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then.'`));
+  assert.ok(cmd.includes(`--append-system-prompt 'You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message. Your machine is deleted by the server at ${new Date(deps.open.get(id).deleteAt).toISOString()}; push your work well before then. This turn ends at ${cmd.match(/This turn ends at (\S+?);/)[1]}; commit, push and finish before then.'`));
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name cloudy-cloud') && c.includes('user.email cloudy-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b cloudy-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
@@ -906,11 +906,11 @@ test('a pi follow-up resumes the session by id', async () => {
   assert.match(lines[1], /PROMPT=again/);
 });
 
-test('a pi run whose final assistant message is an error fails the turn', async () => {
+test('a pi run whose final assistant message is an error fails the turn and leaves the agent open', async () => {
   const { start, wait } = await profileSetup();
   const id = await start({ profile: 'pi-particle', prompt: 'PIERR now' });
   const r = await wait([id]);
-  assert.match(r, /status: failed/);
+  assert.match(r, /status: idle/); // the session event was seen, so the agent stays open (#49)
   assert.match(r, /ERROR: .*401 invalid api key/);
 });
 
@@ -2067,4 +2067,109 @@ test('#139 review: the all and no-agents listings end with the usage line too', 
   await listAgents({}, deps); await planSettled(provider);
   assert.equal(text(await listAgents({}, deps)), 'No agents.\nInstabox this month: $3.00 of $20.00 included used');
   assert.match(text(await listAgents({ all: true }, deps)), /No cloudy-cloud machines\.\nInstabox this month: \$3\.00 of/);
+});
+
+// ---- #49 resumable after a failed first turn, #50 turn limit ----
+const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: SID, model: 'x' });
+// A sandbox whose claude run streams an init event, then hits the command timeout (an error with no exit code).
+const timeoutSandbox = (over = {}) => async () => {
+  const sbx = await fakeSandbox(getGithub());
+  const real = sbx.commands.run;
+  sbx.commands.run = async (cmd, o) => {
+    if (/(claude|bin\/cloudy-cloud) -p /.test(cmd) && /TIMEOUT/.test(sbx.mode ?? 'TIMEOUT')) {
+      sbx.cmds.push(cmd); sbx.agentRuns = [...(sbx.agentRuns ?? []), { cmd, o }];
+      if (!over.noInit) await o.onStdout?.(`${INIT}\n`);
+      throw new Error('job still running after 1740000 ms');
+    }
+    if (/(claude|bin\/cloudy-cloud) -p /.test(cmd)) sbx.agentRuns = [...(sbx.agentRuns ?? []), { cmd, o }];
+    return real(cmd, o);
+  };
+  return sbx;
+};
+
+test('#49 a first turn that times out after the init event leaves the agent idle and resumable', async () => {
+  let sbx;
+  const { start, wait, msg, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()) });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /still open/);
+  assert.match(r, /Next step:[^]*cloud_agent_message/);
+  assert.equal(sbx.killed, false);
+  assert.ok(open.has(id));
+  sbx.mode = 'OK'; // the next turn works
+  assert.equal((await msg(id, 'continue')).isError, undefined);
+  assert.match(await wait([id]), /status: idle/);
+  assert.match(sbx.agentRuns.at(-1).cmd, new RegExp(`--resume ${SID}`));
+});
+
+test('#49 a first turn that times out before any stream event still fails the agent', async () => {
+  let sbx;
+  const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.equal(sbx.killed, true);
+});
+
+test('#49 a pi turn that ends with a provider error after the session event stays open and resumable', async () => {
+  const { start, wait, msg, sandboxes } = await profileSetup();
+  const id = await start({ profile: 'pi-particle', prompt: 'PIERR now' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /401 invalid api key/);
+  assert.match(r, /Next step:/);
+  assert.equal(sandboxes[0].killed, false);
+  await msg(id, 'again');
+  await wait([id]);
+  assert.match(await readFile(join(sandboxes[0].dir, 'home', 'pi.log'), 'utf8'), /--session 11111111-2222-3333-4444-555555555555 /);
+});
+
+test('#49 a coordinator whose turn times out stays open and runs no worker clean-up', async () => {
+  let sbx;
+  const { start, wait, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()), env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_MAX_DEPTH: '3' } });
+  const id = await start({ role: 'coordinator' });
+  assert.match(await wait([id]), /status: idle/);
+  assert.equal(sbx.killed, false);
+  assert.equal(open.get(id).status, 'idle');
+});
+
+test('#49 the failed and still-open errors each carry a next step', async () => {
+  const { guide } = await import('../src/errors.mjs');
+  for (const k of ['agent_failed', 'turn_failed_open']) assert.match(guide(k, { id: 'abc12345', minutes: 29 }), /Next step:/);
+  assert.match(guide('agent_failed', { id: 'abc12345' }), /cannot be resumed/);
+});
+
+test('#50 CLOUDY_CLOUD_TURN_MINUTES sets the command timeout, the Bash timeouts and a UTC deadline in the hint', async () => {
+  for (const [env, minutes] of [[{}, 29], [{ CLOUDY_CLOUD_TURN_MINUTES: '45' }, 45]]) {
+    let sbx;
+    const before = Date.now();
+    const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()), env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', ...env } });
+    await wait([await start()]);
+    const { cmd, o } = sbx.agentRuns[0];
+    assert.equal(o.timeoutMs, minutes * 60_000);
+    assert.match(cmd, new RegExp(`BASH_DEFAULT_TIMEOUT_MS=${(minutes - 1) * 60_000} BASH_MAX_TIMEOUT_MS=${(minutes - 1) * 60_000}`));
+    const deadline = cmd.match(/This turn ends at (\d{4}-\d\d-\d\dT[\d:.]+Z); commit, push and finish before then\./)?.[1];
+    assert.ok(deadline, 'hint has the deadline');
+    assert.ok(Math.abs(Date.parse(deadline) - (before + minutes * 60_000)) < 60_000);
+    assert.match(cmd, new RegExp(`CLOUDY_CLOUD_TURN_DEADLINE=${deadline} `));
+  }
+});
+
+test('#50 an out-of-range or non-numeric turn limit is rejected with the range and the fix', async () => {
+  for (const bad of ['4', '9999', 'abc', '30.5']) {
+    const { deps } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_TURN_MINUTES: bad } });
+    const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+    assert.equal(r.isError, true, bad);
+    assert.match(r.content[0].text, /CLOUDY_CLOUD_TURN_MINUTES[^]*5[^]*Next step:/);
+  }
+});
+
+test('#50 the cloud_agent tool descriptions state the turn limit and the resume path', async () => {
+  const { buildServer: _b } = await import('../src/mcp.mjs');
+  const src = await readFile(new URL('../src/mcp.mjs', import.meta.url), 'utf8');
+  for (const name of ['cloud_agent', 'cloud_agent_message']) {
+    const d = src.match(new RegExp(`name: '${name}',\\s*description: '([^]*?)',\\n`))[1];
+    assert.match(d, /29 minutes/);
+    assert.match(d, /CLOUDY_CLOUD_TURN_MINUTES/);
+  }
 });

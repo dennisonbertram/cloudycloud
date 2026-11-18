@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, defaultWorkerNote } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
@@ -42,7 +42,6 @@ const NO_ORIGIN = guide('no_origin');
 // A real key was about to go to a machine whose provider keeps keys off machines.
 export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
 const IDLE_MS = 60 * 60_000;
-const AGENT_MS = 29 * 60_000;
 const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
 const WAIT_MAX_S = 1500;
@@ -56,7 +55,7 @@ const MAX_AGENTS = 200;
 const ROLES = ['worker', 'coordinator'];
 const COORDINATOR_HINT = 'You are a coordinator. You can start your own cloud subagents with the cloud_agent tools. Never print, share, commit or send any API key or token you can see in the environment or in ~/.config/cloudy-cloud. Pass work to subagents only through the cloud_agent tools. No human is watching in real time. Do not stop to ask; choose the documented default and record each decision. If the reply of a subagent ends with a QUESTION: line, answer it with cloud_agent_message. Your workers are deleted as soon as your reply ends, even if they have not pushed, so never end your reply while a worker is running: call cloud_agent_wait on every worker you started, and merge or record its result first. Before you finish, stop your workers with cloud_agent_stop and push your work. If you run on a machine made by cloudy-cloud coordinator start, your last step is to run ~/cloudy-cloud/bin/cloudy-cloud coordinator finish; a nested coordinator just ends its reply and its parent stops it.';
 const IDENT = ['-c', 'user.name=cloudy-cloud', '-c', 'user.email=cloudy-cloud@localhost'];
-const commitHint = (id, deleteAt, serverTtl = true) => `You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted ${serverTtl ? 'by the server ' : ''}at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}`;
+const commitHint = (id, deleteAt, serverTtl = true, turnEnd) => `You are on branch cloudy-cloud/${id}, which tracks origin. After each meaningful step, commit with a short message and run git push. Your sandbox can disappear at any time; only pushed work survives. Never push to any other branch. Run every command in the foreground and wait for it to finish. Never end your turn while work is still running. No human is available to answer questions. Make reasonable choices, write down any assumptions in your final reply, and keep going. Only if you are truly blocked, stop and end your reply with a line starting QUESTION: that states exactly what you need; whoever started you can answer with a follow-up message.${deleteAt ? ` Your machine is deleted ${serverTtl ? 'by the server ' : ''}at ${new Date(deleteAt).toISOString()}; push your work well before then.` : ''}${turnEnd ? ` This turn ends at ${turnEnd}; commit, push and finish before then.` : ''}`;
 
 const git = (cwd, ...args) => run('git', args, { cwd, maxBuffer: 1 << 28 }).then((r) => r.stdout.trim());
 const log = (...a) => console.error('[cloudy-cloud]', ...a);
@@ -266,6 +265,8 @@ async function writeMeta(a, ctx) {
   } catch { /* meta is best effort */ }
 }
 
+const validSession = (a, id) => typeof id === 'string' && (harnessOf(a) === 'opencode' ? OPENCODE_SESSION : SESSION).test(id);
+
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
   const pat = (x) => (harnessOf(a) === 'codex' ? redactText(x) : x); // the machine may refresh the ChatGPT login, so exact values are not enough there
@@ -279,12 +280,14 @@ async function turn(a, message, ctx, t) {
   // A coordinator runs through the cloudy-cloud launcher, which passes its own --append-system-prompt. Its extra
   // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
-  const hint = `${commitHint(a.id, a.deleteAt, a.serverTtl)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
+  const turnMs = (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000, turnEnd = new Date(Date.now() + turnMs).toISOString(); // the value was checked when the agent started
+  const bashMs = turnMs - 60_000;
+  const hint = `${commitHint(a.id, a.deleteAt, a.serverTtl, turnEnd)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
   // A Claude worker starts with one merged MCP file and --strict-mcp-config, so a repo's .mcp.json is never loaded: the image's
   // servers except `instabox` (no sign-in on the box) plus the shared ones (#145). A coordinator keeps its own flags.
   const worker = !coord && harnessOf(a) === 'claude';
   const merge = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json ${a.home}/.config/cloudy-cloud/mcp.json || (umask 077; rm -f $D/mcp.json; echo '{"mcpServers":{}}' > $D/mcp.json);`;
-  const cmd = [worker && merge, `${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+  const cmd = [worker && merge, `${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLOUDY_CLOUD_TURN_DEADLINE=${turnEnd} BASH_DEFAULT_TIMEOUT_MS=${bashMs} BASH_MAX_TIMEOUT_MS=${bashMs} ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     worker ? '--mcp-config $D/mcp.json --strict-mcp-config' : hasMcp(a) && harnessOf(a) === 'claude' && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
@@ -301,13 +304,14 @@ async function turn(a, message, ctx, t) {
     const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
     if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
     stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
-      cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+      cwd: `${a.home}/repo`, timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
   }
   t.progress.end();
   local.end();
+  if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
   Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
   await writeMeta(a, ctx);
   const { where, failed } = await safetyPush(a, ctx);
@@ -315,11 +319,12 @@ async function turn(a, message, ctx, t) {
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
+    const limit = failure.exitCode === undefined ? `\nThe turn may have hit its ${turnMs / 60_000}-minute limit (CLOUDY_CLOUD_TURN_MINUTES).` : '';
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone: failed, text: pat(`Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}`) };
+    return { error: true, gone: failed, text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -338,7 +343,7 @@ async function turn(a, message, ctx, t) {
     text = j.result;
     error = j.is_error === true;
     if (j.session_id !== undefined) {
-      if (typeof j.session_id === 'string' && (harnessOf(a) === 'opencode' ? OPENCODE_SESSION : SESSION).test(j.session_id)) a.sessionId = j.session_id;
+      if (validSession(a, j.session_id)) a.sessionId = j.session_id;
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
@@ -751,9 +756,9 @@ async function work(a, message, first, ctx, t) {
     r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
   }
   if (a.status === 'stopped') return;
-  // A failed first turn cannot be resumed (no session id); a later turn fails the agent only when its sandbox is gone.
-  const dead = first ? r.error : r.gone;
-  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : 'worker_error', { id: a.id })}` };
+  // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
+  const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
@@ -878,6 +883,8 @@ export async function runSubagent(args, deps) {
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
+  const turnLimit = turnMinutes(ctx.env, ctx.provider.caps.maxTtlSeconds);
+  if (turnLimit.error) return fail(turnLimit.error, true);
   if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   const kind = parseMachine(args.machine);
   if (kind.error) return fail(guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) }));
