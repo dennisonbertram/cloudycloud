@@ -367,7 +367,7 @@ check_proxy_secrets() { # optional $1: the Instabox key
     let profiles={};try{profiles=(await import(root+"/src/profiles.mjs")).loadProfiles()}catch{}
     let bad=0;
     const show=(cmd)=>{const [base,...hosts]=cmd.split(" --host ");let line="  "+base;
-      for(const h of hosts){const seg=" --host "+h;if(line.length+seg.length>80){console.log(line+" \\");line="    "+seg}else line+=seg}
+      for(const h of hosts){const seg=" --host "+h;if(line.length+seg.length>78){console.log(line+" \\");line="    "+seg}else line+=seg}
       console.log(line)};
     for(const pair of process.argv.slice(2)){
       const [name,fixed]=[pair.slice(0,pair.indexOf("=")),pair.slice(pair.indexOf("=")+1)];
@@ -387,16 +387,17 @@ check_proxy_secrets() { # optional $1: the Instabox key
 # check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
 # Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
 check_setup() {
-  local fails=0 more= code state host provider key st org pct pset ov cap
-  [ -z "${PREREQ_FAIL:-}" ] || fails=1
+  local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov=""
+  [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
   provider=$(eff CLOUDY_CLOUD_PROVIDER)
+  [ "$provider" = self-hosted ] && prov=" --provider self-hosted"
   step 2 "Provider"
   if [ "$provider" = self-hosted ]; then
     host=$(eff CLOUDY_CLOUD_SSH_HOST)
-    if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine"; fails=1; fi
+    if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine"; fails=1; setupfix=1; fi
   else
     key=$(eff INSTABOX_API_KEY)
-    if [ -z "$key" ]; then bad "No Instabox key is saved"; fails=1
+    if [ -z "$key" ]; then bad "No Instabox key is saved"; fails=1; setupfix=1
     else
       code=$(http_code "$key")
       case $code in
@@ -405,10 +406,10 @@ check_setup() {
           alerts_report "$st" "$org" "$pct" "$ov" "$cap" || {
             warn "Instabox usage alert emails are off"
             hint "(usage alert: $([ "$pset" = yes ] && echo "$pct%" || echo off), overage alert: $ov, spend cap: $([ "$cap" = none ] && echo none || echo "\$$cap"))"
-            hint "Turn them on: $(rerun_cmd) --more"
+            hint "Turn them on in setup --more."
             hint "Or: ${ALERTS_FIX/ORG/$org}"
           } ;;
-        401|403) bad "Instabox rejected the saved key (HTTP $code)"; fails=1 ;;
+        401|403) bad "Instabox rejected the saved key (HTTP $code)"; fails=1; setupfix=1 ;;
         *) warn "Could not check the Instabox key" "no answer from the Instabox API" ;;
       esac
     fi
@@ -433,43 +434,69 @@ check_setup() {
     elif [ -n "$plain" ]; then
       bad "$plain is a plain value, not a proxy secret"; fails=1
       hint "Instabox refuses to copy a real key to a machine."
-      hint "Run: $(rerun_cmd)$(case $plain in CLAUDE*|ANTHROPIC*) ;; *) printf ' --more' ;; esac) to store it as a proxy secret"
-      more_key "$plain" && more=1
+      if more_key "$plain"; then
+        more=1 setupfix=1
+        hint "Store it as a proxy secret in setup --more."
+      else
+        hint "claude is not in your agents, so setup skips this key. Store it:"
+        hint "printf %s \"\$$plain\" |"
+        hint "npx --yes instabox@latest secrets set \\"
+        hint "  $plain --host $(secret_hosts "$plain")"
+        hint "then add it to CLOUDY_CLOUD_PROXY_SECRETS and delete the"
+        hint "plain $plain= line in the env file."
+      fi
     else
-      bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1 more=1
-      hint "Run: $(rerun_cmd) --more and save OPENAI_API_KEY, PARTICLE_API_KEY,"
-      hint "OPENROUTER_API_KEY or the Codex login file"
+      bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1 more=1 setupfix=1
+      hint "Save a key in setup --more: OPENAI_API_KEY, PARTICLE_API_KEY or"
+      hint "OPENROUTER_API_KEY. Or copy the Codex login file by hand:"
+      hint "install -m 600 ~/.codex/auth.json \\"
+      hint "  $(codex_auth_file)"
     fi
   else
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
     if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
   done
-  if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in"; fails=1
+  if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in"; fails=1; setupfix=1
   elif [ "$provider" != self-hosted ] && [ -n "$lit" ] && ! is_proxied "$name"; then
-    bad "$name is a plain value, not a proxy secret"; fails=1
+    bad "$name is a plain value, not a proxy secret"; fails=1; setupfix=1
     hint "Instabox refuses to copy a real key to a machine."
-    hint "Run: $(rerun_cmd) to store it as a proxy secret"
+    hint "Rerun setup to store it as a proxy secret."
   else ok "A Claude credential is saved"; fi
   fi
   step 4 "GitHub token, secrets and coordinators"
   if [ "$provider" = self-hosted ]; then
-    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1
+    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
     elif [ "$(eff CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX)" != yes ]; then
-      bad "GH_TOKEN is not allowed on your own machine, so subagents cannot push"; fails=1
+      bad "GH_TOKEN is not allowed on your own machine, so subagents cannot push"; fails=1; setupfix=1
       hint "Set CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes to allow it"
     else ok "GH_TOKEN is saved and allowed on your own machine"; fi
   else
     state=$(gh_secret_state "$key")
     case $state in
       yes) ok "GH_TOKEN is stored in Instabox" ;;
-      no) bad "GH_TOKEN is not stored in Instabox, so subagents cannot push"; fails=1 ;;
+      no) bad "GH_TOKEN is not stored in Instabox, so subagents cannot push"; fails=1; setupfix=1 ;;
       *) warn "Could not confirm GH_TOKEN" "check with: npx --yes instabox@latest secrets ls" ;;
     esac
-    if [ -n "$(eff CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then ok "Coordinator image is saved"; else hint "No coordinator image is set up (optional)."; hint "Run: cloudy-cloud coordinator image"; fi
-    check_proxy_secrets "$key" || fails=1
+    if [ -n "$(eff CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then ok "Coordinator image is saved"
+    elif coordinators_offered; then hint "No coordinator image is set up (optional)."; coord_hint=1; fi
+    cps=$(check_proxy_secrets "$key") || fails=1
+    [ -z "$cps" ] || printf '%s\n' "$cps"
+    while IFS= read -r l; do
+      case $l in
+        *"is not an Instabox secret"*|*"is missing host"*)
+          l=${l#"${l%%[![:space:]]*}"}; n=${l%% *}
+          case $n in
+            GH_TOKEN) setupfix=1 ;;
+            CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY) agents_has claude && setupfix=1 ;;
+            *) more_key "$n" && { more=1; setupfix=1; } ;;
+          esac ;;
+      esac
+    done <<<"$cps"
   fi
   echo
-  if [ "$fails" = 0 ]; then ok "Check passed: nothing needs fixing"; else bad "Check failed: fix the items above" "run $(rerun_cmd)${more:+ --more}"; fi
+  if [ "$fails" = 0 ]; then ok "Check passed: nothing needs fixing"
+  else bad "Check failed: fix the items above" "$([ -n "$setupfix" ] && printf 'run %s%s%s' "$(rerun_cmd)" "${more:+ --more}" "$prov")"; fi
+  [ -z "$coord_hint" ] || [ "$fails" != 0 ] || hint "Run: $(rerun_cmd) --more"
   return "$fails"
 }
 
@@ -670,6 +697,14 @@ rerun_cmd() {
 
 # more_key NAME: true when NAME is a credential only setup --more asks for.
 more_key() { case $1 in PARTICLE_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CLOUDY_CLOUD_INSTABOX_API_KEY) return 0 ;; esac; return 1; }
+
+# coordinators_offered: false where a local coordinator image cannot run here: self-hosted has its own
+# coordinator flow, and local coordinators use docker, not podman.
+coordinators_offered() {
+  [ "${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)}" != self-hosted ] || return 1
+  [ "$(eff CLOUDY_CLOUD_CONTAINER_RUNTIME)" != podman ] || return 1
+  command -v docker >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1
+}
 
 # strip_escapes TEXT: prints TEXT without terminal escape sequences and carriage returns.
 strip_escapes() {
@@ -954,7 +989,7 @@ setup_coordinators() {
   local root=$1 snap marker acct
   snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
   marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
-  if ! have_tty; then hint "Set up coordinators later on a terminal: cloudy-cloud coordinator image"; return 0; fi
+  if ! have_tty; then hint "Set up coordinators later on a terminal: $(rerun_cmd) --more"; return 0; fi
   if [ -n "$snap" ]; then
     STATUS_COORD="ready${marker:+ ($marker)}"
     if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
@@ -962,7 +997,7 @@ setup_coordinators() {
     fi
     yn "Cloud coordinators use the Claude account saved in their image${marker:+ ($marker)}. Sign in again to use a different account?" || return 0
   else
-    yn "Set up cloud coordinators now? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes." || return 0
+    yn "Set up cloud coordinators now? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes." || { STATUS_COORD=declined; return 0; }
   fi
   # Ready only when the saved image changed: a command that exits 0 without saving one (no terminal) is not a success.
   if "$root/bin/cloudy-cloud" coordinator image && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ] && [ "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" != "$snap" ]; then
@@ -1021,7 +1056,8 @@ alerts_report() {
   local cap=none
   [ "$5" = none ] || cap="\$$5"
   case $1 in
-    on) ok "Instabox emails you at $3% of included usage and beyond it (pay as you go)" "spend cap: $cap"
+    on) ok "Instabox emails you at $3% of included usage and beyond it"
+        hint "(pay as you go; spend cap: $cap)"
         hint "Instabox can stop machines at a monthly spend cap. Set one:"
         hint "npx --yes instabox@latest workspace spend-cap $2 <usd>" ;;
     none) hint "Usage alert emails apply to paid Instabox plans only." ;;
@@ -1211,6 +1247,7 @@ incomplete() { INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$1"; }
 next_setup_cmd() {
   local c; c=$(rerun_cmd)
   case $INCOMPLETE in *"coordinator image"*) c="$c --more" ;; esac
+  [ "${PROVIDER:-}" = self-hosted ] && c="$c --provider self-hosted"
   printf '%s' "$c"
 }
 
@@ -1313,7 +1350,7 @@ main() {
     hint "No worker credential is saved yet, so a first worker cannot start."
     ask_worker_keys
   fi
-  worker_usable || incomplete "no worker credential (a Claude token, or an OpenAI, Particle.ai or OpenRouter key)"
+  worker_usable || incomplete "no worker credential (a Claude token or a provider key)"
   # A saved image counts as ready on a plain run too.
   if [ "$STATUS_COORD" = "not set up" ] && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then
     acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT); STATUS_COORD="ready${acct:+ ($acct)}"
@@ -1340,11 +1377,15 @@ main() {
     hint "It is on branch $branch at $sha."
     hint "To update, run this in that folder: git pull && npm install"
   fi
-  hint "To change a key later, run: cloudy-cloud setup"
+  local prov=""; [ "$PROVIDER" = self-hosted ] && prov=" --provider self-hosted"
+  hint "To change a key later, run: $(rerun_cmd)$prov"
   hint "Restart any open cloudy-cloud session to use the new keys."
   if [ -n "$INCOMPLETE" ]; then
     echo
-    printf '  %s\n' "Setup incomplete: $INCOMPLETE. Next: $(next_setup_cmd)"
+    printf '  %s\n' "Setup incomplete:"
+    local IFS=';' r
+    for r in $INCOMPLETE; do printf '    - %s\n' "${r# }"; done
+    printf '  %s\n' "Next: $(next_setup_cmd)"
     exit 1
   fi
   box_open Next
@@ -1358,8 +1399,12 @@ main() {
   hint "Recommended: block direct pushes to your main branch. In a repo, run: cloudy-cloud protect"
   echo
   printf '  %s\n' "Setup complete."
-  printf '  %s\n' "Coordinators: cloudy-cloud coordinator image."
-  printf '  %s\n' "Usage alerts and other model keys: cloudy-cloud setup --more."
+  if [ "$PROVIDER" = self-hosted ]; then
+    printf '  %s\n' "Other model keys: $(rerun_cmd) --more --provider self-hosted."
+  else
+    case $STATUS_COORD in ready*|declined) ;; *) coordinators_offered && printf '  %s\n' "Coordinators: $(rerun_cmd) --more." ;; esac
+    printf '  %s\n' "Usage alerts and other model keys: $(rerun_cmd) --more."
+  fi
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
