@@ -454,7 +454,22 @@ export function createProvider(env, deps = {}) {
       const host = SECRET_HOSTS[name];
       if (!host) throw Object.assign(new Error(`no host is known for the secret ${name}`), { code: 'unknown_secret' });
       const r = await spawn([...INSTABOX_CLI, 'secrets', 'set', name, '--host', host], { input: String(value) });
-      if (r.code !== 0) throw Object.assign(new Error(`Could not store the ${name} secret (exit ${r.code})`), { exitCode: r.code });
+      if (r.code !== 0) {
+        const detail = (r.stderr || r.stdout || '').split(String(value)).join('[redacted]').split(apiKeyOrEmpty()).join('[redacted]').trim().slice(0, 200);
+        throw Object.assign(new Error(`Could not store the ${name} secret (exit ${r.code})${detail ? `: ${detail}` : ''}`), { exitCode: r.code });
+      }
+    },
+
+    // The effective org's secret names, through the same CLI and env as storeSecret (`instabox secrets ls --json`).
+    // Names only — a secret value never appears here. Used to check CLOUDY_CLOUD_INSTABOX_API_KEY before writing it.
+    async listSecrets() {
+      const r = await spawn([...INSTABOX_CLI, 'secrets', 'ls', '--json']);
+      if (r.code !== 0) throw Object.assign(new Error(`Could not list the Instabox secrets (exit ${r.code})`), { exitCode: r.code });
+      let j;
+      try { j = JSON.parse(r.stdout); } catch { throw new Error('Could not read the Instabox secrets list (not JSON).'); }
+      const a = Array.isArray(j) ? j : (j.items ?? j.data ?? j.secrets);
+      if (!Array.isArray(a)) throw new Error('Could not read the Instabox secrets list (unexpected shape).');
+      return new Set(a.map((x) => x?.name).filter((n) => typeof n === 'string'));
     },
 
     localMachineName: (hostname) => (hostname.startsWith('instabox-') ? hostname.slice('instabox-'.length) : ''),

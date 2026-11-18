@@ -75,9 +75,14 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', auth = [SIGNED_I
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
   const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
-  // Provider CLI calls (instabox secrets set ...) are recorded, never run: argv plus what stdin would carry.
-  const store = { calls: [], fail: false };
-  const cliSpawn = async (argv, o = {}) => { store.calls.push({ argv: [...argv], input: o.input }); return store.fail ? { code: 1, stdout: '', stderr: 'denied' } : { code: 0, stdout: '', stderr: '' }; };
+  // Provider CLI calls (instabox secrets ...) are recorded, never run: argv plus what stdin would carry.
+  // `secrets ls --json` answers the names in store.remote (default: the current CLOUDY_CLOUD_PROXY_SECRETS).
+  const store = { calls: [], fail: false, lsFail: false, remote: undefined };
+  const cliSpawn = async (argv, o = {}) => {
+    store.calls.push({ argv: [...argv], input: o.input });
+    if (argv.includes('ls')) return { code: store.lsFail ? 1 : 0, stdout: JSON.stringify((store.remote ?? env.CLOUDY_CLOUD_PROXY_SECRETS.split(/[\s,]+/).filter(Boolean)).map((name) => ({ name, hosts: ['api.instabox.sh'] }))), stderr: '' };
+    return store.fail ? { code: 1, stdout: '', stderr: 'denied' } : { code: 0, stdout: '', stderr: '' };
+  };
   const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s), cliSpawn };
   return { log, deps, configFile, mk, machines, store };
 }
@@ -697,6 +702,8 @@ test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and sta
   const f = fixture();
   f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY'; // a plain setup: no coordinator copy
   f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  const err = [];
+  f.deps.stderr = { isTTY: false, write: (x) => err.push(x) };
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
   const set = f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set'));
   assert.equal(set.length, 1);
@@ -704,13 +711,14 @@ test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and sta
   assert.equal(set[0].input, IBK, 'the key goes on stdin, never argv');
   assert.ok(!set[0].argv.join(' ').includes(IBK));
   const out = f.log.out.join('\n');
-  assert.match(out, /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
-  assert.ok(!out.includes(IBK));
+  assert.doesNotMatch(out, /Stored a coordinator copy/); // the notice is on stderr, never piped stdout
+  assert.match(err.join(''), /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
+  assert.ok(!out.includes(IBK) && !err.join('').includes(IBK));
   assert.equal(f.log.create.length, 1);
   const patch = f.log.fetches.find((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN'));
   assert.ok(patch.body.includes('CLOUDY_CLOUD_INSTABOX_API_KEY'));
   assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PROXY_SECRETS=.*CLOUDY_CLOUD_INSTABOX_API_KEY/m);
-  // once: the next start sees the recorded name and does not store it again
+  // once: the next start sees the recorded name (local and remote agree) and does not store it again
   await main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps);
   assert.equal(f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set')).length, 1);
 });
@@ -718,28 +726,17 @@ test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and sta
 test('the coordinator key is not stored when the proxy secret exists; --json stores it with no extra stdout', async () => {
   const f = fixture(); // the default env already names CLOUDY_CLOUD_INSTABOX_API_KEY
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
-  assert.deepEqual(f.store.calls, []);
+  assert.equal(f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set')).length, 0);
   const g = fixture();
   g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
   g.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  const err = [];
+  g.deps.stderr = { isTTY: false, write: (x) => err.push(x) };
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
   assert.equal(g.store.calls.filter((s) => s.argv.join(' ').includes('secrets set')).length, 1);
   assert.equal(g.log.out.length, 1, 'exactly the JSON object, no store line on stdout');
   assert.ok(JSON.parse(g.log.out[0]).started);
-});
-
-test('a failed coordinator-key store keeps the key_on_machine_refused refusal, before any machine', async () => {
-  const f = fixture();
-  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
-  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
-  f.store.fail = true;
-  await assert.rejects(main(START, f.deps), (e) => {
-    assert.equal(e.code, 'key_on_machine_refused');
-    assert.match(e.message, /keeps keys off machines/);
-    assert.ok(!e.message.includes(IBK) && !e.message.includes(TOK));
-    return true;
-  });
-  assert.equal(f.log.create.length, 0);
+  assert.match(err.join(''), /Stored a coordinator copy/); // the notice goes to stderr with --json
 });
 
 test('an error that already carries guidance but no known code keeps its own fields in --json', async () => {
@@ -1151,12 +1148,15 @@ test('storeSecret calls `instabox secrets set` with the host and the value on st
 test('coordinator image stores the key before it creates the image machine', async () => {
   const f = fixture();
   f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  const err = [];
+  f.deps.stderr = { isTTY: false, write: (x) => err.push(x) };
   await main(['image'], f.deps);
   const set = f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set'));
   assert.equal(set.length, 1);
   assert.equal(set[0].input, IBK);
   assert.equal(f.log.create.length, 1);
-  assert.match(f.log.out.join('\n'), /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
+  assert.doesNotMatch(f.log.out.join('\n'), /Stored a coordinator copy/); // piped stdout has only the result
+  assert.match(err.join(''), /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
 });
 
 test('any provider with a storeSecret stores the coordinator key once; a failure keeps the refusal', async () => {
@@ -1184,12 +1184,12 @@ test('any provider with a storeSecret stores the coordinator key once; a failure
   p2.storeSecret = async () => { throw new Error('exit 1'); };
   const env2 = { ...env, CLOUDY_CLOUD_PROXY_SECRETS: 'FAKE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN' }; // a fresh env without the stored name
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider: p2, env: env2, root: resolve('.'), out: () => {}, sleep: async () => {} }),
-    (e) => e.code === 'key_on_machine_refused' && /keeps keys off machines/.test(e.message));
+    (e) => e.code === 'key_on_machine_refused' && /workspace-admin Instabox key/.test(e.message) && /setup --more/.test(e.message));
   assert.equal(p2.log.create.length, 0);
 
   const p3 = createFakeProvider({ FAKE_API_KEY: 'k' }); // a provider with no storeSecret keeps today's refusal
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider: p3, env: { ...env, CLOUDY_CLOUD_PROXY_SECRETS: 'FAKE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN' }, root: resolve('.'), out: () => {}, sleep: async () => {} }),
-    (e) => e.code === 'key_on_machine_refused' && /INSTABOX_API_KEY is set as a real value/.test(e.message));
+    (e) => e.code === 'key_on_machine_refused' && /INSTABOX_API_KEY is set as a real value/.test(e.message) && /setup --more/.test(e.message));
   assert.equal(p3.log.create.length, 0);
 });
 
@@ -1350,4 +1350,238 @@ test('every coordinator screen fits 80 cells at cols=80 (colour)', async () => {
   const e = fixture(); // the no-snapshot guided error renders its lines too
   const thrown = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...e.deps, env: { ...e.deps.env, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: '' } }).then(() => { throw new Error('start did not fail'); }, (x) => x);
   check('guided error', errorScreen(thrown, tty()));
+});
+
+// ---- r2 review: remote-checked coordinator-key store, failure surface, script-stable output ----
+
+const noStore = (f) => f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set'));
+const storeErr = (f) => { const e = []; f.deps.stderr = { isTTY: false, write: (x) => e.push(x) }; return e; };
+
+test('listSecrets lists the org secret names through `instabox secrets ls --json`', async () => {
+  const { createProvider } = await import('../src/providers/instabox.mjs');
+  const calls = [];
+  const p = createProvider({ INSTABOX_API_KEY: IBK, PATH: join(mkdtempSync(join(tmpdir(), 'cc-none-')), 'bin') }, { spawn: async (argv) => { calls.push(argv); return { code: 0, stdout: JSON.stringify([{ name: 'GH_TOKEN' }, { name: 'CLOUDY_CLOUD_INSTABOX_API_KEY', hosts: ['api.instabox.sh'] }, { name: 'OTHER' }]), stderr: '' }; } });
+  const names = await p.listSecrets();
+  assert.deepEqual(calls, [['npx', '--yes', 'instabox@latest', 'secrets', 'ls', '--json']]);
+  assert.ok(names.has('CLOUDY_CLOUD_INSTABOX_API_KEY') && names.has('GH_TOKEN'));
+  assert.ok(!names.has('not-there'));
+  const fail = createProvider({ INSTABOX_API_KEY: IBK, PATH: join(mkdtempSync(join(tmpdir(), 'cc-none-')), 'bin') }, { spawn: async () => ({ code: 1, stdout: '', stderr: 'denied' }) });
+  await assert.rejects(fail.listSecrets(), /Could not list/);
+  const bad = createProvider({ INSTABOX_API_KEY: IBK, PATH: join(mkdtempSync(join(tmpdir(), 'cc-none-')), 'bin') }, { spawn: async () => ({ code: 0, stdout: 'not json', stderr: '' }) });
+  await assert.rejects(bad.listSecrets(), /Could not read/);
+});
+
+test('storeSecret failure carries the scrubbed CLI detail, never the key', async () => {
+  const { createProvider } = await import('../src/providers/instabox.mjs');
+  const p = createProvider({ INSTABOX_API_KEY: IBK, PATH: join(mkdtempSync(join(tmpdir(), 'cc-none-')), 'bin') }, { spawn: async () => ({ code: 1, stdout: '', stderr: `403 missing_scope for ${IBK}` }) });
+  await assert.rejects(p.storeSecret('CLOUDY_CLOUD_INSTABOX_API_KEY', IBK), (e) => {
+    assert.match(e.message, /missing_scope/);
+    assert.ok(!e.message.includes(IBK), 'the key value is scrubbed');
+    return true;
+  });
+});
+
+test('a remote secret links the local name without storing; a stale local name is repaired by storing', async () => {
+  // Present remotely but missing locally: only the name is recorded, no secrets set runs.
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.store.remote = ['CLOUDY_CLOUD_INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(noStore(f).length, 0, 'no overwrite of the other laptop’s secret');
+  assert.ok(f.store.calls.some((s) => s.argv.join(' ').includes('secrets ls --json')));
+  assert.equal(f.log.create.length, 1);
+  assert.ok(f.log.fetches.find((x) => x.method === 'PATCH').body.includes('CLOUDY_CLOUD_INSTABOX_API_KEY'), 'the name is attached');
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PROXY_SECRETS=.*CLOUDY_CLOUD_INSTABOX_API_KEY/m);
+  // A stale local name with no remote secret is repaired: the key is stored.
+  const g = fixture(); // env names CLOUDY_CLOUD_INSTABOX_API_KEY but the remote does not
+  g.store.remote = ['CLAUDE_CODE_OAUTH_TOKEN'];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  assert.equal(noStore(g).length, 1);
+  assert.equal(noStore(g)[0].input, IBK);
+});
+
+test('a placeholder key or a nested coordinator is never stored; the refusal stays', async () => {
+  for (const extra of [{ INSTABOX_API_KEY: 'ibsec_placeholder_xyz' }, { CLOUDY_CLOUD_COORDINATOR: '1' }]) {
+    const f = fixture();
+    f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+    Object.assign(f.deps.env, extra);
+    await assert.rejects(main(START, f.deps), (e) => {
+      assert.equal(e.code, 'key_on_machine_refused');
+      assert.match(e.message, /INSTABOX_API_KEY is set as a real value|keeps keys off machines/);
+      assert.match(e.message, /setup --more/);
+      return true;
+    });
+    assert.equal(noStore(f).length, 0, `nothing stored for ${JSON.stringify(extra)}`);
+    assert.equal(f.log.create.length, 0);
+  }
+});
+
+test('a failed coordinator-key store surfaces the admin-key cause and setup --more, on start and image', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.store.fail = true;
+  const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e.code, 'key_on_machine_refused');
+  assert.match(e.message, /Storing the coordinator key needs a workspace-admin Instabox key\./);
+  assert.match(e.message, /cloudy-cloud setup --more \(or ask a workspace admin\)/);
+  assert.doesNotMatch(e.message, /`cloudy-cloud setup`(?! --more)/); // never plain setup
+  assert.ok(!e.message.includes(IBK) && !e.message.includes(TOK));
+  assert.equal(f.log.create.length, 0);
+  // --json gives the same next step, and errorScreen the one-line cause
+  const j = fixture();
+  j.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  j.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  j.store.fail = true;
+  await assert.rejects(main([...START, '--json'], j.deps));
+  const je = JSON.parse(j.log.out.at(-1)).error;
+  assert.match(je.nextStep, /setup --more/);
+  assert.match(je.likelyCause, /workspace-admin/);
+  // image does not silently continue past a failed store
+  const i = fixture();
+  i.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  i.store.fail = true;
+  await assert.rejects(main(['image'], i.deps), /workspace-admin Instabox key[\s\S]*setup --more/);
+  assert.equal(i.log.create.length, 0);
+});
+
+test('a store that cannot verify the remote does not write blind', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  f.store.lsFail = true;
+  await assert.rejects(main(START, f.deps), (e) => e.code === 'key_on_machine_refused' && /setup --more/.test(e.message));
+  assert.equal(noStore(f).length, 0, 'no write without a remote check');
+  assert.equal(f.log.create.length, 0);
+  // when the local list already names it, an unreadable remote keeps the name (pre-existing behaviour)
+  const g = fixture();
+  g.store.lsFail = true;
+  await main(START, g.deps);
+  assert.equal(noStore(g).length, 0);
+  assert.equal(g.log.create.length, 1);
+});
+
+test('the error reason and the session screen are scrubbed of configured values before they are fitted', async () => {
+  const secret = 'opaque-value-12345678';
+  const f = fixture({ pane: `Invalid API key \u00b7 ${secret}\n` });
+  f.deps.env.CLOUDY_CLOUD_TEST_API_KEY = secret;
+  const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.ok(!e.message.includes(secret), e.message);
+  assert.ok(!e.reason.includes(secret), e.reason);
+  assert.doesNotMatch(errorScreen(e, tty()), new RegExp(secret));
+});
+
+test('the config edit reads the last duplicate line, keeps other lines, and a write failure is not swallowed', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'SECOND_KEY'; // matches the loader's last-line value
+  writeFileSync(f.configFile, 'CLOUDY_CLOUD_PROXY_SECRETS=FIRST_KEY\nKEEP_ME=yes\nCLOUDY_CLOUD_PROXY_SECRETS=SECOND_KEY\n', { mode: 0o600 });
+  f.store.remote = ['SECOND_KEY']; // remote lacks the coordinator key: store and record under the last line
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(noStore(f).length, 1);
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.match(cfg, /^KEEP_ME=yes$/m);
+  assert.match(cfg, /^CLOUDY_CLOUD_PROXY_SECRETS=SECOND_KEY,CLOUDY_CLOUD_INSTABOX_API_KEY$/m);
+  assert.equal((cfg.match(/CLOUDY_CLOUD_PROXY_SECRETS=/g) ?? []).length, 1);
+  // A config write that fails is reported, not swallowed as a success.
+  const g = fixture();
+  g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  g.store.remote = [];
+  mkdirSync(g.configFile); // a directory: reading and writing both fail
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps));
+});
+
+test('the store notice goes to stderr when piped and follows the result on a colour terminal', async () => {
+  // piped: stdout has only the result; the notice is on stderr
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  const err = storeErr(f);
+  await main(START, f.deps);
+  assert.match(err.join(''), /Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\./);
+  assert.doesNotMatch(f.log.out.join('\n'), /Stored a coordinator copy/);
+  // colour: the notice follows the result, still only after the store succeeded
+  const g = fixture();
+  g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  g.deps.ui = tty();
+  await main(START, g.deps);
+  const lines = plainText(g.log.out.join('\n')).split('\n');
+  const at = (re) => lines.findIndex((l) => re.test(l));
+  assert.ok(at(/Stored a coordinator copy/) > at(/Coordinator boss is running/), lines.join('\n'));
+  assert.ok(at(/Stored a coordinator copy/) > at(/Reach it/) || at(/Reach it/) === -1, 'after the result block');
+  // a failed store prints no notice
+  const h = fixture();
+  h.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  h.store.fail = true;
+  const herr = storeErr(h);
+  await assert.rejects(main(START, h.deps));
+  assert.doesNotMatch(herr.join(''), /Stored a coordinator copy/);
+  assert.doesNotMatch(h.log.out.join('\n'), /Stored a coordinator copy/);
+});
+
+test('the colour skip warning keeps the custom-key instructions and never truncates the key name', async () => {
+  const f = fixture();
+  writeFileSync(f.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ mine: { format: 'anthropic', baseUrl: 'https://api.mine.example/v1', keyName: 'MY_VERY_LONG_CUSTOM_KEY_NAME_API_KEY', model: 'm' } }));
+  f.deps.env.MY_VERY_LONG_CUSTOM_KEY_NAME_API_KEY = 'mine-real-value-012345';
+  f.deps.env.PARTICLE_API_KEY = 'particle-real-value-0123'; // a built-in name, skipped too
+  f.deps.ui = tty();
+  await main(START, f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  const flat = text.replace(/\n */g, ' '); // a wrapped line still carries the whole instruction
+  assert.match(text, /MY_VERY_LONG_CUSTOM_KEY_NAME_API_KEY/);
+  assert.match(flat, /secrets set MY_VERY_LONG_CUSTOM_KEY_NAME_API_KEY --host api\.mine\.example/);
+  assert.match(flat, /add MY_VERY_LONG_CUSTOM_KEY_NAME_API_KEY to CLOUDY_CLOUD_PROXY_SECRETS/);
+  assert.match(text, /cloudy-cloud setup --more/);
+  for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('start at 80 cols under LANG=C, and a 40-character name keeps the deadline', async () => {
+  const f = fixture();
+  f.deps.ui = tty({ LANG: 'C', LC_ALL: 'C' });
+  await main(START, f.deps);
+  const ascii = f.log.out.join('\n');
+  assert.match(ascii, /\[ok\]/);
+  for (const l of plainText(ascii).split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  const name = 'a'.repeat(40);
+  const g = fixture({ pane: 'Do you trust the files in this folder?' });
+  g.deps.ui = tty();
+  await main(['start', name, '--repo', 'https://github.com/o/r'], g.deps);
+  const text = plainText(g.log.out.join('\n'));
+  assert.match(text, /deletes it in|deleted in|deletes it at|deleted at/);
+  for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  // the same stop-heading overflow: stop NAME stays within 80 with a 40-character name
+  const h = fixture({ machines: [{ sandboxId: 'm1', name: `coord-${name}`, state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name } }] });
+  h.deps.ui = tty();
+  await main(['stop', name], h.deps);
+  for (const l of plainText(h.log.out.join('\n')).split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('image stores the key on a reused machine and on image --save, not only on a new machine', async () => {
+  const f = fixture();
+  IMG(f); // a running image machine is reused, no create
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  await main(['image'], f.deps);
+  assert.equal(noStore(f).length, 1, 'store runs on the reuse path');
+  const g = fixture();
+  g.machines.push(g.mk('m_img', 'img-1', { role: 'coordinator-image' }));
+  g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  await main(['image', '--save'], g.deps);
+  assert.equal(noStore(g).length, 1, 'store runs on image --save');
+});
+
+test('plain stderr keeps the appended guidance; the tmux-exit message keeps its previous text', async () => {
+  const f = fixture({ pane: "  You've hit your monthly spend limit\n" });
+  const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  const plain = errorScreen(e, { on: false });
+  assert.match(plain, /^cloudy-cloud: The coordinator session started but is not working/);
+  assert.match(plain, /What happened: /);
+  assert.match(plain, /Next step: /); // the guidance fields scripts saw before
+  // the colour screen still shows only the three lines
+  assert.equal(plainText(errorScreen(e, tty())).split('\n').length, 3);
+  // tmux-exit: piped callers keep the old wording (noninteractive image needs --save)
+  const g = fixture();
+  const orig = g.deps.sdk.Sandbox.create;
+  g.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw Object.assign(new Error('no server'), { exitCode: 1 }); return run(cmd, ...r); }; return sbx; };
+  const t = await main(START, g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(t.message, /run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again/);
+  assert.doesNotMatch(t.message, /it signs you in to Claude and saves the image/);
 });
