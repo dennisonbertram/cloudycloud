@@ -104,7 +104,7 @@ test('interactive image signs in, saves and deletes the machine in one run', asy
   assert.ok(!spawned[0].some((a) => a.includes(IBK)), 'no key in argv');
   assert.ok(!f.log.out.join('\n').includes(IBK));
   assert.ok(spawned[0].includes('-t') && spawned[0].includes("'claude' 'auth' 'login'"));
-  assert.match(f.log.out[0], /Sign in to Claude in your browser\. This machine is deleted at \d\d:\d\d/);
+  assert.match(f.log.out[0], /Claude will show a link\. Open it, sign in, and paste the code it shows when asked\. This machine is deleted at \d\d:\d\d if you don't finish/);
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, ['m_new']);
   assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
@@ -305,7 +305,7 @@ test('ls strips control characters from names and stacks records in a narrow ter
   assert.match(f.log.out[1], /^a forged\trunning\t/);
   assert.doesNotMatch(f.log.out.join(''), /\x1b/);
   f.log.out.length = 0;
-  f.deps.ui = makeUi({ tty: true, env: { TERM: 'xterm' }, cols: 40 });
+  f.deps.ui = makeUi({ tty: true, env: { TERM: 'xterm' }, cols: 24 });
   await main(['ls'], f.deps);
   assert.match(f.log.out.join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /a forged \[running\]\n {4}Machine: coord-a\n {4}Created: 2026-01-02T03:04:05\.000Z/);
 });
@@ -1005,4 +1005,95 @@ test('an ssh child that could not start counts as an unfinished sign-in', async 
 test('closed stdin at the retry prompt declines: fallback and failure', async () => {
   const f = fixture({ auth: [NOT_YET] });
   await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }), ask: async () => null }), /cloudy-cloud shell sbx-abc/);
+});
+
+// ---- round 1: Next lines, account, attach, narrow ls ----
+const withEmail = (email) => JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email });
+
+test('ui.next: accent arrow on a colour terminal, plain "Next:" otherwise', () => {
+  assert.match(plainText(tty().next('cloudy-cloud coordinator image')), /^ {2}→ Next: cloudy-cloud coordinator image$/);
+  assert.ok(ANSI.test(tty().next('x')));
+  assert.equal(makeUi({ tty: false }).next('x'), 'Next: x');
+  assert.equal(tty({ NO_COLOR: '1' }).next('x'), 'Next: x');
+});
+
+test('image saves the signed-in email with the snapshot id; no valid email drops the key', async () => {
+  const f = fixture({ auth: [withEmail('me@example.com')] });
+  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  const text = readFileSync(f.configFile, 'utf8');
+  assert.match(text, /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=me@example\.com$/m);
+  assert.match(text, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+  const g = fixture({ auth: [withEmail('not an email')] });
+  writeFileSync(g.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\n');
+  await main(['image'], { ...g.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/);
+});
+
+test('failures give a reason line and one Next line; not-found is neutral', async () => {
+  const f = fixture();
+  await assert.rejects(main(['stop', 'zzz'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator ls' && e.short === 'No coordinator named zzz.' && /^No coordinator named zzz\. List them with: cloudy-cloud coordinator ls$/.test(e.message));
+});
+
+test('attach on a terminal runs the ssh command and returns its exit code; otherwise it prints it', async () => {
+  const f = fixture();
+  f.machines.push(f.mk('m1', 'coord-a', { role: 'coordinator', name: 'a' }));
+  let call;
+  const code = await main(['attach', 'a'], { ...f.deps, tty: true, spawn: (bin, a, o) => { call = [bin, ...a, o.stdio]; return { status: 3 }; } });
+  assert.equal(code, 3);
+  assert.equal(call.at(-1), 'inherit');
+  assert.ok(call.includes('-t'));
+  assert.equal(await main(['attach', 'a'], { ...f.deps, tty: true, spawn: () => ({ status: null, signal: 'SIGTERM' }) }), 143);
+  await assert.rejects(main(['attach', 'a'], { ...f.deps, tty: true, spawn: () => ({ error: new Error('spawn ENOENT') }) }), /Could not start npx \(spawn ENOENT\)/);
+});
+
+test('ls keeps the table with a long waiting SCREEN (truncated with …) and ends with one Next line', async () => {
+  const f = fixture({ pane: `${WAIT_LINE}\n  1. Yes\n  2. No\n` });
+  f.machines.push(f.mk('m1', 'coord-averyveryverylongcoordinatorname', { role: 'coordinator', name: 'averyveryverylongcoordinatorname' }));
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  for (const l of text.split('\n')) assert.ok(l.length <= 80, l);
+  assert.match(text, /NAME\s+STATE\s+STARTED/);
+  assert.match(text, /…/);
+  assert.equal((text.match(/Next: cloudy-cloud coordinator attach averyvery/g) ?? []).length, 1);
+});
+
+test('the account saved with a pending snapshot is used on resume, and an old pending entry keeps the saved account', async () => {
+  const f = fixture({ auth: [withEmail('me@example.com')], snapStatus: (n) => (n < 2 ? 'pending' : 'ready') });
+  f.deps.sleep = async () => {};
+  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).catch(() => {});
+  const g = fixture();
+  writeFileSync(g.configFile, 'CLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_ACCOUNT=kept@example.com\n');
+  await main(['image'], { ...g.deps, tty: true });
+  assert.match(readFileSync(g.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=kept@example\.com$/m);
+  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /PENDING/);
+  const h = fixture();
+  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\n');
+  await main(['image'], { ...h.deps, tty: true });
+  assert.match(readFileSync(h.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example\.com$/m);
+});
+
+test('an email must be one plain address', async () => {
+  for (const bad of ['Display<me@example.org>', 'a\u0000b@example.org', 'a b@example.org', 'me@example.org, you@example.org']) {
+    const f = fixture({ auth: [withEmail(bad)] });
+    await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+    assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/, bad);
+  }
+});
+
+test('ls measures wide characters as two cells and never splits one', async () => {
+  const { cellWidth, fitCells } = await import('../src/ui.mjs');
+  assert.equal(cellWidth('界a'), 3);
+  assert.equal(fitCells('界界界界', 6), '界界…');
+  assert.equal(fitCells('😀😀😀', 4), '😀…');
+  const f = fixture({ pane: `${WAIT_LINE}\n  1. Yes\n  2. No\n` });
+  f.machines.push(f.mk('m1', 'coord-x', { role: 'coordinator', name: '界界界界界界界界界界界界' }));
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  for (const l of plainText(f.log.out.join('\n')).split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('a missing coordinator image stays neutral through the start error wrapper', async () => {
+  const f = fixture({ snapshot: '' });
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator image');
 });

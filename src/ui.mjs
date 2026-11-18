@@ -1,6 +1,19 @@
 // Terminal styling for the coordinator commands. Same look as install.sh.
 // Styling is on only for a colour terminal: not piped, no NO_COLOR, CLICOLOR not 0, TERM not dumb.
 // Callers keep their plain text for the off case (`ui.on`), so scripts that read the output do not change.
+// Width of one character in terminal cells: 0 for combining marks and control characters, 2 for East Asian wide and emoji, else 1.
+const charWidth = (cp) => (cp < 32 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x300 && cp <= 0x36f) || cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) ? 0
+  : (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f)
+    || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1f64f) || (cp >= 0x1f900 && cp <= 0x1f9ff) || (cp >= 0x20000 && cp <= 0x3fffd) ? 2 : 1);
+export const cellWidth = (str) => { let n = 0; for (const ch of String(str).replace(/\x1b\[[0-9;]*m/g, '')) n += charWidth(ch.codePointAt(0)); return n; };
+// Cuts text to at most max cells with a trailing …, never splitting a character.
+export const fitCells = (str, max) => {
+  if (cellWidth(str) <= max) return str;
+  let out = '', n = 0;
+  for (const ch of str) { const w = charWidth(ch.codePointAt(0)); if (n + w > max - 1) break; out += ch; n += w; }
+  return `${out}…`;
+};
+
 export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = process.stdout.columns } = {}) {
   const on = Boolean(tty) && !env.NO_COLOR && (env.TERM || 'dumb') !== 'dumb' && env.CLICOLOR !== '0';
   const utf = /utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '');
@@ -24,7 +37,7 @@ export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = p
   // table(headers, rows): a cell is a string or a list of [text, colour] parts. Columns are padded to the widest cell.
   const table = (headers, rows) => {
     const parts = (c) => (Array.isArray(c) ? c : [[String(c)]]);
-    const len = (c) => parts(c).reduce((n, [t]) => n + t.length, 0);
+    const len = (c) => parts(c).reduce((n, [t]) => n + cellWidth(t), 0);
     const w = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => len(r[i]))));
     const cell = (c, i) => parts(c).map(([t, k]) => (k ? paint(k, t) : t)).join('') + ' '.repeat(w[i] - len(c));
     return [`  ${headers.map((h, i) => paint(col.dim, h.padEnd(w[i]))).join('   ')}`, ...rows.map((r) => `  ${r.map(cell).join('   ').trimEnd()}`)].join('\n');
@@ -38,5 +51,7 @@ export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = p
 
   return { on, utf, col, mark, width, paint, rel, table, block, dim: (s) => paint(col.dim, s), bold: (s) => paint(col.bold, s),
     ok: (m, d) => line('ok', m, d), err: (m, d) => line('err', m, d), warn: (m, d) => line('warn', m, d),
-    hint: (m) => `  ${paint(col.dim, `${mark.hint} ${m}`)}` };
+    hint: (m) => `  ${paint(col.dim, `${mark.hint} ${m}`)}`,
+    // The one command to run next. Plain "Next: ..." when colour is off.
+    next: (cmd) => (on ? `  ${paint(col.acc, `${utf ? '→' : '->'} Next: ${cmd}`)}` : `Next: ${cmd}`) };
 }

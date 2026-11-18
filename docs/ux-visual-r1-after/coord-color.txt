@@ -1,0 +1,16 @@
+
+$ cloudy-cloud coordinator ls
+  No coordinators yet.
+  [38;5;75m→ Next: cloudy-cloud coordinator image[0m
+
+$ cloudy-cloud coordinator image --save
+  [31m✖[0m No image machine found.
+Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them.
+Next: cloudy-cloud coordinator image
+
+$ cloudy-cloud coordinator status zzz
+  [31m✖[0m No coordinator named zzz.
+Next: cloudy-cloud coordinator ls
+
+$ cloudy-cloud coordinator start boss --repo https://github.com/o/r --task go
+  [31m✖[0m exit
