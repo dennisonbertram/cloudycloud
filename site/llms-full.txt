@@ -751,7 +751,7 @@ cloudy-cloud dashboard --port 5000 --no-open
 cloudy-cloud branches prune [--yes] [--dry-run]
 ```
 
-Run it inside your repository. It lists the `cloudy-cloud/<8 hex characters>` branches on origin and compares each with origin's default branch. A branch that adds no commits to the default branch (it is empty, or already merged) is marked `prune`. A branch with commits not in the default branch is marked `keep`. It never touches a branch with another name.
+Run it inside your repository. It lists the `cloudy-cloud/<8 hex characters>` branches on origin (and `cloudy-cloud/issue-<n>-<id>` branches, for workers started from an issue) and compares each with origin's default branch. A branch that adds no commits to the default branch (it is empty, or already merged) is marked `prune`. A branch with commits not in the default branch is marked `keep`. It never touches a branch with another name.
 
 It is a dry run: nothing is deleted unless you pass `--yes`. `--dry-run` forces a dry run even with `--yes`.
 
@@ -944,6 +944,8 @@ Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` chang
 | `fallback` | array of strings | no | the profile's `fallback` in `profiles.json`, else none | Profile names to try, in order, when the chosen profile has no key or the provider refuses the one-token check before the machine starts. It overrides the profile's own `fallback`. The result says which profile ran. |
 | `preflight` | boolean | no | `true` | Set `false` to skip the one-token provider check that runs before the machine is created. |
 | `subagent_type` | string | no | none | The name of an agent to run, passed to Claude Code as `--agent` (Claude Code workers only). It may contain only letters, digits and `. _ : -`. |
+| `issue` | string | no | none | A GitHub issue in this repo's origin: a number like `"12"`, or a URL like `https://github.com/<owner>/<repo>/issues/<n>`. The title and body are fetched on your computer with `gh` and quoted into the prompt as untrusted text. The branch is `cloudy-cloud/issue-<n>-<id>`, and an autofix pull request body says `Fixes #<n>`, so merging it closes the issue. Workers only; needs `gh` signed in. |
+| `preview_port` | integer | no | none | A port from 1 to 65535 (a digit string also works) where the worker's app is already running on its machine. After a turn that pushed, a share link is published, the same as `cloudy-cloud open <id> <port> --share`, and the result shows `Preview: <url>`. An autofix pull request body carries the link too. Anyone with the link can open the app until the machine is deleted. Needs a provider that supports published links (Instabox); if publishing fails, the turn still succeeds and the result gives the manual command. |
 
 When `~/.config/cloudy-cloud/mcp.json` holds at least one valid server, a Claude Code subagent (not a pi, omp, Codex or opencode worker) starts with `--mcp-config` for that file and `--strict-mcp-config`, so a repo's own `.mcp.json` is not loaded on the machine. pi, omp, Codex and opencode workers get the same servers in their own config files. The reply ends with an `MCP servers:` line. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
