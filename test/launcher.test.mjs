@@ -285,7 +285,7 @@ function runHost(sub, config, extraEnv = {}) {
 
 for (const sub of ['codex', 'opencode']) {
   test(`${sub} host with no Claude token starts, and names the profile to pass`, () => {
-    const r = runHost(sub, `INSTABOX_API_KEY=${IBK}\nOPENAI_API_KEY=sk-test-0123456789abcdef\n`);
+    const r = runHost(sub, `INSTABOX_API_KEY=${IBK}\nCLOUDY_CLOUD_PROXY_SECRETS=OPENAI_API_KEY\n`);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /No Claude token is saved/);
     assert.match(r.stderr, /Next step: .*profile/);
