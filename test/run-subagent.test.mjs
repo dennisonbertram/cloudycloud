@@ -2032,6 +2032,19 @@ test('buildServer wires the live-agent count into its queue', async () => {
   await assert.rejects(p, /cancelled/);
 });
 
+test('a stopped issue agent still names its issue branch when cloud_agent_result is a separate MCP request', async () => {
+  const { deps } = await setup({ fetchIssue: async () => ({ title: 't', body: 'b' }) });
+  const server = buildServer(deps);
+  // The same path every MCP tool request takes: the registered handler gets a fresh copy of the shared deps.
+  // Calling the exported handlers with `deps` itself would create the shared maps up front and mask the bug.
+  const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
+  const text = (r) => r.content[0].text;
+  const id = text(await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' })).match(/agent_id: ([0-9a-f]{8})/)[1];
+  assert.match(text(await call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 60 })), /status: idle/);
+  assert.match(text(await call('cloud_agent_stop', { agent_ids: [id] })), /stopped/);
+  assert.match(text(await call('cloud_agent_result', { agent_id: id })), new RegExp(`git fetch origin cloudy-cloud/issue-12-${id}`));
+});
+
 // ---- plan UX (#135 #136 #126) ----
 test('#135 3x5 on pro says the size is not offered and does not suggest an upgrade', async () => {
   const { deps, text } = await sizeSetup(proPlan);
@@ -2298,6 +2311,28 @@ test('when the retries run out the result names the provider status and a next s
   assert.deepEqual(sleeps, [30_000, 60_000, 120_000]);
   assert.match(r, /Provider status: 502 server_error[\s\S]*Gave up after 4 attempts[\s\S]*Next step:/);
   assert.ok(!r.includes(PKEY));
+});
+
+test('a push failure after a successful pi turn is not rerun as a provider retry', async () => {
+  let piRuns = 0, pushes = 0;
+  const { start, wait } = await setup({
+    env: pEnv, sleep: async () => {},
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => {
+        if (cmd.includes('pi --mode json')) piRuns++;
+        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\n', stderr: '', exitCode: 0 }; }
+        return real(cmd, o);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /Push failed/);
+  assert.equal(piRuns, 1); // the finished run is never replayed: only harness/provider failures may be retried
+  assert.equal(pushes, 2); // the safety push still used its own retry
 });
 
 test('provider retries share one deadline: a later attempt gets only the time left, and a retry needs five minutes', async () => {

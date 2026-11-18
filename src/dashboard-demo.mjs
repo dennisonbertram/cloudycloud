@@ -28,7 +28,7 @@ export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const lastPush = (msgs) => { const r = msgs.findLast((m) => m.kind === 'reply'), p = r && pushOf(r.text); return p ? { push: { ...p, t: r.t } } : {}; };
   const lastAutofix = (msgs) => { let f; for (const m of msgs) if (m.kind !== 'out') f = autofixOf(m.text) ?? f; return f ? { autofix: f } : {}; };
-  const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33']); // the demo coordinator's workers; the rest were started by this session
+  const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33', 'aa9f1e02']); // the demo coordinator's workers; the rest were started by this session
   const box = (o) => ({
     kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), ...lastAutofix(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
     title: o.description, titleSource: 'log', source: 'log', turns: o.messages.filter((m) => m.kind === 'out').length,
@@ -68,6 +68,14 @@ export function demoState(now = Date.now()) {
       messages: [{ t: ago(40_000), kind: 'out', text: 'Replace the hand-written inputs in app/settings/page.tsx with the shared Form, Field and Switch components. Keep the page behaviour the same.' }],
     }),
     box({
+      id: 'aa9f1e02', description: 'Audit the invoice PDFs for missing totals', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash',
+      startedAt: ago(80 * M), lastActivity: ago(45 * M), idleSince: ago(45 * M), deadline: ago(80 * M) + 8 * H,
+      messages: [
+        { t: ago(80 * M), kind: 'out', text: 'Check every PDF in invoices/ totals a positive amount. Report the ones that do not, and change nothing.' },
+        { t: ago(45 * M), kind: 'reply', text: 'Three invoices have a zero or missing total: inv-1042, inv-1089 and inv-1103.\n\nNo changes, no branch pushed.\nModel: z-ai/glm-5.3-flash\nTotal: 6 tool uses, 19.4k in / 1.1k out tokens, 4m 2s' },
+      ],
+    }),
+    box({
       id: '51d9ee02', description: 'Fix flaky checkout e2e test', status: 'queued', profile: 'deepseek', harness: 'claude', model: 'deepseek-ai/deepseek-v41-flash-1017',
       startedAt: ago(12_000), lastActivity: ago(12_000), deadline: ago(12_000) + 8 * H,
       messages: [{ t: ago(12_000), kind: 'out', text: 'The checkout e2e test fails about one run in five. Find out why and fix the cause, not with a longer timeout.' }],
@@ -104,7 +112,7 @@ export function demoState(now = Date.now()) {
       startedAt: ago(70 * M), lastActivity: ago(20 * M), idleSince: ago(20 * M), deadline: ago(20 * M) + H,
       messages: [{ t: ago(70 * M), kind: 'out', text: 'Train the reranker for one epoch on data/pairs.jsonl and report eval loss.' }, { t: ago(20 * M), kind: 'reply', text: 'One epoch done. Eval loss 0.41, down from 0.58.\nModel: claude-sonnet-5-5\nTotal: 6 tool uses, 18.0k in / 2.0k out tokens, 41m 2s' }],
     }),
-    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
+    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', fleet: 'fleet/billing-migrate', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
   for (const b of boxes) if (b.machineState === 'running' && ['running', 'idle', 'starting'].includes(b.status)) b.usage = b.status === 'starting' ? { none: 'no_samples_yet', fetchedAt: now } : demoUsage(b.id, now);
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
@@ -134,5 +142,5 @@ export const demoStream = {
     return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
   },
   metrics: (id) => ({ samples: demoSeries(id), fetchedAt: Date.now(), source: 'live' }),
-  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
+  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '  aa9f1e02  idle     Audit the invoice PDFs for missing totals', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
 };

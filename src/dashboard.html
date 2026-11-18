@@ -778,6 +778,12 @@
       h('span', { class: 'top' }, dot(b.status), h('span', { class: 'st ' + b.status, text: statusWord(b.status) }), quietTag(b), stamp(b) && live('rel', stamp(b), 'rel')),
       h('span', { class: 'd', text: b.title || b.description || label(b) }),
       h('span', { class: 'm', text: b.id + ' · ' + label(b) }), usageLine(b, true) && h('span', { class: 'm use', text: usageLine(b, true) }), soonTag(b), extra);
+    // A coordinator's workers without a trunk of their own render under it, whether it sits in a trunk
+    // section or a status group. A worker with its own trunk shows in that trunk's section, never twice.
+    const workersOf = (c) => {
+      const kids = (S.kids[c.id] ?? []).filter((b) => !b.fleet);
+      if (kids.length) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(kids.length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, kids.map((b) => tile(b))));
+    };
     // One section per fleet trunk above the status groups; agents on a trunk leave the groups for it.
     for (const f of S.data.fleets ?? []) {
       const agents = (S.data.boxes ?? []).filter((b) => b.fleet === f.trunk);
@@ -786,11 +792,12 @@
       g.append(grp(f.trunk, n === null ? 'merge status unknown' : n + ' of ' + agents.length + ' merged'));
       const tag = (b) => f.merged === null ? null : h('span', { class: 'tag' + (f.merged.includes(b.id) ? ' ok' : ' warn'), text: f.merged.includes(b.id) ? 'merged' : 'not merged' });
       g.append(h('div', { class: 'grid', role: 'group', 'aria-label': f.trunk }, agents.map((b) => tile(b, tag(b)))));
+      for (const c of agents) workersOf(c);
     }
     for (const [name, list] of groupsOf(boxes.filter((b) => !b.fleet))) {
       g.append(grp(name, list.length));
       g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => tile(b))));
-      for (const c of list) if (S.kids[c.id]) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(S.kids[c.id].length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, S.kids[c.id].map((b) => tile(b))));
+      for (const c of list) workersOf(c);
     }
     return g;
   }

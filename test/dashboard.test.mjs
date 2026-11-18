@@ -1332,13 +1332,17 @@ test('liveState exposes fleets from the merged check, and null when git cannot a
   assert.deepEqual(s2.fleets, [{ trunk: 'fleet/x', merged: null }]);
 });
 
-test('the demo shows one fleet of three agents, exactly one merged', () => {
+test('the demo shows one fleet: a trunked coordinator, three trunked workers, exactly one merged', () => {
   const d = demoState();
   assert.equal(d.fleets.length, 1);
   const agents = d.boxes.filter((b) => b.fleet === d.fleets[0].trunk);
-  assert.equal(agents.length, 3);
+  assert.equal(agents.length, 4); // the coordinator plus its three workers on the trunk
+  assert.equal(agents.filter((b) => b.kind === 'coordinator').length, 1);
   assert.equal(d.fleets[0].merged.length, 1);
   assert.ok(agents.some((a) => a.id === d.fleets[0].merged[0]));
+  // a worker of the trunked coordinator that has no trunk of its own: it must still render in the fleet view
+  const co = agents.find((b) => b.kind === 'coordinator');
+  assert.ok(d.boxes.some((b) => b.parent === co.id && !b.fleet));
 });
 
 test('the fleet view adds a trunk section per fleet with a merged count and per-agent tags', () => {
@@ -1347,6 +1351,11 @@ test('the fleet view adds a trunk section per fleet with a merged count and per-
   assert.match(PAGE, /'merged'/);
   assert.match(PAGE, /merge status unknown/);
   assert.match(PAGE, / of /);
+});
+
+test('page: a trunked coordinator keeps its workers without a trunk, each box rendered once', () => {
+  assert.match(PAGE, /for \(const c of agents\) workersOf\(c\)/, 'trunk sections render the coordinator\'s unassigned workers');
+  assert.match(PAGE, /filter\(\(b\) => !b\.fleet\)/, 'worker grids skip workers that have their own trunk');
 });
 
 // ---- issue #83: a stopped box is not complete while its stream still has unread data ----
@@ -1382,6 +1391,31 @@ test('a stopped box stays complete on the first response when the whole stream w
   try {
     const r = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
     assert.equal(r.complete, true);
+  } finally { s.close(); }
+});
+
+test('a retried turn: a result event in a remote chunk is not complete while more bytes remain', async () => {
+  const clock = { t: 10_000 };
+  const sid = '11111111-2222-3333-4444-555555555555';
+  const failed = JSON.stringify({ type: 'result', subtype: 'error', is_error: true, result: '503 overloaded', session_id: sid });
+  const work = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(300) }] } });
+  const ok = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done after retry', session_id: sid });
+  const raw = `${failed}\n${work}\n${ok}\n`, split = failed.length + 1; // chunk 1 ends after the failed attempt's result
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'idle', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reads = [];
+  const reader = {
+    readTail: async (m, name, from) => { reads.push(from); const data = from === 0 ? raw.slice(0, split) : raw.slice(from); return { data, from, next: from + data.length, size: raw.length, fetchedAt: clock.t }; },
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r1 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r1.events.some((e) => e.kind === 'result'), true, 'the failed attempt\'s result is in this chunk');
+    assert.equal(r1.complete, false, 'unread bytes remain, so the stream is not complete');
+    const r2 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r2.complete, true);
+    assert.deepEqual(reads, [0, split]);
   } finally { s.close(); }
 });
 

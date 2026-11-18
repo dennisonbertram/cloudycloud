@@ -302,7 +302,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
           if (!ev) return json(404, { error: 'unknown event' });
           out = [fullEvent(ev, r.raw)];
         }
-        return json(200, { box: box.id, turn: Number(turn), events: out, next, complete: events.some((e) => e.kind === 'result') || (['stopped', 'failed'].includes(box.status) && !r.more), source, totals: totalsOf(events) });
+        return json(200, { box: box.id, turn: Number(turn), events: out, next, complete: !r.more && (events.some((e) => e.kind === 'result') || ['stopped', 'failed'].includes(box.status)), source, totals: totalsOf(events) });
       } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
     }
     return send(404, 'Not found\n');

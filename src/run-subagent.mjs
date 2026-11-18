@@ -304,7 +304,7 @@ async function turn(a, message, ctx, t) {
   for (let n = 0; ; n++) {
     const r = await turnOnce(a, message, ctx, t, deadline);
     if (!max) return r;
-    if (!r.error) { answered.add(a.profile.name); return r; } // any successful turn counts as answered; most harnesses never set progress.answered
+    if (!r.error || r.pushOnly) { answered.add(a.profile.name); return r; } // any finished run counts as answered; a push failure after one must not rerun the task
     if (r.cancelled || r.gone) return r;
     const c = classifyProviderError(r.text);
     if (!c) return r;
@@ -401,7 +401,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to') };
+  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to'), ...(!error && (failed || gone) ? { pushOnly: true } : {}) };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
