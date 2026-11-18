@@ -20,6 +20,7 @@ const tools = [
         autofix: { type: 'boolean', description: 'Optional, default false. After the worker pushes, the server opens a pull request for its branch and keeps the worker fixing failed checks, review comments and merge conflicts (at most 3 rounds, CLOUDY_CLOUD_AUTOFIX_ROUNDS) before the task ends. The result says whether the pull request is clean. Not for coordinators.' },
         machine: { type: 'string', description: 'Optional kind of machine: linux (default), android, omarchy, gpu, gpu:TYPE, gpu:TYPE:COUNT, macos, macos:MODEL. gpu and macos cost much more and need CLOUDY_CLOUD_ALLOW_MACHINE_KINDS in the user\'s cloudy-cloud env file.' },
         size: { type: 'string', description: 'Optional machine size as VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16. Sizes and cost an hour: 2x4 $0.017, 4x8 $0.034 (default), 8x16 $0.068 on every paid plan; builder adds 16x32 ($0.136); team adds 32x64 ($0.272). Your plan decides which are allowed; a size no plan lists is refused.' },
+        base: { type: 'string', description: 'Optional branch name or commit SHA to start the worker from instead of the local HEAD (fetched from origin if needed). Uncommitted edits are ignored when set.' },
         subagent_type: { type: 'string', description: 'Optional Claude Code agent name, passed to claude as --agent. Only for Claude Code workers (no profile, or glm, deepseek, particle, openrouter); pi, omp, Codex and opencode workers ignore it.' },
       },
       required: ['prompt', 'description'],

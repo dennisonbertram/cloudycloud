@@ -216,16 +216,17 @@ async function safetyPush(a, ctx) {
   const branch = `cloudy-cloud/${a.id}`;
   try {
     const push = async () => (await a.sandbox.commands.run(
-      `if err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
+      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
       ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
     let out = await push();
-    if (!out.includes('PUSHOK')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
+    if (!out.includes('PUSHOK') && !out.includes('NOCHANGE')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
     const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
+    if (out.includes('NOCHANGE')) return { where: `No changes, no branch pushed.${dirty}` };
     if (out.includes('PUSHOK')) return { where: `Pushed to origin ${branch} at ${sha}. Fetch with: git fetch origin ${branch}.${dirty}` };
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
     return { where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
@@ -386,13 +387,13 @@ async function setup(a, ctx) {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     // Many agents starting together can collide on index.lock here; wait and retry.
     let snap;
-    for (let i = 1; ; i++) {
+    for (let i = 1; !a.base; i++) {
       try { snap = await git(a.root, ...IDENT, 'stash', 'create'); break; } catch (e) {
         if (i >= 8 || !/index\.lock|could not write index/i.test(`${e?.stderr ?? ''} ${e?.message ?? ''}`)) throw e;
         await new Promise((r) => setTimeout(r, 100 * i));
       }
     }
-    a.sha = snap || (await git(a.root, 'rev-parse', 'HEAD'));
+    a.sha = a.base?.sha ?? (snap || (await git(a.root, 'rev-parse', 'HEAD')));
     const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
     const bundle = join(tmp, 'in.bundle');
     await git(a.root, 'update-ref', ref, a.sha);
@@ -472,13 +473,14 @@ async function setup(a, ctx) {
     // All agents push the same new base history at once and GitHub sometimes rejects one, so retry.
     for (let n = 1; ; n++) {
       try {
-        await a.sandbox.commands.run(`git push -q -u origin ${branch}`, repo);
+        // No push here: an agent that changes nothing must not leave an empty branch on GitHub. ls-remote checks the token; the upstream is set by hand so plain `git push` works.
+        await a.sandbox.commands.run(`git ls-remote -q origin HEAD >/dev/null && git config branch.${branch}.remote origin && git config branch.${branch}.merge refs/heads/${branch}`, repo);
         break;
       } catch (e) {
         const said = tail(e?.stderr ?? e?.message);
-        if (AUTH_FAIL.test(said) && !provider.caps.hasProxySecrets) throw new Error(`The first push to origin ${branch} failed. ${provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
-        if (AUTH_FAIL.test(said)) throw new Error(`The first push to origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
-        if (n === 3) throw new Error(`The first push to origin ${branch} failed after 3 attempts. Git said: ${said}`);
+        if (AUTH_FAIL.test(said) && !provider.caps.hasProxySecrets) throw new Error(`The GitHub access check for origin ${branch} failed. ${provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
+        if (AUTH_FAIL.test(said)) throw new Error(`The GitHub access check for origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
+        if (n === 3) throw new Error(`The GitHub access check for origin ${branch} failed after 3 attempts. Git said: ${said}`);
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
@@ -580,6 +582,7 @@ async function startGateway(a, ctx) {
 // Text from GitHub (logs, comments, reviews) is untrusted: redacted before it is cut, and review text counts only from people with write access.
 // Never throws for a gh problem: it returns { text } saying what to do. Also { gone } (sandbox lost) or { cancelled }.
 const GH_MS = 60_000, AUTOFIX_MARGIN_MS = 10 * 60_000, PR_FIELDS = 'number,url,state,headRefOid,baseRefName,mergeable,author,reviews';
+const BASE_REF = /^(?!-)[A-Za-z0-9._/-]{1,100}$/;
 const REF = /^[A-Za-z0-9._/-]{1,100}$/, SHA = /^[0-9a-f]{40}$/, RUN = /\/actions\/runs\/(\d+)/, LINK = /^https:\/\/github\.com\/[A-Za-z0-9._/-]+$/, LOGIN = /^[A-Za-z0-9-]{1,39}(\[bot\])?$/, WRITE = new Set(['admin', 'maintain', 'write']);
 const nap = (ms, t) => { let id, off; return Promise.race([new Promise((r) => { id = setTimeout(r, ms); }), t.done, new Promise((r) => { t.abort.signal.addEventListener('abort', r, { once: true }); off = () => t.abort.signal.removeEventListener('abort', r); })]).finally(() => { clearTimeout(id); off(); }); };
 function autofix(a, ctx, t) {
@@ -860,7 +863,7 @@ export async function runSubagent(args, deps) {
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
-  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false } = args;
+  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
   if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
@@ -910,6 +913,15 @@ export async function runSubagent(args, deps) {
   }
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
+  let baseInfo;
+  if (base !== undefined) {
+    if (typeof base !== 'string' || !BASE_REF.test(base) || base.includes('..') || base.includes('//') || base.endsWith('/') || base.endsWith('.lock')) return fail('invalid base: use a branch name (letters, digits, . _ / -) or a commit SHA of 7 to 40 hex characters. Fix the value, or leave base out to start from the local HEAD.');
+    const resolve = (r) => git(root, 'rev-parse', '--verify', '--quiet', `${r}^{commit}`).catch(() => '');
+    let sha = await resolve(base);
+    if (!sha) { await git(root, 'fetch', '-q', 'origin', base).catch(() => {}); sha = (await resolve(`origin/${base}`)) || (await resolve('FETCH_HEAD')); }
+    if (!sha) return fail(`base ${base} was not found locally or on origin. Check the name, or push it to GitHub first, then start the agent again.`);
+    baseInfo = { ref: base, sha };
+  }
   const depth = (Number(ctx.env.CLOUDY_CLOUD_DEPTH) || 0) + 1;
   const maxDepth = Number(ctx.env.CLOUDY_CLOUD_MAX_DEPTH) || MAX_DEPTH;
   const maxAgents = Number(ctx.env.CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION) || MAX_AGENTS;
@@ -932,7 +944,7 @@ export async function runSubagent(args, deps) {
   if (noClaude) return fail(noClaude, true);
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
@@ -944,7 +956,7 @@ export async function runSubagent(args, deps) {
   work(a, prompt, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\n${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.

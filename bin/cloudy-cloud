@@ -44,6 +44,12 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# `cloudy-cloud branches prune [--yes]` deletes empty or merged cloudy-cloud/* branches on origin (dry run by default).
+if [ "${1:-}" = branches ]; then
+  shift
+  exec node "$root/src/branches.mjs" "$@"
+fi
+
 # `cloudy-cloud pi|free-pi [args]` starts pi or free-pi as the main session with the cloud_agent tools.
 if [ "${1:-}" = pi ] || [ "${1:-}" = free-pi ]; then
   exec node "$root/src/host-pi.mjs" "$@"
@@ -95,6 +101,7 @@ Usage: cloudy-cloud [command]
   opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
   pi [args]              start pi as the main session with the cloud_agent tools
   free-pi [args]         start free-pi as the main session with the cloud_agent tools
+  branches prune         delete empty or merged cloudy-cloud/* branches on origin (--yes to delete)
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
