@@ -1,0 +1,23 @@
+{
+  "serverInfo": {
+    "name": "cloudy-cloud",
+    "version": "0.2.0"
+  },
+  "description": "Run coding-agent subagents on cloud machines: each gets its own sandbox and pushes a git branch. Run `npx cloudycloud setup` once before use; keys stay in ~/.config/cloudy-cloud/env.",
+  "url": "https://www.npmjs.com/package/cloudycloud",
+  "documentation": "https://cloudycloud.tech/docs/index.html",
+  "transport": {
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "cloudycloud",
+      "mcp-server"
+    ]
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": false,
+    "prompts": false
+  }
+}

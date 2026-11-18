@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Regenerate the AI-facing files of the static site from its HTML pages. Run from anywhere: python3 site/build-md.py
 
-Writes: a .md twin for every HTML page, llms.txt, llms-full.txt, sitemap.xml, and the
-homepage / FAQ / glossary JSON-LD blocks (between <!--ld--> and <!--/ld--> in each page).
-Edit the HTML, then run this. Stdlib only.
+Writes: a .md twin for every HTML page, llms.txt, llms-full.txt, sitemap.xml, the
+homepage / FAQ / glossary JSON-LD blocks (between <!--ld--> and <!--/ld--> in each page),
+and the /.well-known agent-skills index and MCP server card. Edit the HTML, then run this.
+Stdlib only.
 """
-import html, json, re, sys
+import gzip, hashlib, html, io, json, re, sys, tarfile
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -284,6 +285,64 @@ def inject_ld(slug):
     f.write_text(s)
 
 
+def skill_desc(path):
+    """The one-line description of a SKILL.md's YAML frontmatter."""
+    fm = re.match(r'---\n(.*?)\n---', path.read_text(), re.S).group(1)
+    return re.search(r'^description: *(.*\S) *$', fm, re.M).group(1)
+
+
+def det_targz(skill_dir):
+    """A deterministic .tar.gz of a skill directory: files at the archive root, entries sorted,
+    and no varying metadata (mtime, uid/gid, uname/gname, gzip header), so two runs are byte-identical."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w') as tar:
+        for p in sorted(skill_dir.rglob('*')):
+            if not p.is_file():
+                continue
+            ti = tarfile.TarInfo(p.relative_to(skill_dir).as_posix())
+            data = p.read_bytes()
+            ti.size, ti.mtime, ti.mode = len(data), 0, 0o644
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = ''
+            tar.addfile(ti, io.BytesIO(data))
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode='wb', mtime=0) as gz:
+        gz.write(buf.getvalue())
+    return out.getvalue()
+
+
+def well_known():
+    """/.well-known/agent-skills per the Agent Skills Discovery RFC v0.2.0 (a draft, not a final
+    standard), plus /.well-known/mcp/server-card.json in the shape microsandbox.dev publishes."""
+    wk = SITE / '.well-known' / 'agent-skills'
+    skills = []
+    for d in sorted(p for p in (SITE.parent / 'skills').iterdir() if p.is_dir()):
+        skill_md = d / 'SKILL.md'
+        if [p for p in d.rglob('*') if p.is_file()] == [skill_md]:
+            typ, rel, data = 'skill-md', f'/.well-known/agent-skills/{d.name}/SKILL.md', skill_md.read_bytes()
+            artifact = wk / d.name / 'SKILL.md'
+        else:
+            typ, rel, data = 'archive', f'/.well-known/agent-skills/{d.name}.tar.gz', det_targz(d)
+            artifact = wk / f'{d.name}.tar.gz'
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(data)
+        skills.append({'name': d.name, 'type': typ, 'description': skill_desc(skill_md),
+                       'url': rel, 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()})
+    wk.mkdir(parents=True, exist_ok=True)
+    index = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': skills}
+    (wk / 'index.json').write_text(json.dumps(index, ensure_ascii=False, indent=2) + '\n')
+    version = json.loads((SITE.parent / 'package.json').read_text())['version']
+    card = {'serverInfo': {'name': 'cloudy-cloud', 'version': version},
+            'description': 'Run coding-agent subagents on cloud machines: each gets its own sandbox and pushes a git branch. '
+                           'Run `npx cloudycloud setup` once before use; keys stay in ~/.config/cloudy-cloud/env.',
+            'url': NPM, 'documentation': BASE + '/docs/index.html',
+            'transport': {'type': 'stdio', 'command': 'npx', 'args': ['-y', 'cloudycloud', 'mcp-server']},
+            'capabilities': {'tools': True, 'resources': False, 'prompts': False}}
+    mcp_dir = SITE / '.well-known' / 'mcp'
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    (mcp_dir / 'server-card.json').write_text(json.dumps(card, ensure_ascii=False, indent=2) + '\n')
+
+
 def main():
     slugs = ['home'] + DOC_SLUGS
     for slug in slugs:
@@ -325,6 +384,7 @@ def main():
     # sitemap.xml
     urls = ''.join(f'  <url>\n    <loc>{page_url(sl)}</loc>\n    <lastmod>{LASTMOD}</lastmod>\n  </url>\n' for sl in slugs)
     (SITE / 'sitemap.xml').write_text('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + urls + '</urlset>\n')
+    well_known()
 
 
 if __name__ == '__main__':
