@@ -1,9 +1,9 @@
 // Tells the user when a newer cloudycloud is on npm. The launcher runs `node update-check.mjs` once per session start.
 // It only reads a cache file; a detached `refresh` process updates the cache at most once a day, so startup never waits.
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DAY = 24 * 3600 * 1000;
@@ -26,6 +26,10 @@ export function isNewer(a, b) {
   return x.pre.length > y.pre.length;
 }
 
+// The path for `cd`: ~ replaces the home folder only at a path boundary; odd characters are single-quoted (after ~/ so ~ still expands).
+const q = (p) => (/^[A-Za-z0-9_./-]*$/.test(p) ? p : `'${p.replaceAll("'", "'\\''")}'`);
+const shown = (root, home) => (root === home ? '~' : root.startsWith(home + sep) ? `~/${q(root.slice(home.length + 1))}` : q(root));
+
 // An unreadable or invalid cache (not an object, bad or future checkedAt) counts as missing.
 const readCache = (home, now = Date.now()) => {
   try {
@@ -36,12 +40,13 @@ const readCache = (home, now = Date.now()) => {
 
 // check(opts): prints the notice when a newer version is cached and starts a refresh when the cache is missing or old.
 // Returns nothing; every failure is ignored. opts is injectable for tests.
-export function check({ version, env = process.env, home = homedir(), isTTY = process.stdout.isTTY && process.stderr.isTTY, now = Date.now(), write = (s) => process.stderr.write(s), startRefresh = defaultRefresh } = {}) {
+export function check({ version, env = process.env, home = homedir(), isTTY = process.stdout.isTTY && process.stderr.isTTY, now = Date.now(), write = (s) => process.stderr.write(s), root = join(dirname(fileURLToPath(import.meta.url)), '..'), startRefresh = defaultRefresh } = {}) {
   try {
     if (!isTTY || env.CI || env.CLOUDY_CLOUD_NO_UPDATE_CHECK === '1') return;
     const c = readCache(home, now);
     if (typeof c.latest === 'string' && isNewer(c.latest, version)) {
-      write(`Cloudy Cloud ${c.latest} is available (you have ${version}). Update: npm install -g cloudycloud@latest\n`);
+      const how = existsSync(join(root, '.git')) ? `cd ${shown(root, home)} && git pull && npm install` : 'npm install -g cloudycloud@latest';
+      write(`Cloudy Cloud ${c.latest} is available (you have ${version}). Update: ${how}\n`);
     }
     if (!(now - c.checkedAt < DAY)) startRefresh();
   } catch { /* never block a session */ }
