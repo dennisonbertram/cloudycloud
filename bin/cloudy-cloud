@@ -44,8 +44,14 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# update_notice: one line when a newer version is on npm. Interactive terminals only; no node starts when opted out.
+update_notice() {
+  if [ -t 1 ] && [ -t 2 ] && [ -z "${CI:-}" ] && [ "${CLOUDY_CLOUD_NO_UPDATE_CHECK:-}" != 1 ]; then node "$root/src/update-check.mjs" || true; fi
+}
+
 # `cloudy-cloud pi|free-pi [args]` starts pi or free-pi as the main session with the cloud_agent tools.
 if [ "${1:-}" = pi ] || [ "${1:-}" = free-pi ]; then
+  update_notice
   exec node "$root/src/host-pi.mjs" "$@"
 fi
 
@@ -67,6 +73,7 @@ fi
 if [ "${1:-}" = opencode ]; then
   shift
   . "$root/bin/migrate-config.sh"; migrate_config
+  update_notice
   exec node "$root/src/host-opencode.mjs" "$@"
 fi
 
@@ -76,7 +83,7 @@ case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
 # `cloudy-cloud --version` prints the package version; `--help`, `-h` and `help` (alone) print Cloudy Cloud's own help.
 if [ $# -eq 1 ]; then
   case $1 in
-    --version) sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json"; exit 0 ;;
+    --version) sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json"; echo "installed at $(cd "$root" && pwd -P)"; exit 0 ;;
     --help|-h|help)
       cat <<'EOF'
 Cloudy Cloud: give every subagent of your coding agent its own cloud machine.
@@ -191,6 +198,7 @@ case $root in *'"'*|*'\'*) warn "cloudy-cloud: install path contains a quote or 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
 # CLOUDY_CLOUD_CONFIG is included so the server reads the same file as this launcher.
 export CLOUDY_CLOUD_CONFIG="$config"
+update_notice
 if [ "$agent" = codex ]; then exec node "$root/src/host-codex.mjs" "$@"; fi
 envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","CLOUDY_CLOUD_PROVIDER":"${CLOUDY_CLOUD_PROVIDER:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}","CLOUDY_CLOUD_PROXY_SECRETS":"${CLOUDY_CLOUD_PROXY_SECRETS:-}","CLOUDY_CLOUD_APT_PACKAGES":"${CLOUDY_CLOUD_APT_PACKAGES:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"

@@ -143,7 +143,9 @@ test('--help, -h and help print Cloudy Cloud help; --version prints the package 
     assert.match(r.stdout, /Claude Code's own options: claude --help/);
   }
   const v = spawnSync('/bin/sh', [launcher, '--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
-  assert.equal(v.stdout.trim(), JSON.parse(readFileSync('package.json', 'utf8')).version);
+  const [l1, l2] = v.stdout.trim().split('\n');
+  assert.equal(l1, JSON.parse(readFileSync('package.json', 'utf8')).version);
+  assert.equal(l2, `installed at ${realpathSync(resolve('.'))}`);
 });
 
 test('mcp subcommand runs src/mcp-cli.mjs with the remaining arguments', () => {
