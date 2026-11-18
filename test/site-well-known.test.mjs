@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative } from 'node:path';
@@ -49,11 +49,12 @@ test('a skill-md artifact is byte-equal to skills/<name>/SKILL.md', () => {
   }
 });
 
-test('an archive extracts to the same file set and bytes as skills/<name>/, with SKILL.md at the root', () => {
+test('an archive extracts to the same file set and bytes as the git-tracked files in skills/<name>/, SKILL.md at the root', () => {
   for (const skill of index.skills.filter((s) => s.type === 'archive')) {
     const dir = mkdtempSync(join(tmpdir(), 'cc-skill-'));
     execFileSync('tar', ['-xzf', join(siteDir, skill.url), '-C', dir]);
-    const want = tree(join(skillsDir, skill.name));
+    const tracked = execFileSync('git', ['ls-files', '-z', '--', join(skillsDir, skill.name)], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
+    const want = Object.fromEntries(tracked.map((p) => [relative(join(skillsDir, skill.name), join(root, p)), readFileSync(join(root, p))]));
     const got = tree(dir);
     assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort(), skill.name);
     assert.ok('SKILL.md' in got, `${skill.name}: SKILL.md is not at the archive root`);
@@ -61,10 +62,25 @@ test('an archive extracts to the same file set and bytes as skills/<name>/, with
   }
 });
 
-test('server-card.json names this package and a transport that ends in the mcp-server subcommand', () => {
+test('server-card.json names the real server and a transport pinned to this package version ending in mcp-server', () => {
   const card = JSON.parse(readFileSync(join(siteDir, '.well-known', 'mcp', 'server-card.json'), 'utf8'));
-  assert.equal(card.serverInfo.version, JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version);
+  const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  assert.equal(card.serverInfo.name, 'cloud'); // the name src/mcp.mjs reports in the initialize handshake
+  assert.equal(card.serverInfo.version, version);
   assert.equal(card.transport.args.at(-1), 'mcp-server');
+  assert.deepEqual(card.transport.args, ['-y', `cloudycloud@${version}`, 'mcp-server']);
+});
+
+test('re-running the generator removes artifacts that are no longer in the index', () => {
+  const staleDir = join(agentSkillsDir, 'stale-skill');
+  mkdirSync(staleDir, { recursive: true });
+  writeFileSync(join(staleDir, 'SKILL.md'), 'stale');
+  const staleFile = join(agentSkillsDir, 'old-skill.tar.gz');
+  writeFileSync(staleFile, 'stale');
+  execFileSync('python3', [join(root, 'site', 'build-md.py')]);
+  assert.ok(!existsSync(staleFile), 'stale archive survived a rebuild');
+  assert.ok(!existsSync(staleDir), 'stale skill directory survived a rebuild');
+  assert.deepEqual(JSON.parse(readFileSync(join(agentSkillsDir, 'index.json'), 'utf8')).skills.map((s) => s.name).sort(), skillNames);
 });
 
 test('cloudy-cloud mcp-server answers initialize and tools/list on stdio with nothing else on stdout', async () => {

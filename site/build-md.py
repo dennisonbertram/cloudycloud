@@ -6,7 +6,7 @@ homepage / FAQ / glossary JSON-LD blocks (between <!--ld--> and <!--/ld--> in ea
 and the /.well-known agent-skills index and MCP server card. Edit the HTML, then run this.
 Stdlib only.
 """
-import gzip, hashlib, html, io, json, re, sys, tarfile
+import gzip, hashlib, html, io, json, re, subprocess, sys, tarfile
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -291,14 +291,29 @@ def skill_desc(path):
     return re.search(r'^description: *(.*\S) *$', fm, re.M).group(1)
 
 
-def det_targz(skill_dir):
+def skill_files(skill_dir):
+    """The git-tracked regular files in a skill directory: untracked local files are never published,
+    and a symlink (tracked or not) is rejected because its target could be outside the directory."""
+    out = subprocess.run(['git', 'ls-files', '-z', '--', str(skill_dir)], cwd=SITE.parent,
+                         capture_output=True, check=True).stdout
+    files = []
+    for name in out.decode().split('\0'):
+        if not name:
+            continue
+        p = SITE.parent / name
+        if p.is_symlink():
+            raise SystemExit(f'{name}: symlinks cannot be published in a skill')
+        if p.is_file():
+            files.append(p)
+    return files
+
+
+def det_targz(skill_dir, files):
     """A deterministic .tar.gz of a skill directory: files at the archive root, entries sorted,
     and no varying metadata (mtime, uid/gid, uname/gname, gzip header), so two runs are byte-identical."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w') as tar:
-        for p in sorted(skill_dir.rglob('*')):
-            if not p.is_file():
-                continue
+        for p in sorted(files, key=lambda p: p.relative_to(skill_dir).as_posix()):
             ti = tarfile.TarInfo(p.relative_to(skill_dir).as_posix())
             data = p.read_bytes()
             ti.size, ti.mtime, ti.mode = len(data), 0, 0o644
@@ -306,7 +321,8 @@ def det_targz(skill_dir):
             ti.uname = ti.gname = ''
             tar.addfile(ti, io.BytesIO(data))
     out = io.BytesIO()
-    with gzip.GzipFile(fileobj=out, mode='wb', mtime=0) as gz:
+    # compresslevel=9 explicitly: Python 3.15 changed the default to 6, which would change the bytes.
+    with gzip.GzipFile(fileobj=out, mode='wb', compresslevel=9, mtime=0) as gz:
         gz.write(buf.getvalue())
     return out.getvalue()
 
@@ -315,28 +331,38 @@ def well_known():
     """/.well-known/agent-skills per the Agent Skills Discovery RFC v0.2.0 (a draft, not a final
     standard), plus /.well-known/mcp/server-card.json in the shape microsandbox.dev publishes."""
     wk = SITE / '.well-known' / 'agent-skills'
-    skills = []
+    skills, artifacts = [], set()
     for d in sorted(p for p in (SITE.parent / 'skills').iterdir() if p.is_dir()):
         skill_md = d / 'SKILL.md'
-        if [p for p in d.rglob('*') if p.is_file()] == [skill_md]:
+        if skill_files(d) == [skill_md]:
             typ, rel, data = 'skill-md', f'/.well-known/agent-skills/{d.name}/SKILL.md', skill_md.read_bytes()
             artifact = wk / d.name / 'SKILL.md'
         else:
-            typ, rel, data = 'archive', f'/.well-known/agent-skills/{d.name}.tar.gz', det_targz(d)
+            typ, rel, data = 'archive', f'/.well-known/agent-skills/{d.name}.tar.gz', det_targz(d, skill_files(d))
             artifact = wk / f'{d.name}.tar.gz'
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(data)
+        artifacts.add(artifact)
         skills.append({'name': d.name, 'type': typ, 'description': skill_desc(skill_md),
                        'url': rel, 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()})
     wk.mkdir(parents=True, exist_ok=True)
     index = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': skills}
     (wk / 'index.json').write_text(json.dumps(index, ensure_ascii=False, indent=2) + '\n')
+    # Drop artifacts the new index does not name, so a removed or renamed skill stops being served.
+    keep = artifacts | {wk / 'index.json'}
+    for p in sorted(wk.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+        if (p.is_file() or p.is_symlink()) and p not in keep:
+            p.unlink()
+        elif p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
     version = json.loads((SITE.parent / 'package.json').read_text())['version']
-    card = {'serverInfo': {'name': 'cloudy-cloud', 'version': version},
+    card = {'serverInfo': {'name': 'cloud', 'title': 'Cloudy Cloud', 'version': version},
             'description': 'Run coding-agent subagents on cloud machines: each gets its own sandbox and pushes a git branch. '
-                           'Run `npx cloudycloud setup` once before use; keys stay in ~/.config/cloudy-cloud/env.',
+                           'Run `npx cloudycloud setup` once before use; it stores your GitHub token and worker credentials '
+                           'as Instabox proxy secrets, so cloud machines see placeholders, never your keys.',
             'url': NPM, 'documentation': BASE + '/docs/index.html',
-            'transport': {'type': 'stdio', 'command': 'npx', 'args': ['-y', 'cloudycloud', 'mcp-server']},
+            # Pinned to the published release that contains the mcp-server subcommand.
+            'transport': {'type': 'stdio', 'command': 'npx', 'args': ['-y', f'cloudycloud@{version}', 'mcp-server']},
             'capabilities': {'tools': True, 'resources': False, 'prompts': False}}
     mcp_dir = SITE / '.well-known' / 'mcp'
     mcp_dir.mkdir(parents=True, exist_ok=True)
