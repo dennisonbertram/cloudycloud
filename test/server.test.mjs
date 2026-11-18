@@ -165,7 +165,7 @@ test('modern revision without the tasks extension: immediate result, cloud_agent
   const c = await connect('modern');
   const r = await c.call('cloud_agent', { prompt: 'OK plain', description: 'd' });
   assert.notEqual(r.result.resultType, 'task');
-  assert.match(text(r), /agent_id: [0-9a-f]{8}\nstatus: starting\nCall cloud_agent_wait/);
+  assert.match(text(r), /agent_id: [0-9a-f]{8}\nstatus: starting\nIt will push to cloudy-cloud\/[0-9a-f]{8}\.\n(?:[^\n]*\n)*Call cloud_agent_wait/);
   const id = text(r).match(/agent_id: ([0-9a-f]{8})/)[1];
   const w = await c.call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 10 });
   assert.match(text(w), /status: idle\ndone OK/);

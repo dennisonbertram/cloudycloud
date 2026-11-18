@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const launcher = resolve('bin/cloudy-cloud');
 const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
@@ -146,6 +146,37 @@ test('--help, -h and help print Cloudy Cloud help; --version prints the package 
   const [l1, l2] = v.stdout.trim().split('\n');
   assert.equal(l1, JSON.parse(readFileSync('package.json', 'utf8')).version);
   assert.equal(l2, `installed at ${realpathSync(resolve('.'))}`);
+});
+
+test('--version shows the install path with ~ for the home directory', () => {
+  const home = dirname(realpathSync(resolve('.')));
+  const v = spawnSync('/bin/sh', [launcher, '--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } });
+  assert.equal(v.status, 0);
+  assert.equal(v.stdout.trim().split('\n')[1], `installed at ~/${basename(realpathSync(resolve('.')))}`);
+});
+
+test('top-level help lists setup with its --more and --check-only flags, within 80 columns', () => {
+  const r = spawnSync('/bin/sh', [launcher, '--help'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
+  assert.match(r.stdout, /^  setup \[--more\] \[--check-only\]/m);
+});
+
+// Runs a command in a pty; returns the merged terminal transcript and exit code.
+const pty = (spec) => {
+  const r = spawnSync('python3', [resolve('test/pty_run.py'), JSON.stringify({ timeout: 30, steps: [], ...spec })], { encoding: 'utf8' });
+  const m = r.stdout.match(/EXIT:(\d+)\s*$/);
+  return { text: r.stdout, code: m ? Number(m[1]) : -1 };
+};
+
+test('a bare-word typo on a colour terminal prints a styled error line and a Next line', () => {
+  const env = { PATH: '/usr/bin:/bin', HOME: tmpdir(), TERM: 'xterm-256color', LANG: 'en_US.UTF-8' };
+  const r = pty({ cmd: ['/bin/sh', launcher, 'ls'], env });
+  assert.equal(r.code, 2);
+  assert.match(r.text, /\x1b\[31m✖\x1b\[0m cloudy-cloud: "ls" is not a command\./);
+  assert.match(r.text, /\x1b\[1;34m→ Next: cloudy-cloud --help\x1b\[0m/);
+  assert.match(r.text, /› To send it to Claude as a prompt: cloudy-cloud -p "ls"/);
+  const n = pty({ cmd: ['/bin/sh', launcher, 'ls'], env: { ...env, NO_COLOR: '1' } });
+  assert.match(n.text, / {2}✖ cloudy-cloud: "ls" is not a command\.\n {2}→ Next: cloudy-cloud --help/);
+  assert.doesNotMatch(n.text, /\x1b\[/);
 });
 
 test('mcp subcommand runs src/mcp-cli.mjs with the remaining arguments', () => {

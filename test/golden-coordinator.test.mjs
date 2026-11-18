@@ -65,7 +65,9 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   };
   const out = [];
   const env = { INSTABOX_API_KEY: KEY, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_CONFIG: join(dir, 'env'), ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
-  return { calls, out, deps: { sdk, fetchFn, env, tty: false, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner') } };
+  // Provider CLI calls are recorded, never run; `secrets ls --json` answers the names the env already lists.
+  const cliSpawn = async (argv, o = {}) => { calls.push({ cli: argv.join(' '), input: o.input }); return argv.includes('ls') ? { code: 0, stdout: JSON.stringify(env.CLOUDY_CLOUD_PROXY_SECRETS.split(',').map((name) => ({ name }))), stderr: '' } : { code: 0, stdout: '', stderr: '' }; };
+  return { calls, out, deps: { sdk, fetchFn, env, tty: false, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner'), cliSpawn } };
 }
 
 const coord = (id, name, cname) => ({ sandboxId: id, name, state: 'running', startedAt: started, metadata: { role: 'coordinator', name: cname } });

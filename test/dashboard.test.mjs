@@ -654,11 +654,11 @@ test('page: Terminal polling needs the list view and an open detail pane, like t
 });
 
 test('page: collapsing a coordinator with one of its workers selected selects the coordinator first', () => {
-  assert.match(PAGE, /S\.kids\[id\]\?\.some\(\(c\) => c\.id === S\.sel\)\) return select\(id, false\)/);
+  assert.match(PAGE, /descOf\(id\)\.some\(\(c\) => c\.id === S\.sel\)\) return select\(id, false\)/);
 });
 
 test('page: the fleet signature includes workers', () => {
-  assert.match(PAGE, /const f = sig\(\['f', roots\.map\(\(b\) => \[[^\]]*, \(S\.kids\[b\.id\] \|\| \[\]\)\.map/);
+  assert.match(PAGE, /const f = sig\(\['f', roots\.map\(\(b\) => \[[^\]]*, descOf\(b\.id\)\.map/);
 });
 
 test('page: pane failures show their reason, and pane data gets the source and age badge', () => {
@@ -699,6 +699,47 @@ test('the page lists a waiting coordinator under Needs you with its line and the
   assert.match(page, /needsYou = \(b\) => [^\n]*b\.waiting/);
   assert.match(page, /Waiting on a prompt/);
   assert.match(page, /coordinator attach/);
+});
+
+test('the Needs-you chip and the list heading share one count: agents at any depth, not top-level rows', () => {
+  const src = ['const today', 'const needsYou', 'const needsYouCount'].map(pageLine).join('\n');
+  const { needsYou, needsYouCount } = new Function(`${src}\nreturn { needsYou, needsYouCount };`)();
+  const t = Date.now(), boxes = [
+    { id: 'c1', status: 'running' },                                           // a coordinator row is not a needy item itself
+    { id: 'w1', status: 'idle', parent: 'c1' },                                // waiting for you, nested under c1
+    { id: 'w2', status: 'running', parent: 'c1', waiting: 'answer a prompt' }, // waiting on a prompt, nested
+    { id: 'f1', status: 'failed', lastActivity: t },                           // failed today
+    { id: 'f9', status: 'failed', lastActivity: t - 48 * 3_600_000 },          // failed days ago: does not count
+  ];
+  for (const b of boxes.slice(1, 4)) assert.ok(needsYou(b), b.id);
+  assert.ok(!needsYou(boxes[0]) && !needsYou(boxes[4]));
+  assert.equal(needsYouCount(boxes), 3);
+  assert.equal(needsYouCount(boxes.filter((b) => !b.parent)), 1, 'a row count would hide the two nested workers');
+  assert.match(PAGE, /'Needs you' \? needsYouCount/, 'the Needs-you heading counts agents with the shared function');
+  assert.match(PAGE, /'Needs you', need\]/, 'the header chip uses the same shared count');
+  assert.doesNotMatch(PAGE, /'Waiting for you', idle/, 'the old per-status chips are gone');
+});
+
+test('agents under nested coordinators still group, count and render — two levels', () => {
+  const src = ['const active', 'const today', 'const needsYou', 'const needsYouCount', 'const descOf', 'const fam', 'const grpCount', 'const groupsOf'].map(pageLine).join('\n');
+  const c0 = { id: 'c0', status: 'running' }, c1 = { id: 'c1', status: 'running', parent: 'c0' }, w1 = { id: 'w1', status: 'idle', parent: 'c1' };
+  const S = { kids: { c0: [c1], c1: [w1] } };
+  const { descOf, fam, grpCount, groupsOf } = new Function('S', `${src}\nreturn { descOf, fam, grpCount, groupsOf };`)(S);
+  assert.deepEqual(descOf('c0').map((b) => b.id), ['c1', 'w1']);
+  assert.ok(fam((b) => b.status === 'idle')(c0));
+  assert.equal(groupsOf([c0])[0][0], 'Needs you', 'a needy worker two levels down pulls the root into Needs you');
+  assert.equal(grpCount('Needs you', [c0]), 1, 'the needy agent counts, not its two coordinator rows');
+  assert.match(PAGE, /flatMap\(\(c\) => rowsOf\(c, lvl \+ 1\)\)/, 'rows render recursively past level 2');
+  assert.equal((PAGE.match(/grpCount\(name, list\)/g) || []).length, 2, 'rail and fleet headings share the count');
+});
+
+test('page: the spend line truncates only on the phone width; on desktop it wraps as before', () => {
+  const media = PAGE.indexOf('@media (max-width: 820px)');
+  const desk = PAGE.slice(0, media).match(/\.summary \.spend \{[^}]*\}/)[0];
+  const phone = PAGE.slice(media).match(/\.summary \.spend \{[^}]*\}/)[0];
+  assert.doesNotMatch(desk, /nowrap|ellipsis/, 'desktop keeps the wrapped full sentence');
+  assert.match(phone, /nowrap/); assert.match(phone, /ellipsis/);
+  assert.match(PAGE, /title: spend/, 'the full sentence stays in the tooltip');
 });
 
 test('a fatal pane state reaches the box as waiting with fatal; the attach name is the label; a stopped coordinator drops the alert (#88)', async () => {
@@ -1054,7 +1095,7 @@ test('page: list rows and fleet cards show a quiet tag from usage.quiet, fleet t
   assert.equal((PAGE.match(/quietTag\(b\)/g) || []).length >= 3, true, 'list row and fleet card use the tag');
   assert.match(PAGE, /usageLine\(b, true\)/); assert.match(PAGE, /'\/' \+ gib\(u\.memTotal\) \+ ' GiB'/);
   assert.match(PAGE, /st === 'idle' \? 'waiting for you'/);
-  assert.match(PAGE, /'Waiting for you', idle/);
+  assert.match(PAGE, /'Needs you', need\]/);
   assert.equal((PAGE.match(/isQuiet\((b|c|sb)\)\]?[,\]]/g) || []).length >= 3, true, 'the quiet state is in the rebuild signatures');
 });
 

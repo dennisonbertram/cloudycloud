@@ -90,7 +90,7 @@ const guides = {
     ['--max-hours N', 'Delete the machine after N hours (up to 24, the default)'],
     ['--model NAME', 'Claude Code model for the session (for example opus or claude-opus-5-5)'],
     ['--json', 'Print the result as JSON (includes started: true)'],
-  ], 'Run "image" and "image --save" once first. Stop the coordinator when you are done.'],
+  ], 'Run coordinator image once first. Stop the coordinator when you are done.'],
   attach: ['Open a coordinator\'s Claude session.', 'attach NAME', [], 'On a terminal it opens the session. When piped, it prints the SSH command instead; run that to connect.'],
   ls: ['List your cloud coordinators and whether one waits on a prompt.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, WAITING, or "No coordinators.". It reads each running coordinator\'s screen once.'],
   status: ['Show one coordinator: state, the prompt it waits on (if any) and the attach command.', 'status NAME [--json]', [], 'Read-only. Reads the screen once. A coordinator runs with permission checks off, so a waiting prompt is unexpected: attach and answer it.'],
