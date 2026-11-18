@@ -10,7 +10,9 @@ export const SECRET_HOSTS = { CLAUDE_CODE_OAUTH_TOKEN: 'api.anthropic.com', ANTH
 // A host from profile data goes into a shell command, so only a plain hostname (optional port) is printed.
 const safeHost = (h) => (typeof h === 'string' && /^[A-Za-z0-9.-]+(:\d+)?$/.test(h) ? h : undefined);
 export const setCmd = (d) => `printf %s "$KEY" | npx --yes instabox@latest secrets set ${d.secret} --host ${safeHost(d.host) ?? SECRET_HOSTS[d.secret] ?? '<host>'}`;
-const SETTINGS = 'Add it in cloudy-cloud setup: run `cloudy-cloud setup`.';
+// The setup command that asks for a key: only `setup --more` asks for the other model keys and the coordinator's Instabox-key copy.
+const MORE_KEYS = new Set(['PARTICLE_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'CLOUDY_CLOUD_INSTABOX_API_KEY']);
+const SETTINGS = (secret) => `cloudy-cloud setup${MORE_KEYS.has(secret) ? ' --more' : ''}`;
 
 // Plan wording (d.plan comes from provider.plan(); absent when the provider has no plan). Names the tier and the number hit.
 // One upgrade instruction everywhere: the next tier (or `to`), where <workspace> comes from, and the billing page.
@@ -53,11 +55,11 @@ const T = {
   agent_result_pending: (d) => [`Agent ${d.id ?? ''} has no result yet (status ${d.status ?? 'running'}).`.replace('  ', ' '), 'The current turn has not finished.', `Call cloud_agent_wait with agent_ids ["${d.id ?? '<id>'}"].`],
   invalid_args: (d) => ['The call was not accepted (see the message).', 'The arguments of the call, or the state it needs, were not accepted.', `Correct the call as the message says, then call ${d.tool ?? 'cloud_agent'} again.`],
   worker_error: (d) => [`The turn of agent ${d.id ?? ''} ended with an error (details above).`.replace('  ', ' '), 'See the error text above.', `Call cloud_agent_message with agent_id ${d.id ?? '<id>'} to retry or fix it, or cloud_agent_stop if the agent is not needed.`],
-  secret_missing: (d) => [`The Instabox secret ${d.secret} is not in your org.`, 'The secret was never created, or it was created under another name.', `Run \`cloudy-cloud setup\` or: \`${setCmd(d)}\`.`, `The ${d.secret} secret is missing; paste the key when \`cloudy-cloud setup\` asks.`],
+  secret_missing: (d) => [`The Instabox secret ${d.secret} is not in your org.`, 'The secret was never created, or it was created under another name.', `Run \`${SETTINGS(d.secret)}\` or: \`${setCmd(d)}\`.`, `The ${d.secret} secret is missing; paste the key when \`${SETTINGS(d.secret)}\` asks.`],
   secret_not_applied: (d) => ['Instabox did not apply the secrets to the machine in 60 seconds.', 'Likely Instabox is slow right now.', `Retry cloud_agent. If it repeats, run \`npx instabox@latest secrets show ${d.id ?? '<machine>'}\`.`],
   secret_host_mismatch: (d) => [`The provider host ${d.host ?? '<host>'} is not in the host list of secret ${d.secret}.`, 'Likely the secret was created for other hosts, so the placeholder reached the provider unswapped (HTTP 401).', `Run \`${setCmd(d)}\` with every host the secret needs, and paste the key again.`, `The ${d.secret} secret does not cover ${d.host ?? 'this provider'}; paste the key again when asked.`],
   key_on_machine_refused: (d) => ['A real key was about to be placed on a machine whose provider keeps keys off machines.', 'The key was passed the old way, not as a proxy secret.', d.secret
-    ? `Run \`${setCmd(d)}\`, add ${d.secret} to CLOUDY_CLOUD_PROXY_SECRETS in ~/.config/cloudy-cloud/env (comma-separated), then delete the plain ${d.secret}= line from that file. (\`cloudy-cloud setup\` only moves the built-in keys.)`
+    ? `Run \`${setCmd(d)}\`, add ${d.secret} to CLOUDY_CLOUD_PROXY_SECRETS in ~/.config/cloudy-cloud/env (comma-separated), then delete the plain ${d.secret}= line from that file. (\`${SETTINGS(d.secret)}\` only moves the built-in keys.)`
     : 'Run `cloudy-cloud setup`, which stores keys as proxy secrets.'],
   secret_set_needs_login: () => ['Instabox refused to create the secret (missing_scope).', 'An API key cannot create secrets; a logged-in session can.', 'Run `npx --yes instabox@latest login`, then run `cloudy-cloud setup` again.', 'Instabox needs you to log in; run `npx --yes instabox@latest login` in your terminal.'],
   // Machine kinds, shell and display (#89).

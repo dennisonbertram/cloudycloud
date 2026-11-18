@@ -96,7 +96,8 @@ test('--check-only rejects old Node and passes with everything present', () => {
   const good = stubDir(all, { node: nodeStub });
   const r2 = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: good } });
   assert.equal(r2.status, 1, r2.stdout); // tools pass; no keys are saved, so the verdict fails
-  assert.match(r2.stdout, /git, node|\[1\/4\] Tools[\s\S]*Check failed/);
+  assert.match(r2.stdout, /Check failed/);
+  assert.doesNotMatch(r2.stdout, /\[1\/4\]/); // a step that finds nothing wrong is skipped
 });
 
 test('CLOUDY_CLOUD_CONFIG is honoured and the default is under HOME', () => {
@@ -350,7 +351,7 @@ test('pty: a two-line paste gives the full token; live check runs; token is not 
   assert.equal(readFileSync(join(g.cl, 'seen'), 'utf8').split('\n')[0], TOKEN);
   assert.ok(!r.text.includes(TOKEN) && !r.text.includes(KEY)); // nothing secret on screen
   assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK[\s\S]*Claude token\s+OK/);
-  assert.doesNotMatch(r.text, /Coordinators/);
+  assert.doesNotMatch(r.text, /Coordinators {2}/); // no Coordinators row in the Summary box on a plain run
 });
 
 test('pty: pasted export lines and quoted values work', () => {
@@ -404,7 +405,8 @@ test('pty: a rejected token is retried at most 3 times and not saved', () => {
   const g = rig({ saved: `INSTABOX_API_KEY=${KEY}\n`, claudeExtra: { fail: '401 invalid authentication\n' } });
   const r = g.run([['Replace it\\? \\[y/N\\]', 'n\n'], ['Enter, or paste', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Paste the token', TOKEN + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']]);
   assert.equal(r.code, 1, r.text);
-  assert.match(r.text, /Setup incomplete: no Claude token is saved.*Next: cloudy-cloud setup --more/);
+  assert.match(r.text, /Setup incomplete: no Claude token is saved.*Next: cloudy-cloud setup/);
+  assert.doesNotMatch(r.text, /Next: cloudy-cloud setup --more/);
   assert.doesNotMatch(r.text, /Setup complete/);
   assert.match(r.text, /Claude rejected this token: 401 invalid authentication/);
   assert.match(r.text, /Stopped the Claude step after 3 tries\. No token is saved/);
@@ -721,7 +723,9 @@ test('pty: answer 1 (the default) is the Instabox flow and never runs the self-h
   assert.match(r.text, /Instabox key saved and working/);
   assert.match(r.text, /Agents: claude/);
   assert.doesNotMatch(r.text, /Where should subagents run|Which agents|Particle|OpenRouter|usage alert emails|coordinators now/i);
-  assert.match(r.text, /Setup complete\. More: cloudy-cloud setup --more/);
+  assert.match(r.text, /Setup complete\./);
+  assert.match(r.text, /Coordinators: cloudy-cloud coordinator image\./);
+  assert.match(r.text, /Usage alerts and other model keys: cloudy-cloud setup --more\./);
   assert.ok(r.text.lastIndexOf('Next') < r.text.indexOf('cloudy-cloud protect') && r.text.indexOf('cloudy-cloud protect') < r.text.indexOf('Setup complete'), 'Next box, protect hint, final line in order');
   assert.ok(!existsSync(spy.log), 'self-hosted script was called');
 });
@@ -889,6 +893,69 @@ test('setup --check-only runs every check and ends with a verdict', () => {
   assert.match(good.stdout, /Check passed/);
 });
 
+test('an incomplete setup says to rerun plain setup unless the coordinator image is the reason', () => {
+  const dir = stubDir(['cloudy-cloud']);
+  const env = { PATH: `${dir}:${process.env.PATH}` };
+  const next = (why) => fn(`INCOMPLETE="$1"; next_setup_cmd`, [why], env).stdout;
+  assert.equal(next('no Claude token is saved'), 'cloudy-cloud setup');
+  assert.equal(next('the GitHub token is not confirmed'), 'cloudy-cloud setup');
+  assert.equal(next('no worker credential (a Claude token, or an OpenAI, Particle.ai or OpenRouter key)'), 'cloudy-cloud setup');
+  assert.equal(next('the coordinator image was not saved'), 'cloudy-cloud setup --more');
+  assert.equal(next('no Claude token is saved; the coordinator image was not saved'), 'cloudy-cloud setup --more');
+});
+
+test('the step line drops "n of 4" where the bar shows the step, and keeps [n/4] in plain output', () => {
+  const r = fn('UI=1; UTF=1; step 2 Coloured; UI=0; step 3 Plain');
+  assert.match(r.stdout, /Coloured/);
+  assert.doesNotMatch(r.stdout, /of 4/);
+  assert.match(r.stdout, /\[3\/4\] Plain/);
+});
+
+test('check-only skips a step that prints nothing, and says to run setup once, at the end', () => {
+  const s = npxStub({ secrets: '[]' });
+  const cc = stubDir(['cloudy-cloud']);
+  const r = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${cc}:${s.path}`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
+  assert.equal(r.status, 1, r.stdout);
+  assert.doesNotMatch(r.stdout, /\[1\/4\]/); // every tool is present, so the Tools step prints nothing
+  const runs = r.stdout.split('\n').filter((l) => /run cloudy-cloud setup/.test(l));
+  assert.equal(runs.length, 1, r.stdout);
+  assert.match(runs[0], /Check failed/);
+});
+
+test('check-only shows the Tools step when a tool is missing', () => {
+  const dir = stubDir(all.filter((n) => n !== 'git'), { node: nodeStub });
+  const r = checkOnly('', {}, { path: dir });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /\[1\/4\] Tools/);
+  assert.match(r.stdout, /git is missing/);
+});
+
+test('check-only points at "cloudy-cloud coordinator image" when no image is saved', () => {
+  const sec = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'CLAUDE_CODE_OAUTH_TOKEN', hosts: ['api.anthropic.com'] }]);
+  const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, {}, { stub: npxStub({ secrets: sec }) });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /No coordinator image is set up \(optional\)\./);
+  assert.match(r.stdout, /Run: cloudy-cloud coordinator image/);
+});
+
+test('check-only keeps every line under 80 columns, plain and colour, even on long fix commands', () => {
+  const runs = [];
+  const s = npxStub({ secrets: '[]' });
+  const cfg = join(tmp(), 'env');
+  // A plain-value Claude credential and a missing proxy secret: the two longest lines check-only can print.
+  writeFileSync(cfg, `INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-plainvalue-for-test\nCLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY\n`, { mode: 0o600 });
+  runs.push(spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } }));
+  runs.push(alertsRig({ body: alertsBody(0, false) }).check());
+  assert.equal(runs[0].status, 1, runs[0].stdout);
+  assert.equal(runs[1].status, 0, runs[1].stdout); // alerts off is a warning, not a failure
+  for (const r of runs) for (const l of r.stdout.split('\n')) assert.ok(l.length <= 80, `line over 80 columns: ${l}`);
+  assert.match(runs[0].stdout, /CLOUDY_CLOUD_INSTABOX_API_KEY is not an Instabox secret/);
+  assert.match(runs[0].stdout, /CLAUDE_CODE_OAUTH_TOKEN is a plain value/);
+  const r = pty({ cmd: ['/bin/bash', script, '--check-only'], env: { PATH: s.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm-256color', LANG: 'en_US.UTF-8' }, steps: [], cols: 80 });
+  const plain = r.text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+  for (const l of plain.split('\n')) assert.ok([...l].length <= 80, `colour line over 80 columns: ${l}`);
+});
+
 // A check-only run with its own config file and shell environment.
 const checkOnly = (cfgText, env = {}, { stub = npxStub({ secrets: '[]' }), path } = {}) => {
   const cfg = join(tmp(), 'env');
@@ -971,7 +1038,7 @@ const FIX = 'npx --yes instabox@latest workspace alerts o1 --usage 80 --overage 
 test('check-only: alerts on shows the real percent and the spend cap, exits without a prompt', () => {
   const g = alertsRig({ body: alertsBody(90, true, 25) });
   const r = g.check();
-  assert.match(r.stdout, /Instabox emails you at 90% of included usage and when usage goes beyond it \(pay as you go\)/);
+  assert.match(r.stdout, /Instabox emails you at 90% of included usage and beyond it \(pay as you go\)/);
   assert.match(r.stdout, /spend cap: \$25/);
   assert.match(r.stdout, /workspace spend-cap o1 <usd>/);
   assert.ok(!/workspace alerts/.test(g.npxCalls()));
@@ -981,7 +1048,9 @@ test('check-only: alerts on shows the real percent and the spend cap, exits with
 test('check-only: alerts off warns with the exact command and the check still passes the step', () => {
   const g = alertsRig({ body: alertsBody(0, false) });
   const r = g.check();
-  assert.match(r.stdout, /Instabox usage alert emails are off \(usage alert: off, overage alert: off, spend cap: none\)/);
+  assert.match(r.stdout, /Instabox usage alert emails are off/);
+  assert.match(r.stdout, /\(usage alert: off, overage alert: off, spend cap: none\)/);
+  assert.match(r.stdout, /cloudy-cloud setup --more/);
   assert.ok(r.stdout.includes(FIX), r.stdout);
   assert.ok(!/workspace alerts/.test(g.npxCalls()), 'check-only must not run the CLI');
   assert.doesNotMatch(r.stdout, /\[x\] .*alert/i);
@@ -1097,7 +1166,8 @@ test('pty: a Codex-only user with no key saved is asked for it, then told setup 
   const g = rig();
   const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
   assert.equal(r.code, 1, r.text); // no worker credential saved: setup is not complete
-  assert.match(r.text, /Setup incomplete: no worker credential.*Next: cloudy-cloud setup --more/);
+  assert.match(r.text, /Setup incomplete: no worker credential.*Next: (cloudy-cloud setup|\.\/install\.sh)/);
+  assert.doesNotMatch(r.text, /Next: (cloudy-cloud setup|\.\/install\.sh) --more/);
   assert.doesNotMatch(r.text, /Setup complete/);
   assert.doesNotMatch(r.text, /Claude token for subagents|Claude token works|Claude Code is missing/);
   const cfg = readFileSync(g.cfg, 'utf8');
