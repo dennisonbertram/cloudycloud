@@ -148,6 +148,13 @@ cloudy-cloud --version</code></pre>
 <p>Example:</p>
 <pre><code>cloudy-cloud dashboard --port 5000 --no-open</code></pre>
 
+<h3 id="cli-branches">cloudy-cloud branches</h3>
+<pre><code>cloudy-cloud branches prune [--yes] [--dry-run]</code></pre>
+<p>Run it inside your repository. It lists the <code>cloudy-cloud/&lt;8 hex characters&gt;</code> branches on origin (and <code>cloudy-cloud/issue-&lt;n&gt;-&lt;id&gt;</code> branches, for workers started from an issue) and compares each with origin's default branch. A branch that adds no commits to the default branch (it is empty, or already merged) is marked <code>prune</code>. A branch with commits not in the default branch is marked <code>keep</code>. It never touches a branch with another name.</p>
+<p>It is a dry run: nothing is deleted unless you pass <code>--yes</code>. <code>--dry-run</code> forces a dry run even with <code>--yes</code>.</p>
+<pre><code>cloudy-cloud branches prune
+cloudy-cloud branches prune --yes</code></pre>
+
 <h3 id="cli-open">cloudy-cloud open</h3>
 <pre><code>cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; [--share]
 cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; --unshare</code></pre>
@@ -264,6 +271,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 
 <h3 id="tool-cloud-agent">cloud_agent</h3>
 <p>Starts a subagent in a remote sandbox on the committed and tracked files of the current repository. It does not include untracked files. The repository needs a <code>github.com</code> origin. The call returns at once while the sandbox starts and the task runs. The agent pushes its work to the origin branch <code>cloudy-cloud/&lt;id&gt;</code>. Nothing is copied into your local repository. The agent stays open for follow-ups until it is stopped or has been idle for 60 minutes.</p>
+<p>Each turn is limited to 29 minutes by default. <code>CLOUDY_CLOUD_TURN_MINUTES</code> changes the limit (see <a href="#env-settings">Settings</a>), and the prompt tells the agent when its turn ends. If a turn fails or hits the limit after the agent has started, the agent stays open with its session: call <code>cloud_agent_message</code> to continue it. A worker that commits nothing pushes no branch; the result says <code>No changes, no branch pushed.</code> and autofix does not start.</p>
 <table>
 <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
 <tbody>
@@ -275,7 +283,12 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>machine</code></td><td>string</td><td>no</td><td><code>linux</code></td><td>The kind of machine: <code>linux</code>, <code>android</code>, <code>omarchy</code>, <code>gpu</code>, <code>gpu:TYPE</code>, <code>gpu:TYPE:COUNT</code> (COUNT 1 to 8), <code>macos</code> or <code>macos:MODEL</code>. <code>gpu</code> and <code>macos</code> cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until <code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code> in <code>~/.config/cloudy-cloud/env</code> names them (for example <code>gpu,macos</code>). Only on Instabox.</td></tr>
 <tr><td><code>size</code></td><td>string</td><td>no</td><td><code>4x8</code></td><td>Machine size as VCPUSxGIB, for example <code>2x4</code>, <code>4x8</code> or <code>8x16</code>. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused.</td></tr>
 <tr><td><code>autofix</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>After the worker pushes, the server opens a pull request for its branch and keeps the worker fixing failed checks, review comments and merge conflicts, for at most <code>CLOUDY_CLOUD_AUTOFIX_ROUNDS</code> rounds, before the task ends. The result says whether the pull request is clean. Not for coordinators.</td></tr>
+<tr><td><code>base</code></td><td>string</td><td>no</td><td>the local <code>HEAD</code></td><td>A branch name or a commit hash of 7 to 40 hex characters. The worker starts from it instead of your local <code>HEAD</code>; the server fetches it from origin if needed. Uncommitted edits are ignored when <code>base</code> is set.</td></tr>
+<tr><td><code>fallback</code></td><td>array of strings</td><td>no</td><td>the profile's <code>fallback</code> in <code>profiles.json</code>, else none</td><td>Profile names to try, in order, when the chosen profile has no key or the provider refuses the one-token check before the machine starts. It overrides the profile's own <code>fallback</code>. The result says which profile ran.</td></tr>
+<tr><td><code>preflight</code></td><td>boolean</td><td>no</td><td><code>true</code></td><td>Set <code>false</code> to skip the one-token provider check that runs before the machine is created.</td></tr>
 <tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code> (Claude Code workers only). It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
+<tr><td><code>issue</code></td><td>string</td><td>no</td><td>none</td><td>A GitHub issue in this repo's origin: a number like <code>"12"</code>, or a URL like <code>https://github.com/&lt;owner&gt;/&lt;repo&gt;/issues/&lt;n&gt;</code>. The title and body are fetched on your computer with <code>gh</code> and quoted into the prompt as untrusted text. The branch is <code>cloudy-cloud/issue-&lt;n&gt;-&lt;id&gt;</code>, and an autofix pull request body says <code>Fixes #&lt;n&gt;</code>, so merging it closes the issue. Workers only; needs <code>gh</code> signed in.</td></tr>
+<tr><td><code>preview_port</code></td><td>integer</td><td>no</td><td>none</td><td>A port from 1 to 65535 (a digit string also works) where the worker's app is already running on its machine. After a turn that pushed, a share link is published, the same as <code>cloudy-cloud open &lt;id&gt; &lt;port&gt; --share</code>, and the result shows <code>Preview: &lt;url&gt;</code>. The link is never posted to a pull request. Anyone with the link can open the app until the machine is deleted. Needs a provider that supports published links (Instabox); if publishing fails, the turn still succeeds and the result gives the manual command.</td></tr>
 </tbody>
 </table>
 <p>When <code>~/.config/cloudy-cloud/mcp.json</code> holds at least one valid server, a Claude Code subagent (not a pi, omp, Codex or opencode worker) starts with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>, so a repo's own <code>.mcp.json</code> is not loaded on the machine. pi, omp, Codex and opencode workers get the same servers in their own config files. The reply ends with an <code>MCP servers:</code> line. See <a href="mcp.html">MCP servers for subagents</a>.</p>
@@ -377,12 +390,15 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_CPUS</code></td><td>2 if unset</td><td>Self-hosted: CPU limit per container. Setup saves a value.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_MEMORY</code></td><td>4g if unset</td><td>Self-hosted: memory limit per container. Setup saves a value.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX</code></td><td>unset</td><td>Self-hosted: <code>yes</code> means you allowed the GitHub token inside worker containers on your machine. Without it, workers do not start.</td></tr>
-<tr><td><code>CLOUDY_CLOUD_PROFILES</code></td><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Path of the file that adds or overrides model profiles. Each entry can set <code>harness</code> to choose the agent (<code>claude</code>, <code>pi</code>, <code>omp</code>, <code>codex</code> or <code>opencode</code>).</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROFILES</code></td><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Path of the file that adds or overrides model profiles. Each entry can set <code>harness</code> to choose the agent (<code>claude</code>, <code>pi</code>, <code>omp</code>, <code>codex</code> or <code>opencode</code>), <code>fallback</code> (profile names to try in order) and <code>maxConcurrent</code> (a positive whole number).</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MCP</code></td><td><code>~/.config/cloudy-cloud/mcp.json</code></td><td>Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_EVENTS</code></td><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>Path of the event log that the dashboard reads. Set it in the environment before you start <code>cloudy-cloud</code> and the dashboard.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_WORKER_HOURS</code></td><td>6</td><td>Hours until the server deletes a worker or nested coordinator machine. At most 24. A value that is not a positive number uses 6.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_STARTS_PER_MIN</code></td><td>25</td><td>The most machine starts per minute. Extra agents wait in the queue.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code></td><td>24</td><td>The most Instabox command and file requests that run at once. Instabox's own limit is 32.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_TURN_MINUTES</code></td><td>29</td><td>The most minutes one agent turn may run. A whole number from 5 to the provider's machine lifetime in minutes minus 30; any other value is refused with the allowed range. The server sets <code>CLOUDY_CLOUD_TURN_DEADLINE</code> (the turn's end time) inside the worker command. You do not set it.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROVIDER_RETRIES</code></td><td>3</td><td>How many times a pi, omp, Codex or opencode turn is retried after a transient provider error (model not found, 429, 5xx or a connection error). Errors such as 400, 401 and 403 are not retried.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROFILE_MAX</code></td><td>no cap</td><td>The default most agents one profile may run at once. A profile's <code>maxConcurrent</code> in <code>profiles.json</code> overrides it. Agents over the cap wait in the queue and say why in <code>cloud_agent_list</code>. The count covers this server's own agents only.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_AUTOFIX_ROUNDS</code></td><td>3</td><td>The most fix rounds <code>autofix</code> runs on a pull request (0 to 10).</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MAX_DEPTH</code></td><td>3</td><td>How many levels of coordinators can exist below your session. Starting a coordinator past this is refused. Workers do not add depth. Passed down to child coordinators.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code></td><td>200</td><td>How many agents one cloudy-cloud session may start. Passed down to child coordinators.</td></tr>
@@ -395,7 +411,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>NO_COLOR</code>, <code>CLICOLOR=0</code>, <code>TERM=dumb</code></td><td>unset</td><td>Any of these turns off colour and the animated setup display. Output is plain text with the same messages.</td></tr>
 </tbody>
 </table>
-<div class="note"><p>You can set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, <code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, <code>CLOUDY_CLOUD_WORKER_HOURS</code>, <code>CLOUDY_CLOUD_MAX_DEPTH</code>, <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>, <code>CLOUDY_CLOUD_PROXY_SECRETS</code> and <code>CLOUDY_CLOUD_APT_PACKAGES</code> in the config file as well as in the environment.</p></div>
+<div class="note"><p>You can set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, <code>CLOUDY_CLOUD_MAX_INSTABOX_CALLS</code>, <code>CLOUDY_CLOUD_WORKER_HOURS</code>, <code>CLOUDY_CLOUD_TURN_MINUTES</code>, <code>CLOUDY_CLOUD_MAX_DEPTH</code>, <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code>, <code>CLOUDY_CLOUD_PROXY_SECRETS</code> and <code>CLOUDY_CLOUD_APT_PACKAGES</code> in the config file as well as in the environment.</p></div>
 
 <h3 id="files">Files</h3>
 <table>

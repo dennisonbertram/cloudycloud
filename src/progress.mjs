@@ -31,6 +31,7 @@ export function createProgress(now = Date.now) {
   p.event = (j) => {
     if (j?.type === 'system' && j.subtype === 'init') {
       p.setModel(j.model);
+      if (typeof j.session_id === 'string') p.sessionId = j.session_id; // known at once, so a turn that dies later can still be resumed
       // Names and statuses only; any other field of a server entry is dropped.
       // mcp_server_errors also names entries Claude Code skipped, which are not in mcp_servers.
       const errors = {};

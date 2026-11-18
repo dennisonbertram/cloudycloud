@@ -124,6 +124,8 @@ Setup asks for `PARTICLE_API_KEY` and `OPENROUTER_API_KEY`, and for `OPENAI_API_
 - `codex`, `omp` and `opencode` need `"format": "openai"`. The `claude` and `pi` harnesses accept either value.
 - `codex` also accepts `"auth": "chatgpt"` (the login file) in place of `keyName`.
 - `keyName` must look like `NAME_API_KEY`.
+- `fallback` (optional) is a list of profile names. When the profile has no key, or the provider refuses a one-token check before the machine starts, the server tries them in order. The `fallback` argument of `cloud_agent` overrides it, and `preflight: false` skips the check.
+- `maxConcurrent` (optional) is a positive whole number: the most agents this profile runs at once. Extra agents wait in the queue. `CLOUDY_CLOUD_PROFILE_MAX` sets the same cap for profiles without one. The count covers this server's own agents only.
 
 ```json
 { "my-codex": { "harness": "codex", "format": "openai", "baseUrl": "https://api.openai.com/v1", "model": "default", "keyName": "OPENAI_API_KEY" } }
@@ -193,6 +195,10 @@ git show FETCH_HEAD:proof.txt
   - Asking "list the subagents" shows the same progress line for each one.
 - **Without tasks.** In the VS Code extension, the desktop app, or a one-shot `claude -p "<prompt>"` run, Claude Code does not make MCP tasks. The tools then return an agent ID and Claude uses `cloud_agent_wait`, exactly as in older versions. Nothing needs configuring. Task mode is not turned on or off with any setting of this tool, so do not set `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` or `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND`.
 - **Large swarms.** Start as many as you need. Starts are paced and queued automatically (the pace comes from your Instabox plan's starts a minute, less 10 %; `CLOUDY_CLOUD_STARTS_PER_MIN` overrides it, and 25 a minute is used when the plan cannot be read), and Instabox requests share `CLOUDY_CLOUD_MAX_INSTABOX_CALLS` slots (default 24). Queued subagents show the status `queued`. Set either variable in the environment, or as `NAME=value` in `~/.config/cloudy-cloud/env`, before you start `cloudy-cloud`.
+- **Turn limit.** Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` in `~/.config/cloudy-cloud/env` changes it: a whole number from 5 to the provider's machine lifetime in minutes minus 30. The prompt tells the agent when the turn ends. If a turn fails or hits the limit after the agent has started, the agent stays `idle` with its session and machine, and the result is marked as an error: send `cloud_agent_message` ("continue where you stopped"). A Codex or opencode first turn that times out still fails, because only Claude and pi report their session id early. `CLOUDY_CLOUD_PROVIDER_RETRIES` (default 3) sets the retries after a transient provider error in pi, omp, Codex and opencode workers.
+- **Start from another commit.** `cloud_agent` takes `base` (a branch name or a 7 to 40 character commit hash). The worker starts from it, not from your local `HEAD`, and uncommitted edits are ignored. A worker that commits nothing pushes no branch; the result says "No changes, no branch pushed." and autofix does not start.
+- **Work on a GitHub issue.** `cloud_agent` takes `issue` (workers only): a number like `"12"`, or an issue URL in this repo. The issue title and body are fetched on your computer with `gh` (so `gh` must be signed in) and quoted into the worker's prompt as untrusted text. The worker pushes to `cloudy-cloud/issue-<n>-<id>` instead of `cloudy-cloud/<id>`. With autofix the pull request body says `Fixes #<n>`, so merging it closes the issue.
+- **Share a running app.** `cloud_agent` takes `preview_port`: a port from 1 to 65535 where the worker's app is already running on its machine. After a turn that pushed, a share link is published, the same as `cloudy-cloud open <id> <port> --share`, and the result shows `Preview: <url>`. The link is never posted to a pull request. Anyone with the link can open the app until the machine is deleted. It needs a provider with published links, so Instabox. If publishing fails the turn still succeeds and the result gives the manual command.
 - **When subagents stop:**
   - when you or the session stops them;
   - after 60 minutes with nothing to do;
@@ -206,6 +212,7 @@ git show FETCH_HEAD:proof.txt
 | --- | --- |
 | **List cloud machines** | `npx instabox@latest ls`. Machines created by this tool have the label `purpose=cloudy-cloud`. |
 | **Delete a leftover machine** | `npx instabox@latest rm <name>` |
+| **Delete empty or merged subagent branches on GitHub** | `cloudy-cloud branches prune` lists them (dry run); `cloudy-cloud branches prune --yes` deletes them. `cloudy-cloud/issue-<n>-<id>` branches are covered too. |
 | **Delete all subagent branches on GitHub** | `git ls-remote --heads origin 'cloudy-cloud/*' \| awk '{print $2}' \| xargs -n 50 git push origin --delete` |
 | **Replace a key** (Claude token, Instabox key or GitHub token) | Run `cloudy-cloud setup`, answer `y` for that key, then restart `cloudy-cloud`. A running session keeps the old key until you restart it. |
 | **Remove all saved keys** | `rm ~/.config/cloudy-cloud/env` |
@@ -224,7 +231,7 @@ git show FETCH_HEAD:proof.txt
 | `malformed API key`, or `401` from Instabox in a session | The Instabox key is wrong or revoked. Run `cloudy-cloud setup`, replace the key, and restart `cloudy-cloud`. |
 | You changed a key but the session still uses the old one | `cloudy-cloud` reads keys once at start. Restart it. |
 | `cloudy-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
-| `The first push to origin cloudy-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `cloudy-cloud setup` and replace the GitHub token, and check the token's repository list. |
+| `The GitHub access check for origin cloudy-cloud/<id> failed` (the setup check is `git ls-remote origin HEAD`) | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `cloudy-cloud setup` and replace the GitHub token, and check the token's repository list. |
 | `the codex command was not found` or `opencode is not installed` | Install the main-session agent: `npm install -g @openai/codex` or `npm install -g opencode-ai`. |
 | `Profile NAME needs KEY, which is not set` | The profile's provider key is missing (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`). Run `cloudy-cloud setup` for the first two; see section 2.5 for `OPENAI_API_KEY`. |
 | `The Codex ChatGPT login file ... was not found` | Run `codex login`, then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. |

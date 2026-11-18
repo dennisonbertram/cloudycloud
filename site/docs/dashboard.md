@@ -29,6 +29,8 @@ The page has two views, switched at the top: **List** and **Fleet**.
 - **List** has the boxes in a left column and the selected box in a detail pane. Workers started by a cloud coordinator are nested under it; use the arrow next to the coordinator, or the Left and Right arrow keys, to close or open them.
 - **Fleet** shows one tile per box, with its status, description, id and time since last activity, and a *Workers of* heading under each coordinator. Select a tile to open it in the List view.
 
+In the Fleet view, boxes whose brief names a trunk branch (`fleet/<topic>`) get their own section above the groups. The section heading says how many of the workers' branches are merged into that trunk, and each tile says *merged* or *not merged*. The check runs `git branch -r --merged origin/<trunk>` in the folder where the dashboard runs, and is cached for about 30 seconds. If git cannot answer, the heading says *merge status unknown*. Other boxes are grouped as below.
+
 Boxes are grouped as **Needs you**, **Active** and **Finished**.
 
 - **Needs you:** agents that are idle, and agents that failed today.
@@ -42,6 +44,8 @@ The top bar counts running, starting, idle and failed agents and those finished 
 Select a box to see:
 
 - **Status**, **Model** (or profile), **Started**, **Role**, **Started by** (this session, or the coordinator that started it) and the **Machine**.
+- **Harness**: the agent that runs the worker (`claude`, `pi`, `omp`, `codex` or `opencode`). It also shows as a tag on the box.
+- **Autofix**: for an agent started with `autofix`, the state (for example running, with the round and the most rounds) and a link to the pull request, taken from the progress and result lines. It is shown only when the agent's text has them.
 - **MCP**: the names of the MCP servers the subagent has, when it has any.
 - **Branch**: the `cloudy-cloud/<id>` branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.
 - **Deletes**: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (`CLOUDY_CLOUD_WORKER_HOURS`, at most 24), which can be earlier.

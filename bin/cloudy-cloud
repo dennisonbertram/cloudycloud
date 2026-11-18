@@ -64,6 +64,12 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# `cloudy-cloud branches prune [--yes]` deletes empty or merged cloudy-cloud/* branches on origin (dry run by default).
+if [ "${1:-}" = branches ]; then
+  shift
+  exec node "$root/src/branches.mjs" "$@"
+fi
+
 # update_notice: one line when a newer version is on npm. Interactive terminals only; no node starts when opted out.
 update_notice() {
   if [ -t 1 ] && [ -t 2 ] && [ -z "${CI:-}" ] && [ "${CLOUDY_CLOUD_NO_UPDATE_CHECK:-}" != 1 ]; then node "$root/src/update-check.mjs" || true; fi
@@ -121,6 +127,7 @@ Usage: cloudy-cloud [command] [options]
   display <agent>         Print a link to a cloud machine's desktop
   open <agent> <port>     Reach an app running on a cloud machine
   mcp add|ls|rm           Choose which MCP servers cloud subagents get
+  branches prune          Delete empty or merged cloudy-cloud/* branches
   dashboard               Open a read-only web page about your cloud machines
   protect [owner/repo]    Block direct pushes to the default branch (asks first)
   doctor                  Check your own machine (self-hosted provider)

@@ -15,7 +15,7 @@ export function createPiProgress(now) {
     p.final = { subtype: last.stopReason, is_error: failed, session_id: sessionId, result: failed ? (last.errorMessage || text || `pi stopped: ${last.stopReason}`) : text };
   };
   p.event = (j) => {
-    if (j?.type === 'session') sessionId = j.id;
+    if (j?.type === 'session') p.sessionId = sessionId = j.id;
     else if (j?.type === 'tool_execution_start' && !p.seenTools.has(j.toolCallId)) {
       p.seenTools.add(j.toolCallId);
       p.tools++;
