@@ -210,8 +210,8 @@ git show FETCH_HEAD:proof.txt
 
 | Task | Command or step |
 | --- | --- |
-| **List cloud machines** | `npx instabox@latest ls`. Machines created by this tool have the label `purpose=cloudy-cloud`. |
-| **Delete a leftover machine** | `npx instabox@latest rm <name>` |
+| **List cloud machines** | `cloudy-cloud machines`. Machines created by this tool have the label `purpose=cloudy-cloud`; it lists only those. |
+| **Delete a leftover machine** | `cloudy-cloud machines stop <id-or-name>` (`cloudy-cloud machines stop --all` for all of them) |
 | **Delete empty or merged subagent branches on GitHub** | `cloudy-cloud branches prune` lists them (dry run); `cloudy-cloud branches prune --yes` deletes them. `cloudy-cloud/issue-<n>-<id>` branches are covered too. |
 | **Delete all subagent branches on GitHub** | `git ls-remote --heads origin 'cloudy-cloud/*' \| awk '{print $2}' \| xargs -n 50 git push origin --delete` |
 | **Replace a key** (Claude token, Instabox key or GitHub token) | Run `cloudy-cloud setup`, answer `y` for that key, then restart `cloudy-cloud`. A running session keeps the old key until you restart it. |
@@ -318,7 +318,7 @@ A coordinator's Claude runs with permission checks off, like a worker (`--danger
 
 ### 8.4 Cleanup
 
-Your laptop's cleanup process deletes only machines whose `owner` label is that session's id (`src/reaper.mjs` checks `metadata.owner === owner`). Coordinators have no `owner` label, so it never deletes them. Delete one with `coordinator stop NAME`, or list leftovers with `npx --yes instabox@latest ls --meta role=coordinator`.
+Your laptop's cleanup process deletes only machines whose `owner` label is that session's id (`src/reaper.mjs` checks `metadata.owner === owner`). Coordinators have no `owner` label, so it never deletes them. Delete one with `coordinator stop NAME`, or list leftovers with `cloudy-cloud machines` (role `coordinator`).
 
 ### 8.5 Delete deadlines and `finish`
 

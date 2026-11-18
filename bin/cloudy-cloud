@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder
 # and `help -p` still goes to claude. For mcp, only `mcp`, `mcp add|ls|rm` are ours; `mcp list -h` is Claude Code's.
 case ${1:-} in
   help) if [ $# -gt 1 ]; then case $2 in -*) ;; *) shift; exec node "$root/src/cli-help.mjs" "$@" ;; esac; fi ;;
-  setup|--setup|coordinator|shell|display|open|mcp|protect|doctor|dashboard)
+  setup|--setup|coordinator|shell|display|open|mcp|protect|doctor|dashboard|machines|branches)
     case $1:${2:-} in mcp:''|mcp:--help|mcp:-h|mcp:add|mcp:ls|mcp:rm) ;; mcp:*) n=-1 ;; esac
     [ "${n:-}" = -1 ] || n=0
     [ "$n" = -1 ] || for a in "$@"; do
@@ -68,6 +68,12 @@ fi
 if [ "${1:-}" = branches ]; then
   shift
   exec node "$root/src/branches.mjs" "$@"
+fi
+
+# `cloudy-cloud machines [ls]` lists your Cloudy Cloud machines; `machines stop <id-or-name|--all>` deletes them.
+if [ "${1:-}" = machines ]; then
+  shift
+  exec node "$root/src/machines.mjs" "$@"
 fi
 
 # update_notice: one line when a newer version is on npm. Interactive terminals only; no node starts when opted out.
@@ -132,6 +138,7 @@ Usage: cloudy-cloud [command] [options]
   mcp add|ls|rm           Choose which MCP servers cloud subagents get
   branches prune          Delete empty or merged cloudy-cloud/* branches
   dashboard               Open a read-only web page about your cloud machines
+  machines                List or delete your Cloudy Cloud machines
   protect [owner/repo]    Block direct pushes to the default branch (asks first)
   doctor                  Check your own machine (self-hosted provider)
   --version               Print the version

@@ -72,6 +72,17 @@ const cmds = {
     ['--no-open', 'Print the link but do not open a browser'],
     ['--prune', 'Delete stored agent logs older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
+  machines: { desc: 'List or delete the Cloudy Cloud machines of the active provider.', usages: [['machines', '[ls]'], ['machines', 'stop', ID], ['machines', 'stop', '--all', '[--yes]']], rows: [
+    ['ls', 'One line per machine: name, role, state, age and when it is deleted'],
+    ['stop <id>', 'Delete one machine (an id, a machine name or an agent id)'],
+    ['stop --all', 'Delete every machine in the list (asks once on a terminal)'],
+    ['--yes', 'Say yes to that question, or delete without a terminal'],
+  ], note: `Only machines Cloudy Cloud made are listed or deleted; a machine without the cloudy-cloud purpose label is never touched. ${WHERE}` },
+  branches: { desc: 'Delete cloudy-cloud/<id> branches on origin that add nothing to the default branch (empty or already merged).', usages: [['branches', 'prune', '[--yes]', '[--dry-run]']], rows: [
+    ['prune', 'List the branches; nothing is deleted'],
+    ['--yes', 'Delete the listed branches'],
+    ['--dry-run', 'Only list, even with --yes'],
+  ], note: 'Never touches any other branch name. Run it inside a clone of the repo.' },
 };
 
 const guides = {
@@ -140,8 +151,9 @@ const hosts = {
 // `node cli-help.mjs <command> [subcommand]` (from bin/cloudy-cloud for `help <command>` and `<command> --help`).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [name, sub, ...extra] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
+  const subs = { mcp: ['add', 'ls', 'rm'], machines: ['ls', 'stop'], branches: ['prune'] };
   const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && !extra.length)
-    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || (name === 'mcp' && ['add', 'ls', 'rm'].includes(sub))) && !extra.length);
+    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || subs[name]?.includes(sub)) && !extra.length);
   if (!ok) { console.error(`cloudy-cloud: no help for "${[name, sub].filter(Boolean).join(' ')}". See: cloudy-cloud --help`); process.exitCode = 2; }
   else if (name === 'coordinator') console.log(coordinatorHelp(sub));
   else console.log(Object.hasOwn(hosts, name) ? `cloudy-cloud ${name} ${hosts[name]}` : helpText(name));

@@ -232,6 +232,10 @@
     .fleet { padding: 4px 16px 16px; }
     .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   }
+  @media (max-width: 480px) {
+    /* the truncated spend sentence lost its meaning on a phone; wrap it in full instead */
+    .summary .spend { flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
+  }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
   }

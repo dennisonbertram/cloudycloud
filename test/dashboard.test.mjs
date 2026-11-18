@@ -733,12 +733,16 @@ test('agents under nested coordinators still group, count and render — two lev
   assert.equal((PAGE.match(/grpCount\(name, list\)/g) || []).length, 2, 'rail and fleet headings share the count');
 });
 
-test('page: the spend line truncates only on the phone width; on desktop it wraps as before', () => {
+test('page: the spend line truncates at tablet widths, wraps under 480px, and is full on desktop', () => {
   const media = PAGE.indexOf('@media (max-width: 820px)');
+  const small = PAGE.indexOf('@media (max-width: 480px)');
+  assert.ok(small > media, 'a 480px override comes after the 820px rules');
   const desk = PAGE.slice(0, media).match(/\.summary \.spend \{[^}]*\}/)[0];
-  const phone = PAGE.slice(media).match(/\.summary \.spend \{[^}]*\}/)[0];
+  const phone = PAGE.slice(media, small).match(/\.summary \.spend \{[^}]*\}/)[0];
+  const narrow = PAGE.slice(small).match(/\.summary \.spend \{[^}]*\}/)[0];
   assert.doesNotMatch(desk, /nowrap|ellipsis/, 'desktop keeps the wrapped full sentence');
   assert.match(phone, /nowrap/); assert.match(phone, /ellipsis/);
+  assert.match(narrow, /white-space: normal/, 'under 480px the line wraps instead of truncating mid-sentence');
   assert.match(PAGE, /title: spend/, 'the full sentence stays in the tooltip');
 });
 

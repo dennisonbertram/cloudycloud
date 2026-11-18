@@ -300,6 +300,7 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails, and changes nothing. `--provider` picks where subagents run without asking. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
+| `cloudy-cloud machines` \| `machines stop <id-or-name\|--all>` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |
 | `cloudy-cloud branches prune [--yes] [--dry-run]` | Deletes empty or merged `cloudy-cloud/<id>` and `cloudy-cloud/issue-<n>-<id>` branches on origin. A dry run unless you pass `--yes`. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
 | `cloudy-cloud shell <agent> [-- command]` | Opens a shell on a cloud machine, or runs one command there. |
@@ -361,7 +362,7 @@ When you start a session in a terminal, Cloudy Cloud prints one line if a newer 
 
 ## Uninstall
 
-Delete any leftover machines first: list them with `npx instabox@latest ls` and delete each with `npx instabox@latest rm <name>`. Then:
+Delete any leftover machines first: `cloudy-cloud machines` lists them and `cloudy-cloud machines stop --all` deletes them. Then:
 
 ```sh
 npm uninstall -g cloudycloud
