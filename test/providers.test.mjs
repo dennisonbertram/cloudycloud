@@ -23,7 +23,7 @@ test('fake provider records the kind and serves shell and display', async () => 
 });
 
 test('loadProvider rejects an unknown provider name', async () => {
-  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox, self-hosted.' });
+  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox, self-hosted, microsandbox.' });
   await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'constructor' }), /Unknown CLOUDY_CLOUD_PROVIDER/);
 });
 
