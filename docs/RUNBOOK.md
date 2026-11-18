@@ -56,7 +56,7 @@ Subagents push their work to GitHub. Instabox stores the token and adds it only 
 
 - Create it at https://github.com/settings/personal-access-tokens/new.
 - **Repository access:** *Only select repositories*. Choose only the repos you will use `cloudy-cloud` in.
-- **Permissions:** *Contents*, *Pull requests* and *Workflows*: read and write. *Actions*: read-only. *Metadata*, read-only, is added automatically. Pushing needs only Contents; Autofix needs Pull requests (to open and read the pull request) and Actions (to read CI logs); Workflows lets a subagent push files under `.github/workflows`.
+- **Permissions:** *Contents*, *Pull requests* and *Workflows*: read and write. *Actions* and *Commit statuses*: read-only. *Metadata*, read-only, is added automatically. Pushing needs only Contents; Autofix needs Pull requests (to open and read the pull request) and Actions and Commit statuses (to read CI results and logs); Workflows lets a subagent push files under `.github/workflows`.
 - **Expiration:** your choice. Shorter limits the damage if it leaks.
 - `install.sh` runs `npx --yes instabox@latest login` if you are not signed in, then `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, and the Instabox tool asks for the token. The name must be exactly `GH_TOKEN`.
 

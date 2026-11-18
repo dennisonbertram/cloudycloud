@@ -662,7 +662,7 @@ function autofix(a, ctx, t) {
   const hand = `${fixByHand}, or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
   const done = (text) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
   const stop = (why) => /Resource not accessible by (personal access token|integration)/i.test(why)
-    ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
+    ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions and Commit statuses to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
     : done(`Autofix stopped: ${why}\nNext step: ${hand}`);
   const bail = (result) => { throw Object.assign(new Error('autofix ends'), { result }); };
   const exec = async (cmd, ms = GH_MS) => {

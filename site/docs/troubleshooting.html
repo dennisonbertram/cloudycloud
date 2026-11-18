@@ -209,7 +209,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <li><strong>ChatGPT login file</strong> (<code>codex-chatgpt</code> only): your <code>codex-auth.json</code> is written to the worker machine, even on Instabox, because it cannot be a proxy secret. Its tokens are scrubbed from replies. Revoke it by signing out in your ChatGPT account.</li>
 <li><strong>Provider keys</strong> (for example Particle, OpenRouter, OpenAI): setup stores Particle.ai and OpenRouter keys as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See <a href="models.html">Models and keys</a>.</li>
 </ul>
-<p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under <code>.github/workflows</code>), and Actions read (so subagents can see CI results).</p>
+<p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under <code>.github/workflows</code>), and Actions and Commit statuses read (so subagents and Autofix can see CI results).</p>
 
 <h3 id="dashboard-local">The dashboard is local only</h3>
 <p>The dashboard is a read-only page on <code>127.0.0.1</code>. Requests without the random per-run token, or with another <code>Host</code> header, are refused. Keys never reach the browser.</p>

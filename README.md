@@ -45,7 +45,7 @@ npx -y cloudycloud setup
 | Instabox API key (`ibk_...`) | [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). Setup checks it with Instabox before saving. |
 | Claude token (`sk-ant-oat01-...`), only if you chose claude or want Claude workers | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
 | OpenAI key (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
-| GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
+| GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions and Commit statuses set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
 
 `cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (Particle.ai, OpenRouter). Plain setup never asks about them. It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
 
