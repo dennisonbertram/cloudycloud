@@ -1,0 +1,24 @@
+{
+  "serverInfo": {
+    "name": "cloud",
+    "title": "Cloudy Cloud",
+    "version": "0.2.0"
+  },
+  "description": "Run coding-agent subagents on cloud machines: each gets its own sandbox and pushes a git branch. Run `npx cloudycloud setup` once before use; it stores your GitHub token and worker credentials as Instabox proxy secrets, so cloud machines see placeholders, never your keys.",
+  "url": "https://www.npmjs.com/package/cloudycloud",
+  "documentation": "https://cloudycloud.tech/docs/index.html",
+  "transport": {
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "cloudycloud@0.2.0",
+      "mcp-server"
+    ]
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": false,
+    "prompts": false
+  }
+}

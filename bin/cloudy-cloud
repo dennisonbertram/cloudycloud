@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder
 # and `help -p` still goes to claude. For mcp, only `mcp`, `mcp add|ls|rm` are ours; `mcp list -h` is Claude Code's.
 case ${1:-} in
   help) if [ $# -gt 1 ]; then case $2 in -*) ;; *) shift; exec node "$root/src/cli-help.mjs" "$@" ;; esac; fi ;;
-  setup|--setup|coordinator|shell|display|open|mcp|protect|doctor|dashboard)
+  setup|--setup|coordinator|shell|display|open|mcp|mcp-server|protect|doctor|dashboard)
     case $1:${2:-} in mcp:''|mcp:--help|mcp:-h|mcp:add|mcp:ls|mcp:rm) ;; mcp:*) n=-1 ;; esac
     [ "${n:-}" = -1 ] || n=0
     [ "$n" = -1 ] || for a in "$@"; do
@@ -27,6 +27,13 @@ case ${1:-} in
       esac
     done ;;
 esac
+
+# `cloudy-cloud mcp-server` runs the MCP server on stdio (the transport the site's server card names).
+# It prints nothing itself and runs before the setup check: an empty config still answers tools/list.
+if [ "${1:-}" = mcp-server ]; then
+  shift
+  exec node "$root/src/server.mjs" "$@"
+fi
 
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
 if [ "${1:-}" = dashboard ]; then
@@ -130,6 +137,7 @@ Usage: cloudy-cloud [command] [options]
   display <agent>         Print a link to a cloud machine's desktop
   open <agent> <port>     Reach an app running on a cloud machine
   mcp add|ls|rm           Choose which MCP servers cloud subagents get
+  mcp-server              Run the MCP server on stdio (for other MCP clients)
   branches prune          Delete empty or merged cloudy-cloud/* branches
   dashboard               Open a read-only web page about your cloud machines
   protect [owner/repo]    Block direct pushes to the default branch (asks first)

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "cloud-fleet",
+      "type": "archive",
+      "description": "How to run fleets of cloudy-cloud subagents (Instabox cloud machines that push cloudy-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.",
+      "url": "/.well-known/agent-skills/cloud-fleet.tar.gz",
+      "digest": "sha256:58d478636a1a858d777db47d3217b24d04d0f3503fa1c68d153c79cce735ec07"
+    },
+    {
+      "name": "cloudy-cloud-setup",
+      "type": "skill-md",
+      "description": "Sets up Cloudy Cloud, which runs coding-agent subagents (Claude Code, pi, oh-my-pi, Codex or opencode) on cloud machines. Use when the user says \"set up Cloudy Cloud\", \"install cloudy cloud\", \"cloudycloud setup\", or asks how to get cloudy-cloud working.",
+      "url": "/.well-known/agent-skills/cloudy-cloud-setup/SKILL.md",
+      "digest": "sha256:883984ea97c99c85a6c11640ea2f3a223a153759930578abdb365f8dfa6b1a57"
+    }
+  ]
+}

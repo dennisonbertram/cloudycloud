@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -117,6 +117,38 @@ test('the reaper deletes the machines of page 1 when page 2 of the list fails, a
   assert.equal(n, 1);
   assert.deepEqual(deleted, ['m1']);
   assert.match(logs.join('\n'), /list failed.*HTTP 500/);
+});
+
+// server.mjs may start without the provider key (cloudy-cloud mcp-server before setup). A key saved later
+// still gets crash cleanup: the first env refresh that sees it (the top of cloud_agent) starts the reaper.
+test('a server started without the key starts the reaper on the first env refresh that finds one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-late-'));
+  const cfg = join(dir, 'env');
+  writeFileSync(cfg, '');
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))], {
+    cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg },
+  });
+  const reapers = () => { try { return execFileSync('pgrep', ['-f', `reaper.mjs ${child.pid} `], { encoding: 'utf8' }).trim(); } catch { return ''; } };
+  try {
+    let buf = '', stderr = '';
+    child.stdout.on('data', (d) => { buf += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } } });
+    for (const end = Date.now() + 10000; !buf.includes('\n') && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(buf.includes('"id":1'), `no initialize response; stderr: ${stderr}`);
+    assert.equal(reapers(), '', 'a reaper started without a key');
+    writeFileSync(cfg, 'INSTABOX_API_KEY=ibk_FAKEKEY0123456789\n'); // what `cloudy-cloud setup` writes
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'cloud_agent', arguments: { prompt: 'x', description: 'd' } } });
+    for (const end = Date.now() + 15000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+      const pids = reapers();
+      if (pids) return; // the refresh inside cloud_agent started it; the call itself may still fail
+    }
+    assert.fail(`no reaper after the key arrived; stderr: ${stderr}`);
+  } finally {
+    child.kill('SIGKILL');
+    try { execFileSync('pkill', ['-f', `reaper.mjs ${child.pid} `]); } catch { /* none left */ }
+  }
 });
 
 test('the reaper reads the saved settings file, so a self-hosted reaper uses the saved docker path and ssh key', () => {
