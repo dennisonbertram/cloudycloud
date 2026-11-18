@@ -74,3 +74,11 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 - **The `pi` harness:** fixtures were synthetic, but the live run passed. There's no per-command time limit setting for `pi`.
 - **Old-session shim:** delete `bin/claude-cloud` once no session started before the rename to Cloudy Cloud is still running.
 - **Hosted service:** see [HOSTED-DESIGN.md](HOSTED-DESIGN.md).
+
+## pi and free-pi as main sessions
+
+| Piece | Where | State |
+|---|---|---|
+| `cloudy-cloud pi [pi args]` | `src/host-pi.mjs`, `src/host-pi-extension.mjs`, `bin/cloudy-cloud` | Starts pi 1.5.0 (on PATH, else `npx` pinned) with `-e` extension that calls `pi.registerMcpServer('cloud', ...)` with `direct` exposure, plus `--append-system-prompt`. Per session: no pi config file is edited. Observed: pi reports `cloud: connected, 6 tools (direct)`. No model turn was run. |
+| `cloudy-cloud free-pi [args]` | same | `free-pi-cli` takes no extension or prompt flag, so each start runs `free-pi-cli mcp add cloud --exposure direct ...`, which replaces the `cloud` entry in `~/.free-pi/agent/mcp.json` (no key in it, only `CLOUDY_CLOUD_CONFIG`). Observed: `free-pi-cli mcp list` shows the 6 tools. The host prompt cannot be appended; the tool descriptions carry the guidance. |
+| free-pi worker | not implemented | BLOCKED. `free-pi-cli` rejects `-p` and `--mode` (`unknown argument`), needs an interactive terminal for first-run consent, and signs in as one GitHub user whose token is in `~/.free-pi/agent/credentials.json`. Running it on a worker would copy that token to another machine, which the terms forbid (no sharing credentials, no bypassing the terminal harness and ads), and headless output shows no ads. Plain pi workers (`pi-glm` etc.) already exist and are unchanged. |
