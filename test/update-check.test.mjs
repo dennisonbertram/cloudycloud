@@ -25,6 +25,12 @@ test('isNewer compares numeric parts and ranks a prerelease below its release', 
   assert.ok(!isNewer('0.2.0-beta.1', '0.2.0'));
   assert.ok(isNewer('0.2.0', '0.2.0-beta.1'));
   assert.ok(!isNewer('0.1.9', '0.2.0'));
+  assert.ok(isNewer('1.0.0-beta.10', '1.0.0-beta.2'));
+  assert.ok(!isNewer('1.2.3+build.5', '1.2.3'));
+  assert.ok(!isNewer('1.2.3', '1.2.3+build.5'));
+  assert.ok(isNewer('1.0.0-beta', '1.0.0-1'));
+  assert.ok(isNewer('1.0.0-beta.1', '1.0.0-beta'));
+  assert.ok(isNewer('1.0.0-rc.1', '1.0.0-beta.9'));
 });
 
 test('a cached newer version prints one line; a fresh cache starts no refresh', () => {
@@ -54,5 +60,24 @@ test('refresh writes the cache from the registry reply, and ignores a failure', 
   assert.deepEqual(JSON.parse(readFileSync(cachePath(h), 'utf8')), { checkedAt: NOW, latest: '0.4.0' });
   const h2 = home();
   await refresh({ home: h2, fetchFn: async () => { throw new Error('offline'); } });
-  assert.throws(() => readFileSync(cachePath(h2)));
+  assert.equal(JSON.parse(readFileSync(cachePath(h2), 'utf8')).latest, undefined);
+});
+
+test('an invalid or future cache counts as missing', () => {
+  for (const bad of [null, 'x', { latest: '9.0.0' }, { checkedAt: 'now', latest: '9.0.0' }, { checkedAt: NOW + 1e6, latest: '9.0.0' }]) {
+    const r = run(bad);
+    assert.deepEqual(r.out, []);
+    assert.equal(r.refreshed, 1);
+  }
+});
+
+test('refresh claims the attempt before fetching, so a failing fetch is not retried until tomorrow', async () => {
+  const h = home({ checkedAt: NOW - 30 * 3600 * 1000, latest: '0.3.0' });
+  await refresh({ home: h, now: NOW, fetchFn: async () => { throw new Error('offline'); } });
+  assert.deepEqual(JSON.parse(readFileSync(cachePath(h), 'utf8')), { checkedAt: NOW, latest: '0.3.0' });
+  const blocked = mkdtempSync(join(tmpdir(), 'cc-upd-'));
+  writeFileSync(join(blocked, '.config'), 'a file, so the cache folder cannot be made');
+  let fetched = 0;
+  await refresh({ home: blocked, fetchFn: async () => { fetched++; return { json: async () => ({}) }; } });
+  assert.equal(fetched, 0);
 });
