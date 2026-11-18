@@ -133,7 +133,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default) or `self-hosted`. A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted` or `microsandbox`. A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
 
 ## Run on your own machine
 
@@ -152,6 +152,33 @@ Setup asks for the SSH address (`user@host`), an optional SSH key, how many suba
 - **Not supported:** `cloudy-cloud open --share`, `cloudy-cloud display` and machine kinds other than `linux`.
 
 Details are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-your-own-machine) and [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html).
+
+### Run on this computer with microsandbox (experimental)
+
+Instead of a remote box, subagents can run in [microsandbox](https://microsandbox.dev) microVMs on this computer (Apple Silicon Mac or Linux with KVM). Secrets never enter the VM: the guest gets a placeholder and microsandbox swaps in the real value only in requests to that key's own hosts.
+
+```sh
+# install microsandbox, then build the worker image and load it into microsandbox
+curl -fsSL https://install.microsandbox.dev | sh
+V=$(node -p "require('./package.json').version")   # run from the cloudy-cloud repo
+docker build --build-arg VERSION=$V -t cloudy-cloud-worker:$V - < docker/worker.Dockerfile
+docker save cloudy-cloud-worker:$V | ~/.local/bin/msb load
+```
+
+Then in `~/.config/cloudy-cloud/env`:
+
+```sh
+CLOUDY_CLOUD_PROVIDER=microsandbox
+CLOUDY_CLOUD_MSB_BIN=<full path of msb, usually $HOME/.local/bin/msb>
+GH_TOKEN=<a token with write access>
+CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
+CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN
+```
+
+- **What the guest sees:** placeholders only. `GH_TOKEN` and each secret named in `secrets` are attached as `--secret NAME@hosts` rules; the values travel only in the `msb create` process's environment, never in argv or the guest's env.
+- **Egress:** with no allowlist, microsandbox's default policy applies (public internet only; private and metadata addresses are blocked).
+- **Limits:** no coordinators, no MCP server tokens, no `CLOUDY_CLOUD_APT_PACKAGES`, no `cloudy-cloud setup` support and no display; at most `CLOUDY_CLOUD_MSB_SLOTS` (default 2) sandboxes at once.
+- **Status:** covered by unit tests only; the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) has not been run on this machine yet. See [STATUS.md](docs/STATUS.md).
 
 ## Dashboard
 
