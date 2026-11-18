@@ -67,6 +67,8 @@ async function setup(g = {}, env = {}) {
       }
       // the fake claude commits nothing for an autofix prompt, so commit for it (the real worker would)
       if (g.commitOnFix !== false && / -p /.test(cmd) && g.prompts.at(-1)?.startsWith('Autofix round')) await run('echo x >> fix.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm fix', { cwd: o.cwd, timeoutMs: 5000 });
+      // since branches (#53) a worker that commits nothing pushes nothing and autofix never starts, so the first turn commits
+      if (/ -p /.test(cmd) && g.prompts.at(-1) === 'hi') await run('echo x > first.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm first', { cwd: o.cwd, timeoutMs: 5000 });
       return run(cmd, o);
     };
     s.files.write = (p, d) => { if (p.endsWith('prompt.txt')) g.prompts.push(String(d)); return write(p, d); };

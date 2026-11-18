@@ -755,7 +755,7 @@ function autofix(a, ctx, t) {
       const list = problems.map((p) => `- ${p}`).join('\n');
       const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
       if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`);
-      if (left() <= AGENT_MS + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
+      if (left() <= (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
       fixes++;
       say('worker is fixing');
       t.note = '';
