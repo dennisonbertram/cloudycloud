@@ -6,7 +6,7 @@
       "type": "archive",
       "description": "How to run fleets of cloudy-cloud subagents (Instabox cloud machines that push cloudy-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.",
       "url": "/.well-known/agent-skills/cloud-fleet.tar.gz",
-      "digest": "sha256:079835778242a2c6bf9caf7e28ca3e399b98d0ac4c892df34504e48e6409ca45"
+      "digest": "sha256:58d478636a1a858d777db47d3217b24d04d0f3503fa1c68d153c79cce735ec07"
     },
     {
       "name": "cloudy-cloud-setup",
