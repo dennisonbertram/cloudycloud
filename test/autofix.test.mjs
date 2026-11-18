@@ -167,8 +167,8 @@ test('autofix: the status line shows the autofix round', async () => {
   const { taskId } = await runSubagent({ description: 'd', prompt: 'hi', autofix: true }, deps);
   const t0 = Date.now();
   let msg = '';
-  while (!/autofix 0\/3: waiting for checks/.test(msg) && Date.now() - t0 < 20_000) { await new Promise((r) => setTimeout(r, 20)); msg = getTask(taskId, deps).statusMessage; }
-  assert.match(msg, /autofix 0\/3: waiting for checks/);
+  while (!/autofix PR #7 round 0\/3: waiting for checks/.test(msg) && Date.now() - t0 < 20_000) { await new Promise((r) => setTimeout(r, 20)); msg = getTask(taskId, deps).statusMessage; }
+  assert.match(msg, /autofix PR #7 round 0\/3: waiting for checks/);
   await cancelTask(taskId, deps);
 });
 
@@ -385,7 +385,7 @@ test('a read-only MEMBER is ignored, a write collaborator is trusted, permission
   assert.doesNotMatch(g.prompts.join('\n'), /reader says|bad login/);
   assert.match(r, /2 comments from people without write access were ignored/);
   assert.ok(!g.calls.some((c) => c.includes('evil')), 'invalid login reached a command');
-  assert.equal(g.permCalls.filter((l) => l === 'writer').length, 1); // cached for the later rounds
+  assert.equal(g.permCalls.filter((l) => l === 'writer').length, 1); // asked once: the only round that sees its comment
 });
 
 test('a failed permission lookup means untrusted', async () => {
@@ -412,4 +412,30 @@ test('more than 100 inline comments are read, so an old trusted comment is found
   await wait([await start({ autofix: true })]);
   assert.match(g.prompts[1], /old but important/);
   assert.ok(g.calls.some((c) => c.includes('--paginate')));
+});
+
+test('newer comments from people without write access cannot crowd out an older trusted comment', async () => {
+  const inline = [{ id: 99, user: { login: 'maint' }, path: 'a.txt', body: 'the trusted ask', created_at: '2025-01-01T00:00:00Z' }];
+  for (let i = 1; i <= 31; i++) inline.unshift({ id: i, user: { login: 'spam' }, path: 'a.txt', body: `noise ${i}`, created_at: `2026-02-01T00:00:${String(60 - i).padStart(2, '0')}Z` });
+  const { g, start, wait } = await setup({ perms: { spam: 'read', maint: 'maintain' }, inline, checks: [PASS] });
+  const r = await wait([await start({ autofix: true })]);
+  assert.match(g.prompts[1], /the trusted ask/);
+  assert.doesNotMatch(g.prompts[1], /noise/);
+  assert.match(r, /31 comments from people without write access were ignored/);
+  assert.equal(g.permCalls.filter((l) => l === 'spam').length, 2); // asked once per review check, never once per comment
+});
+
+test('a collaborator demoted to read-only is not trusted at the next review check', async () => {
+  const { g, deps, start, wait } = await setup({ perms: { rev: 'write' }, checks: [PASS], inline: [{ id: 1, user: { login: 'rev' }, path: 'a.txt', body: 'first note' }] });
+  const id = await start({ autofix: true });
+  await wait([id]);
+  assert.match(g.prompts[1], /first note/);
+  g.perms.rev = 'read';
+  g.inline = [{ id: 2, user: { login: 'rev' }, path: 'a.txt', body: 'demoted order' }];
+  g.prompts.length = 0;
+  await messageAgent({ agent_id: id, message: 'again' }, deps);
+  const r = await wait([id]);
+  assert.doesNotMatch(g.prompts.join('\n'), /demoted order/);
+  assert.match(r, /1 comment from people without write access was ignored/);
+  assert.equal(g.permCalls.filter((l) => l === 'rev').length, 2); // asked of GitHub again, not cached from the earlier check
 });
