@@ -75,7 +75,7 @@
 <h1>Run on your own machine</h1>
 <p class="lede">Instead of Instabox, subagents can run in Docker containers on a computer you own, such as a Mac Studio or a Linux server. Cloudy Cloud reaches it over SSH. Tools, branches and follow-ups work the same way.</p>
 
-<p>This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under <a href="#agent-keys">Keys for other agents</a>. The provider itself is not yet proven live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine.</p>
+<p>This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under <a href="#agent-keys">Keys for other agents</a>. The provider itself is not yet verified live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine. Statuses for every agent: <a href="models.html#verified">what has been verified</a>.</p>
 
 <h2 id="how-it-works">How it works</h2>
 <p>Set <code>CLOUDY_CLOUD_PROVIDER=self-hosted</code> (setup does this). Each subagent gets its own container on the machine, named <code>cc-&lt;id&gt;</code>, started from a worker image that setup builds there. Cloudy Cloud runs every command through one shared SSH connection and uses <code>docker exec</code> inside the container. The reaper that deletes a session's machines also removes that session's containers.</p>

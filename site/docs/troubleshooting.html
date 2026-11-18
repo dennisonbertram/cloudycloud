@@ -137,7 +137,7 @@ npm install -g cloudycloud</code></pre>
 <li><code>model is not supported when using Codex with a ChatGPT account</code>: start the worker without <code>model</code>, or use a model your plan supports.</li>
 <li><code>incorrect api key</code> with <code>codex</code>: check <code>OPENAI_API_KEY</code> in your Instabox secrets and in <code>CLOUDY_CLOUD_PROXY_SECRETS</code>.</li>
 </ul>
-<p>Codex and opencode workers are not proven live yet. If one fails in a way not listed here, the error text in the result is the best clue; please report it.</p>
+<p>Codex and opencode workers are not verified on a real machine (<a href="models.html#verified">status table</a>). If one fails in a way not listed here, the error text in the result is the best clue; please report it.</p>
 
 <h3 id="queued">A subagent stays "queued"</h3>
 <p>Starts are paced (<code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, default 25 a minute), or your Instabox plan's machine limit is full (<code>quota_exceeded</code>). Paused machines count toward the limit. A subagent blocked by the quota retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you do not need, delete leftover machines (below), or upgrade the plan.</p>

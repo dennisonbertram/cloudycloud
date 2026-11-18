@@ -33,15 +33,28 @@ With no `profile`, a subagent runs Claude Code. To pick a Claude model, pass the
 
 To run a subagent on another agent or a non-Claude model, pass the `profile` argument of `cloud_agent`. Do not use `model` for non-Claude models, except as noted for `openrouter`, `codex-openrouter` and `opencode-openrouter`. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.
 
+## What has been verified
+
+This table is the one status list. Other pages link here. "Verified live" means it ran on a real machine and the result was checked. "Partly verified" means only the named check was done. "Not verified on a real machine" means tests with a fake sandbox only. The same terms apply to [your own machine](https://cloudycloud.tech/docs/self-hosted.html), where no Codex, opencode, pi or omp worker has run.
+
+| Agent | As main session | As worker |
+|---|---|---|
+| Claude Code | Verified live | Verified live |
+| pi | Partly verified: MCP connection only, no model turn | Verified live |
+| oh-my-pi | Not a main session | Verified live (follow-ups by unit tests only) |
+| Codex | Partly verified: it listed the six cloud tools (codex-cli 0.166.0) | Not verified on a real machine |
+| opencode | Verified live | Not verified on a real machine |
+| free-pi | Partly verified: `mcp list` only | Cannot be a worker |
+
 ## Worker agents at a glance
 
-| Agent on the machine | Profiles | Credential it needs | Started as | Proven live |
+| Agent on the machine | Profiles | Credential it needs | Started as | Status |
 |---|---|---|---|---|
-| Claude Code (default) | none, or `glm`, `deepseek`, `particle`, `openrouter` | Claude token or API key; for the four profiles, the provider key instead | `claude -p ... --output-format stream-json` | Yes, including GLM and DeepSeek through Particle.ai |
-| pi | `pi-glm`, `pi-deepseek`, `pi-particle` | `PARTICLE_API_KEY` | `pi --mode json --provider worker --model ... --session ID` | Yes (`pi-glm`) |
-| oh-my-pi | `omp-glm`, `omp-deepseek`, `omp-particle` | `PARTICLE_API_KEY` | `omp -p --mode json --model worker/MODEL [--session ID] ...` | Yes (`omp-glm`) |
-| Codex | `codex`, `codex-chatgpt`, `codex-openrouter` | `OPENAI_API_KEY`, your ChatGPT login file, or `OPENROUTER_API_KEY` | `CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -` | No. Only fake-sandbox tests have run it. |
-| opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` | `opencode run --format json --model worker/MODEL [--session ses_...]` | No. Only fake-sandbox tests have run it. |
+| Claude Code (default) | none, or `glm`, `deepseek`, `particle`, `openrouter` | Claude token or API key; for the four profiles, the provider key instead | `claude -p ... --output-format stream-json` | Verified live, including GLM and DeepSeek through Particle.ai |
+| pi | `pi-glm`, `pi-deepseek`, `pi-particle` | `PARTICLE_API_KEY` | `pi --mode json --provider worker --model ... --session ID` | Verified live (`pi-glm`) |
+| oh-my-pi | `omp-glm`, `omp-deepseek`, `omp-particle` | `PARTICLE_API_KEY` | `omp -p --mode json --model worker/MODEL [--session ID] ...` | Verified live (`omp-glm`) |
+| Codex | `codex`, `codex-chatgpt`, `codex-openrouter` | `OPENAI_API_KEY`, your ChatGPT login file, or `OPENROUTER_API_KEY` | `CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -` | Not verified on a real machine |
+| opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` | `opencode run --format json --model worker/MODEL [--session ses_...]` | Not verified on a real machine |
 
 free-pi can be a main session but not a worker: free-pi-cli has no headless mode, and its terms forbid scripted use.
 
@@ -102,7 +115,7 @@ install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json
 - Set `CLOUDY_CLOUD_CODEX_AUTH` to use another path. The file must have mode 600. This is the one real credential that Cloudy Cloud sends to a machine as a file, even on Instabox, because a ChatGPT login cannot be a proxy secret. Its tokens are scrubbed from replies, and the machine may refresh them. Do not pass `model` unless your plan supports it: with no model, Codex uses the default model of your plan.
 - **`codex-openrouter`.** Uses `OPENROUTER_API_KEY`, set up as in OpenRouter. Pass the OpenRouter model id in `model`.
 
-> Note: Not proven live: no Codex worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox. Resume and the ChatGPT-login error message were also recorded locally with `codex exec`.
+> Note: Not verified on a real machine (see the status table). Resume and the ChatGPT-login error message were also recorded locally with `codex exec`.
 
 ### The opencode profiles
 
@@ -110,7 +123,7 @@ The `opencode-*` profiles run [opencode](https://opencode.ai) in the worker. Clo
 
 No profile uses opencode's own login, because that would copy a login to the machine.
 
-> Note: Not proven live: no opencode worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox.
+> Note: Not verified on a real machine (see the status table).
 
 ## OpenRouter
 

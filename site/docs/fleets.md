@@ -6,7 +6,11 @@ Source: https://cloudycloud.tech/docs/fleets.html
 
 A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
 
-A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. This page was written for Claude Code coordinators; whether a coordinator can start `codex-chatgpt` workers (which need your ChatGPT login file) has not been checked.
+A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: `coordinator image` signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start `codex-chatgpt` workers (which need your ChatGPT login file) has not been checked.
+
+### Picking a worker agent for a fleet
+
+Keep the coordinator and any sub-coordinators on Claude Code. For the workers, set `profile` per task. For bulk, well-specified work (renames, adding tests, filling in similar files, doc updates), use an open-model profile: `glm`, `deepseek` or `particle` (Claude Code), `pi-glm` or `pi-deepseek`, or `omp-glm`. These are the ones verified live. Use `openrouter`, or `codex-openrouter` and `opencode-openrouter`, only with a `model` argument. Keep the default Claude profile for judgment-heavy tasks. Codex and opencode workers are not verified on a real machine (see [the status table](https://cloudycloud.tech/docs/models.html#verified)), so try one before you start many. The `cloud-fleet` skill is a Claude Code skill.
 
 ## When to use a coordinator
 
@@ -57,7 +61,8 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 - `--branch B`: the branch to clone. Optional.
 - `--task TEXT` or `--task-file PATH`: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.
 - `--max-hours N`: when the server deletes the machine. Default and maximum 24.
-- `--json`: print the machine name, Remote Control name and attach command as JSON.
+- `--model NAME`: the Claude Code model for the coordinator's session, such as `opus` or `claude-opus-5-5`. Optional.
+- `--json`: print the machine name, Remote Control name and attach command as JSON, with `started: true`.
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 

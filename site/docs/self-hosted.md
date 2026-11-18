@@ -6,7 +6,7 @@ Source: https://cloudycloud.tech/docs/self-hosted.html
 
 Instead of Instabox, subagents can run in Docker containers on a computer you own, such as a Mac Studio or a Linux server. Cloudy Cloud reaches it over SSH. Tools, branches and follow-ups work the same way.
 
-This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under Keys for other agents. The provider itself is not yet proven live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine.
+This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under Keys for other agents. The provider itself is not yet verified live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine. Statuses for every agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified).
 
 ## How it works
 

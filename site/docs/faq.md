@@ -10,7 +10,7 @@ Short answers about what Cloudy Cloud does, what it needs, what it keeps and how
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### How do I start Cloudy Cloud?
 
@@ -22,7 +22,7 @@ An account with a cloud sandbox provider (Instabox is supported today), a GitHub
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
 
 ### Can subagents use my MCP servers?
 
@@ -50,7 +50,7 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 ### Which models and agents can subagents use?
 
-Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Codex and opencode workers have not been run on a real Instabox machine yet. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Status of each agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Can I use my own computer?
 

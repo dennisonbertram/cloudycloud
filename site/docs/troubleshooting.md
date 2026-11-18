@@ -93,7 +93,7 @@ The profile's provider key is missing: `PARTICLE_API_KEY` for the pi, omp and op
 - `model is not supported when using Codex with a ChatGPT account`: start the worker without `model`, or use a model your plan supports.
 - `incorrect api key` with `codex`: check `OPENAI_API_KEY` in your Instabox secrets and in `CLOUDY_CLOUD_PROXY_SECRETS`.
 
-Codex and opencode workers are not proven live yet. If one fails in a way not listed here, the error text in the result is the best clue; please report it.
+Codex and opencode workers are not verified on a real machine ([status table](https://cloudycloud.tech/docs/models.html#verified)). If one fails in a way not listed here, the error text in the result is the best clue; please report it.
 
 ### A subagent stays "queued"
 

@@ -47,11 +47,11 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Add your keys
 
-2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
+2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. It does not ask for Codex, OpenAI or ChatGPT credentials; set those separately if you use Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
 
 ### Start a session
 
-3. Run `cloudy-cloud` instead of `claude`, then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
+3. Run `cloudy-cloud` instead of `claude`, or `cloudy-cloud codex`, `opencode`, `pi` or `free-pi` for another agent. Then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
 
 ```
 $ npx cloudycloud setup
@@ -144,7 +144,7 @@ Based on each product's public docs, November 2026. Products change; check their
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### What do I need?
 
@@ -152,7 +152,7 @@ An account with a cloud sandbox provider (Instabox is supported today), a GitHub
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
 
 ### What happens to the machines?
 

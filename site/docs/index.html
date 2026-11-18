@@ -90,9 +90,10 @@
 <h3 id="run-the-installer">Run the installer with npx</h3>
 <pre><code>npx -y cloudycloud setup</code></pre>
 <p>The <code>-y</code> skips npm's own "Ok to proceed?" question. Without it, npm asks that first; answer <code>y</code>.</p>
-<h3 id="install-with-the-skill">Or add the skill and ask Claude</h3>
+<h3 id="install-with-the-skill">Or add the skill and ask Claude Code</h3>
 <pre><code>npx skills add dennisonbertram/cloudycloud</code></pre>
 <p>Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run <code>npx -y cloudycloud setup</code> yourself, because setup asks for secret keys that Claude should not see.</p>
+<p>This route is for Claude Code: <code>npx skills add</code> installs the skill for Claude Code, and setup copies the <code>cloud-fleet</code> and <code>cloudy-cloud-setup</code> skills into <code>~/.claude/skills/</code>, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run <code>npx -y cloudycloud setup</code> yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.</p>
 <h3 id="from-source">From source</h3>
 <pre><code>git clone https://github.com/dennisonbertram/cloudycloud.git
 cd cloudycloud
@@ -127,16 +128,18 @@ cloudy-cloud</code></pre>
 <h2 id="other-hosts">Start a session with another agent</h2>
 <p>The main session does not have to be Claude Code. Run the subcommand for your agent from inside your repo. The cloud tools are added for that session only, and your own settings for the agent are not edited. All of them need the Instabox key from setup (or the self-hosted settings), and none needs a Claude token.</p>
 <table>
-<thead><tr><th>Main session</th><th>Command</th><th>Install the agent first</th><th>Checked live</th></tr></thead>
+<thead><tr><th>Main session</th><th>Command</th><th>Install the agent first</th><th>Status</th></tr></thead>
 <tbody>
-<tr><td>Claude Code</td><td><code>cloudy-cloud</code></td><td>See <a href="https://code.claude.com">code.claude.com</a></td><td>Yes</td></tr>
-<tr><td>Codex</td><td><code>cloudy-cloud codex</code></td><td><code>npm install -g @openai/codex</code></td><td>Yes: it listed the six cloud tools (codex-cli 0.166.0)</td></tr>
-<tr><td>opencode</td><td><code>cloudy-cloud opencode</code></td><td><code>npm install -g opencode-ai</code></td><td>Yes</td></tr>
-<tr><td>pi</td><td><code>cloudy-cloud pi</code></td><td>Optional: without <code>pi</code> on your PATH it runs a pinned copy through <code>npx</code></td><td>The MCP connection only, no model turn</td></tr>
-<tr><td>free-pi</td><td><code>cloudy-cloud free-pi</code></td><td>Optional: without <code>free-pi-cli</code> on your PATH it runs a pinned copy through <code>npx</code></td><td><code>mcp list</code> only</td></tr>
+<tr><td>Claude Code</td><td><code>cloudy-cloud</code></td><td>See <a href="https://code.claude.com">code.claude.com</a></td><td>Verified live</td></tr>
+<tr><td>Codex</td><td><code>cloudy-cloud codex</code></td><td><code>npm install -g @openai/codex</code></td><td>Partly verified: it listed the six cloud tools (codex-cli 0.166.0)</td></tr>
+<tr><td>opencode</td><td><code>cloudy-cloud opencode</code></td><td><code>npm install -g opencode-ai</code></td><td>Verified live</td></tr>
+<tr><td>pi</td><td><code>cloudy-cloud pi</code></td><td>Optional: without <code>pi</code> on your PATH it runs a pinned copy through <code>npx</code></td><td>Partly verified: MCP connection only, no model turn</td></tr>
+<tr><td>free-pi</td><td><code>cloudy-cloud free-pi</code></td><td>Optional: without <code>free-pi-cli</code> on your PATH it runs a pinned copy through <code>npx</code></td><td>Partly verified: <code>mcp list</code> only</td></tr>
 </tbody>
 </table>
+<p><strong>Signing in to the agent itself.</strong> Cloudy Cloud does not sign you in to your main agent. Sign in to Codex (<code>codex login</code>) or opencode the way you normally do before you start <code>cloudy-cloud codex</code> or <code>cloudy-cloud opencode</code>. pi and free-pi need a model configured in the agent itself; Cloudy Cloud never passes them a key, and how to configure one has not been checked here. <code>free-pi-cli</code> asks for consent the first time it runs, and that needs an interactive terminal, so start it once yourself in a terminal. These logins are separate from the worker credentials in <a href="models.html#agents">Models and keys</a>.</p>
 <p>Arguments after the subcommand go to that agent, for example <code>cloudy-cloud codex exec</code> uses Codex's non-interactive mode. Codex, opencode and pi cannot receive MCP task results, so the session calls <code>cloud_agent_wait</code> to get results; there is no <code>/tasks</code> view. In opencode the tools are named <code>cloud_cloud_agent</code>, <code>cloud_cloud_agent_wait</code> and so on. free-pi writes a <code>cloud</code> entry into <code>~/.free-pi/agent/mcp.json</code> each time it starts. free-pi can only be a main session, not a worker.</p>
+<p>The full status table is in <a href="models.html#verified">Models and keys</a>.</p>
 <p>Which agent a <em>worker</em> runs is separate from your main session: it is set by the <code>profile</code> argument of <code>cloud_agent</code>. Any main session can start any kind of worker. See <a href="models.html#agents">Models and keys</a>.</p>
 
 <h2 id="first-subagent">Your first subagent</h2>

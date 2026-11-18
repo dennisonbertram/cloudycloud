@@ -75,7 +75,9 @@
 <h1>Coordinators and fleets</h1>
 <p class="lede">A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
 
-<p>A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through <code>profile</code>. This page was written for Claude Code coordinators; whether a coordinator can start <code>codex-chatgpt</code> workers (which need your ChatGPT login file) has not been checked.</p>
+<p>A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through <code>profile</code>. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: <code>coordinator image</code> signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start <code>codex-chatgpt</code> workers (which need your ChatGPT login file) has not been checked.</p>
+<h3 id="worker-harness">Picking a worker agent for a fleet</h3>
+<p>Keep the coordinator and any sub-coordinators on Claude Code. For the workers, set <code>profile</code> per task. For bulk, well-specified work (renames, adding tests, filling in similar files, doc updates), use an open-model profile: <code>glm</code>, <code>deepseek</code> or <code>particle</code> (Claude Code), <code>pi-glm</code> or <code>pi-deepseek</code>, or <code>omp-glm</code>. These are the ones verified live. Use <code>openrouter</code>, or <code>codex-openrouter</code> and <code>opencode-openrouter</code>, only with a <code>model</code> argument. Keep the default Claude profile for judgment-heavy tasks. Codex and opencode workers are not verified on a real machine (see <a href="models.html#verified">the status table</a>), so try one before you start many. The <code>cloud-fleet</code> skill is a Claude Code skill.</p>
 
 <h2 id="when-to-use-one">When to use a coordinator</h2>
 <p>For a few independent tasks, start plain cloud agents from your own session. You wait for them and review their branches yourself.</p>
@@ -106,7 +108,8 @@
 <li><code>--branch B</code>: the branch to clone. Optional.</li>
 <li><code>--task TEXT</code> or <code>--task-file PATH</code>: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.</li>
 <li><code>--max-hours N</code>: when the server deletes the machine. Default and maximum 24.</li>
-<li><code>--json</code>: print the machine name, Remote Control name and attach command as JSON.</li>
+<li><code>--model NAME</code>: the Claude Code model for the coordinator's session, such as <code>opus</code> or <code>claude-opus-5-5</code>. Optional.</li>
+<li><code>--json</code>: print the machine name, Remote Control name and attach command as JSON, with <code>started: true</code>.</li>
 </ul>
 <p>The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.</p>
 

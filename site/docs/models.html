@@ -94,15 +94,29 @@
 <p>With no <code>profile</code>, a subagent runs Claude Code. To pick a Claude model, pass the optional <code>model</code> argument of <code>cloud_agent</code>, for example <code>haiku</code>.</p>
 <p>To run a subagent on another agent or a non-Claude model, pass the <code>profile</code> argument of <code>cloud_agent</code>. Do not use <code>model</code> for non-Claude models, except as noted for <code>openrouter</code>, <code>codex-openrouter</code> and <code>opencode-openrouter</code>. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.</p>
 
+<h2 id="verified">What has been verified</h2>
+<p>This table is the one status list. Other pages link here. "Verified live" means it ran on a real machine and the result was checked. "Partly verified" means only the named check was done. "Not verified on a real machine" means tests with a fake sandbox only. The same terms apply to <a href="self-hosted.html">your own machine</a>, where no Codex, opencode, pi or omp worker has run.</p>
+<table>
+<thead><tr><th>Agent</th><th>As main session</th><th>As worker</th></tr></thead>
+<tbody>
+<tr><td>Claude Code</td><td>Verified live</td><td>Verified live</td></tr>
+<tr><td>pi</td><td>Partly verified: MCP connection only, no model turn</td><td>Verified live</td></tr>
+<tr><td>oh-my-pi</td><td>Not a main session</td><td>Verified live (follow-ups by unit tests only)</td></tr>
+<tr><td>Codex</td><td>Partly verified: it listed the six cloud tools (codex-cli 0.166.0)</td><td>Not verified on a real machine</td></tr>
+<tr><td>opencode</td><td>Verified live</td><td>Not verified on a real machine</td></tr>
+<tr><td>free-pi</td><td>Partly verified: <code>mcp list</code> only</td><td>Cannot be a worker</td></tr>
+</tbody>
+</table>
+
 <h2 id="agents">Worker agents at a glance</h2>
 <table>
-<thead><tr><th>Agent on the machine</th><th>Profiles</th><th>Credential it needs</th><th>Started as</th><th>Proven live</th></tr></thead>
+<thead><tr><th>Agent on the machine</th><th>Profiles</th><th>Credential it needs</th><th>Started as</th><th>Status</th></tr></thead>
 <tbody>
-<tr><td>Claude Code (default)</td><td>none, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code></td><td>Claude token or API key; for the four profiles, the provider key instead</td><td><code>claude -p ... --output-format stream-json</code></td><td>Yes, including GLM and DeepSeek through Particle.ai</td></tr>
-<tr><td>pi</td><td><code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>pi --mode json --provider worker --model ... --session ID</code></td><td>Yes (<code>pi-glm</code>)</td></tr>
-<tr><td>oh-my-pi</td><td><code>omp-glm</code>, <code>omp-deepseek</code>, <code>omp-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>omp -p --mode json --model worker/MODEL [--session ID] ...</code></td><td>Yes (<code>omp-glm</code>)</td></tr>
-<tr><td>Codex</td><td><code>codex</code>, <code>codex-chatgpt</code>, <code>codex-openrouter</code></td><td><code>OPENAI_API_KEY</code>, your ChatGPT login file, or <code>OPENROUTER_API_KEY</code></td><td><code>CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -</code></td><td>No. Only fake-sandbox tests have run it.</td></tr>
-<tr><td>opencode</td><td><code>opencode-glm</code>, <code>opencode-deepseek</code>, <code>opencode-particle</code>, <code>opencode-openrouter</code></td><td><code>PARTICLE_API_KEY</code> or <code>OPENROUTER_API_KEY</code></td><td><code>opencode run --format json --model worker/MODEL [--session ses_...]</code></td><td>No. Only fake-sandbox tests have run it.</td></tr>
+<tr><td>Claude Code (default)</td><td>none, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code></td><td>Claude token or API key; for the four profiles, the provider key instead</td><td><code>claude -p ... --output-format stream-json</code></td><td>Verified live, including GLM and DeepSeek through Particle.ai</td></tr>
+<tr><td>pi</td><td><code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>pi --mode json --provider worker --model ... --session ID</code></td><td>Verified live (<code>pi-glm</code>)</td></tr>
+<tr><td>oh-my-pi</td><td><code>omp-glm</code>, <code>omp-deepseek</code>, <code>omp-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>omp -p --mode json --model worker/MODEL [--session ID] ...</code></td><td>Verified live (<code>omp-glm</code>)</td></tr>
+<tr><td>Codex</td><td><code>codex</code>, <code>codex-chatgpt</code>, <code>codex-openrouter</code></td><td><code>OPENAI_API_KEY</code>, your ChatGPT login file, or <code>OPENROUTER_API_KEY</code></td><td><code>CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -</code></td><td>Not verified on a real machine</td></tr>
+<tr><td>opencode</td><td><code>opencode-glm</code>, <code>opencode-deepseek</code>, <code>opencode-particle</code>, <code>opencode-openrouter</code></td><td><code>PARTICLE_API_KEY</code> or <code>OPENROUTER_API_KEY</code></td><td><code>opencode run --format json --model worker/MODEL [--session ses_...]</code></td><td>Not verified on a real machine</td></tr>
 </tbody>
 </table>
 <p>free-pi can be a main session but not a worker: free-pi-cli has no headless mode, and its terms forbid scripted use.</p>
@@ -151,12 +165,12 @@ On a self-hosted machine, add the line <code>OPENAI_API_KEY=...</code> to the en
 Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have mode 600. This is the one real credential that Cloudy Cloud sends to a machine as a file, even on Instabox, because a ChatGPT login cannot be a proxy secret. Its tokens are scrubbed from replies, and the machine may refresh them. Do not pass <code>model</code> unless your plan supports it: with no model, Codex uses the default model of your plan.</li>
 <li><strong><code>codex-openrouter</code>.</strong> Uses <code>OPENROUTER_API_KEY</code>, set up as in <a href="#openrouter">OpenRouter</a>. Pass the OpenRouter model id in <code>model</code>.</li>
 </ul>
-<div class="note"><p>Not proven live: no Codex worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox. Resume and the ChatGPT-login error message were also recorded locally with <code>codex exec</code>.</p></div>
+<div class="note"><p>Not verified on a real machine (see <a href="#verified">the status table</a>). Resume and the ChatGPT-login error message were also recorded locally with <code>codex exec</code>.</p></div>
 
 <h3 id="opencode-profiles">The opencode profiles</h3>
 <p>The <code>opencode-*</code> profiles run <a href="https://opencode.ai">opencode</a> in the worker. Cloudy Cloud installs the pinned <code>opencode-ai@1.18.31</code> with npm under <code>~/.local</code> and runs <code>opencode run --format json --model worker/MODEL</code>. A follow-up passes <code>--session ses_...</code>. The configuration is <code>~/opencode-agent/opencode.json</code> (mode 600). It holds key names such as <code>{env:PARTICLE_API_KEY}</code>, never key values, and the servers from <code>cloudy-cloud mcp add</code>. Keys: <code>opencode-glm</code>, <code>opencode-deepseek</code> and <code>opencode-particle</code> use <code>PARTICLE_API_KEY</code>, and <code>opencode-openrouter</code> uses <code>OPENROUTER_API_KEY</code> and needs <code>model</code>. Both are set up with <code>cloudy-cloud setup</code> (see <a href="#openrouter">OpenRouter</a> for the second).</p>
 <p>No profile uses opencode's own login, because that would copy a login to the machine.</p>
-<div class="note"><p>Not proven live: no opencode worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox.</p></div>
+<div class="note"><p>Not verified on a real machine (see <a href="#verified">the status table</a>).</p></div>
 
 <h2 id="openrouter">OpenRouter</h2>
 <p>To use OpenRouter:</p>

@@ -47,11 +47,11 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Add your keys
 
-2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
+2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. It does not ask for Codex, OpenAI or ChatGPT credentials; set those separately if you use Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
 
 ### Start a session
 
-3. Run `cloudy-cloud` instead of `claude`, then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
+3. Run `cloudy-cloud` instead of `claude`, or `cloudy-cloud codex`, `opencode`, `pi` or `free-pi` for another agent. Then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
 
 ```
 $ npx cloudycloud setup
@@ -144,7 +144,7 @@ Based on each product's public docs, November 2026. Products change; check their
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### What do I need?
 
@@ -152,7 +152,7 @@ An account with a cloud sandbox provider (Instabox is supported today), a GitHub
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
 
 ### What happens to the machines?
 
@@ -206,13 +206,15 @@ npx -y cloudycloud setup
 
 The `-y` skips npm's own "Ok to proceed?" question. Without it, npm asks that first; answer `y`.
 
-### Or add the skill and ask Claude
+### Or add the skill and ask Claude Code
 
 ```
 npx skills add dennisonbertram/cloudycloud
 ```
 
 Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run `npx -y cloudycloud setup` yourself, because setup asks for secret keys that Claude should not see.
+
+This route is for Claude Code: `npx skills add` installs the skill for Claude Code, and setup copies the `cloud-fleet` and `cloudy-cloud-setup` skills into `~/.claude/skills/`, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run `npx -y cloudycloud setup` yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.
 
 ### From source
 
@@ -267,15 +269,19 @@ Put `--allowedTools` after the prompt, because it takes a list. See `claude --he
 
 The main session does not have to be Claude Code. Run the subcommand for your agent from inside your repo. The cloud tools are added for that session only, and your own settings for the agent are not edited. All of them need the Instabox key from setup (or the self-hosted settings), and none needs a Claude token.
 
-| Main session | Command | Install the agent first | Checked live |
+| Main session | Command | Install the agent first | Status |
 |---|---|---|---|
-| Claude Code | `cloudy-cloud` | See [code.claude.com](https://code.claude.com) | Yes |
-| Codex | `cloudy-cloud codex` | `npm install -g @openai/codex` | Yes: it listed the six cloud tools (codex-cli 0.166.0) |
-| opencode | `cloudy-cloud opencode` | `npm install -g opencode-ai` | Yes |
-| pi | `cloudy-cloud pi` | Optional: without `pi` on your PATH it runs a pinned copy through `npx` | The MCP connection only, no model turn |
-| free-pi | `cloudy-cloud free-pi` | Optional: without `free-pi-cli` on your PATH it runs a pinned copy through `npx` | `mcp list` only |
+| Claude Code | `cloudy-cloud` | See [code.claude.com](https://code.claude.com) | Verified live |
+| Codex | `cloudy-cloud codex` | `npm install -g @openai/codex` | Partly verified: it listed the six cloud tools (codex-cli 0.166.0) |
+| opencode | `cloudy-cloud opencode` | `npm install -g opencode-ai` | Verified live |
+| pi | `cloudy-cloud pi` | Optional: without `pi` on your PATH it runs a pinned copy through `npx` | Partly verified: MCP connection only, no model turn |
+| free-pi | `cloudy-cloud free-pi` | Optional: without `free-pi-cli` on your PATH it runs a pinned copy through `npx` | Partly verified: `mcp list` only |
+
+**Signing in to the agent itself.** Cloudy Cloud does not sign you in to your main agent. Sign in to Codex (`codex login`) or opencode the way you normally do before you start `cloudy-cloud codex` or `cloudy-cloud opencode`. pi and free-pi need a model configured in the agent itself; Cloudy Cloud never passes them a key, and how to configure one has not been checked here. `free-pi-cli` asks for consent the first time it runs, and that needs an interactive terminal, so start it once yourself in a terminal. These logins are separate from the worker credentials in [Models and keys](https://cloudycloud.tech/docs/models.html#agents).
 
 Arguments after the subcommand go to that agent, for example `cloudy-cloud codex exec` uses Codex's non-interactive mode. Codex, opencode and pi cannot receive MCP task results, so the session calls `cloud_agent_wait` to get results; there is no `/tasks` view. In opencode the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on. free-pi writes a `cloud` entry into `~/.free-pi/agent/mcp.json` each time it starts. free-pi can only be a main session, not a worker.
+
+The full status table is in [Models and keys](https://cloudycloud.tech/docs/models.html#verified).
 
 Which agent a *worker* runs is separate from your main session: it is set by the `profile` argument of `cloud_agent`. Any main session can start any kind of worker. See [Models and keys](https://cloudycloud.tech/docs/models.html#agents).
 
@@ -465,15 +471,28 @@ With no `profile`, a subagent runs Claude Code. To pick a Claude model, pass the
 
 To run a subagent on another agent or a non-Claude model, pass the `profile` argument of `cloud_agent`. Do not use `model` for non-Claude models, except as noted for `openrouter`, `codex-openrouter` and `opencode-openrouter`. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.
 
+## What has been verified
+
+This table is the one status list. Other pages link here. "Verified live" means it ran on a real machine and the result was checked. "Partly verified" means only the named check was done. "Not verified on a real machine" means tests with a fake sandbox only. The same terms apply to [your own machine](https://cloudycloud.tech/docs/self-hosted.html), where no Codex, opencode, pi or omp worker has run.
+
+| Agent | As main session | As worker |
+|---|---|---|
+| Claude Code | Verified live | Verified live |
+| pi | Partly verified: MCP connection only, no model turn | Verified live |
+| oh-my-pi | Not a main session | Verified live (follow-ups by unit tests only) |
+| Codex | Partly verified: it listed the six cloud tools (codex-cli 0.166.0) | Not verified on a real machine |
+| opencode | Verified live | Not verified on a real machine |
+| free-pi | Partly verified: `mcp list` only | Cannot be a worker |
+
 ## Worker agents at a glance
 
-| Agent on the machine | Profiles | Credential it needs | Started as | Proven live |
+| Agent on the machine | Profiles | Credential it needs | Started as | Status |
 |---|---|---|---|---|
-| Claude Code (default) | none, or `glm`, `deepseek`, `particle`, `openrouter` | Claude token or API key; for the four profiles, the provider key instead | `claude -p ... --output-format stream-json` | Yes, including GLM and DeepSeek through Particle.ai |
-| pi | `pi-glm`, `pi-deepseek`, `pi-particle` | `PARTICLE_API_KEY` | `pi --mode json --provider worker --model ... --session ID` | Yes (`pi-glm`) |
-| oh-my-pi | `omp-glm`, `omp-deepseek`, `omp-particle` | `PARTICLE_API_KEY` | `omp -p --mode json --model worker/MODEL [--session ID] ...` | Yes (`omp-glm`) |
-| Codex | `codex`, `codex-chatgpt`, `codex-openrouter` | `OPENAI_API_KEY`, your ChatGPT login file, or `OPENROUTER_API_KEY` | `CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -` | No. Only fake-sandbox tests have run it. |
-| opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` | `opencode run --format json --model worker/MODEL [--session ses_...]` | No. Only fake-sandbox tests have run it. |
+| Claude Code (default) | none, or `glm`, `deepseek`, `particle`, `openrouter` | Claude token or API key; for the four profiles, the provider key instead | `claude -p ... --output-format stream-json` | Verified live, including GLM and DeepSeek through Particle.ai |
+| pi | `pi-glm`, `pi-deepseek`, `pi-particle` | `PARTICLE_API_KEY` | `pi --mode json --provider worker --model ... --session ID` | Verified live (`pi-glm`) |
+| oh-my-pi | `omp-glm`, `omp-deepseek`, `omp-particle` | `PARTICLE_API_KEY` | `omp -p --mode json --model worker/MODEL [--session ID] ...` | Verified live (`omp-glm`) |
+| Codex | `codex`, `codex-chatgpt`, `codex-openrouter` | `OPENAI_API_KEY`, your ChatGPT login file, or `OPENROUTER_API_KEY` | `CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -` | Not verified on a real machine |
+| opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` | `opencode run --format json --model worker/MODEL [--session ses_...]` | Not verified on a real machine |
 
 free-pi can be a main session but not a worker: free-pi-cli has no headless mode, and its terms forbid scripted use.
 
@@ -534,7 +553,7 @@ install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json
 - Set `CLOUDY_CLOUD_CODEX_AUTH` to use another path. The file must have mode 600. This is the one real credential that Cloudy Cloud sends to a machine as a file, even on Instabox, because a ChatGPT login cannot be a proxy secret. Its tokens are scrubbed from replies, and the machine may refresh them. Do not pass `model` unless your plan supports it: with no model, Codex uses the default model of your plan.
 - **`codex-openrouter`.** Uses `OPENROUTER_API_KEY`, set up as in OpenRouter. Pass the OpenRouter model id in `model`.
 
-> Note: Not proven live: no Codex worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox. Resume and the ChatGPT-login error message were also recorded locally with `codex exec`.
+> Note: Not verified on a real machine (see the status table). Resume and the ChatGPT-login error message were also recorded locally with `codex exec`.
 
 ### The opencode profiles
 
@@ -542,7 +561,7 @@ The `opencode-*` profiles run [opencode](https://opencode.ai) in the worker. Clo
 
 No profile uses opencode's own login, because that would copy a login to the machine.
 
-> Note: Not proven live: no opencode worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox.
+> Note: Not verified on a real machine (see the status table).
 
 ## OpenRouter
 
@@ -1007,7 +1026,11 @@ Source: https://cloudycloud.tech/docs/fleets.html
 
 A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
 
-A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. This page was written for Claude Code coordinators; whether a coordinator can start `codex-chatgpt` workers (which need your ChatGPT login file) has not been checked.
+A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: `coordinator image` signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start `codex-chatgpt` workers (which need your ChatGPT login file) has not been checked.
+
+### Picking a worker agent for a fleet
+
+Keep the coordinator and any sub-coordinators on Claude Code. For the workers, set `profile` per task. For bulk, well-specified work (renames, adding tests, filling in similar files, doc updates), use an open-model profile: `glm`, `deepseek` or `particle` (Claude Code), `pi-glm` or `pi-deepseek`, or `omp-glm`. These are the ones verified live. Use `openrouter`, or `codex-openrouter` and `opencode-openrouter`, only with a `model` argument. Keep the default Claude profile for judgment-heavy tasks. Codex and opencode workers are not verified on a real machine (see [the status table](https://cloudycloud.tech/docs/models.html#verified)), so try one before you start many. The `cloud-fleet` skill is a Claude Code skill.
 
 ## When to use a coordinator
 
@@ -1058,7 +1081,8 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 - `--branch B`: the branch to clone. Optional.
 - `--task TEXT` or `--task-file PATH`: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.
 - `--max-hours N`: when the server deletes the machine. Default and maximum 24.
-- `--json`: print the machine name, Remote Control name and attach command as JSON.
+- `--model NAME`: the Claude Code model for the coordinator's session, such as `opus` or `claude-opus-5-5`. Optional.
+- `--json`: print the machine name, Remote Control name and attach command as JSON, with `started: true`.
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 
@@ -1420,7 +1444,7 @@ Source: https://cloudycloud.tech/docs/self-hosted.html
 
 Instead of Instabox, subagents can run in Docker containers on a computer you own, such as a Mac Studio or a Linux server. Cloudy Cloud reaches it over SSH. Tools, branches and follow-ups work the same way.
 
-This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under Keys for other agents. The provider itself is not yet proven live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine.
+This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under Keys for other agents. The provider itself is not yet verified live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine. Statuses for every agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified).
 
 ## How it works
 
@@ -1624,7 +1648,7 @@ The profile's provider key is missing: `PARTICLE_API_KEY` for the pi, omp and op
 - `model is not supported when using Codex with a ChatGPT account`: start the worker without `model`, or use a model your plan supports.
 - `incorrect api key` with `codex`: check `OPENAI_API_KEY` in your Instabox secrets and in `CLOUDY_CLOUD_PROXY_SECRETS`.
 
-Codex and opencode workers are not proven live yet. If one fails in a way not listed here, the error text in the result is the best clue; please report it.
+Codex and opencode workers are not verified on a real machine ([status table](https://cloudycloud.tech/docs/models.html#verified)). If one fails in a way not listed here, the error text in the result is the best clue; please report it.
 
 ### A subagent stays "queued"
 
@@ -1844,7 +1868,7 @@ Short answers about what Cloudy Cloud does, what it needs, what it keeps and how
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### How do I start Cloudy Cloud?
 
@@ -1856,7 +1880,7 @@ An account with a cloud sandbox provider (Instabox is supported today), a GitHub
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
 
 ### Can subagents use my MCP servers?
 
@@ -1884,7 +1908,7 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 ### Which models and agents can subagents use?
 
-Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Codex and opencode workers have not been run on a real Instabox machine yet. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Status of each agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Can I use my own computer?
 
