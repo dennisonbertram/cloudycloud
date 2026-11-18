@@ -80,5 +80,5 @@ export function defaultWorkerNote(env) {
   const profile = [['codex'], ['codex-chatgpt'], ['pi-glm'], ['openrouter', ' (also pass model, an OpenRouter model id)']].find(([n]) => resolveProfile(n, 'x', env, { proxyOnly }).ok);
   const head = 'No Claude token is saved, so a cloud_agent call without a profile is refused.';
   return profile ? `${head}\nNext step: pass profile: ${profile[0]}${profile[1] ?? ''} on every cloud_agent call.`
-    : `${head}\nNext step: run: cloudy-cloud setup (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY as a proxy secret, or a Claude token).`;
+    : `${head}\nNext step: run: cloudy-cloud setup --more (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY as a proxy secret, or a Claude token).`;
 }

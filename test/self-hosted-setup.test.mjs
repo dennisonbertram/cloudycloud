@@ -349,3 +349,15 @@ test('setup: Enter keeps a token that exists only in the shell, and saves it to 
   assert.match(readFileSync(g.cfg, 'utf8'), new RegExp(`GH_TOKEN=${FAKE_TOKEN}\n`));
   assert.ok(!r.text.includes(FAKE_TOKEN));
 });
+
+test('setup: Enter at the GitHub and coordinator consent prompts keeps the saved consent, token and Docker socket', () => {
+  const env = SAVED + 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes\nCLOUDY_CLOUD_DOCKER_SOCKET=/var/run/docker.sock\n';
+  const g = rig(mac(), { env });
+  const r = g.run(['setup'], '\n\n\n\n\n\n');
+  assert.equal(r.code, 0, r.text);
+  const saved = readFileSync(g.cfg, 'utf8');
+  assert.match(saved, /CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes/);
+  assert.match(saved, new RegExp(`GH_TOKEN=${FAKE_TOKEN}\n`));
+  assert.match(saved, /CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes/);
+  assert.match(saved, /CLOUDY_CLOUD_DOCKER_SOCKET=\/var\/run\/docker\.sock/);
+});

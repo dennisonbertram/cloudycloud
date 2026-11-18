@@ -259,7 +259,9 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     ui.text('    Subagents need a GitHub token to push branches. Instabox keeps the token off its machines; your own machine has no such proxy,');
     ui.text(`    so the token would be stored inside each worker container on ${host} (in memory only, removed with the container).`);
     ui.text('    Say yes only if you own and trust that machine.');
-    const allow = /^y/i.test(await inp.line(`  > Allow the GitHub token on ${host}? [y/N]: `));
+    // Enter keeps what is saved (no consent on a first run), so a rerun never deletes a working consent or token.
+    const yes = (a, saved) => (a.trim() === '' ? saved : /^y/i.test(a));
+    const allow = yes(await inp.line(`  > Allow the GitHub token on ${host}? [${env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes' ? 'Y/n' : 'y/N'}]: `), env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes');
     const set = { CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: host, ...containerSettings(f, slots) };
     const del = [];
     if (key) set.CLOUDY_CLOUD_SSH_KEY = key; else del.push('CLOUDY_CLOUD_SSH_KEY');
@@ -282,7 +284,8 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
       ui.text(`  ? Allow coordinators on ${host}? [y/N]`);
       ui.text('    A coordinator is a Claude session that starts its own subagents. It runs in a container on the machine and starts them through the Docker socket,');
       ui.text('    so no SSH key is copied to it. That socket gives the coordinator full control of Docker on the machine (it can start any container).');
-      const coords = /^y/i.test(await inp.line(`  > Coordinators on ${host} can start containers through Docker, which gives them full control of Docker on that machine. Allow? [y/N]: `));
+      const savedCoords = env.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
+      const coords = yes(await inp.line(`  > Coordinators on ${host} can start containers through Docker, which gives them full control of Docker on that machine. Allow? [${savedCoords ? 'Y/n' : 'y/N'}]: `), savedCoords);
       if (coords) {
         // On a Mac the container VM always serves /var/run/docker.sock; on Linux use the active Docker context (rootless Docker differs).
         const ctx = f.mac ? '' : (await probe(ssh, `${q(f.bin)} context inspect --format '{{.Endpoints.docker.Host}}'`)).stdout.trim();
