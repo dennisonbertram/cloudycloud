@@ -111,7 +111,7 @@ if [ $# -eq 1 ]; then
   case $1 in
     --version) sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json"
       where=$(cd "$root" && pwd -P); home=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)
-      if [ -n "$home" ]; then case $where in "$home") where='~' ;; "$home"/*) where="~${where#$home}" ;; esac; fi
+      if [ -n "$home" ] && [ "$home" != / ]; then case $where in "$home") where="~" ;; "$home"/*) where="~${where#"$home"}" ;; esac; fi
       echo "installed at $where"; exit 0 ;;
     --help|-h|help)
       cat <<'EOF'
