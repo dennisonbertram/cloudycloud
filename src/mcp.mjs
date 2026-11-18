@@ -8,7 +8,7 @@ const ids = { type: 'array', items: { type: 'string' }, description: 'Agent ids'
 const tools = [
   {
     name: 'cloud_agent',
-    description: 'Start a subagent in a remote sandbox on committed and tracked files (no untracked files). The repo needs a github.com origin. Returns at once while the sandbox starts and the task runs in the background. In Claude Code terminal sessions that support MCP tasks, the call becomes a background task: its progress shows in /tasks and the result arrives on its own, with the agent_id. Otherwise it returns an agent_id and you call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. The agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo. The optional machine argument picks another kind of machine (android, omarchy, gpu, macos).',
+    description: 'Start a subagent in a remote sandbox on committed and tracked files (no untracked files). The repo needs a github.com origin. Returns at once while the sandbox starts and the task runs in the background. In Claude Code terminal sessions that support MCP tasks, the call becomes a background task: its progress shows in /tasks and the result arrives on its own, with the agent_id. Otherwise it returns an agent_id and you call cloud_agent_wait to get the result. The agent stays open for follow-ups until cloud_agent_stop or 60 idle minutes. The agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo. The optional machine argument picks another kind of machine (android, omarchy, gpu, macos). Each turn is limited to 29 minutes by default (CLOUDY_CLOUD_TURN_MINUTES changes it, 5 or more); the prompt tells the agent when its turn ends. If a turn fails or hits the limit after the agent has started, the agent stays open: call cloud_agent_message to continue it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -27,7 +27,7 @@ const tools = [
   },
   {
     name: 'cloud_agent_message',
-    description: 'Send a follow-up message to an open, idle agent. Returns at once. As an MCP task the reply arrives on its own; otherwise call cloud_agent_wait for it. Rejected if the agent is busy or gone.',
+    description: 'Send a follow-up message to an open, idle agent. Returns at once. As an MCP task the reply arrives on its own; otherwise call cloud_agent_wait for it. Rejected if the agent is busy or gone. Each turn is limited to 29 minutes by default (CLOUDY_CLOUD_TURN_MINUTES changes it); a turn that fails or hits the limit leaves the agent open, so send another message to continue.',
     inputSchema: {
       type: 'object',
       properties: { agent_id: { type: 'string' }, message: { type: 'string' } },
