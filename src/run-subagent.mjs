@@ -333,7 +333,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
   // instructions go to the launcher in CLOUDY_CLOUD_EXTRA_PROMPT instead of a second flag, so neither is dropped.
   const coord = a.role === 'coordinator';
   // turnMs is what is left of the caller-visible turn's one deadline (computed in turn()); retries share it, they never restart it
-  const turnMs = Math.max(deadline - Date.now(), 1000), turnEnd = new Date(deadline).toISOString(); // the value was checked when the agent started
+  const turnMs = Math.max(Math.round((deadline - Date.now()) / 1000) * 1000, 1000), turnEnd = new Date(deadline).toISOString(); // the value was checked when the agent started
   const bashMs = turnMs - 60_000;
   const hint = `${commitHint(a.branch, a.deleteAt, a.serverTtl, turnEnd)}${a.profile ? ` ${profileHint(a.profile)}` : ''}${coord ? ` ${COORDINATOR_HINT}` : ''}`;
   // A Claude worker starts with one merged MCP file and --strict-mcp-config, so a repo's .mcp.json is never loaded: the image's
