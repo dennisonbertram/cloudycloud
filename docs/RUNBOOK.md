@@ -282,8 +282,8 @@ A coordinator is a long-lived Claude Code session on its own Instabox machine. I
 
 Remote Control needs a full Claude login. A token from `claude setup-token` can only make model requests, so it cannot open Remote Control sessions. You sign in once on an image machine and keep the result in an Instabox snapshot.
 
-1. `cloudy-cloud coordinator image` creates a machine labelled `role=coordinator-image`, installs `cloudy-cloud` on it, and prints an SSH command.
-2. Run that SSH command, then `claude auth login` inside the machine, and finish the sign-in in your browser.
+1. `cloudy-cloud coordinator image` creates a machine labelled `role=coordinator-image` (or reuses a running one) and installs `cloudy-cloud` on it. On a terminal it then opens `claude auth login` on the machine. You finish the sign-in in your browser. The command checks `claude auth status`, then does step 3 itself. It prints the time the server deletes the machine (2 hours after creation).
+2. Without a terminal, the command prints manual steps instead: `cloudy-cloud shell NAME`, `claude auth login`, `exit`, then `cloudy-cloud coordinator image --save`. Plain `--save` fails if Claude is not signed in with claude.ai.
 3. `cloudy-cloud coordinator image --save` snapshots the machine, saves the snapshot id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine. A snapshot keeps the home folder, including the saved sign-in. A coordinator image built from a template dated 2026-11-01 or later carries the Instabox CLI at version 0.8.289 or later (Cloudy Cloud uses an installed `instabox` only at that version or newer, and otherwise runs `npx --yes instabox@latest`), so `cloudy-cloud shell` from the coordinator no longer downloads it; rebuild an older image with `cloudy-cloud coordinator image` to get this.
 
 ### 8.2 Commands

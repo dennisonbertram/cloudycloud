@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync, renameSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -554,12 +554,70 @@ test('link_command (npm mode): a cloudy-cloud found only in the npx cache does n
   const bin = join(cache, '.bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, 'cloudy-cloud'), 0o755);
-  const run = (path) => fn(`yn() { echo ASKED; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${path}:${process.env.PATH}` }).stdout;
+  const run = (path) => fn(`yn() { echo ASKED; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${path}:${nodeDir()}:/usr/bin:/bin` }).stdout;
   const npx = run(bin);
   assert.match(npx, /ASKED/);
   assert.doesNotMatch(npx, /already on your PATH/);
-  const global = stubDir(['cloudy-cloud']); // a real global install lives outside node_modules
-  assert.match(run(global), /already on your PATH/);
+  const prefix = tmp(), pkg = join(prefix, 'lib/node_modules/cloudycloud/bin');
+  mkdirSync(pkg, { recursive: true }); mkdirSync(join(prefix, 'bin'));
+  writeFileSync(join(pkg, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(pkg, 'cloudy-cloud'), 0o755);
+  symlinkSync(join(pkg, 'cloudy-cloud'), join(prefix, 'bin/cloudy-cloud'));
+  const npm = stubDir(['npm'], { npm: `#!/bin/sh\n[ "$*" = "prefix -g" ] && echo "${realpathSync(prefix)}"\n` });
+  assert.match(run(`${join(prefix, 'bin')}:${npm}`), /already on your PATH/);
+});
+
+test('link_command (npm mode): a cloudy-cloud that is not the npm global install is replaced only with a yes', () => {
+  const old = tmp(); mkdirSync(join(old, 'bin'), { recursive: true }); // an old worktree link
+  writeFileSync(join(old, 'bin/cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(old, 'bin/cloudy-cloud'), 0o755);
+  const s = npmStub(false);
+  const run = (answer) => fn(`yn() { case "$1" in Install*) return 1 ;; *) return ${answer} ;; esac; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${join(old, 'bin')}:${s.dir}:/usr/bin:/bin` });
+  const no = run(1);
+  assert.match(no.stdout, /Left it in place[^\n]*npm install -g cloudycloud/);
+  assert.doesNotMatch(readFileSync(s.calls, 'utf8'), /install -g/);
+  const yes = run(0);
+  assert.match(yes.stdout, /Installed the cloudy-cloud command/);
+  assert.match(readFileSync(s.calls, 'utf8'), /install -g cloudycloud/);
+});
+
+// A folder holding only node, so tests control which cloudy-cloud is on PATH.
+const nodeDir = () => { const d = tmp(); symlinkSync(process.execPath, join(d, 'node')); return d; };
+
+// A fake npm global layout: PREFIX/bin/cloudy-cloud -> PREFIX/lib/node_modules/cloudycloud/bin/cloudy-cloud, and a stub npm for it.
+function globalLayout() {
+  const prefix = tmp(), pkg = join(prefix, 'lib/node_modules/cloudycloud/bin');
+  mkdirSync(pkg, { recursive: true }); mkdirSync(join(prefix, 'bin'));
+  writeFileSync(join(pkg, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(pkg, 'cloudy-cloud'), 0o755);
+  symlinkSync(join(pkg, 'cloudy-cloud'), join(prefix, 'bin/cloudy-cloud'));
+  const calls = join(prefix, 'calls');
+  const npm = stubDir(['npm'], { npm: `#!/bin/sh\necho "npm $*" >> "${calls}"\n[ "$*" = "prefix -g" ] && echo "PREFIX"\nexit 0\n` });
+  return { prefix, bin: join(prefix, 'bin'), npm, calls, setPrefix: (p) => writeFileSync(join(npm, 'npm'), readFileSync(join(npm, 'npm'), 'utf8').replace('PREFIX', p)) };
+}
+const staleDir = () => { const d = tmp(); mkdirSync(join(d, 'bin')); writeFileSync(join(d, 'bin/cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(d, 'bin/cloudy-cloud'), 0o755); return join(d, 'bin'); };
+
+test('link_command (npm mode): a stale copy behind the npx cache on PATH is still found', () => {
+  const g = globalLayout(); g.setPrefix(realpathSync(g.prefix));
+  const cache = join(tmp(), '_npx/abc/node_modules'); mkdirSync(join(cache, '.bin'), { recursive: true });
+  writeFileSync(join(cache, '.bin/cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(cache, '.bin/cloudy-cloud'), 0o755);
+  const r = fn(`yn() { echo ASKED "$1"; return 1; }; link_command "${cache}/cloudycloud"`, [], { PATH: `${join(cache, '.bin')}:${staleDir()}:${g.npm}:${nodeDir()}:/usr/bin:/bin` });
+  assert.match(r.stdout, /ASKED cloudy-cloud on your PATH runs from/);
+});
+
+test('link_command (npm mode): after a yes, a stale copy that still wins on PATH is reported with the fix', () => {
+  const g = globalLayout(); g.setPrefix(realpathSync(g.prefix));
+  const stale = staleDir();
+  const r = fn(`yn() { return 0; }; install_global() { echo INSTALLED; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${stale}:${g.bin}:${g.npm}:${nodeDir()}:/usr/bin:/bin` });
+  assert.match(r.stdout, /INSTALLED/);
+  assert.match(r.stdout, /still the old copy[^\n]*bin\/cloudy-cloud/);
+  assert.match(r.stdout, /put [^\n]*\/bin first on your PATH/);
+});
+
+test('link_command (npm mode): a symlinked npm prefix does not look stale', () => {
+  const g = globalLayout();
+  const link = join(tmp(), 'prefix-link'); symlinkSync(g.prefix, link);
+  g.setPrefix(link); // npm reports the symlinked path
+  const r = fn(`yn() { echo ASKED; return 1; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${g.bin}:${g.npm}:${nodeDir()}:/usr/bin:/bin` });
+  assert.doesNotMatch(r.stdout, /ASKED/);
+  assert.match(r.stdout, /already on your PATH/);
 });
 
 // A stub npm that logs its calls; "install" fails with EEXIST while the old link exists unless it was removed first.

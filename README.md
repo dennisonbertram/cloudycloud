@@ -327,6 +327,10 @@ See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troublesho
 - Task mode (`/tasks`) does not work in the VS Code extension, the desktop app, or `claude -p`. There Claude uses `cloud_agent_wait`.
 - Problems? See [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html) and [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
+## Updates
+
+When you start a session in a terminal, Cloudy Cloud prints one line if a newer version is on npm (it checks at most once a day, in the background). Update with `npm install -g cloudycloud@latest`. Set `CLOUDY_CLOUD_NO_UPDATE_CHECK=1` to turn the check off. `cloudy-cloud --version` also prints where the running copy is installed.
+
 ## Uninstall
 
 Delete any leftover machines first: list them with `npx instabox@latest ls` and delete each with `npx instabox@latest rm <name>`. Then:

@@ -198,7 +198,7 @@ Manages cloud coordinators: long-lived Claude Code sessions that run on their ow
 
 #### coordinator image
 
-Builds the machine image that coordinators start from. It is a one-time step. Without `--save`, it creates an image machine, installs cloudy-cloud on it, and prints the steps to sign in to Claude on it (`claude auth login` in a shell on the machine). With `--save`, it saves a snapshot of that machine, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
+Builds the machine image that coordinators start from. It is a one-time step. On a terminal, it creates an image machine (or reuses one you already started), installs cloudy-cloud on it, opens the Claude sign-in (`claude auth login`), and when you finish in the browser it saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. Without a terminal it prints the manual steps instead (`cloudy-cloud shell NAME`, `claude auth login`, `exit`, then `--save`). `--save` checks that Claude is signed in on the machine, then saves and deletes it. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
 
 | Flag | Meaning |
 |---|---|

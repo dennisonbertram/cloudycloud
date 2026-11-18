@@ -558,14 +558,50 @@ install_global_done() {
   warn "Continuing without it. Run it with npx cloudycloud"
 }
 
+# real_path FILE: FILE with symlinks resolved.
+real_path() { node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "$1" 2>/dev/null || printf '%s\n' "$1"; }
+
+# path_cloudy_cloud ROOT: the first cloudy-cloud on PATH that is not in npx's cache or ROOT's own node_modules (empty if none).
+path_cloudy_cloud() {
+  local c
+  while IFS= read -r c; do
+    case $c in */_npx/* | "${1%/node_modules/*}"/node_modules/*) continue ;; esac
+    printf '%s\n' "$c"; return
+  done < <(type -ap cloudy-cloud 2>/dev/null)
+}
+
+# is_npm_global_copy FILE: true when FILE resolves into the npm global modules folder's cloudycloud package.
+is_npm_global_copy() {
+  local mods
+  mods=$(npm prefix -g 2>/dev/null)/lib/node_modules
+  mods=$(cd "$mods" 2>/dev/null && pwd -P || printf '%s' "$mods")
+  case $(real_path "$1") in "$mods/cloudycloud/"*) return 0 ;; *) return 1 ;; esac
+}
+
 link_command() { # link_command ROOT
   local root=$1 cur other old oldpkg
   if from_npm "$root"; then
     # An npx copy is a temporary cache folder, so the lasting command comes from a global npm install, never npm link.
-    cur=$(command -v cloudy-cloud) || cur=""
     # npx puts its own temporary .bin first on PATH; a command found there (or inside this package's node_modules) is not installed.
-    case $cur in */_npx/* | "${root%/node_modules/*}"/node_modules/*) cur="" ;; esac
-    if [ -n "$cur" ]; then ok "cloudy-cloud is already on your PATH" "$cur"; return; fi
+    # Keep searching the rest of PATH, so a stale copy behind it is still found.
+    cur=$(path_cloudy_cloud "$root")
+    if [ -n "$cur" ]; then
+      if ! is_npm_global_copy "$cur"; then
+        if yn "cloudy-cloud on your PATH runs from $(dirname "$(real_path "$cur")" | sed 's|/bin$||'). Replace it with the npm global install?"; then
+          install_global
+          cur=$(path_cloudy_cloud "$root")
+          if [ -n "$cur" ] && ! is_npm_global_copy "$cur"; then
+            warn "cloudy-cloud on your PATH is still the old copy" "$cur"
+            hint "Remove it ($cur), or put $(npm prefix -g 2>/dev/null)/bin first on your PATH"
+          fi
+        else
+          warn "Left it in place. Replace it later: npm install -g cloudycloud"
+        fi
+      else
+        ok "cloudy-cloud is already on your PATH" "$cur"
+      fi
+      return
+    fi
     if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
       install_global
     else

@@ -95,11 +95,8 @@
 <h3 id="image">1. Make the coordinator image (once)</h3>
 <p>Remote Control needs a full Claude login. A token from <code>claude setup-token</code> cannot open Remote Control sessions. So you sign in once on an image machine and save it as an Instabox snapshot.</p>
 <pre><code>cloudy-cloud coordinator image</code></pre>
-<p>This creates a machine, installs <code>cloudy-cloud</code> on it, and prints an SSH command. Run that command, then run this in the shell it opens:</p>
-<pre><code>claude auth login</code></pre>
-<p>Finish the browser sign-in, leave the shell, then save the snapshot:</p>
-<pre><code>cloudy-cloud coordinator image --save</code></pre>
-<p>This saves the snapshot id as <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code> in <code>~/.config/cloudy-cloud/env</code> and deletes the image machine. The image machine is deleted by the server after 2 hours if you do not finish.</p>
+<p>This creates a machine, installs <code>cloudy-cloud</code> on it, and opens the Claude sign-in. Finish the sign-in in your browser. The command then saves the snapshot as <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code> in <code>~/.config/cloudy-cloud/env</code> and deletes the image machine.</p>
+<p>The server deletes the image machine after 2 hours, and the command prints the time. If the sign-in does not finish, run <code>cloudy-cloud coordinator image</code> again to resume on the same machine. Without a terminal (a script), the command prints the manual steps instead: <code>cloudy-cloud shell NAME</code>, then <code>claude auth login</code>, then <code>exit</code>, then <code>cloudy-cloud coordinator image --save</code>.</p>
 
 <h3 id="start">2. Start a coordinator</h3>
 <pre><code>cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branch main --task-file brief.md</code></pre>
