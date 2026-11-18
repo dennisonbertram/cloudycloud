@@ -37,7 +37,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
     sandboxId: id,
     getInfo: async () => { calls.push({ sdk: 'getInfo', id }); return { name }; },
     files: { write: async (p, d) => { calls.push({ sdk: 'files.write', path: p, ...(/\/env$/.test(p) ? { envNames: envNames(d) } : /task\.md$/.test(p) ? { text: String(d) } : {}) }); } },
-    commands: { run: async (cmd, o = {}) => { calls.push({ sdk: 'commands.run', cmd, cwd: o.cwd, timeoutMs: o.timeoutMs }); return { stdout: '/data/home', stderr: '', exitCode: 0 }; } },
+    commands: { run: async (cmd, o = {}) => { calls.push({ sdk: 'commands.run', cmd, cwd: o.cwd, timeoutMs: o.timeoutMs }); return { stdout: /auth status/.test(cmd) ? '{"loggedIn":true,"authMethod":"claude.ai"}' : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { calls.push({ sdk: 'createSnapshot', ...o }); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { calls.push({ sdk: 'sandbox.kill', id }); return true; },
   });
@@ -65,7 +65,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   };
   const out = [];
   const env = { INSTABOX_API_KEY: KEY, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN', CLOUDY_CLOUD_CONFIG: join(dir, 'env'), ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
-  return { calls, out, deps: { sdk, fetchFn, env, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner') } };
+  return { calls, out, deps: { sdk, fetchFn, env, tty: false, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner') } };
 }
 
 const coord = (id, name, cname) => ({ sandboxId: id, name, state: 'running', startedAt: started, metadata: { role: 'coordinator', name: cname } });
@@ -73,6 +73,7 @@ const normalise = (v) => JSON.parse(JSON.stringify(v)
   .replaceAll(KEY, '<API_KEY>').replaceAll(TOK, '<OAUTH_TOKEN>')
   .replace(/\b[0-9a-f]{40}\b/g, '<SHA>').replace(/cc-keep\/tool-[0-9a-f]+/g, 'cc-keep/tool-<RAND>')
   .replace(/(?:\/[\w.-]+)+\/gold-coord-\w+\/env/g, '<CONFIG_FILE>')
+  .replace(/deleted at \d\d:\d\d/g, 'deleted at <HH:MM>')
   .replace(/coordinator-\d{14}/g, 'coordinator-<STAMP>')
   .replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, (s) => (s === started.toISOString() ? s : '<TIME>'))
   .replace(/"Idempotency-Key":"[0-9a-f-]{36}"/g, '"Idempotency-Key":"<UUID>"'));

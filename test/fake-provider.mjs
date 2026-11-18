@@ -159,7 +159,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
     async forwardPort(id, localRemote) { log.ports.push({ op: 'forward', id, localRemote }); return 0; },
     async publishPort(id, port) { log.ports.push({ op: 'publish', id, port }); return { url: `https://fake.example/${id}/${port}` }; },
     async unpublishPort(id, port) { log.ports.push({ op: 'unpublish', id, port }); return 0; },
-    shellArgv: (id, cmd = []) => ['fake-ssh', id, ...cmd],
+    shellArgv: (id, cmd = [], o = {}) => ['fake-ssh', ...(o.tty ? ['-t'] : []), id, ...cmd],
     async displayLink(id, o = {}) { log.display.push({ op: 'link', id, ...o }); return { url: `https://fake.example/desktop/${id}#tok`, expiresAt: new Date(Date.now() + (o.ttlSeconds ?? 3600) * 1000) }; },
     // Deterministic: 5 samples 30 s apart ending at `now`, oldest first; cpu climbs 10..50 %. The first has no network fields.
     async metrics(id, { since = Date.now() - 3_600_000 } = {}) {

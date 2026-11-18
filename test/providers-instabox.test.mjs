@@ -295,6 +295,7 @@ test('shellArgv keeps every argument separate and the key out of argv', () => {
   const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' }, {});
   assert.deepEqual(p.shellArgv('m1'), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1']);
   assert.deepEqual(p.shellArgv('m1', ['ls', '-la', 'a b']), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', '-T', "'ls' '-la' 'a b'"]);
+  assert.deepEqual(p.shellArgv('m1', ['claude', 'auth', 'login'], { tty: true }), ['npx', '--yes', 'instabox@latest', 'ssh', 'm1', '--', '-t', "'claude' 'auth' 'login'"]);
   assert.equal(p.caps.hasShell, true);
   assert.deepEqual(p.caps.machineKinds, ['linux', 'android', 'omarchy', 'gpu', 'macos']);
 });

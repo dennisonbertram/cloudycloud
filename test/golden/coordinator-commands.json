@@ -80,7 +80,7 @@
       }
     ],
     "out": [
-      "Image machine sbx-abc is ready and cloudy-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. npx --yes instabox@latest ssh sbx-abc\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: cloudy-cloud coordinator image --save"
+      "Image machine sbx-abc is ready and cloudy-cloud is installed on it. It is deleted at <HH:MM>.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell sbx-abc\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save"
     ]
   },
   "image --save": {
@@ -100,6 +100,11 @@
         "sdk": "Sandbox.connect",
         "id": "m_img",
         "apiKey": "<API_KEY>"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "claude auth status --json",
+        "timeoutMs": 60000
       },
       {
         "sdk": "createSnapshot",
