@@ -89,7 +89,7 @@ test('omp built-ins and profiles.json use the omp harness; other harness names a
   assert.equal(resolveProfile('omp-particle', undefined, env).ok.model, 'particle-ai/particle-1');
   const mk = (h) => ({ ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: h, format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
   assert.equal(resolveProfile('mine', undefined, mk('omp')).ok.harness, 'omp');
-  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi" or "omp"/);
+  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi", "omp"/);
 });
 
 test('ompModels names the key variable and never holds a value; ompConfig turns off imports and project MCP', () => {

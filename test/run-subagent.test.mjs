@@ -971,7 +971,7 @@ test('an omp worker cannot be a coordinator, and no machine starts', async () =>
   const { deps, created } = await profileSetup();
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'omp-glm', role: 'coordinator' }, deps);
   assert.equal(r.isError, true);
-  assert.match(r.content[0].text, /coordinator cannot use a pi or omp profile/);
+  assert.match(r.content[0].text, /coordinator cannot use a pi, omp or opencode profile/);
   assert.equal(created.length, 0);
 });
 
