@@ -120,7 +120,7 @@ export function createProvider(env = process.env, deps = {}) {
         } else {
           const have = await docker(['image', 'inspect', '--format', '{{index .Config.Labels "cloudy-cloud.image"}}', image])
             .then((r) => r.stdout.trim(), (e) => { if (e.exitCode !== undefined) return 'missing'; throw e; });
-          if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup`);
+          if (have !== VERSION) throw new Error(`The worker image on ${host} is version ${have} but cloudy-cloud is ${VERSION}. Run: cloudy-cloud setup --provider self-hosted`);
         }
 
         // A coordinator (and only a coordinator) gets the box's Docker socket, so it can start its workers as siblings. The socket's

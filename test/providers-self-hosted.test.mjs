@@ -229,7 +229,7 @@ test('slots full gives quota_exceeded', async () => {
 
 test('wrong image label gives the setup message', async () => {
   const { provider } = make({}, { imageVersion: '0.0.1' });
-  await assert.rejects(mk(provider), (e) => e.message.includes(`version 0.0.1 but cloudy-cloud is ${VERSION}`) && e.message.includes('Run: cloudy-cloud setup'));
+  await assert.rejects(mk(provider), (e) => e.message.includes(`version 0.0.1 but cloudy-cloud is ${VERSION}`) && e.message.includes('Run: cloudy-cloud setup --provider self-hosted'));
 });
 
 test('exit 124 gives the timeout error', async () => {
