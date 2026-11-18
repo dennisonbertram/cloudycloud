@@ -81,7 +81,7 @@ export function buildServer(deps) {
   deps.tasks ??= new Map();
   sharedQueue(deps);
   deps.literals ??= new Set(); // tokens to redact, added when an agent starts and needed by every later call
-  const server = new Server({ name: 'cloud', version: '0.1.4' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
+  const server = new Server({ name: 'cloud', version: '0.2.0' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {
     const h = handlers[req.params.name];

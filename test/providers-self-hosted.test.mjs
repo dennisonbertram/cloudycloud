@@ -229,7 +229,7 @@ test('slots full gives quota_exceeded', async () => {
 
 test('wrong image label gives the setup message', async () => {
   const { provider } = make({}, { imageVersion: '0.0.1' });
-  await assert.rejects(mk(provider), (e) => e.message.includes(`version 0.0.1 but cloudy-cloud is ${VERSION}`) && e.message.includes('Run: cloudy-cloud setup'));
+  await assert.rejects(mk(provider), (e) => e.message.includes(`version 0.0.1 but cloudy-cloud is ${VERSION}`) && e.message.includes('Run: cloudy-cloud setup --provider self-hosted'));
 });
 
 test('exit 124 gives the timeout error', async () => {
@@ -368,7 +368,7 @@ test('coordinator snapshots: commit, inspect, create from the image without the 
   await assert.rejects(provider.getSnapshot(snap.id), (e) => e.code === 'not_found');
   await assert.rejects(provider.create({ image: snap.id, envs: {}, labels: {}, ttlSeconds: 60 }), (e) => e.code === 'not_found');
   await assert.rejects(provider.snapshot(src, { name: 'bad name; rm -rf /' }), /invalid snapshot name/);
-  await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.1.4'), /only deletes coordinator images/);
+  await assert.rejects(provider.deleteSnapshot('cloudy-cloud-worker:0.2.0'), /only deletes coordinator images/);
 });
 
 test('GitHub token consent covers GH_TOKEN only: unrequested env secrets are never copied, requested MCP secrets are', async () => {
