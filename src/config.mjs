@@ -32,12 +32,18 @@ export function aptPackages(env = process.env) {
 }
 
 // Hosts a worker machine may connect to (comma- or space-separated; *.example.com covers the domain and its
-// subdomains). No ports, schemes or paths: a wild-card needs at least one more name after the TLD. Returns { list } or { error }.
-const EGRESS_HOST = /^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+// subdomains). No ports, schemes or paths; labels are at most 63 characters and may not start or end in a hyphen.
+// Unset means no policy ({ list: [] }); a value that is set but names nothing is an error, so a blank override
+// cannot silently switch a saved policy off. Returns { list } (lowercased) or { error }.
+const EGRESS_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+const EGRESS_HOST = new RegExp(`^(\\*\\.)?${EGRESS_LABEL}(\\.${EGRESS_LABEL})+$`);
 export function egressAllow(env = process.env) {
-  const list = String(env.CLOUDY_CLOUD_EGRESS_ALLOW ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').split(/[\s,]+/).filter(Boolean);
-  const bad = list.find((n) => !EGRESS_HOST.test(n));
-  return bad ? { error: `CLOUDY_CLOUD_EGRESS_ALLOW has an invalid host "${bad.slice(0, 60)}". Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list };
+  const raw = env.CLOUDY_CLOUD_EGRESS_ALLOW;
+  if (raw === undefined || raw === null) return { list: [] };
+  const parts = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2').split(/[\s,]+/).filter(Boolean);
+  if (!parts.length) return { error: `CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env or remove it.` };
+  const bad = parts.find((n) => !EGRESS_HOST.test(n));
+  return bad ? { error: `CLOUDY_CLOUD_EGRESS_ALLOW has an invalid host "${bad.slice(0, 60)}". Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list: parts.map((h) => h.toLowerCase()) };
 }
 
 // What the env file holds (only the names cloudy-cloud knows); a missing file is fine.

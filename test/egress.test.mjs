@@ -114,3 +114,108 @@ test('with egress unset, create options have no egress key', async () => {
   assert.ok(!('egress' in createOpts[0]));
   await stop([agent]);
 });
+
+test('a set-but-blank CLOUDY_CLOUD_EGRESS_ALLOW is refused, not treated as no policy', async () => {
+  const { start, text, created, deps } = await setup();
+  deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: '  , ' };
+  const r = await start();
+  assert.equal(r.isError, true);
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts/);
+  assert.equal(created.length, 0);
+  assert.equal(deps.open.size, 0);
+});
+
+test('the provider-capability refusal fires before any profile preflight model request', async () => {
+  const fetches = [];
+  const { start, text, created, deps } = await setup({
+    provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }),
+    fetchFn: async (...a) => { fetches.push(a[0]); return { status: 200, text: async () => '{}' }; },
+  });
+  deps.env = { ...deps.env, PARTICLE_API_KEY: 'pk-early-refusal-1', CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start({ profile: 'glm' }); // format openai: without the early refusal its preflight POSTs to the model host
+  assert.equal(r.isError, true);
+  assert.match(text(r), /provider fake cannot limit where a machine connects/);
+  assert.equal(fetches.length, 0);
+  assert.equal(created.length, 0);
+  assert.equal(deps.open.size, 0);
+});
+
+test('an incompatible profile is refused before its preflight request too', async () => {
+  const fetches = [];
+  const { start, text, created, deps } = await setup({
+    fetchFn: async (...a) => { fetches.push(a[0]); return { status: 200, text: async () => '{}' }; },
+  });
+  deps.env = { ...deps.env, PARTICLE_API_KEY: 'pk-early-refusal-2', CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start({ profile: 'glm' });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /works only for Claude Code workers that reach their model host directly/);
+  assert.equal(fetches.length, 0);
+  assert.equal(created.length, 0);
+});
+
+test('a malformed profile baseUrl is refused before the agent is registered', async () => {
+  const profilesFile = join(await mkdtemp(join(tmpdir(), 'cc-profiles-')), 'profiles.json');
+  await writeFile(profilesFile, JSON.stringify({ weird: { format: 'anthropic', baseUrl: 'https://model.example:bad', keyName: 'ANTHROPIC_API_KEY', model: 'm1' } }));
+  const { start, text, deps } = await setup();
+  deps.env = { ...deps.env, CLOUDY_CLOUD_PROFILES: profilesFile, CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start({ profile: 'weird' });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /baseUrl/);
+  assert.equal(deps.open.size, 0);
+  assert.equal(deps.count?.started ?? 0, 0);
+});
+
+test('an https MCP URL adds only its lowercase hostname, whatever the scheme case or port', async () => {
+  const mcp = join(await mkdtemp(join(tmpdir(), 'cc-mcp-')), 'mcp.json');
+  await writeFile(mcp, JSON.stringify({ mcpServers: { ctx: { type: 'http', url: 'HTTPS://MCP.Example.NET:8443/mcp' } } }));
+  const { id, wait, createOpts, deps, stop } = await setup();
+  deps.env = { ...deps.env, CLOUDY_CLOUD_MCP: mcp, CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const agent = await id();
+  await wait([agent]);
+  assert.deepEqual(createOpts[0].egress.allow, ['github.com', 'api.github.com', 'api.anthropic.com', 'mcp.example.net', 'example.com']);
+  await stop([agent]);
+});
+
+test('npx and uvx MCP servers are refused with the package hosts to add', async () => {
+  const mcp = join(await mkdtemp(join(tmpdir(), 'cc-mcp-')), 'mcp.json');
+  await writeFile(mcp, JSON.stringify({ mcpServers: { npm: { command: 'npx', args: ['-y', 'some-mcp'] }, py: { command: 'uvx', args: ['other-mcp'] } } }));
+  const { start, text, created, deps } = await setup();
+  deps.env = { ...deps.env, CLOUDY_CLOUD_MCP: mcp, CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start();
+  assert.equal(r.isError, true);
+  assert.match(text(r), /registry\.npmjs\.org/);
+  assert.match(text(r), /pypi\.org/);
+  assert.match(text(r), /files\.pythonhosted\.org/);
+  assert.equal(created.length, 0);
+  assert.equal(deps.open.size, 0);
+});
+
+test('CLOUDY_CLOUD_APT_PACKAGES is refused with the apt mirrors to add when egress is active', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: true, hasEgressPolicy: true });
+  const { start, text, created, deps } = await setup({ provider });
+  deps.env = { ...deps.env, CLOUDY_CLOUD_PROXY_SECRETS: 'GH_TOKEN,ANTHROPIC_API_KEY', CLOUDY_CLOUD_APT_PACKAGES: 'jq', CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start();
+  assert.equal(r.isError, true);
+  assert.match(text(r), /deb\.debian\.org/);
+  assert.match(text(r), /cli\.github\.com/);
+  assert.equal(created.length, 0);
+  assert.equal(deps.open.size, 0);
+});
+
+test('a cased duplicate of a built-in host is not allowed twice', async () => {
+  const { id, wait, createOpts, deps, stop } = await setup();
+  deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'GITHUB.COM Example.COM' };
+  const agent = await id();
+  await wait([agent]);
+  assert.deepEqual(createOpts[0].egress.allow, ['github.com', 'api.github.com', 'api.anthropic.com', 'example.com']);
+  await stop([agent]);
+});
+
+test('task mode names the allow list in its start message', async () => {
+  const { start, deps, stop } = await setup({ asTask: true });
+  deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  const r = await start();
+  assert.equal(r.resultType, 'task');
+  assert.match(r.statusMessage, /Network: only github\.com, api\.github\.com, api\.anthropic\.com, example\.com\./);
+  await stop([...deps.open.keys()]);
+});

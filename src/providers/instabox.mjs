@@ -464,6 +464,6 @@ export function createProvider(env, deps = {}) {
 // instance id the reaper deletes by. Kept until the core uses createProvider.
 export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, rt = {}) {
   const provider = createProvider(env, { sdk, fetchFn, timing, ...rt });
-  return (envs, { deleteAfterSeconds = workerSeconds(env), secrets = [] } = {}) =>
-    provider.create({ envs, labels: { purpose: 'cloudy-cloud', owner }, ttlSeconds: deleteAfterSeconds, secrets });
+  return (envs, { deleteAfterSeconds = workerSeconds(env), secrets = [], egress } = {}) =>
+    provider.create({ envs, labels: { purpose: 'cloudy-cloud', owner }, ttlSeconds: deleteAfterSeconds, secrets, ...(egress && { egress }) });
 }

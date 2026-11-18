@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile } from './config.mjs';
+import { loadEnv, ownerFile, egressAllow } from './config.mjs';
 import { coordinatorKeys, loadProfiles } from './profiles.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
@@ -33,6 +33,8 @@ const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; 
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
+// Coordinators run unrestricted machines: a configured worker egress policy refuses them outright (same text as runSubagent's role refusal).
+const refuseEgress = (env) => { const e = egressAllow(env); if (e.error) fail(e.error); if (e.list.length) fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it, or call cloud_agent with role "worker".'); };
 // A "not found" is a normal answer, not a failure: it prints without the failure mark. Lines: short message, reason (optional), Next.
 // The message stays one sentence for scripts (plain stderr, --json); only a colour terminal shows short / reason / Next.
 const guided = (message, short, reason, next, neutral = false) => { throw Object.assign(new Error(message), { short, reason, next, neutral }); };
@@ -176,6 +178,7 @@ async function saveNew(c, sbx, email) {
 }
 
 async function image(c, args) {
+  refuseEgress(c.env);
   if (await resumePending(c)) return;
   const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
   if (args.includes('--save')) {
@@ -223,6 +226,7 @@ const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? arg
 const customHost = (env, key) => { try { const p = Object.values(loadProfiles(env)).find((x) => x?.keyName === key); return URL.canParse(p?.baseUrl) ? new URL(p.baseUrl).host : undefined; } catch { return undefined; } };
 
 async function start(c, args) {
+  refuseEgress(c.env);
   const name = args[0];
   if (!name || !NAME_RE.test(name)) fail('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.');
   const repo = flag(args, '--repo');

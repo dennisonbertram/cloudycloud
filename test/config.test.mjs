@@ -50,18 +50,30 @@ test('the profile cap and provider retry keys load from the env file', () => {
 });
 
 
-test('egressAllow parses a comma- or space-separated host list; unset and empty are an empty list', () => {
+test('egressAllow parses a comma- or space-separated host list; unset is no policy, set-but-empty is an error', () => {
   assert.deepEqual(egressAllow({}), { list: [] });
-  assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: '  ' }), { list: [] });
   assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'api.example.com, *.example.org other.net ,another.io' }), { list: ['api.example.com', '*.example.org', 'other.net', 'another.io'] });
+  for (const blank of ['', '  ', ' , , ']) {
+    const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: blank });
+    assert.match(r.error ?? '', /CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts/, `"${blank}"`);
+    assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
+  }
 });
 
 test('egressAllow rejects entries that are not plain host names', () => {
-  for (const bad of ['*.com', 'http://x', 'a.com:443', 'a/b', 'localhost']) {
+  for (const bad of ['*.com', 'http://x', 'a.com:443', 'a/b', 'localhost', '-bad.example.com', 'bad-.example.com', '-.example.com']) {
     const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `ok.example.com ${bad}` });
     assert.ok(r.error && r.error.includes(`invalid host "${bad}"`), `${bad}: ${r.error ?? r.list}`);
     assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
   }
+  const overlong = `a${'b'.repeat(63)}.example.com`; // 64-char label; the error truncates the entry to 60 chars
+  const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: overlong });
+  assert.ok(r.error && r.error.includes(`invalid host "${overlong.slice(0, 60)}"`), r.error ?? 'accepted');
+  assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `a${'b'.repeat(62)}.example.com` }), { list: [`a${'b'.repeat(62)}.example.com`] }, 'a 63-character label is fine');
+});
+
+test('egressAllow lowercases the list so case folds into the built-in hosts', () => {
+  assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'GITHUB.COM Example.COM' }), { list: ['github.com', 'example.com'] });
 });
 
 test('the egress and microsandbox keys load from the env file', () => {

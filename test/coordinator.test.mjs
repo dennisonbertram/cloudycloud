@@ -389,6 +389,16 @@ test('image and start refuse a provider without snapshots, before creating anyth
   assert.equal(provider.log.list.length, 0);
 });
 
+test('image and start refuse when CLOUDY_CLOUD_EGRESS_ALLOW is set, before creating anything', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, {});
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
+  for (const args of [['image'], ['image', '--save'], ['start', 'boss', '--repo', 'https://github.com/o/r']]) {
+    await assert.rejects(main(args, { provider, env, out: () => {} }), /CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only\./, args.join(' '));
+  }
+  await assert.rejects(main(['image'], { provider, env: { ...env, CLOUDY_CLOUD_EGRESS_ALLOW: '  ' }, out: () => {} }), /is set but lists no hosts/);
+  assert.equal(provider.log.create.length, 0);
+});
+
 test('start asks the provider for a never-suspending machine from the snapshot with a server deadline', async () => {
   const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true }); // no proxy secrets: its key goes by value, so no secrets option
   provider.create = async (o) => {
