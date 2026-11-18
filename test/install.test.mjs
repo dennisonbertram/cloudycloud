@@ -288,6 +288,7 @@ const pty = (spec) => {
 
 // The first question of every run: Enter keeps the default, Instabox.
 const WHERE = ['Where should subagents run', '\n'];
+const AGENTS = ['Which agents do you run', 'claude\n']; // the agent question: this suite's default is the Claude flow
 function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   const cl = claudeStub(claudeExtra);
   const cfgDir = tmp(); const cfg = join(cfgDir, 'env');
@@ -301,7 +302,7 @@ function rig({ saved = '', claudeExtra = {}, githubState = 'yes' } = {}) {
   symlinkSync(resolve('bin/cloudy-cloud'), join(cl, 'cloudy-cloud'));
   const tdir = tmp();
   const env = { PATH: `${cl}:${process.env.PATH}`, HOME: tdir, TMPDIR: tdir, CLOUDY_CLOUD_CONFIG: cfg, TERM: 'xterm', NO_COLOR: '1' };
-  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps: [WHERE, ...steps] });
+  const run = (steps) => pty({ cmd: ['/bin/bash', script], env, steps: [WHERE, AGENTS, ...steps] });
   return { cl, cfg, tdir, run, env };
 }
 const P_IB = ['Paste it', null]; // placeholders, built per test
@@ -400,7 +401,7 @@ function uiRig(opts, env = {}) {
   const g = rig(opts);
   const e = { PATH: `${g.cl}:${process.env.PATH}`, HOME: g.tdir, TMPDIR: g.tdir, CLOUDY_CLOUD_CONFIG: g.cfg, ...UI_ENV, ...env };
   for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
-  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [WHERE, ...steps], ...extra }) };
+  return { ...g, env: e, run: (steps, extra = {}) => pty({ cmd: ['/bin/bash', script], env: e, steps: [WHERE, AGENTS, ...steps], ...extra }) };
 }
 const answers = [['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']];
 const NOANIM = { CLOUDY_CLOUD_NO_ANIMATION: '1' };
@@ -490,7 +491,7 @@ test('animation: Ctrl-C restores the cursor and echo', () => {
 
 test('animation: a key pressed during it skips it and does not reach the first prompt', () => {
   const g = uiRig({ saved: savedBoth });
-  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: g.env, steps: [['\\?25l', 'yy'], WHERE, AGENTS, ['Replace it\\?.*\\[y/N\\]', 'n\n'], MOVE, ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Replace it\\?.*\\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/create one at|Create one at/.test(r.text), 'the y reached the Replace prompt'); // a leaked y would have said yes
   assert.equal(readFileSync(g.cfg, 'utf8'), savedBoth);
@@ -630,7 +631,7 @@ function nodeSpy(g, { stub }) {
 test('pty: answer 1 (the default) is the Instabox flow and never runs the self-hosted script', () => {
   const g = rig({ saved: savedBoth });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [WHERE, ...answers] });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [WHERE, AGENTS, ...answers] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Instabox key saved and working/);
   assert.ok(!existsSync(spy.log), 'self-hosted script was called');
@@ -639,7 +640,7 @@ test('pty: answer 1 (the default) is the Instabox flow and never runs the self-h
 test('pty: answer 2 runs the self-hosted script, skips every Instabox step and keeps the Claude step', () => {
   const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\nCLOUDY_CLOUD_SSH_HOST=me@mac-studio\nCLOUDY_CLOUD_SELF_HOSTED_SLOTS=4\n` });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '2\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  const r = pty({ cmd: ['/bin/bash', script], env: spy.env, steps: [['Where should subagents run', '2\n'], AGENTS, ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
   assert.equal(r.code, 0, r.text);
   assert.equal(readFileSync(spy.log, 'utf8').trim().endsWith('self-hosted-setup.mjs setup'), true);
   assert.ok(!/Instabox API key|Instabox key saved|GH_TOKEN|coordinators/i.test(r.text), r.text);
@@ -649,7 +650,7 @@ test('pty: answer 2 runs the self-hosted script, skips every Instabox step and k
 test('pty: --provider self-hosted skips the question', () => {
   const g = rig({ saved: `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\n` });
   const spy = nodeSpy(g, { stub: true });
-  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'self-hosted'], env: spy.env, steps: [['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'self-hosted'], env: spy.env, steps: [AGENTS, ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n']] });
   assert.equal(r.code, 0, r.text);
   assert.ok(!/Where should subagents run/.test(r.text));
   assert.ok(existsSync(spy.log));
@@ -992,4 +993,39 @@ test('the spend cap is shown when alerts are off, in check-only and in setup', (
 test('an org id that starts with a hyphen is unknown, not a node option', () => {
   const r = alertsRig({ orgId: '--version' }).check();
   assert.match(r.stdout, /Could not read your Instabox usage alerts/);
+});
+
+// ---- setup does not require Claude ----
+const CODEX = ['Which agents do you run', 'codex\n'];
+const NO_CLAUDE_WORKERS = ['Also run Claude Code workers', 'n\n'];
+// A PATH with the setup tools but no claude command.
+const noClaudePath = (g) => stubDir(['git', 'curl', 'npm', 'npx', 'node'], { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, curl: readFileSync(join(g.cl, 'curl'), 'utf8'), npm: readFileSync(join(g.cl, 'npm'), 'utf8') }) + ':/usr/bin:/bin';
+
+test('pty: a Codex-only user finishes setup with no Claude token and no claude command', () => {
+  const g = rig();
+  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [WHERE, CODEX, NO_CLAUDE_WORKERS, ['Paste it', KEY + '\n'], ['Replace it\\? \\[y/N\\]', 'n\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators.*\\[y/N\\]', 'n\n']] });
+  assert.equal(r.code, 0, r.text);
+  assert.doesNotMatch(r.text, /Claude token for subagents|Claude token works|Claude Code is missing/);
+  const cfg = readFileSync(g.cfg, 'utf8');
+  assert.ok(cfg.includes('CLOUDY_CLOUD_AGENTS=codex\n'), cfg);
+  assert.ok(cfg.includes(`INSTABOX_API_KEY=${KEY}\n`));
+  assert.doesNotMatch(cfg, /CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
+  assert.equal(statSync(g.cfg).mode & 0o777, 0o600);
+  assert.match(r.text, /Summary[\s\S]*Instabox key\s+OK/);
+  assert.doesNotMatch(r.text.split('Summary')[1], /Claude token/);
+});
+
+test('pty: choosing claude with no claude command stops with the install link', () => {
+  const g = rig();
+  const r = pty({ cmd: ['/bin/bash', script], env: { ...g.env, PATH: noClaudePath(g) }, steps: [WHERE, AGENTS] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.text, /Claude Code is missing/);
+});
+
+test('check-only does not ask for a Claude token when the saved agents do not include claude', () => {
+  const dir = stubDir(['git', 'npm', 'curl'].concat('node'), { node: nodeStub });
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `CLOUDY_CLOUD_AGENTS=codex\nINSTABOX_API_KEY=${KEY}\n`, { mode: 0o600 });
+  const r = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  assert.doesNotMatch(r.stdout, /Claude Code is missing|No Claude token is saved/);
 });

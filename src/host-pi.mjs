@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv } from './config.mjs';
+import { defaultWorkerNote, loadEnv } from './config.mjs';
 import { PI_VERSION } from './profiles.mjs';
 
 // Pinned like the workers' installs. free-pi-cli updates itself in place when its server blocks an old version.
@@ -22,10 +22,10 @@ export function missingSetup(env) {
 }
 
 // -> { setup?: { cmd, args }, run: { cmd, args } }. Argument arrays only, nothing goes through a shell.
-export function hostPlan(agent, { root, env, args, onPath: has = onPath }) {
+export function hostPlan(agent, { root, env, args, note = '', onPath: has = onPath }) {
   const server = `${root}/src/server.mjs`;
   if (agent === 'pi') {
-    const pre = ['-e', `${root}/src/host-pi-extension.mjs`, '--append-system-prompt', HOST_PROMPT, ...args];
+    const pre = ['-e', `${root}/src/host-pi-extension.mjs`, '--append-system-prompt', note ? `${HOST_PROMPT} ${note.replace(/\n/g, ' ')}` : HOST_PROMPT, ...args];
     return { run: has('pi', env) ? { cmd: 'pi', args: pre } : { cmd: 'npx', args: ['--yes', `@earendil-works/pi-coding-agent@${PI_VERSION}`, ...pre] } };
   }
   const bin = has('free-pi-cli', env) ? { cmd: 'free-pi-cli', pre: [] } : { cmd: 'npx', pre: ['--yes', `free-pi-cli@${FREE_PI_VERSION}`] };
@@ -42,7 +42,9 @@ function main(agent, args) {
   const env = loadEnv();
   const missing = missingSetup(env);
   if (missing) { console.error(`cloudy-cloud is not set up yet: no ${missing} in ${process.env.CLOUDY_CLOUD_CONFIG || '~/.config/cloudy-cloud/env'}\n  Next step: run cloudy-cloud setup`); return 1; }
-  const plan = hostPlan(agent, { root, env: process.env, args });
+  const note = defaultWorkerNote(env);
+  if (note) console.error(`  ! ${note.replace(/\n/g, '\n    ')}`);
+  const plan = hostPlan(agent, { root, env: process.env, args, note });
   if (plan.setup) {
     const s = spawnSync(plan.setup.cmd, plan.setup.args, { stdio: ['ignore', 'ignore', 'inherit'] });
     if (s.status !== 0) { console.error(`Could not register the cloud tools with ${agent}. Next step: run ${plan.setup.cmd} --version, then retry cloudy-cloud ${agent}.`); return 1; }

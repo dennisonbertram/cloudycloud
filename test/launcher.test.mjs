@@ -268,3 +268,40 @@ test('display subcommand runs src/display.mjs and help lists it', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Usage: cloudy-cloud display/);
 });
+
+// A host subcommand starts without a Claude token, but says what the default worker needs and the exact profile to pass.
+function runHost(sub, config, extraEnv = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-host-'));
+  const argvFile = join(dir, 'argv');
+  for (const bin of ['codex', 'opencode', 'pi']) {
+    writeFileSync(join(dir, bin), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+    chmodSync(join(dir, bin), 0o755);
+  }
+  const cfg = join(dir, 'env');
+  writeFileSync(cfg, config);
+  const r = spawnSync('/bin/sh', [launcher, sub], { cwd: repo('https://github.com/test/repo.git'), env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, CLOUDY_CLOUD_OPENCODE_BIN: join(dir, 'opencode'), ...extraEnv }, input: '', encoding: 'utf8' });
+  return { ...r, argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '' };
+}
+
+for (const sub of ['codex', 'opencode']) {
+  test(`${sub} host with no Claude token starts, and names the profile to pass`, () => {
+    const r = runHost(sub, `INSTABOX_API_KEY=${IBK}\nOPENAI_API_KEY=sk-test-0123456789abcdef\n`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /No Claude token is saved/);
+    assert.match(r.stderr, /Next step: .*profile/);
+    assert.match(r.stderr, /profile: codex/);
+    assert.notEqual(r.argv, '');
+  });
+}
+
+test('codex host with a Claude token prints no worker warning', () => {
+  const r = runHost('codex', full);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /No Claude token/);
+});
+
+test('host with no Claude token and no other worker key says to run setup', () => {
+  const r = runHost('codex', `INSTABOX_API_KEY=${IBK}\n`);
+  assert.match(r.stderr, /No Claude token is saved/);
+  assert.match(r.stderr, /cloudy-cloud setup/);
+});

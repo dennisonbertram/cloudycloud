@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { loadEnv } from './config.mjs';
+import { defaultWorkerNote, loadEnv } from './config.mjs';
 import { MCP_TIMEOUT_MS } from './harness-opencode.mjs';
 
 const ENV_NAMES = ['CLOUDY_CLOUD_CONFIG', 'CLOUDY_CLOUD_PROVIDER', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_PROFILES', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES'];
@@ -37,7 +37,9 @@ function main(args) {
   else if (!/github\.com/.test(git('remote', 'get-url', 'origin').stdout)) console.error("  ! This repo has no github.com origin, so subagents can't push their work.  add one: git remote add origin https://github.com/OWNER/REPO.git");
   const dir = mkdtempSync(join(tmpdir(), 'cloudy-cloud-opencode-'));
   const file = join(dir, 'instructions.md');
-  writeFileSync(file, HOST_PROMPT);
+  const note = defaultWorkerNote(env);
+  if (note) console.error(`  ! ${note.replace(/\n/g, '\n    ')}`);
+  writeFileSync(file, note ? `${HOST_PROMPT} ${note.replace(/\n/g, ' ')}` : HOST_PROMPT);
   const child = spawn(process.env.CLOUDY_CLOUD_OPENCODE_BIN || 'opencode', args, {
     stdio: 'inherit',
     env: { ...process.env, CLOUDY_CLOUD_CONFIG: config, OPENCODE_CONFIG_CONTENT: hostConfig(root, file) },
