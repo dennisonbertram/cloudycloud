@@ -50,6 +50,37 @@ test('#66 secret codes fill their placeholders and never print a key', () => {
   assert.match(guide('secret_set_needs_login', {}), /instabox@latest login/);
 });
 
+test('setup guidance says --more only for the keys setup --more asks for', () => {
+  for (const k of ['PARTICLE_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'CLOUDY_CLOUD_INSTABOX_API_KEY']) {
+    assert.match(guide('secret_missing', { secret: k }), /cloudy-cloud setup --more/, k);
+    assert.match(guide('key_on_machine_refused', { secret: k, host: 'h.io' }), /cloudy-cloud setup --more/, k);
+  }
+  for (const k of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'INSTABOX_API_KEY']) {
+    const m = guide('secret_missing', { secret: k });
+    assert.match(m, /cloudy-cloud setup/, k);
+    assert.doesNotMatch(m, /setup --more/, k);
+    assert.doesNotMatch(guide('key_on_machine_refused', { secret: k, host: 'h.io' }), /setup --more/, k);
+  }
+});
+
+test('secret_missing tellUser names the real step for secrets setup never asks to paste', () => {
+  // The coordinator copy of the Instabox key is stored by setup itself.
+  const coord = guideObj('secret_missing', { secret: 'CLOUDY_CLOUD_INSTABOX_API_KEY' });
+  assert.doesNotMatch(coord.tellUser, /paste/i);
+  assert.match(coord.tellUser, /cloudy-cloud setup --more/);
+  // A custom profile key is created with the secrets set command, not a setup prompt.
+  const custom = guideObj('secret_missing', { secret: 'MY_VENDOR_KEY', host: 'api.vendor.io' });
+  assert.doesNotMatch(custom.tellUser, /paste/i);
+  assert.match(custom.tellUser, /command above/);
+  // Keys setup asks for keep the paste instruction.
+  assert.match(guideObj('secret_missing', { secret: 'OPENAI_API_KEY' }).tellUser, /paste the key when `cloudy-cloud setup --more` asks/);
+  assert.match(guideObj('secret_missing', { secret: 'INSTABOX_API_KEY' }).tellUser, /paste the key when `cloudy-cloud setup` asks/);
+  // A refused coordinator key names setup --more, which stores the copy itself.
+  const refused = guide('key_on_machine_refused', { secret: 'CLOUDY_CLOUD_INSTABOX_API_KEY' });
+  assert.match(refused, /cloudy-cloud setup --more/);
+  assert.doesNotMatch(refused, /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY/);
+});
+
 test('#92 machine codes exist; consent names the price and the env line; each names a command', () => {
   const NEW = ['machine_kind_unknown', 'machine_kind_unsupported', 'machine_needs_consent', 'machine_not_on_plan', 'machine_no_capacity', 'machine_gpu_limit', 'machine_missing_tools', 'machine_not_running', 'shell_unsupported', 'display_unsupported', 'display_forbidden', 'desktop_unavailable'];
   for (const c of NEW) assert.ok(CODES.includes(c), c);

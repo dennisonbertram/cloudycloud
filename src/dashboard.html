@@ -152,7 +152,7 @@
   @keyframes blink { 50% { opacity: .25; } }
 
   .row.child { padding-left: 36px; }
-  .row.child::after { content: ""; position: absolute; left: 22px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .row.child::after { content: ""; position: absolute; left: var(--ind, 22px); top: 0; bottom: 0; width: 1px; background: var(--border); }
   .chev { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin: -2px -4px -2px -6px; border-radius: 4px; color: var(--text-3); font-size: 14px; }
   .chev:hover { background: var(--border); color: var(--text); }
   .subbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 32px 0; }
@@ -214,6 +214,7 @@
   @media (max-width: 820px) {
     header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; }
     .summary { order: 5; flex-basis: 100%; margin-left: 0; }
+    .summary .spend { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .banner { padding: 6px 16px; }
     main { grid-template-columns: 1fr; }
     .rail { border-right: 0; }
@@ -222,6 +223,7 @@
     .back { display: inline-block; }
     .panel-head, .seclabel, .thread, .subbar { padding-left: 16px; padding-right: 16px; }
     .badge { margin-left: 0; }
+    .l2 { white-space: normal; overflow-wrap: anywhere; }
     .props { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .props.cmds { grid-template-columns: minmax(0, 1fr); }
     .panel { overflow-y: auto; } /* the whole panel scrolls once; the timeline keeps a fixed height instead of being squeezed */
@@ -367,7 +369,7 @@
     const s = soonTag(b); if (s) parts.push(s);
     const ul = usageLine(b);
     const l2 = parts.flatMap((p, i) => i ? [' · ', p] : [p]);
-    const el = h('div', { class: 'row' + (lvl > 1 ? ' child' : ''), role: 'treeitem', 'aria-level': String(lvl), 'aria-expanded': kids ? String(open) : null, 'data-id': b.id,
+    const el = h('div', { class: 'row' + (lvl > 1 ? ' child' : ''), style: lvl > 1 ? 'padding-left: ' + 18 * lvl + 'px; --ind: ' + (18 * lvl - 14) + 'px' : null, role: 'treeitem', 'aria-level': String(lvl), 'aria-expanded': kids ? String(open) : null, 'data-id': b.id,
       'aria-label': [statusWord(b.status), titleOf(b), b.id].join(', ') + (soon(b) ? ', deletes within an hour' : ''),
       'aria-description': a ? ((a.tool || '') + a.text).trim().slice(0, 140) : null, 'aria-selected': String(b.id === S.sel), tabindex: b.id === S.sel ? '0' : '-1', onclick: () => select(b.id, true),
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); select(b.id, true); } } },
@@ -381,14 +383,22 @@
 
   const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
   const needsYou = (b) => b.status === 'idle' || !!b.waiting || (b.status === 'failed' && today(b));
+  // One unit for the header chip and the group heading: agents, at any depth (a waiting worker counts even nested under its coordinator).
+  const needsYouCount = (boxes) => boxes.filter(needsYou).length;
+  // Every descendant in tree order; a worker under nested coordinators still counts and renders.
+  const descOf = (id, seen = new Set([id])) => (S.kids[id] || []).flatMap((c) => seen.has(c.id) ? [] : (seen.add(c.id), [c, ...descOf(c.id, seen)]));
   // A coordinator is grouped by its workers too, so a worker that needs you is never hidden under a closed coordinator.
-  const fam = (f) => (b) => f(b) || (S.kids[b.id] || []).some(f);
+  const fam = (f) => (b) => f(b) || descOf(b.id).some(f);
   const groupsOf = (boxes) => { const need = fam(needsYou), act = fam(active); return [['Needs you', boxes.filter(need)], ['Active', boxes.filter((b) => !need(b) && act(b))], ['Finished', boxes.filter((b) => !need(b) && !act(b))]].filter(([, l]) => l.length); };
+  // Group heading counts: Needs-you counts agents at any depth, the header chip's unit; the other groups count top-level rows.
+  const grpCount = (name, list) => name === 'Needs you' ? needsYouCount(list.flatMap((b) => [b, ...descOf(b.id)])) : list.length;
   const setOpen = (id, on) => {
-    if (on) S.collapsed.delete(id); else { S.collapsed.add(id); if (S.kids[id]?.some((c) => c.id === S.sel)) return select(id, false); } // the selected worker is about to leave the tree: keep the one tab stop on its coordinator
+    if (on) S.collapsed.delete(id); else { S.collapsed.add(id); if (descOf(id).some((c) => c.id === S.sel)) return select(id, false); } // the selected worker is about to leave the tree: keep the one tab stop on its coordinator
     S.sigs.r = null; render();
   };
   const grp = (name, n) => h('div', { class: 'grp', 'aria-hidden': 'true' }, name, h('span', { text: String(n) }));
+  // Rows render recursively: a collapsed coordinator hides its whole subtree, an open one shows every level.
+  const rowsOf = (b, lvl = 1) => [row(b, lvl), ...(S.kids[b.id] && !S.collapsed.has(b.id) ? S.kids[b.id].flatMap((c) => rowsOf(c, lvl + 1)) : [])];
 
   function railView(boxes) {
     const rail = $('rail');
@@ -396,7 +406,7 @@
     const top = rail.scrollTop;
     const wrap = h('div', { role: 'tree', 'aria-label': 'Agent list' });
     wrap.addEventListener('keydown', listKeys);
-    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.flatMap((b) => [row(b), ...(S.kids[b.id] && !S.collapsed.has(b.id) ? S.kids[b.id].map((c) => row(c, 2)) : [])])));
+    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, grpCount(name, list)), list.flatMap(rowsOf)));
     rail.replaceChildren(wrap);
     rail.scrollTop = top;
     if (focusId) (wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]') || wrap.querySelector('.row[tabindex="0"]'))?.focus({ preventScroll: true });
@@ -410,7 +420,7 @@
     else if (e.key === 'Home') n = 0; else if (e.key === 'End') n = cards.length - 1;
     else if (e.key === 'ArrowRight' && cards[i]?.getAttribute('aria-expanded') === 'false') { e.preventDefault(); return setOpen(cards[i].dataset.id, true); }
     else if (e.key === 'ArrowLeft' && cards[i]?.getAttribute('aria-expanded') === 'true') { e.preventDefault(); return setOpen(cards[i].dataset.id, false); }
-    else if (e.key === 'ArrowLeft' && cards[i]?.getAttribute('aria-level') === '2') n = cards.findLastIndex((c, j) => j < i && c.getAttribute('aria-level') === '1');
+    else if (e.key === 'ArrowLeft' && +cards[i]?.getAttribute('aria-level') > 1) n = cards.findLastIndex((c, j) => j < i && +c.getAttribute('aria-level') === +cards[i].getAttribute('aria-level') - 1);
     if (n < 0) return;
     e.preventDefault();
     cards.forEach((c, j) => c.tabIndex = j === n ? 0 : -1);
@@ -780,9 +790,12 @@
       h('span', { class: 'm', text: b.id + ' · ' + label(b) }), usageLine(b, true) && h('span', { class: 'm use', text: usageLine(b, true) }), soonTag(b), extra);
     // A coordinator's workers without a trunk of their own render under it, whether it sits in a trunk
     // section or a status group. A worker with its own trunk shows in that trunk's section, never twice.
-    const workersOf = (c) => {
-      const kids = (S.kids[c.id] ?? []).filter((b) => !b.fleet);
-      if (kids.length) g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(kids.length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, kids.map((b) => tile(b))));
+    const workersOf = (c, seen = new Set()) => {
+      const kids = (S.kids[c.id] ?? []).filter((b) => !b.fleet && !seen.has(b.id));
+      if (!kids.length) return;
+      for (const k of kids) seen.add(k.id);
+      g.append(h('div', { class: 'grp sub2', 'aria-hidden': 'true' }, 'Workers of ' + titleOf(c), h('span', { text: String(kids.length) })), h('div', { class: 'grid', role: 'group', 'aria-label': 'Workers of ' + titleOf(c) }, kids.map((b) => tile(b))));
+      for (const k of kids) workersOf(k, seen);
     };
     // One section per fleet trunk above the status groups; agents on a trunk leave the groups for it.
     for (const f of S.data.fleets ?? []) {
@@ -795,7 +808,7 @@
       for (const c of agents) workersOf(c);
     }
     for (const [name, list] of groupsOf(boxes.filter((b) => !b.fleet))) {
-      g.append(grp(name, list.length));
+      g.append(grp(name, grpCount(name, list)));
       g.append(h('div', { class: 'grid', role: 'group', 'aria-label': name }, list.map((b) => tile(b))));
       for (const c of list) workersOf(c);
     }
@@ -805,15 +818,15 @@
   // Same sentence as usageLine in src/machine.mjs (a test keeps them equal); null when the figures are missing.
   const usageSentence = (u) => { const n = (x) => typeof x === 'number' && isFinite(x), m = (x) => '$' + x.toFixed(2); if (!u || !n(u.costUSD)) return null; if (!n(u.allowanceUSD)) return null; const inc = u.allowanceUSD; return 'Instabox this month: ' + (!inc ? m(u.costUSD) + ' used (pay as you go)' : n(u.overageUSD) && u.overageUSD > 0 ? m(u.costUSD) + ' used, ' + m(inc) + ' included, ' + m(u.overageUSD) + ' beyond it (pay as you go)' : m(u.costUSD) + ' of ' + m(inc) + ' included used'); };
 
-  // Counts for the top bar and the tab title; returns the two the title needs.
+  // Counts for the top bar and the tab title; returns the one the title needs.
   function summary(boxes) {
     const c = (f) => boxes.filter(f).length;
-    const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
-    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Waiting for you', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
+    const need = needsYouCount(boxes);
+    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['failed', 'Needs you', need]].filter((i) => i[2]);
     items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
     const spend = usageSentence(S.data && S.data.usage);
-    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)).concat(spend ? [h('span', { class: 'spend', text: spend })] : []));
-    return { failed, idle };
+    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)).concat(spend ? [h('span', { class: 'spend', text: spend, title: spend })] : []));
+    return { need };
   }
 
   function banner() {
@@ -832,7 +845,7 @@
     const d = S.data, main = $('main');
     banner();
     $('demo').hidden = !(d && d.demo);
-    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' waiting for you'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    const setTitle = (n) => { const parts = []; if (n?.need) parts.push(n.need + (n.need === 1 ? ' needs you' : ' need you')); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
     setTitle();
     main.classList.toggle('stale', !!d && S.net !== 'ok');
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));
@@ -867,7 +880,7 @@
     if (!boxes.some((b) => b.id === S.sel)) S.sel = groupsOf(roots)[0][1][0].id;
     const sig = (x) => JSON.stringify(x);
     if (S.view === 'fleet') {
-      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, b.fleet, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b), (S.kids[b.id] || []).map((c) => [c.id, c.status, c.description, c.title, c.fleet, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at, isQuiet(c)])]), JSON.stringify(d.fleets ?? [])]);
+      const f = sig(['f', roots.map((b) => [b.id, b.status, b.description, b.title, b.parent, b.fleet, needsYou(b), soon(b), b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b), descOf(b.id).map((c) => [c.id, c.status, c.description, c.title, c.fleet, needsYou(c), soon(c), c.usage?.cpuPct, c.usage?.memUsed, c.usage?.at, isQuiet(c)])]), JSON.stringify(d.fleets ?? [])]);
       if (S.sigs.f !== f) {
         S.sigs = { f };
         const old = main.querySelector('.fleet'), top = old ? old.scrollTop : 0, fid = document.activeElement?.closest?.('.tile')?.dataset.id;
@@ -892,7 +905,8 @@
   function select(id, open) {
     if (id !== S.sel) S.tab = 'activity';
     S.sel = id; S.sigs = {}; S.sticky = id;
-    const par = S.data?.boxes.find((b) => b.id === id)?.parent; if (par) S.collapsed.delete(par);
+    const byId = Object.fromEntries((S.data?.boxes || []).map((b) => [b.id, b]));
+    for (let p = byId[id]?.parent, n = 0; p && n++ < 20; p = byId[p]?.parent) S.collapsed.delete(p);
     if (open) $('main').classList.add('detail');
     // keep keyboard focus on the chosen card after the rail is rebuilt
     render();
