@@ -14,10 +14,14 @@ function wrap(text, first = '', indent = '') {
   return [...lines, line];
 }
 
+// usages: arrays of pieces that stay together when a line wraps. Returns the wrapped Usage line(s) only.
+function usageLines(usages) {
+  return usages.flatMap((u, i) => wrap(u.map((x) => x.replaceAll(' ', '\u00a0')).join(' '), i ? '       cloudy-cloud' : 'Usage: cloudy-cloud', '         ').map((l) => l.replaceAll('\u00a0', ' ')));
+}
+
 // usages: arrays of pieces that stay together when a line wraps; rows: [option, meaning].
 export function render({ desc, usages, rows = [], note }) {
-  const out = [...wrap(desc), ''];
-  usages.forEach((u, i) => out.push(...wrap(u.map((x) => x.replaceAll(' ', '\u00a0')).join(' '), i ? '       cloudy-cloud' : 'Usage: cloudy-cloud', '         ').map((l) => l.replaceAll('\u00a0', ' '))));
+  const out = [...wrap(desc), '', ...usageLines(usages)];
   if (rows.length) {
     const w = Math.min(Math.max(...rows.map(([a]) => a.length)), 22);
     out.push('');
@@ -72,6 +76,11 @@ const cmds = {
     ['--no-open', 'Print the link but do not open a browser'],
     ['--prune', 'Delete stored agent logs older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
+  branches: { desc: 'List or delete the cloudy-cloud/<id> branches on origin that add nothing to the default branch (empty, or already merged).', usages: [['branches', 'prune', '[--yes]', '[--dry-run]']], rows: [
+    ['(default)', 'Dry run: list what would be deleted'],
+    ['--yes', 'Actually delete the listed branches'],
+    ['--dry-run', 'List only, even together with --yes'],
+  ], note: 'Only branches named cloudy-cloud/<id> are ever listed; every other name is skipped. Run it inside a git repo whose origin you can access.' },
 };
 
 const guides = {
@@ -107,12 +116,19 @@ export function helpText(name, short = false) {
   return short ? text.slice(text.indexOf('Usage:')) : text;
 }
 
+// A guide usage string ('start NAME --repo URL [--branch B]') split into pieces that never break across
+// lines: a bracketed option group, and any word inside it, stays whole on one line.
+const usagePieces = (usage) => { let depth = 0; return usage.split('').map((c) => { if (c === '[') depth++; if (c === ']') depth--; return c === ' ' && !depth ? '\n' : c; }).join('').split('\n'); };
+
+// The wrapped Usage line(s) for one coordinator subcommand (or the general form): for error messages.
+export function coordinatorUsage(command) {
+  return usageLines([['coordinator', ...(command && guides[command] ? usagePieces(guides[command][1]) : ['<command>'])]]).join('\n');
+}
+
 export function coordinatorHelp(command) {
   if (command && guides[command]) {
     const [desc, usage, rows, note] = guides[command];
-    let depth = 0;
-    const pieces = usage.split('').map((c) => { if (c === '[') depth++; if (c === ']') depth--; return c === ' ' && !depth ? '\n' : c; }).join('').split('\n');
-    return render({ desc, usages: [['coordinator', ...pieces]], rows, note: `${note} All coordinator commands: cloudy-cloud coordinator --help` });
+    return render({ desc, usages: [['coordinator', ...usagePieces(usage)]], rows, note: `${note} All coordinator commands: cloudy-cloud coordinator --help` });
   }
   return render({
     desc: 'Cloudy Cloud coordinators: always-on Claude Code sessions on their own cloud machines. A coordinator always runs Claude Code, never pi, omp, Codex or opencode.',

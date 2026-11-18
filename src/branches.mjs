@@ -4,13 +4,15 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { helpText } from './cli-help.mjs';
 
 const run = promisify(execFile);
 const OURS = /^cloudy-cloud\/(issue-\d{1,10}-)?[0-9a-f]{8}$/; // cloudy-cloud/<id> or, for a worker started from an issue, cloudy-cloud/issue-<n>-<id>
-const USAGE = 'Usage: cloudy-cloud branches prune [--yes] [--dry-run]\n  Lists cloudy-cloud/<id> branches on origin that are empty or merged into the default branch.\n  Nothing is deleted unless you pass --yes.';
+const USAGE = helpText('branches', true); // Usage plus the option rows and note, wrapped at 80 by the help renderer
 
 export async function main(argv, { cwd = process.cwd(), out = console.log, err = console.error } = {}) {
   const [cmd, ...flags] = argv;
+  if (cmd === '--help' || cmd === '-h') { out(helpText('branches')); return 0; }
   if (cmd !== 'prune' || flags.some((f) => f !== '--yes' && f !== '--dry-run')) { err(USAGE); return 2; }
   const del = flags.includes('--yes') && !flags.includes('--dry-run');
   const git = (...a) => run('git', a, { cwd, maxBuffer: 1 << 26 }).then((r) => r.stdout.trim());

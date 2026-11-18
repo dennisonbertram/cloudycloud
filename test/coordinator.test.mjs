@@ -391,7 +391,11 @@ test('image and start refuse a provider without snapshots, before creating anyth
   const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSnapshots: false });
   const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' };
   for (const args of [['image'], ['image', '--save'], ['start', 'boss', '--repo', 'https://github.com/o/r']]) {
-    await assert.rejects(main(args, { provider, env, out: () => {} }), /^Error: Provider fake has no snapshots, which coordinators need\.$/, args.join(' '));
+    await assert.rejects(main(args, { provider, env, out: () => {} }), (e) => {
+      assert.equal(e.message, 'Provider fake has no snapshots, which coordinators need.');
+      assert.ok(e.next, 'the refusal carries a Next');
+      return true;
+    }, args.join(' '));
   }
   assert.equal(provider.log.create.length, 0);
   assert.equal(provider.log.list.length, 0);
@@ -815,7 +819,7 @@ test('a permission prompt on the screen counts as waiting; ordinary output does 
   assert.match(g.log.out.join('\n'), /waiting on a prompt/);
 });
 
-test('ls adds a WAITING column with the prompt line, and says "screen not read" when the pane read fails (#88)', async () => {
+test('ls adds a WAITING column with the prompt line, and says "not readable" when the pane read fails (#88)', async () => {
   const f = stuck();
   await main(['ls'], f.deps);
   const [head, row] = f.log.out;
@@ -829,7 +833,7 @@ test('ls adds a WAITING column with the prompt line, and says "screen not read" 
   const orig = h.deps.sdk.Sandbox.connect;
   h.deps.sdk.Sandbox.connect = async (id) => { const s = await orig(id); s.commands.run = async () => { throw new Error('network'); }; return s; };
   await main(['ls'], h.deps);
-  assert.ok(h.log.out[1].endsWith('\tscreen not read'), h.log.out[1]);
+  assert.ok(h.log.out[1].endsWith('\tnot readable'), h.log.out[1]);
 });
 
 test('status NAME prints state, the waiting line and the attach command; --json gives the same fields; it never writes (#88)', async () => {
@@ -1594,4 +1598,180 @@ test('plain stderr keeps the appended guidance; the tmux-exit message keeps its 
   const t = await main(START, g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.match(t.message, /run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again/);
   assert.doesNotMatch(t.message, /it signs you in to Claude and saves the image/);
+});
+
+// ---- r3: layout follows ui.term, colour follows ui.on (visual cluster 2) ----
+
+const nocolor = () => tty({ NO_COLOR: '1' });
+const dumb = (env = {}) => makeUi({ tty: true, cols: 80, env: { TERM: 'dumb', LANG: 'en_US.UTF-8', ...env } });
+const machine = { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), machine: { deleteAt: new Date(Date.now() + 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'a' } };
+
+test('NO_COLOR and TERM=dumb on a terminal get the coordinator screens minus colour; piped output is unchanged', async () => {
+  const c = fixture({ machines: [machine] });
+  c.deps.ui = tty();
+  await main(['ls'], c.deps);
+  const colour = plainText(c.log.out.join('\n'));
+  for (const u of [nocolor(), dumb()]) {
+    const f = fixture({ machines: [machine] });
+    f.deps.ui = u;
+    await main(['ls'], f.deps);
+    const text = f.log.out.join('\n');
+    assert.doesNotMatch(text, /\x1b|\t/, 'terminal layout: no escapes, no TSV');
+    assert.equal(text, colour, 'the same layout as the colour screen, minus colour');
+    assert.match(text, /NAME\s+STATE\s+STARTED\s+MACHINE\s+DELETES/);
+    for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+    // status is the colour screen's own text minus escapes
+    const s = fixture({ machines: [machine] });
+    s.deps.ui = tty();
+    await main(['status', 'a'], s.deps);
+    const t = fixture({ machines: [machine] });
+    t.deps.ui = u;
+    await main(['status', 'a'], t.deps);
+    assert.equal(plainText(s.log.out.join('\n')), t.log.out.join('\n'));
+  }
+  const g = fixture({ machines: [machine] });
+  await main(['ls'], g.deps);
+  assert.match(g.log.out.join('\n'), /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/); // piped stays TSV
+});
+
+test('every coordinator screen fits 80 cells in colour, NO_COLOR and TERM=dumb; every error screen ends with exactly one Next', async () => {
+  const errs = [
+    await main(['lss'], { env: {}, out: () => {} }).then(() => null, (x) => x),
+    await main(['ls', '--all'], { env: {}, out: () => {} }).then(() => null, (x) => x),
+    await main(['stop'], { env: {}, out: () => {} }).then(() => null, (x) => x),
+    Object.assign(new Error('You have reached your monthly spend limit\nWhat happened: The Claude spend limit is reached, so no turn can run.\nLikely cause: The account hit its usage cap.\nNext step: Call cloud_agent_list, then cloud_agent_stop on agents you no longer need, then retry.\nTell the user: the limit is reached.'), {}),
+  ];
+  for (const u of [tty(), nocolor(), dumb()]) {
+    const check = (label, out) => {
+      const text = plainText(out);
+      assert.doesNotMatch(text, /Tell the user/, label);
+      for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, `${label}: ${JSON.stringify(l)}`);
+      return text;
+    };
+    const l = fixture({ machines: [machine] }); l.deps.ui = u; await main(['ls'], l.deps); check('ls', l.log.out.join('\n'));
+    const st = fixture({ machines: [machine] }); st.deps.ui = u; await main(['status', 'a'], st.deps); check('status', st.log.out.join('\n'));
+    const sp = fixture({ machines: [machine] }); sp.deps.ui = u; await main(['stop', 'a'], sp.deps); check('stop', sp.log.out.join('\n'));
+    const im = fixture(); im.deps.ui = u; await main(['image'], im.deps); check('image', im.log.out.join('\n'));
+    const sa = fixture(); sa.deps.ui = u; await main(START, sa.deps); check('start', sa.log.out.join('\n'));
+    for (const [i, e] of errs.entries()) {
+      const text = check(`error ${i}`, errorScreen(e, u));
+      assert.equal((text.match(/Next:/g) ?? []).length, 1, `error ${i} must end with exactly one Next:\n${text}`);
+      assert.doesNotMatch(text, /…/, `error ${i}: nothing is ellipsized\n${text}`);
+    }
+  }
+});
+
+// ---- r3: recovery actions are never cut (visual cluster 1) ----
+
+test('a Next command too long for its line wraps whole words, never an ellipsis', () => {
+  const e = Object.assign(new Error('Broke.'), { next: `cloudy-cloud coordinator attach ${'a'.repeat(50)}` });
+  const s = plainText(errorScreen(e, tty()));
+  assert.doesNotMatch(s, /…/);
+  assert.match(s, /a{50}/); // the whole name survives
+  for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  const e2 = new Error(`Broke.\nRun: cloudy-cloud coordinator attach ${'b'.repeat(60)}`);
+  const s2 = plainText(errorScreen(e2, tty()));
+  assert.doesNotMatch(s2, /…/);
+  assert.match(s2, /b{60}/);
+  for (const l of s2.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+// ---- r3: one guidance layer, parsed once (visual cluster 3) ----
+
+test('a start provider error renders the appended guidance once: short, cause, one Next, no Tell the user', async () => {
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw new Error('You have reached your monthly spend limit'); };
+  const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(errorScreen(e, { on: false }), /What happened: |Next step: /); // piped keeps the labels
+  for (const u of [tty(), nocolor(), dumb()]) {
+    const s = plainText(errorScreen(e, u));
+    assert.equal((s.match(/Next:/g) ?? []).length, 1, s);
+    assert.doesNotMatch(s, /Tell the user|What happened:|Likely cause:|Next step:/);
+    assert.match(s, /spend limit/);
+    for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+});
+
+// ---- r3: usage via cli-help wrapping (visual cluster 4) ----
+
+test('coordinator usage errors show only the relevant subcommand usage and the help command, wrapped at 80', async () => {
+  for (const [args, expect] of [
+    [['lss'], /Usage: cloudy-cloud coordinator <command>/],
+    [[], /Usage: cloudy-cloud coordinator <command>/],
+    [['start', 'boss', '--typo', 'x'], /Usage: cloudy-cloud coordinator start NAME --repo URL/],
+    [['stop'], /Usage: cloudy-cloud coordinator stop NAME/],
+    [['ls', '--all'], /Usage: cloudy-cloud coordinator ls/],
+  ]) {
+    const e = await main(args, { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
+    assert.match(e.message, expect, args.join(' '));
+    assert.match(e.message, /Run: cloudy-cloud coordinator --help/, args.join(' '));
+    assert.doesNotMatch(e.message.replace(expect, ''), /coordinator (image|start|attach|ls|status|stop|finish)\b/, `${args.join(' ')}: only the relevant subcommand usage`);
+    for (const l of e.message.split('\n')) assert.ok(cellWidth(l) <= 80, `${args.join(' ')}: ${l}`);
+    for (const u of [tty(), nocolor(), dumb()]) {
+      const s = plainText(errorScreen(e, u));
+      for (const l of s.split('\n')) { assert.ok(cellWidth(l) <= 80, `${args.join(' ')}: ${l}`); assert.doesNotMatch(l, /…/, l); }
+      assert.equal((s.match(/Next:/g) ?? []).length, 1, s);
+      assert.match(s, /Next: cloudy-cloud coordinator --help/);
+    }
+  }
+});
+
+// ---- r3: every refusal ships a Next (visual cluster 5 + flow 6) ----
+
+test('a provider coordinatorRefusal is checked before the snapshots check, and carries a Next', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSnapshots: false });
+  provider.text.coordinatorRefusal = 'Coordinators are not supported on fake yet. Start workers from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox for coordinators.';
+  for (const args of [['image'], ['start', 'boss', '--repo', 'https://github.com/o/r']]) {
+    const e = await main(args, { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
+    assert.match(e.message, /Coordinators are not supported on fake yet/);
+    assert.doesNotMatch(e.message, /no snapshots/);
+    assert.ok(e.next, 'the refusal carries a Next');
+    const s = plainText(errorScreen(e, tty()));
+    assert.match(s, /Next:/);
+    for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+});
+
+test('ls-empty on a provider that cannot run coordinators shows no coordinator Next', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSnapshots: false });
+  provider.text.coordinatorRefusal = 'Coordinators are not supported on fake yet.';
+  const out = [];
+  await main(['ls'], { provider, env: { FAKE_API_KEY: 'k' }, out: (s) => out.push(s), ui: tty() });
+  const text = out.join('\n');
+  assert.match(text, /No coordinators yet/);
+  assert.doesNotMatch(text, /coordinator image|coordinator start|Next:/);
+});
+
+// ---- r3: polish — stopped status wording, wide ls (visual cluster 6) ----
+
+test('status for a stopped coordinator says "not readable" and drops the attach Next', async () => {
+  const stopped = { ...machine, state: 'stopped' };
+  for (const u of [tty(), nocolor(), dumb()]) {
+    const f = fixture({ machines: [stopped] });
+    f.deps.ui = u;
+    await main(['status', 'a'], f.deps);
+    const text = plainText(f.log.out.join('\n'));
+    assert.match(text, /Screen\s+not readable/);
+    assert.doesNotMatch(text, /attach/i);
+    for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+  const g = fixture({ machines: [stopped] });
+  await main(['status', 'a'], g.deps);
+  assert.match(g.log.out.join('\n'), /Screen: not readable/);
+  assert.doesNotMatch(g.log.out.join('\n'), /Attach:/);
+});
+
+test('ls at 120 columns spends the extra width on SCREEN before truncating', async () => {
+  const prompt = `Do you want to read ${'x'.repeat(60)}?`;
+  const pane = `${prompt}\n  1. Yes\n  2. No`;
+  const at = async (cols) => {
+    const f = fixture({ pane, machines: [machine] });
+    f.deps.ui = makeUi({ tty: true, cols, env: { TERM: 'xterm', LANG: 'en_US.UTF-8' } });
+    await main(['ls'], f.deps);
+    return plainText(f.log.out.join('\n'));
+  };
+  const shown = (s) => s.match(/waiting on a prompt: ([^\n]*)/)?.[1].replace(/…$/, '').length ?? 0;
+  const w100 = await at(100), w120 = await at(120);
+  for (const l of w120.split('\n')) assert.ok(cellWidth(l) <= 120, l);
+  assert.ok(shown(w120) > shown(w100), `120 cols shows more of the prompt than 100: ${shown(w120)} vs ${shown(w100)}`);
 });

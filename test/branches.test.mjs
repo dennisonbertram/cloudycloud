@@ -55,6 +55,22 @@ test('unknown arguments print usage and exit 2', async () => {
   assert.equal((await run([], f.work)).code, 2);
 });
 
+test('usage and --help come through the help wrapper: every line fits 80 cells', async () => {
+  const { cellWidth } = await import('../src/ui.mjs');
+  for (const argv of [[], ['bogus'], ['prune', '--all']]) {
+    const r = await run(argv, '/');
+    assert.equal(r.code, 2);
+    assert.match(r.err, /Usage: cloudy-cloud branches prune \[--yes\] \[--dry-run\]/);
+    for (const l of r.err.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+  for (const arg of ['--help', '-h']) {
+    const r = await run([arg], '/');
+    assert.equal(r.code, 0);
+    assert.match(r.out, /Usage: cloudy-cloud branches prune/);
+    for (const l of r.out.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+});
+
 test('--yes skips a branch that changed since it was listed: the delete carries a lease', async () => {
   const f = fixture();
   const real = sh('/', 'command -v git');
