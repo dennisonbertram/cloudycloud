@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveProfile, loadProfiles, profileKeyNames, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
+import { preflightProfile, resetPreflightCache, resolveProfile, loadProfiles, profileKeyNames, gatewayConfig, ompModels, ompConfig, ompCommand, OMP_VERSION } from '../src/profiles.mjs';
 import { loadEnv } from '../src/config.mjs';
 
 const none = join(tmpdir(), 'no-such-profiles.json');
@@ -160,4 +160,33 @@ test('coordinatorKeys does not forward an ambient OPENAI_API_KEY; it needs the e
   assert.ok(coordinatorKeys({ ...base, OPENAI_API_KEY: 'x', CLOUDY_CLOUD_PROXY_SECRETS: 'OPENAI_API_KEY' }, inst).secrets.includes('OPENAI_API_KEY'), 'a proxy secret: chosen');
   writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\\n');
   assert.ok(!coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-ambient-shell-key' }, inst).skipped.includes('OPENAI_API_KEY'), 'not even reported as skipped');
+});
+
+test('profiles.json fallback and maxConcurrent are validated and passed through', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-'));
+  const mk = (extra) => { const f = join(dir, `p${Math.random()}.json`); writeFileSync(f, JSON.stringify({ x: { harness: 'pi', format: 'openai', baseUrl: 'https://e.com/v1', model: 'm', keyName: 'XYZ_API_KEY', ...extra } })); return { CLOUDY_CLOUD_PROFILES: f, XYZ_API_KEY: 'k' }; };
+  const ok = resolveProfile('x', undefined, mk({ fallback: ['pi-glm'], maxConcurrent: 3 })).ok;
+  assert.deepEqual([ok.fallback, ok.maxConcurrent], [['pi-glm'], 3]);
+  assert.match(resolveProfile('x', undefined, mk({ fallback: 'pi-glm' })).error, /fallback must be a list[\s\S]*Next step:/);
+  assert.match(resolveProfile('x', undefined, mk({ maxConcurrent: 0 })).error, /maxConcurrent must be[\s\S]*Next step:/);
+});
+
+test('preflightProfile: 404 fails with the key removed, 429 and network errors pass, results are cached 60 s, proxied keys are skipped', async () => {
+  resetPreflightCache();
+  const p = { name: 'pi-a', format: 'openai', baseUrl: 'https://api.example.com/v1', model: 'm', keyName: 'KEY_API_KEY' };
+  const env = { KEY_API_KEY: 'sk-secret' };
+  let t = 0, calls = 0, status = 404;
+  const fetchFn = async () => { calls++; if (status === 0) throw new Error('boom'); return { status, text: async () => 'model_not_found sk-secret' }; };
+  const o = { fetchFn, now: () => t };
+  const r = await preflightProfile(p, env, o);
+  assert.equal(r.ok, false);
+  assert.ok(!r.error.includes('sk-secret') && /Next step:/.test(r.error));
+  await preflightProfile(p, env, o);
+  assert.equal(calls, 1);
+  t = 61_000; status = 429;
+  assert.equal((await preflightProfile(p, env, o)).ok, true);
+  t = 130_000; status = 0;
+  assert.equal((await preflightProfile(p, env, o)).ok, true);
+  assert.equal((await preflightProfile({ ...p, proxied: true }, env, o)).skipped, true);
+  assert.equal(calls, 3);
 });
