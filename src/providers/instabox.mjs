@@ -397,6 +397,8 @@ export function createProvider(env, deps = {}) {
     plan,
     screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
     // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command, -t when tty is true (for a sign-in).
+    // Extra environment for the spawned `instabox ssh`, so it uses the same account as the SDK (the key may live only in the config file).
+    shellEnv() { try { return { INSTABOX_API_KEY: apiKey() }; } catch { return {}; } },
     shellArgv: (id, cmd = [], { tty = false } = {}) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', tty ? '-t' : '-T', cmd.map(shq).join(' ')] : [])],
 
     async connect(id, { retry = true } = {}) {

@@ -95,3 +95,13 @@ test('any signal maps to 128 + its number', async () => {
   const s = setup(); s.d.spawn = () => ({ status: null, signal: 'SIGALRM' });
   assert.equal(await run(['7c1e90ab', '--', 'x'], s.d), 142);
 });
+
+test('the shell child gets the provider env (same account as the SDK), never in argv', async () => {
+  const s = setup();
+  s.d.provider.shellEnv = () => ({ FAKE_API_KEY: 'k-secret' });
+  let opts;
+  s.d.spawn = (argv, o) => { s.spawned.push(argv); opts = o; return { status: 0 }; };
+  await run(['mach-aaa', '--', 'ls'], s.d);
+  assert.equal(opts.env.FAKE_API_KEY, 'k-secret');
+  assert.ok(!JSON.stringify(s.spawned).includes('k-secret'));
+});

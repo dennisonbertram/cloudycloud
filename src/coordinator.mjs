@@ -33,16 +33,19 @@ const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw new Error(msg); };
 
-// Saves NAME=value in the config file: temp file in the same folder (mode 600), then rename.
-function saveKey(file, name, value) {
+// Sets and drops config lines in ONE write: temp file in the same folder (mode 600), then rename. Errors other than a missing file propagate.
+function updateConfig(file, set = {}, drop = []) {
   let lines = [];
-  try { lines = readFileSync(file, 'utf8').split('\n').filter((l) => l && !l.startsWith(`${name}=`)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { lines = readFileSync(file, 'utf8').split('\n').filter((l) => l); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const names = new Set([...Object.keys(set), ...drop]);
+  lines = lines.filter((l) => !names.has(l.slice(0, l.indexOf('='))));
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
-  writeFileSync(tmp, `${[...lines, `${name}=${value}`].join('\n')}\n`, { mode: 0o600 });
+  writeFileSync(tmp, `${[...lines, ...Object.entries(set).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, file);
 }
+const saveKey = (file, name, value) => updateConfig(file, { [name]: value });
 
 // The GitHub URL of cloudy-cloud itself, kept as `origin` on the machine for reference only (empty if there is none).
 export function toolRepoUrl(root) {
@@ -68,8 +71,9 @@ async function context(deps) {
   const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep });
   const tty = deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY);
   const spawn = deps.spawn ?? spawnSync;
-  const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(question); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, ui, sleep, tty, spawn, ask, ssh: provider.text.ssh };
+  const now = deps.now ?? Date.now;
+  const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
+  return { env, provider, configFile, out, root, progress, ui, sleep, now, tty, spawn, ask, ssh: provider.text.ssh };
 }
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
@@ -107,41 +111,65 @@ async function signedIn(sbx) {
 const clock = (ms) => new Date(ms).toTimeString().slice(0, 5); // local HH:MM
 
 const PENDING_KEY = 'CLOUDY_CLOUD_PENDING_SNAPSHOT'; // MACHINE_ID:SNAPSHOT_ID of a snapshot still being saved, so a later run waits on it instead of starting another
-const SNAPSHOT_WAIT_POLLS = 360; // 5 s each: 30 minutes
-const readKey = (file, name) => { try { return readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch { return ''; } };
-const dropKey = (file, name) => { try { writeFileSync(file, readFileSync(file, 'utf8').split('\n').filter((l) => l && !l.startsWith(`${name}=`)).map((l) => `${l}\n`).join(''), { mode: 0o600 }); } catch { /* no file, nothing to drop */ } };
+const SNAPSHOT_WAIT_MS = 30 * 60_000;
+const gone = (e) => e?.code === 'not_found' || e?.status === 404;
+// Known limit: two --save runs at the same moment can both start a snapshot; nothing serialises them.
+const readKey = (file, name) => { // throws on anything but a missing file, so a read error never looks like "no snapshot pending"
+  try { return readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch (e) { if (e.code === 'ENOENT') return ''; throw e; }
+};
 
-async function saveImage(c, sbx) {
-  const [pm, pid] = readKey(c.configFile, PENDING_KEY).split(':');
-  let snap;
-  if (pid && pm === sbx.id) { c.progress(`A snapshot of this machine is already being saved (${pid}). Waiting for it.`); snap = await c.provider.getSnapshot(pid); }
-  else {
-    c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
-    snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
-    if (snap.status === 'pending') saveKey(c.configFile, PENDING_KEY, `${sbx.id}:${snap.id}`);
-  }
-  for (let n = 0; snap.status === 'pending'; n++) {
-    if (n >= SNAPSHOT_WAIT_POLLS) fail(`The snapshot is still saving. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`);
+// Waits for the snapshot, saves its id, deletes the image machine (sbx, when it still exists), then drops the pending entry.
+async function finishSave(c, sbx, snap) {
+  const t0 = c.now(); let shown = 0;
+  while (snap.status === 'pending') {
+    const waited = c.now() - t0;
+    if (waited >= SNAPSHOT_WAIT_MS) fail(`The snapshot is still saving. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`);
     await c.sleep(5000);
-    if (n % 6 === 5) c.progress(`Saving the image snapshot... ${Math.round((n + 1) / 12)} min`);
+    const half = Math.floor((c.now() - t0) / 30_000); // progress every 30 s of wall-clock time
+    if (half > shown) { shown = half; c.progress(`Saving the image snapshot... ${Math.floor(half / 2)} min`); }
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') { dropKey(c.configFile, PENDING_KEY); fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`); }
-  saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
-  dropKey(c.configFile, PENDING_KEY);
-  await sbx.kill();
+  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY]); fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`); }
+  updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id }); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
+  if (sbx) await sbx.kill();
+  updateConfig(c.configFile, {}, [PENDING_KEY]);
   if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'), c.ui.hint(`Saved as ${SNAPSHOT_KEY} in ${c.configFile}`),
     c.ui.hint('Start a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO')].join('\n'));
   c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
+// If an earlier run left a snapshot pending, finish that one (even when its machine is gone). Returns false when none is pending.
+async function resumePending(c) {
+  const [mid, sid] = readKey(c.configFile, PENDING_KEY).split(':');
+  if (!sid) return false;
+  c.progress(`A snapshot (${sid}) is already being saved. Waiting for it.`);
+  let snap;
+  try { snap = await c.provider.getSnapshot(sid); } catch (e) {
+    if (!gone(e)) throw e; // a transient error keeps the entry
+    updateConfig(c.configFile, {}, [PENDING_KEY]);
+    fail(`The pending snapshot ${sid} no longer exists, so it was forgotten. Run: cloudy-cloud coordinator image`);
+  }
+  let sbx = null;
+  try { sbx = await c.provider.connect(mid, { retry: false }); } catch (e) { if (!gone(e)) throw e; }
+  await finishSave(c, sbx, snap);
+  return true;
+}
+
+async function saveNew(c, sbx) {
+  c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
+  const snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
+  if (snap.status === 'pending') updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}` });
+  return finishSave(c, sbx, snap);
+}
+
 async function image(c, args) {
+  if (await resumePending(c)) return;
   const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
   if (args.includes('--save')) {
     if (!img) fail('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image');
     const sbx = await c.provider.connect(img.id, { retry: false });
     if (!(await signedIn(sbx))) fail(`Claude is not signed in on ${img.name}. Run: cloudy-cloud coordinator image`);
-    return saveImage(c, sbx);
+    return saveNew(c, sbx);
   }
   let sbx, name, started;
   if (img) {
@@ -161,12 +189,14 @@ async function image(c, args) {
   const until = clock(started + IMAGE_SECONDS * 1000);
   const fallback = `Image machine ${name} is ready and cloudy-cloud is installed on it. It is deleted at ${until}.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell ${name}\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save`;
   if (!c.tty) return c.out(c.ui.on ? fallback.replace(/^Image machine .*\n\n/, `${c.ui.ok(`Image machine ${name} is ready`, `cloudy-cloud is installed on it; deleted at ${until}`)}\n\n`) : fallback);
+  if (img && await signedIn(sbx)) return saveNew(c, sbx); // an earlier run already finished the sign-in
   c.out(`Sign in to Claude in your browser. This machine is deleted at ${until} if you don't finish.`);
-  const [bin, ...rest] = c.provider.shellArgv(name, ['claude', 'auth', 'login'], { tty: true });
+  const [bin, ...rest] = c.provider.shellArgv(sbx.id, ['claude', 'auth', 'login'], { tty: true });
   for (let n = 1; ; n++) {
-    c.spawn(bin, rest, { stdio: 'inherit' });
-    if (await signedIn(sbx)) return saveImage(c, sbx);
-    if (n >= 3 || /^n/i.test((await c.ask('Sign-in did not finish. Try again? [Y/n] ')).trim())) fail(`Sign-in did not finish.\n\n${fallback}`);
+    const r = c.spawn(bin, rest, { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() } });
+    if (r?.status === 0 && !r.error && await signedIn(sbx)) return saveNew(c, sbx);
+    const answer = n >= 3 ? 'n' : (await c.ask('Sign-in did not finish. Try again? [Y/n] '))?.trim() ?? 'n'; // closed stdin (Ctrl-D) declines
+    if (/^n/i.test(answer)) fail(`Sign-in did not finish.\n\n${fallback}`);
   }
 }
 
