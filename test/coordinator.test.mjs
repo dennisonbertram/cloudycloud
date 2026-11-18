@@ -1298,7 +1298,7 @@ test('status on a terminal shows "no prompt waiting", and a waiting prompt in wa
   g.deps.ui = tty();
   await main(['status', 'a'], g.deps);
   const raw = g.log.out.join('\n'), plain = plainText(raw);
-  assert.match(raw, /\u001b\[38;5;214mDo you want to read/); // the prompt text itself is the warn colour
+  assert.match(raw, /\u001b\[33mDo you want to read/); // the prompt text itself is the warn colour
   assert.match(plain, /Screen\s+waiting on a prompt: Do you want to read/);
   assert.match(plain, /→ Next: cloudy-cloud coordinator attach a/);
   for (const l of plain.split('\n')) assert.ok(cellWidth(l) <= 80, l);
