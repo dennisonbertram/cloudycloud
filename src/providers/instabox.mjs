@@ -396,8 +396,8 @@ export function createProvider(env, deps = {}) {
     metrics: fetchMetrics,
     plan,
     screenshot(id) { return this.desktop(id, (d) => d.screenshot()); },
-    // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command.
-    shellArgv: (id, cmd = []) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', '-T', cmd.map(shq).join(' ')] : [])],
+    // ssh joins remote arguments with spaces and the machine's shell parses them again, so send ONE quoted string; -T: no TTY for a command, -t when tty is true (for a sign-in).
+    shellArgv: (id, cmd = [], { tty = false } = {}) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', tty ? '-t' : '-T', cmd.map(shq).join(' ')] : [])],
 
     async connect(id, { retry = true } = {}) {
       const { Sandbox } = await loadSdk();

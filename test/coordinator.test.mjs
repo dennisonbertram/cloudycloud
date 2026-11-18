@@ -42,7 +42,8 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
   }
 });
 
-function fixture({ machines = [], snapshot = 'sn_1', pane = '' } = {}) {
+const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true });
+function fixture({ machines = [], snapshot = 'sn_1', pane = '', auth = [SIGNED_IN], snapStatus = () => 'ready' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
@@ -51,14 +52,15 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '' } = {}) {
     sandboxId: id,
     getInfo: async () => ({ name }),
     files: { write: async (p, d) => { log.writes.push({ p, d }); } },
-    commands: { run: async (cmd, o) => { log.cmds.push(cmd); return { stdout: /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
+    commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
+      return { stdout: /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
   });
   const sdk = { Sandbox: {
     async create(template, opts) { log.create.push({ template, opts }); return sandbox('m_new', opts.name ?? 'sbx-abc'); },
     async connect(id) { return sandbox(id, 'img-1'); },
-    async getSnapshot(id) { return { id, status: 'ready' }; },
+    async getSnapshot(id) { log.polls = (log.polls ?? 0) + 1; return { id, status: snapStatus(log.polls) }; },
     async kill(id) { log.killed.push(id); return true; },
     // ls, attach, stop and the image/start duplicate checks list through the SDK ({ sdk: true }).
     async list(o) { return machines.filter((m) => Object.entries(o.metadata).every(([k, v]) => m.metadata?.[k] === v)); },
@@ -73,7 +75,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '' } = {}) {
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
   const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
-  const deps = { sdk, fetchFn, env, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s) };
+  const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s) };
   return { log, deps, configFile, mk, machines };
 }
 
@@ -84,9 +86,62 @@ test('image creates a labelled machine, installs cloudy-cloud and prints the log
   assert.ok(f.log.cmds.some((c) => /npm install/.test(c)));
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && /secrets/.test(x.url)));
   const text = f.log.out.join('\n');
-  assert.match(text, /npx --yes instabox@latest ssh sbx-abc/);
+  assert.match(text, /cloudy-cloud shell sbx-abc/);
+  assert.doesNotMatch(text, /instabox@latest/);
   assert.match(text, /claude auth login/);
   assert.match(text, /coordinator image --save/);
+  assert.match(text, /deleted at \d\d:\d\d/);
+});
+
+const NOT_YET = JSON.stringify({ loggedIn: false });
+const IMG = (f) => f.machines.push(f.mk('m_img', 'img-1', { role: 'coordinator-image' }));
+
+test('interactive image signs in, saves and deletes the machine in one run', async () => {
+  const f = fixture();
+  const spawned = [];
+  await main(['image'], { ...f.deps, tty: true, spawn: (bin, a, o) => { spawned.push([bin, ...a]); assert.equal(o.stdio, 'inherit'); } });
+  assert.ok(spawned[0].includes('-t') && spawned[0].includes("'claude' 'auth' 'login'"));
+  assert.match(f.log.out[0], /Sign in to Claude in your browser\. This machine is deleted at \d\d:\d\d/);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+});
+
+test('interactive image offers a retry when the sign-in did not finish', async () => {
+  const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
+  let spawns = 0; const asked = [];
+  await main(['image'], { ...f.deps, tty: true, spawn: () => { spawns++; }, ask: async (q) => { asked.push(q); return ''; } });
+  assert.equal(spawns, 2);
+  assert.match(asked[0], /Sign-in did not finish\. Try again\? \[Y\/n\]/);
+  assert.equal(f.log.snapshots.length, 1);
+});
+
+test('declining the retry prints the manual steps and fails, keeping the machine', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => {}, ask: async () => 'n' }), /cloudy-cloud shell sbx-abc[\s\S]*claude auth login[\s\S]*exit[\s\S]*coordinator image --save/);
+  assert.equal(f.log.snapshots.length, 0);
+  assert.deepEqual(f.log.killed, []);
+});
+
+test('image reuses a running image machine instead of failing', async () => {
+  const f = fixture();
+  IMG(f);
+  await main(['image'], f.deps);
+  assert.equal(f.log.create.length, 0);
+  assert.ok(!f.log.cmds.some((c) => /npm install/.test(c)));
+  assert.match(f.log.out.join('\n'), /cloudy-cloud shell img-1/);
+});
+
+test('image --save refuses when Claude is not signed in', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  IMG(f);
+  await assert.rejects(main(['image', '--save'], f.deps), /Claude is not signed in on img-1\. Run: cloudy-cloud coordinator image/);
+  assert.equal(f.log.snapshots.length, 0);
+});
+
+test('image --save with no image machine explains the 2 hour deletion', async () => {
+  const f = fixture();
+  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found\. Image machines are deleted 2 hours after[\s\S]*Run: cloudy-cloud coordinator image/);
 });
 
 test('image --save records the snapshot id and deletes the image machine', async () => {
@@ -819,4 +874,43 @@ test('an npm install takes the git identity from global config, not from the rep
   const cmd = f.log.cmds.find((c) => c.includes('git config --global user.name'));
   assert.ok(cmd.includes('Global Person (coordinator)') && cmd.includes('global@example.com'), cmd);
   assert.ok(!/Local Person|local@example\.com/.test(cmd), cmd);
+});
+
+test('--save shows elapsed minutes while the snapshot is pending, then finishes', async () => {
+  const f = fixture({ snapStatus: (n) => (n < 14 ? 'pending' : 'ready') });
+  IMG(f);
+  const err = []; // 13 polls at 5 s: the progress line shows after every 6th
+  await main(['image', '--save'], { ...f.deps, stderr: { isTTY: true, write: (t) => err.push(t) } });
+  const text = err.join('');
+  assert.match(text, /10 to 20 minutes/);
+  assert.match(text, /Saving the image snapshot\.\.\. 1 min/);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_img']);
+  assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /PENDING_SNAPSHOT/);
+});
+
+test('--save times out after 30 minutes, then a later --save waits on the same snapshot and starts no second one', async () => {
+  let ready = false;
+  const f = fixture({ snapStatus: () => (ready ? 'ready' : 'pending') });
+  IMG(f);
+  await assert.rejects(main(['image', '--save'], f.deps), /The snapshot is still saving\. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one\./);
+  assert.ok(f.log.polls >= 360 && f.log.polls <= 361, `polled ${f.log.polls} times, about 30 minutes`);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, []);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PENDING_SNAPSHOT=m_img:sn_new$/m);
+  ready = true;
+  await main(['image', '--save'], f.deps);
+  assert.equal(f.log.snapshots.length, 1, 'no second snapshot');
+  assert.deepEqual(f.log.killed, ['m_img']);
+  assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /PENDING_SNAPSHOT/);
+});
+
+test('interactive image resumes a pending snapshot instead of starting another', async () => {
+  let ready = false;
+  const f = fixture({ snapStatus: () => (ready ? 'ready' : 'pending') });
+  IMG(f);
+  await assert.rejects(main(['image', '--save'], f.deps), /still saving/);
+  ready = true;
+  await main(['image'], { ...f.deps, tty: true, spawn: () => {} });
+  assert.equal(f.log.snapshots.length, 1);
 });

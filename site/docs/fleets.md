@@ -38,19 +38,9 @@ Remote Control needs a full Claude login. A token from `claude setup-token` cann
 cloudy-cloud coordinator image
 ```
 
-This creates a machine, installs `cloudy-cloud` on it, and prints an SSH command. Run that command, then run this in the shell it opens:
+This creates a machine, installs `cloudy-cloud` on it, and opens the Claude sign-in. Finish the sign-in in your browser. The command then saves the snapshot as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env` and deletes the image machine.
 
-```
-claude auth login
-```
-
-Finish the browser sign-in, leave the shell, then save the snapshot:
-
-```
-cloudy-cloud coordinator image --save
-```
-
-This saves the snapshot id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env` and deletes the image machine. The image machine is deleted by the server after 2 hours if you do not finish.
+The server deletes the image machine after 2 hours, and the command prints the time. If the sign-in does not finish, run `cloudy-cloud coordinator image` again to resume on the same machine. Without a terminal (a script), the command prints the manual steps instead: `cloudy-cloud shell NAME`, then `claude auth login`, then `exit`, then `cloudy-cloud coordinator image --save`.
 
 ### 2. Start a coordinator
 

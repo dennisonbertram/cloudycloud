@@ -163,6 +163,13 @@ test('#92 shellArgv: a command never asks for a TTY (docker -i, ssh -T); no comm
   assert.equal(r.shellArgv('cc-1')[3], '-t');
 });
 
+test('shellArgv with { tty: true } gives a command a TTY (docker -it, ssh -t)', () => {
+  const r = make({ CLOUDY_CLOUD_SSH_PORT: '2200' }).provider;
+  const a = r.shellArgv('cc-1', ['claude', 'auth', 'login'], { tty: true });
+  assert.equal(a[a.indexOf('-p') + 2], '-t');
+  assert.match(a.at(-1), /'exec' '-it' 'cc-1'/);
+});
+
 test('#92 shellArgv: every argument is quoted for each shell layer; nothing is injected', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shellargv-'));
   const docker = join(dir, 'docker'); // drops "exec -it <id>" and runs the rest, like the container's shell would

@@ -1,7 +1,8 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
 // Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,7 +66,10 @@ async function context(deps) {
   const progress = (message) => { if (stderr.isTTY) stderr.write(`${ui.hint(message)}\n`); };
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep });
-  return { env, provider, configFile, out, root, progress, ui, sleep, ssh: provider.text.ssh };
+  const tty = deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY);
+  const spawn = deps.spawn ?? spawnSync;
+  const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(question); } finally { rl.close(); } });
+  return { env, provider, configFile, out, root, progress, ui, sleep, tty, spawn, ask, ssh: provider.text.ssh };
 }
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
@@ -91,40 +95,79 @@ async function installTool(sbx, root) {
 // The machine's name as the server reports it (the adapter fetches it on demand).
 const nameOf = async (sbx) => (await sbx.loadName?.()) ?? sbx.name;
 
-async function image(c, args) {
-  const existing = await find(c.provider, 'coordinator-image');
-  if (!args.includes('--save')) {
-    if (existing.length) fail(`An image machine already exists (${existing[0].name}). Finish it with: cloudy-cloud coordinator image --save`);
-    c.progress('Creating the image machine...');
-    const sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
-    try {
-      c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
-      await installTool(sbx, c.root);
-    } catch (e) { await sbx.kill().catch(() => {}); throw e; }
-    const info = { name: await nameOf(sbx) };
-    if (c.ui.on) return c.out([c.ui.ok(`Image machine ${info.name} is ready`, 'cloudy-cloud is installed on it'), '',
-      c.ui.block('Now sign in to Claude on it', [['1', c.ssh(info.name, '')], ['2', 'In that shell run: claude auth login'], ['3', 'Finish the browser sign-in, then leave the shell']]), '',
-      c.ui.hint('A setup-token cannot open Remote Control sessions, so this sign-in is needed.'), c.ui.hint('Then run: cloudy-cloud coordinator image --save')].join('\n'));
-    c.out(`Image machine ${info.name} is ready and cloudy-cloud is installed on it.\n\nNow sign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. ${c.ssh(info.name, '')}`.trimEnd() +
-      `\n  2. In that shell run: claude auth login\n  3. Finish the browser sign-in, then leave the shell.\n  4. Run: cloudy-cloud coordinator image --save`);
-    return;
+// True when the machine's Claude is signed in through the browser (a setup-token cannot open Remote Control sessions).
+async function signedIn(sbx) {
+  try {
+    const r = await sbx.commands.run('claude auth status --json', { timeoutMs: 60_000 });
+    const j = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
+    return j.loggedIn === true && j.authMethod === 'claude.ai';
+  } catch { return false; }
+}
+
+const clock = (ms) => new Date(ms).toTimeString().slice(0, 5); // local HH:MM
+
+const PENDING_KEY = 'CLOUDY_CLOUD_PENDING_SNAPSHOT'; // MACHINE_ID:SNAPSHOT_ID of a snapshot still being saved, so a later run waits on it instead of starting another
+const SNAPSHOT_WAIT_POLLS = 360; // 5 s each: 30 minutes
+const readKey = (file, name) => { try { return readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch { return ''; } };
+const dropKey = (file, name) => { try { writeFileSync(file, readFileSync(file, 'utf8').split('\n').filter((l) => l && !l.startsWith(`${name}=`)).map((l) => `${l}\n`).join(''), { mode: 0o600 }); } catch { /* no file, nothing to drop */ } };
+
+async function saveImage(c, sbx) {
+  const [pm, pid] = readKey(c.configFile, PENDING_KEY).split(':');
+  let snap;
+  if (pid && pm === sbx.id) { c.progress(`A snapshot of this machine is already being saved (${pid}). Waiting for it.`); snap = await c.provider.getSnapshot(pid); }
+  else {
+    c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
+    snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
+    if (snap.status === 'pending') saveKey(c.configFile, PENDING_KEY, `${sbx.id}:${snap.id}`);
   }
-  const [img] = existing.sort((a, b) => b.startedAt - a.startedAt);
-  if (!img) fail('No image machine found. Run: cloudy-cloud coordinator image');
-  const sbx = await c.provider.connect(img.id, { retry: false });
-  c.progress('Saving the image snapshot...');
-  let snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
   for (let n = 0; snap.status === 'pending'; n++) {
-    if (n > 120) fail(`Snapshot ${snap.id} is still being saved. The image machine was kept; run --save again later.`);
+    if (n >= SNAPSHOT_WAIT_POLLS) fail(`The snapshot is still saving. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`);
     await c.sleep(5000);
+    if (n % 6 === 5) c.progress(`Saving the image snapshot... ${Math.round((n + 1) / 12)} min`);
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`);
+  if (snap.status && snap.status !== 'ready') { dropKey(c.configFile, PENDING_KEY); fail(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`); }
   saveKey(c.configFile, SNAPSHOT_KEY, snap.id);
+  dropKey(c.configFile, PENDING_KEY);
   await sbx.kill();
   if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'), c.ui.hint(`Saved as ${SNAPSHOT_KEY} in ${c.configFile}`),
     c.ui.hint('Start a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO')].join('\n'));
   c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+}
+
+async function image(c, args) {
+  const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
+  if (args.includes('--save')) {
+    if (!img) fail('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image');
+    const sbx = await c.provider.connect(img.id, { retry: false });
+    if (!(await signedIn(sbx))) fail(`Claude is not signed in on ${img.name}. Run: cloudy-cloud coordinator image`);
+    return saveImage(c, sbx);
+  }
+  let sbx, name, started;
+  if (img) {
+    c.progress(`Using the image machine ${img.name} you already started.`);
+    sbx = await c.provider.connect(img.id, { retry: false });
+    name = img.name; started = new Date(img.startedAt).getTime();
+  } else {
+    c.progress('Creating the image machine...');
+    sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
+    started = Date.now();
+    try {
+      c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
+      await installTool(sbx, c.root);
+    } catch (e) { await sbx.kill().catch(() => {}); throw e; }
+    name = await nameOf(sbx);
+  }
+  const until = clock(started + IMAGE_SECONDS * 1000);
+  const fallback = `Image machine ${name} is ready and cloudy-cloud is installed on it. It is deleted at ${until}.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell ${name}\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save`;
+  if (!c.tty) return c.out(c.ui.on ? fallback.replace(/^Image machine .*\n\n/, `${c.ui.ok(`Image machine ${name} is ready`, `cloudy-cloud is installed on it; deleted at ${until}`)}\n\n`) : fallback);
+  c.out(`Sign in to Claude in your browser. This machine is deleted at ${until} if you don't finish.`);
+  const [bin, ...rest] = c.provider.shellArgv(name, ['claude', 'auth', 'login'], { tty: true });
+  for (let n = 1; ; n++) {
+    c.spawn(bin, rest, { stdio: 'inherit' });
+    if (await signedIn(sbx)) return saveImage(c, sbx);
+    if (n >= 3 || /^n/i.test((await c.ask('Sign-in did not finish. Try again? [Y/n] ')).trim())) fail(`Sign-in did not finish.\n\n${fallback}`);
+  }
 }
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };

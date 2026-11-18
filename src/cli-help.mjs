@@ -1,9 +1,9 @@
 // Help for `cloudy-cloud coordinator`. The top-level help lives in bin/cloudy-cloud.
 const guides = {
   image: ['Prepare a reusable Claude Code sign-in for coordinators.', 'image [--save]', [
-    ['image', 'Create a machine to sign in on'],
-    ['image --save', 'Save its snapshot and delete the machine'],
-  ], 'Sign in on the image machine (claude auth login) before you save it.'],
+    ['image', 'Create a machine, sign in to Claude in your browser, save it and delete the machine'],
+    ['image --save', 'Save a machine you signed in on by hand (when image ran without a terminal)'],
+  ], 'Run image on a terminal: you only do the browser sign-in. The machine is deleted 2 hours after it is created.'],
   start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]', [
     ['NAME', 'Lowercase letters, digits and hyphens, up to 40'],
     ['--repo URL', 'Required GitHub https URL'],

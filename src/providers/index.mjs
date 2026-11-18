@@ -48,7 +48,7 @@
  * @property {(id: string, localRemote: string) => Promise<number>} forwardPort   resolves the exit code
  * @property {(id: string, port: string) => Promise<{ url: string }>} publishPort
  * @property {(id: string, port: string) => Promise<number>} unpublishPort
- * @property {(id: string, cmd?: string[]) => string[]} shellArgv   argv that opens an interactive shell on the machine, or runs cmd
+ * @property {(id: string, cmd?: string[], o?: { tty?: boolean }) => string[]} shellArgv   argv that opens an interactive shell on the machine, or runs cmd (with a TTY when o.tty is true)
  * @property {(id: string, o?: { control?: boolean, ttlSeconds?: number }) => Promise<{ url: string, expiresAt: Date|string }>} displayLink   a desktop link; starts the desktop when it is not running
  * @property {(id: string, o?: { since?: number }) => Promise<{ samples: Array<{ t: number, cpuPct: number, cpuCount: number, memUsed: number, memTotal: number, netIn?: number, netOut?: number, diskRead?: number, diskWrite?: number }>, fetchedAt: number }>} metrics   since is a ms timestamp (default now - 1 h, at most 24 h back); t is ms, bytes and bytes per second as reported; oldest first; empty when the machine did not run in the window
  * @property {(o?: { refresh?: boolean }) => Promise<{ tier: string, specs: Array<{ vcpus: number, memMiB: number }>, startsPerMinute: number, maxRunning: number, maxMachines: number, fetchedAt: number }|null>} plan   the account's plan, cached for the process; 0 in a limit means no limit; null when there is no plan or it could not be read (never throws)
