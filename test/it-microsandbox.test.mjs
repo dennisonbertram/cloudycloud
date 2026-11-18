@@ -20,19 +20,26 @@ const GH = `cc-it-${randomBytes(12).toString('hex')}`; // synthetic; only checke
 const IT_TOKEN = `cc-it-${randomBytes(12).toString('hex')}`;
 const ECHO_HOST = process.env.CLOUDY_CLOUD_IT_ECHO || 'httpbin.org';
 const freePort = () => new Promise((r) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
-const msbRun = (...a) => spawnSync(BIN, a, { encoding: 'utf8' });
+// the test's own msb calls pin the local backend too (a user's saved cloud profile must not redirect them)
+const msbRun = (...a) => spawnSync(BIN, a, { encoding: 'utf8', env: { ...process.env, MSB_BACKEND: 'local' } });
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
 let provider;
+// Cleanup touches ONLY this test's sandboxes (the unique OWNER label) and a failed listing fails the test —
+// other sessions' Cloudy Cloud workers on this backend must never be force-removed by a test run.
+const ownLs = () => {
+  const r = msbRun('ls', '--label', `cloudy-cloud.owner=${OWNER}`, '--format', 'json');
+  assert.equal(r.status, 0, `msb ls failed: ${r.stderr}`);
+  return JSON.parse(r.stdout || '[]');
+};
 const cleanup = () => {
   if (!ON || !BIN) return;
-  const rows = JSON.parse(msbRun('ls', '--label', 'cloudy-cloud.purpose=cloudy-cloud', '--format', 'json').stdout || '[]');
-  for (const r of rows) spawnSync(BIN, ['rm', '--force', r.name]);
+  for (const r of ownLs()) spawnSync(BIN, ['rm', '--force', r.name]);
 };
 after(() => {
+  if (!ON || !BIN) return;
   cleanup();
-  const left = ON && BIN ? (msbRun('ls', '--label', 'cloudy-cloud.purpose=cloudy-cloud', '--format', 'json').stdout || '[]').trim() : '[]';
-  assert.equal(left, '[]', `sandboxes left behind: ${left}`);
+  assert.deepEqual(ownLs(), [], 'sandboxes left behind');
 });
 
 test('microsandbox end to end on this computer', { skip: !ON && 'set CLOUDY_CLOUD_IT_MSB=1 (needs msb)', timeout: 20 * 60_000 }, async (t) => {
@@ -50,12 +57,16 @@ test('microsandbox end to end on this computer', { skip: !ON && 'set CLOUDY_CLOU
       const shown = (await s.commands.run('printf %s "$CC_IT_TOKEN"')).stdout;
       assert.notEqual(shown, IT_TOKEN, 'the guest saw the real value');
       assert.ok(shown.length > 0, 'no placeholder env reached the guest');
-      const viaCurl = (await s.commands.run(`curl -sS https://${ECHO_HOST}/headers -H "Authorization: Bearer $CC_IT_TOKEN"`, { timeoutMs: 30_000 })).stdout;
-      assert.ok(viaCurl.includes(IT_TOKEN), `host did not see the swapped value: ${viaCurl.slice(0, 300)}`);
-      const viaNode = (await s.commands.run(`node -e "fetch('https://${ECHO_HOST}/headers',{headers:{authorization:'Bearer '+process.env.CC_IT_TOKEN}}).then(r=>r.text()).then(t=>console.log(t))"`, { timeoutMs: 30_000 })).stdout;
-      assert.ok(viaNode.includes(IT_TOKEN), `node fetch did not see the swapped value: ${viaNode.slice(0, 300)}`);
+      // The endpoint echoes the swapped header; the guest prints only its sha256 so the token never reaches
+      // stdout — msb records exec output in exec.log under ~/.microsandbox, which the grep below then scans.
+      const digest = `node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const h=Object.entries(JSON.parse(d).headers).find(([k])=>k.toLowerCase()==="authorization")?.[1]??"";console.log(require("crypto").createHash("sha256").update(h).digest("hex"))})'`;
+      const want = sha256(`Bearer ${IT_TOKEN}`);
+      const viaCurl = (await s.commands.run(`curl -sS https://${ECHO_HOST}/headers -H "Authorization: Bearer $CC_IT_TOKEN" | ${digest}`, { timeoutMs: 30_000 })).stdout.trim();
+      assert.equal(viaCurl, want, `host did not see the swapped value: ${viaCurl.slice(0, 300)}`);
+      const viaNode = (await s.commands.run(`node -e "fetch('https://${ECHO_HOST}/headers',{headers:{authorization:'Bearer '+process.env.CC_IT_TOKEN}}).then(r=>r.json()).then(j=>{const h=Object.entries(j.headers).find(([k])=>k.toLowerCase()==='authorization')?.[1]??'';console.log(require('crypto').createHash('sha256').update(h).digest('hex'))})"`, { timeoutMs: 30_000 })).stdout.trim();
+      assert.equal(viaNode, want, `node fetch did not see the swapped value: ${viaNode.slice(0, 300)}`);
       const grep = spawnSync('grep', ['-rF', IT_TOKEN, join(homedir(), '.microsandbox')], { encoding: 'utf8' });
-      assert.notEqual(grep.status, 0, 'the token value is stored under ~/.microsandbox');
+      assert.equal(grep.status, 1, `expected grep's no-match exit 1, got ${grep.status}: ${grep.stderr}`);
     } finally { await provider.delete(s.id); }
   });
 

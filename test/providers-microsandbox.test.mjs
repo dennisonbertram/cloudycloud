@@ -28,23 +28,34 @@ const pos = (rest) => rest.filter((a, i) => !a.startsWith('-') && !VALS.has(rest
 const kv = (s) => { const i = s.indexOf('='); return [s.slice(0, i), s.slice(i + 1)]; };
 
 // A fake msb: an in-memory sandbox table; `exec` runs the command locally under a temp root with the sandbox's
-// env (`-e` vars plus a placeholder per --secret, never the value — the value stays in the create call's env).
-function fakeMsb({ imageOk = true } = {}) {
+// env (`-e` vars — bare `-e NAME` resolves from the create child's env like ui::parse_env — plus a placeholder
+// per --secret, never the value — the value stays in the create call's env).
+function fakeMsb({ imageOk = true, imageErr, lsBadJson = false, createErr, onCreate } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cc-msb-'));
   roots.push(root);
   const table = new Map(); // name -> { name, status, created_at, image, labels, env }
   const calls = []; // { bin, args, env } — env is the spawn env the adapter gave this child
   const local = (s) => s.replaceAll('/home/worker', `${root}/home/worker`);
-  function handle(args, stdin, child) {
+  function handle(args, stdin, child, cenv) {
     const done = (code, out = '', err = '') => { if (out) child.stdout.write(out); if (err) child.stderr.write(err); child.emit('close', code, null); };
     const [cmd, ...rest] = args;
-    if (cmd === 'image' && rest[0] === 'inspect') return imageOk ? done(0, '{}\n') : done(1, '', `image ${rest.at(-1)} not found`);
+    if (cmd === 'image' && rest[0] === 'inspect') {
+      if (imageErr) return done(1, '', imageErr);
+      return imageOk ? done(0, '{}\n') : done(1, '', `image ${rest.at(-1)} not found`);
+    }
     if (cmd === 'create') {
+      if (createErr) return done(1, createErr.stdout ?? '', createErr.stderr ?? 'create failed');
       const name = at(rest, '--name');
       const labels = Object.fromEntries(all(rest, '--label').map(kv));
-      const senv = Object.fromEntries([...all(rest, '-e'), ...all(rest, '--env')].map(kv));
+      const senv = {};
+      for (const e of [...all(rest, '-e'), ...all(rest, '--env')]) {
+        if (e.includes('=')) { const [k, v] = kv(e); senv[k] = v; }
+        else if (cenv?.[e] === undefined) return done(1, '', `environment variable '${e}' not set`);
+        else senv[e] = cenv[e];
+      }
       for (const s of all(rest, '--secret')) senv[s.split(/[:@]/)[0]] = `msb-placeholder-${s.split(/[:@]/)[0]}`;
       table.set(name, { name, status: 'Running', created_at: new Date().toISOString(), image: pos(rest)[0], labels, env: senv });
+      onCreate?.(table, name);
       return done(0, `${name}\n`);
     }
     if (cmd === 'ls') {
@@ -52,7 +63,7 @@ function fakeMsb({ imageOk = true } = {}) {
       const labs = all(rest, '--label').map(kv);
       rows = rows.filter((r) => labs.every(([k, v]) => r.labels[k] === v));
       if (rest.includes('--running')) rows = rows.filter((r) => r.status === 'Running');
-      if (at(rest, '--format') === 'json') return done(0, `${JSON.stringify(rows.map(({ name, status, created_at, image }) => ({ name, status, created_at, image })))}\n`);
+      if (at(rest, '--format') === 'json') return done(0, lsBadJson ? 'not json\n' : `${JSON.stringify(rows.map(({ name, status, created_at, image }) => ({ name, status, created_at, image })))}\n`);
       return done(0, `${rows.map((r) => r.name).join('\n')}\n`);
     }
     if (cmd === 'inspect') {
@@ -91,7 +102,7 @@ function fakeMsb({ imageOk = true } = {}) {
     calls.push({ bin, args, env: opts.env });
     const chunks = [];
     child.stdin.on('data', (d) => chunks.push(Buffer.from(d)));
-    child.stdin.on('end', () => handle(args, Buffer.concat(chunks), child));
+    child.stdin.on('end', () => handle(args, Buffer.concat(chunks), child, opts.env));
     return child;
   };
   return { spawn, table, calls, root };
@@ -193,7 +204,7 @@ test('create builds the documented msb argv: image, name, resources, ttl, labels
   for (const l of ['cloudy-cloud.purpose=cloudy-cloud', 'cloudy-cloud.owner=o1', 'cloudy-cloud.name=w1']) assert.ok(labels.includes(l), l);
   assert.ok(labels.some((l) => l.startsWith('cloudy-cloud.deleteAt=') && l.endsWith('Z')));
   assert.ok(labels.some((l) => l.startsWith('cloudy-cloud.startedAt=') && l.endsWith('Z')));
-  assert.ok(all(a.slice(1), '-e').includes('FOO=a b'));
+  assert.ok(all(a.slice(1), '-e').includes('FOO'), '-e carries the name only');
   await assert.rejects(mk(provider, { kind: { name: 'android' } }), (e) => e.code === 'machine_kind_unsupported' && e.message === 'microsandbox runs only linux machines, not android. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.');
   await assert.rejects(mk(provider, { envs: { '9BAD': 'x' } }), /invalid environment variable name/);
   await assert.rejects(mk(provider, { labels: { 'bad key': 'x' } }), /invalid label name/);
@@ -214,8 +225,8 @@ test('a missing worker image says how to build and load it', async () => {
 
 test('slots full gives quota_exceeded naming the count; raising the env lets it through', async () => {
   const box = fakeMsb();
-  const put = (n) => box.table.set(`cc-${n}`, { name: `cc-${n}`, status: 'Running', created_at: 'x', image: IMAGE, labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' }, env: {} });
-  put(1); put(2);
+  const put = (n, status = 'Running') => box.table.set(`cc-${n}`, { name: `cc-${n}`, status, created_at: 'x', image: IMAGE, labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' }, env: {} });
+  put(1); put(2, 'Starting'); // a still-starting sandbox also holds a slot
   const p = createProvider(ENV, { spawn: box.spawn });
   await assert.rejects(mk(p), (e) => e.code === 'quota_exceeded' && e.message === 'All 2 microsandbox slots on this computer are in use. Stop an agent or raise CLOUDY_CLOUD_MSB_SLOTS.');
   put(3);
@@ -291,13 +302,23 @@ test('connect, list, delete; snapshot and publish refuse', async () => {
   assert.equal((await provider.list({})).length, 0);
 });
 
-test('shellArgv: a login shell or a quoted command; shellEnv is empty', () => {
+test('shellArgv: a login shell or a quoted command; shellEnv masks out non-allowlisted env', () => {
   const p = createProvider(ENV, { spawn: fakeMsb().spawn });
   assert.deepEqual(p.shellArgv('cc-1'), [BIN, 'exec', '-t', 'cc-1', '--', 'bash', '-l']);
   assert.deepEqual(p.shellArgv('cc-1', []), p.shellArgv('cc-1'));
   assert.deepEqual(p.shellArgv('cc-1', ['echo', "it's x"]), [BIN, 'exec', '--no-tty', 'cc-1', '--', 'bash', '-lc', `'echo' 'it'\\''s x'`]);
   assert.deepEqual(p.shellArgv('cc-1', ['claude', 'auth', 'login'], { tty: true }), [BIN, 'exec', '-t', 'cc-1', '--', 'bash', '-lc', `'claude' 'auth' 'login'`]);
-  assert.deepEqual(p.shellEnv(), {});
+  // callers merge shellEnv over process.env: mask every non-allowlisted name out (undefined drops a key in
+  // spawn) — including an arbitrary exported credential the provider never heard of — and pin the backend
+  process.env.CC_TEST_EXPORTED_CRED = 'cc-secret-in-parent-env';
+  try {
+    const se = p.shellEnv();
+    assert.equal(se.MSB_BACKEND, 'local');
+    for (const k of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'MSB_API_KEY']) assert.equal(se[k], undefined, k);
+    assert.ok(Object.keys(se).includes('GH_TOKEN'), 'the mask entry is present so the merge deletes the value');
+    assert.ok(Object.keys(se).includes('CC_TEST_EXPORTED_CRED'), 'an arbitrary exported credential is masked too');
+    assert.ok(!('PATH' in se) || se.PATH !== undefined, 'the allowlisted PATH is never masked out');
+  } finally { delete process.env.CC_TEST_EXPORTED_CRED; }
 });
 
 test('display and metrics refuse with their codes; plan is null; text names the fixes', async () => {
@@ -340,4 +361,154 @@ test('loadProvider picks microsandbox; the unknown-provider message lists all th
 test('missingSetup: the msb binary counts, from env or unset', () => {
   assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox' }), /CLOUDY_CLOUD_MSB_BIN/);
   assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_MSB_BIN: BIN }), '');
+});
+
+test('child env: only the allowlist plus MSB_BACKEND=local reaches msb children; secrets only the create call', async () => {
+  process.env.CC_LEAK_TEST = 'leaked-token-value'; // an exported parent secret must not be inherited
+  try {
+    const { box, provider } = make();
+    const s = await mk(provider);
+    await provider.list();
+    await s.commands.run('true');
+    await provider.delete(s.id);
+    assert.ok(box.calls.length >= 4);
+    for (const c of box.calls) {
+      assert.ok(c.env && typeof c.env === 'object', `${c.args[0]} ran without an explicit env`);
+      assert.equal(c.env.CC_LEAK_TEST, undefined, `${c.args[0]} inherited a parent secret`);
+      assert.equal(c.env.MSB_BACKEND, 'local', `${c.args[0]} did not pin the local backend`);
+    }
+    assert.equal(box.calls.find((c) => c.args[0] === 'create').env.GH_TOKEN, 'cc-gh-x');
+    for (const c of box.calls.filter((c) => c.args[0] !== 'create')) assert.equal(c.env.GH_TOKEN, undefined, `${c.args[0]} got a secret it did not need`);
+  } finally { delete process.env.CC_LEAK_TEST; }
+});
+
+test('envs values ride in the create child env (bare -e NAME), never in argv', async () => {
+  const { box, provider } = make();
+  const s = await mk(provider, { envs: { FOO: 'a b', LITELLM_MASTER_KEY: 'sk-live-xyz' } });
+  const create = box.calls.find((c) => c.args[0] === 'create');
+  for (const v of ['sk-live-xyz', 'a b']) assert.ok(!create.args.join(' ').includes(v), `${v} in argv`);
+  assert.deepEqual(all(create.args.slice(1), '-e').sort(), ['FOO', 'LITELLM_MASTER_KEY']);
+  assert.equal(create.env.LITELLM_MASTER_KEY, 'sk-live-xyz');
+  assert.equal((await s.commands.run('printf %s "$LITELLM_MASTER_KEY"')).stdout, 'sk-live-xyz');
+});
+
+test('a failed create redacts secret-bearing output and removes the half-made sandbox', async () => {
+  const box = fakeMsb({ createErr: { stderr: 'apply failed for sk-live-xyz: denied' } });
+  const p = createProvider(ENV, { spawn: box.spawn });
+  const e = await mk(p, { envs: { LITELLM_MASTER_KEY: 'sk-live-xyz' } }).then(() => { throw new Error('create should fail'); }, (x) => x);
+  for (const f of [e.message, e.stdout, e.stderr]) assert.ok(!String(f ?? '').includes('sk-live-xyz'), `${f} echoed the credential`);
+  assert.match(e.stderr, /<redacted>/);
+  assert.equal(box.table.size, 0, 'the failed sandbox was not removed');
+});
+
+test('an image-inspect failure that is not "missing image" keeps its cause', async () => {
+  const { provider } = make({}, { imageErr: 'requires a local backend, but the active default is a cloud backend' });
+  await assert.rejects(mk(provider), (e) => e.message.includes('cloud backend') && !e.message.includes('is missing'));
+});
+
+test('egress rejects IP literals and bad DNS labels before spawning', async () => {
+  const { box, provider } = make();
+  const n = () => box.calls.length;
+  for (const bad of ['1.2.3.4', '::1', '-bad.com', 'bad-.com', `${'a'.repeat(64)}.com`, 'a..b.com', 'nodots'])
+    await assert.rejects(mk(provider, { egress: { allow: [bad] } }), (e) => /invalid egress host/.test(e.message), bad);
+  assert.equal(box.calls.length, n(), 'an invalid host reached msb');
+  await mk(provider, { egress: { allow: ['ok-name.com'] } }); // hyphens inside a label stay legal
+});
+
+test('list pushes ownership and selector labels into msb ls and never inspects foreign sandboxes', async () => {
+  const { box, provider } = make();
+  const s = await mk(provider, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  box.table.set('foreign', { name: 'foreign', status: 'Running', created_at: 'x', image: 'x', labels: {}, env: {} });
+  const before = box.calls.filter((c) => c.args[0] === 'inspect').length;
+  const rows = await provider.list({ owner: 'o1' });
+  assert.deepEqual(rows.map((r) => r.id), [s.id]);
+  const ls = box.calls.filter((c) => c.args[0] === 'ls').at(-1).args;
+  for (const l of ['cloudy-cloud.purpose=cloudy-cloud', 'cloudy-cloud.owner=o1']) assert.ok(ls.includes(l), l);
+  assert.equal(box.calls.filter((c) => c.args[0] === 'inspect').length - before, 1, 'inspected an unrelated sandbox');
+});
+
+test('malformed ls output propagates instead of looking like free capacity', async () => {
+  const { provider } = make({}, { lsBadJson: true });
+  await assert.rejects(provider.list(), (e) => e.code === 'transient' && /invalid JSON/i.test(e.message));
+  await assert.rejects(mk(provider), (e) => e.code === 'transient' && /invalid JSON/i.test(e.message));
+});
+
+test('a racing create over the slot limit is removed after creation', async () => {
+  const box = fakeMsb({
+    onCreate: (t) => t.set('cc-racer', { name: 'cc-racer', status: 'Running', created_at: 'x', image: IMAGE, labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' }, env: {} }),
+  });
+  const p = createProvider({ ...ENV, CLOUDY_CLOUD_MSB_SLOTS: '1' }, { spawn: box.spawn });
+  await assert.rejects(mk(p), (e) => e.code === 'quota_exceeded');
+  assert.deepEqual([...box.table.keys()], ['cc-racer'], 'the loser was not removed');
+});
+
+test('deleteAt is enforced: expired handles refuse and are removed; list clears expired sandboxes', async () => {
+  let t = 1_700_000_000_000;
+  const box = fakeMsb();
+  const p = createProvider(ENV, { spawn: box.spawn, now: () => t });
+  const s = await mk(p, { ttlSeconds: 60 });
+  t += 61_000;
+  await assert.rejects(s.commands.run('true'), (e) => e.code === 'not_found');
+  assert.ok(box.calls.some((c) => c.args[0] === 'rm' && c.args.includes(s.id)), 'the expired sandbox was not removed');
+  const s2 = await mk(p, { ttlSeconds: 60 });
+  t += 61_000;
+  await assert.rejects(p.connect(s2.id), (e) => e.code === 'not_found');
+  assert.ok(!box.table.has(s2.id), 'connect left the expired sandbox');
+  const s3 = await mk(p, { ttlSeconds: 60 });
+  const keep = await mk(p, { ttlSeconds: 3600 });
+  t += 61_000;
+  assert.deepEqual((await p.list()).map((r) => r.id), [keep.id]);
+  assert.ok(!box.table.has(s3.id), 'list left the expired sandbox');
+});
+
+test('an abort while queued for the limiter rejects promptly and runs no guest cleanup', async () => {
+  const { box, provider } = make();
+  const s = await mk(provider);
+  const ctls = Array.from({ length: 8 }, () => new AbortController()); // occupy all limiter slots
+  const hangers = ctls.map((c) => s.commands.run('sleep 60', { signal: c.signal }));
+  await new Promise((r) => setTimeout(r, 150));
+  const ac = new AbortController();
+  const queued = s.commands.run('echo hi', { signal: ac.signal });
+  ac.abort();
+  await assert.rejects(queued, (e) => e.name === 'AbortError');
+  assert.ok(!box.calls.some((c) => c.args.join(' ').includes('kill -TERM')), 'cleanup ran for a command that never started');
+  assert.ok(!box.calls.some((c) => c.args.join(' ').includes('echo hi')), 'the queued command spawned after abort');
+  ctls.forEach((c) => c.abort());
+  await Promise.allSettled(hangers);
+});
+
+test('files.write accepts a bare filename', async () => {
+  const { provider } = make();
+  const s = await mk(provider);
+  await s.files.write('result.txt', 'hi');
+  assert.equal((await s.files.read('result.txt')).toString(), 'hi');
+});
+
+test('forwardPort honours abort before and during, and tears down live connections', async () => {
+  const { provider } = make();
+  const s = await mk(provider);
+  const pre = new AbortController();
+  pre.abort();
+  assert.equal(await provider.forwardPort(s.id, '18765:8765', { signal: pre.signal }), 0);
+  const ac = new AbortController();
+  const done = provider.forwardPort(s.id, '0:8765', { signal: ac.signal });
+  ac.abort();
+  assert.equal(await done, 0);
+  // a live, held-open connection cannot keep the promise pending
+  const echo = createServer((c) => c.pipe(c)).listen(0, '127.0.0.1');
+  await once(echo, 'listening');
+  const lport = await new Promise((r) => { const t = createServer().listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => r(p)); }); });
+  const held = connect(lport, '127.0.0.1');
+  held.on('error', () => {});
+  try {
+    const ac2 = new AbortController();
+    const done2 = provider.forwardPort(s.id, `${lport}:${echo.address().port}`, { signal: ac2.signal });
+    await new Promise((r) => setTimeout(r, 200));
+    held.write('x');
+    await new Promise((r) => setTimeout(r, 100));
+    ac2.abort();
+    assert.equal(await Promise.race([done2, new Promise((_, rej) => setTimeout(() => rej(new Error('forwardPort hung on abort')), 5000))]), 0);
+    if (!held.destroyed) await once(held, 'close'); // the server side is destroyed; the client's close lands after
+    assert.ok(held.destroyed, 'the held socket was not destroyed');
+  } finally { held.destroy(); echo.close(); }
 });
