@@ -11,7 +11,7 @@ const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
 const TOK = 'sk-ant-oat01-FAKECLAUDETOKEN0123';
 
 // Runs the launcher with a stub `claude` that records its argv.
-function run({ config, cwd, provider, socketIn, extraEnv }) {
+function run({ config, cwd, provider, socketIn, extraEnv, args = [] }) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
   const argvFile = join(dir, 'argv');
   const stub = join(dir, 'claude');
@@ -20,7 +20,7 @@ function run({ config, cwd, provider, socketIn, extraEnv }) {
   const cfg = join(dir, 'env');
   if (config !== undefined) writeFileSync(cfg, config);
   const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, ...(provider && { CLOUDY_CLOUD_PROVIDER: provider }), ...(socketIn && { CLOUDY_CLOUD_DOCKER_SOCKET_IN: socketIn }), ...extraEnv };
-  const r = spawnSync('/bin/sh', [launcher], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: cwd ?? dir, env, input: '', encoding: 'utf8' });
   return { ...r, bin: existsSync(`${argvFile}.bin`) ? readFileSync(`${argvFile}.bin`, 'utf8') : '', started: existsSync(argvFile), argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '', dir };
 }
 
@@ -333,4 +333,15 @@ test('one bare word that is not a command is refused with the way to send it as 
   assert.equal(r.status, 2);
   assert.equal(r.stdout, '');
   assert.equal(r.stderr, 'cloudy-cloud: "ls" is not a command. See: cloudy-cloud --help\nTo send it to Claude as a prompt: cloudy-cloud -p "ls"\n');
+});
+
+test("Claude Code's own subcommands still reach claude; any other bare word is refused", () => {
+  for (const word of ['auth', 'update']) {
+    const r = run({ config: full, cwd: repo('https://github.com/test/repo.git'), args: [word] });
+    assert.equal(r.started, true, `${word}: ${r.stderr}`);
+    assert.match(r.argv, new RegExp(`^${word}$`, 'm'));
+  }
+  const r = run({ config: full, cwd: repo('https://github.com/test/repo.git'), args: ['ls'] });
+  assert.equal(r.status, 2);
+  assert.equal(r.started, false);
 });

@@ -127,9 +127,9 @@ EOF
 fi
 
 # One bare word that is not a command (for example `cloudy-cloud ls`) is most likely a typo, not a prompt for Claude.
-# A prompt with spaces, any option and -p keep working.
+# A prompt with spaces, any option, -p and Claude Code's own subcommands keep working.
 case ${1:-} in
-  ''|-*|*[[:space:]]*|codex|mcp) ;;
+  ''|-*|*[[:space:]]*|codex|mcp|agents|attach|auth|auto-mode|gateway|import|install|logs|plugin|plugins|purge|respawn|rm|sessions|setup-token|stop|kill|ultrareview|update|upgrade|config) ;;
   *)
     bare=1
     for a in "$@"; do case $a in -p|--print) bare= ;; esac; done
