@@ -44,6 +44,11 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# `cloudy-cloud pi|free-pi [args]` starts pi or free-pi as the main session with the cloud_agent tools.
+if [ "${1:-}" = pi ] || [ "${1:-}" = free-pi ]; then
+  exec node "$root/src/host-pi.mjs" "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
@@ -88,6 +93,7 @@ Usage: cloudy-cloud [command]
   protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
   codex [args]           start the Codex CLI with the cloud_agent tools instead of Claude Code
   opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
+  pi, free-pi            start pi or free-pi as the main session with the cloud agent tools
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
