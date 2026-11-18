@@ -6,8 +6,8 @@ import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile } from './config.mjs';
-import { coordinatorKeys, loadProfiles } from './profiles.mjs';
+import { loadEnv, ownerFile, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { makeUi, cellWidth, fitCells } from './ui.mjs';
@@ -37,11 +37,32 @@ const fail = (msg) => { throw new Error(msg); };
 // The message stays one sentence for scripts (plain stderr, --json); only a colour terminal shows short / reason / Next.
 const guided = (message, short, reason, next, neutral = false) => { throw Object.assign(new Error(message), { short, reason, next, neutral }); };
 const tilde = (p, env) => { const h = env.HOME || homedir(); return p.startsWith(`${h}/`) ? `~${p.slice(h.length)}` : p; };
+// "→ Next: <cmd>" on one line; a command too long for that drops to its own indented line under the mark.
+const nextFit = (u, cmd) => { const l = u.next(cmd); return cellWidth(l) <= u.width ? l : `  ${u.paint(u.col.acc, `${u.utf ? '→' : '->'} Next:`)}\n    ${fitCells(cmd, u.width - 4)}`; };
+// Same wrap for the "Attach with: <cmd>" hint.
+const attachFit = (u, name) => (4 + cellWidth(`Attach with: cloudy-cloud coordinator attach ${name}`) <= u.width
+  ? u.hint(`Attach with: cloudy-cloud coordinator attach ${name}`) : `${u.hint('Attach with:')}\n    ${fitCells(`cloudy-cloud coordinator attach ${name}`, u.width - 4)}`);
+// Whole-word wrap for a line of text: no word is cut, each returned line fits `room` cells (default: a 4-indent).
+const wrapText = (u, text, room = u.width - 4) => {
+  const lines = []; let cur = '';
+  for (const w of String(text).split(/\s+/).filter(Boolean)) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (cellWidth(t) <= room) cur = t; else { if (cur) lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+};
+// A status line (ok/warn) whose detail rides beside the message when it fits — measuring the real mark, so [ok]
+// under LANG=C is budgeted too — and otherwise moves to its own dimmed line so it is never dropped.
+const statusLine = (u, kind, msg, details = []) => {
+  for (const d of details) { const l = u[kind](msg, d); if (cellWidth(l) <= u.width) return l; }
+  return `${u[kind](msg)}${details.length ? `\n    ${u.dim(fitCells(details[0], u.width - 4))}` : ''}`;
+};
 
 // Sets and drops config lines in ONE write: temp file in the same folder (mode 600), then rename. Errors other than a missing file propagate.
 function updateConfig(file, set = {}, drop = []) {
   let lines = [];
-  try { lines = readFileSync(file, 'utf8').split('\n').filter((l) => l); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { lines = readFileSync(file, 'utf8').split('\n'); if (lines.at(-1) === '') lines.pop(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const names = new Set([...Object.keys(set), ...drop]);
   lines = lines.filter((l) => !names.has(l.slice(0, l.indexOf('='))));
   mkdirSync(dirname(file), { recursive: true });
@@ -72,13 +93,15 @@ async function context(deps) {
   const stderr = deps.stderr ?? process.stderr;
   const ui = deps.ui ?? makeUi();
   const progress = (message) => { if (stderr.isTTY) stderr.write(`${ui.hint(message)}\n`); };
+  // A state change the user should see even when stderr is piped (unlike progress): one line, never stdout.
+  const note = deps.note ?? ((s) => stderr.write(`${s}\n`));
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep });
+  const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep, spawn: deps.cliSpawn });
   const tty = deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY);
   const spawn = deps.spawn ?? spawnSync;
   const now = deps.now ?? Date.now;
   const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, ui, sleep, now, tty, spawn, ask, ssh: provider.text.ssh };
+  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, ssh: provider.text.ssh };
 }
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
@@ -126,7 +149,7 @@ const SNAPSHOT_WAIT_MS = 30 * 60_000;
 const gone = (e) => e?.code === 'not_found' || e?.status === 404;
 // Known limit: two --save runs at the same moment can both start a snapshot; nothing serialises them.
 const readKey = (file, name) => { // throws on anything but a missing file, so a read error never looks like "no snapshot pending"
-  try { return readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch (e) { if (e.code === 'ENOENT') return ''; throw e; }
+  try { return readFileSync(file, 'utf8').split('\n').findLast((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch (e) { if (e.code === 'ENOENT') return ''; throw e; }
 };
 
 // Waits for the snapshot, saves its id, deletes the image machine (sbx, when it still exists), then drops the pending entry.
@@ -145,8 +168,10 @@ async function finishSave(c, sbx, snap, email = '') {
   updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, ...(email && { [ACCOUNT_KEY]: email }) }, email === '' ? [ACCOUNT_KEY] : []); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
   updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_ACCOUNT_KEY]);
-  if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, `${email ? `signed in as ${email}; ` : ''}the image machine is deleted`), c.ui.hint(`Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
-    c.ui.next('cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO')].join('\n'));
+  if (c.ui.on) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'),
+    ...(email ? [c.ui.hint(fitCells(`signed in as ${email}`, c.ui.width - 4))] : []),
+    c.ui.hint(fitCells(`Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`, c.ui.width - 4)),
+    c.ui.next('cloudy-cloud coordinator start NAME --repo URL')].join('\n'));
   c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
@@ -175,15 +200,63 @@ async function saveNew(c, sbx, email) {
   return finishSave(c, sbx, snap, email);
 }
 
+const STORE_NOTE = 'Stored a coordinator copy of your Instabox key as a proxy secret (machines see a placeholder).';
+const ADMIN_NEXT = 'cloudy-cloud setup --more (or ask a workspace admin)';
+// The store notice: stderr for scripts and --json; on a colour terminal it follows the result on stdout.
+// Emitted only after the store succeeded, once.
+const storeNotice = (c, res, { json = false } = {}) => { if (res === 'stored') (c.ui.on && !json ? (s) => c.out(c.ui.hint(s)) : c.note)(STORE_NOTE); };
+
+// The store error: a real key still refuses to go on a machine (key_on_machine_refused), but the cause is the failed
+// store — a personal or machine key cannot write org secrets (403 missing_scope) — and the next step is setup --more.
+const storeError = (detail) => Object.assign(new Error(
+  `Could not store the coordinator copy of your Instabox key as a proxy secret.\nWhat happened: A real key was about to be placed on a machine whose provider keeps keys off machines.\nLikely cause: Storing the coordinator key needs a workspace-admin Instabox key.${detail ? ` ${detail}` : ''}\nNext step: ${ADMIN_NEXT}.`),
+  { code: 'key_on_machine_refused', short: 'Could not store the coordinator key.', reason: 'Storing the coordinator key needs a workspace-admin Instabox key.', next: ADMIN_NEXT });
+
+// Records the secret name locally: env for this run, the config file for later ones (the loader's last-line value
+// wins, so read it). Write and read failures propagate — reporting success while the name was not saved repeats the write.
+const recordCoordinatorSecret = (c) => {
+  c.env.CLOUDY_CLOUD_PROXY_SECRETS = [...proxySecrets(c.env), COORDINATOR_KEY_SECRET].join(',');
+  const file = readKey(c.configFile, 'CLOUDY_CLOUD_PROXY_SECRETS').split(/[\s,]+/).filter(Boolean);
+  if (!file.includes(COORDINATOR_KEY_SECRET)) updateConfig(c.configFile, { CLOUDY_CLOUD_PROXY_SECRETS: [...file, COORDINATOR_KEY_SECRET].join(',') });
+};
+
+// The coordinator copy of the Instabox key (the CLOUDY_CLOUD_INSTABOX_API_KEY proxy secret, host api.instabox.sh) is
+// stored by `setup --more`, but a plain `setup` leaves a real INSTABOX_API_KEY without it. image and start store it
+// themselves the way setup does: the provider's secrets CLI with the value on stdin — never in argv or output.
+// The remote decides, not the local name list: another laptop may already have stored it (then only the name is
+// recorded here), and a local name whose remote secret is gone is stale (then it is stored again). A placeholder
+// (ibsec_...) or a nested coordinator has nothing storable: 'skip', and the caller's refusal explains what to do.
+// Returns 'stored' | 'linked' | 'skip'; throws storeError when a store was needed and could not happen.
+async function storeCoordinatorSecret(c) {
+  if (!c.provider.caps.hasProxySecrets || c.provider.coordinatorEnv || typeof c.provider.storeSecret !== 'function') return 'skip';
+  const key = c.env[DEFAULT_PROVIDER_KEY];
+  if (!key || key.startsWith('ibsec_') || c.env.CLOUDY_CLOUD_COORDINATOR) return 'skip';
+  const local = proxySecrets(c.env).has(COORDINATOR_KEY_SECRET);
+  const canList = typeof c.provider.listSecrets === 'function';
+  let remote; // true/false when the org's secrets could be listed; undefined when they could not
+  if (canList) { try { remote = (await c.provider.listSecrets()).has(COORDINATOR_KEY_SECRET); } catch { remote = undefined; } }
+  if (remote === true) { if (local) return 'skip'; recordCoordinatorSecret(c); return 'linked'; }
+  if (remote === false || (!local && !canList)) { // absent remotely, or the provider cannot check: store (or repair a stale name)
+    try { await c.provider.storeSecret(COORDINATOR_KEY_SECRET, key); } catch (e) { throw storeError(e?.message?.replace(/Could not store the \S+ secret /, '').replaceAll(key, '[redacted]')); }
+    recordCoordinatorSecret(c);
+    return 'stored';
+  }
+  if (!local) throw storeError('the Instabox secrets could not be listed'); // remote unverifiable: do not write blind
+  return 'skip'; // the local list claims it and the remote could not be checked: keep the name
+}
+
 async function image(c, args) {
-  if (await resumePending(c)) return;
+  const stored = await storeCoordinatorSecret(c); // repair the coordinator key on every path; a failed store is not silent
+  if (await resumePending(c)) return storeNotice(c, stored);
   const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
   if (args.includes('--save')) {
     if (!img) guided('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image', 'No image machine found.', 'Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them.', 'cloudy-cloud coordinator image', true);
     const sbx = await c.provider.connect(img.id, { retry: false });
     const who = await signedIn(sbx);
     if (!who) guided(`Claude is not signed in on ${img.name}. Run: cloudy-cloud coordinator image`, `Claude is not signed in on ${img.name}.`, '', 'cloudy-cloud coordinator image');
-    return saveNew(c, sbx, who.email);
+    const r = await saveNew(c, sbx, who.email);
+    storeNotice(c, stored);
+    return r;
   }
   let sbx, name, started;
   if (img) {
@@ -202,17 +275,20 @@ async function image(c, args) {
   }
   const until = clock(started + IMAGE_SECONDS * 1000);
   const fallback = `Image machine ${name} is ready and cloudy-cloud is installed on it. It is deleted at ${until}.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell ${name}\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save`;
-  if (!c.tty) return c.out(c.ui.on ? [c.ui.ok(`Image machine ${name} is ready`, `cloudy-cloud is installed on it; deleted at ${until}`), '',
-    '  Sign in to Claude on it (a setup-token cannot open Remote Control sessions):', `    1. cloudy-cloud shell ${name}`, '    2. claude auth login', '    3. exit', c.ui.next('cloudy-cloud coordinator image --save')].join('\n') : fallback);
+  if (!c.tty) {
+    c.out(c.ui.on ? [statusLine(c.ui, 'ok', `Image machine ${name} is ready`, [`cloudy-cloud installed; deleted at ${until}`]), '',
+      '  Sign in to Claude on it (a setup-token cannot open Remote Control sessions):', `    1. cloudy-cloud shell ${name}`, '    2. claude auth login', '    3. exit', c.ui.next('cloudy-cloud coordinator image --save')].join('\n') : fallback);
+    return storeNotice(c, stored);
+  }
   const already = img && await signedIn(sbx);
-  if (already) return saveNew(c, sbx, already.email); // an earlier run already finished the sign-in
+  if (already) { const r = await saveNew(c, sbx, already.email); storeNotice(c, stored); return r; } // an earlier run already finished the sign-in
   c.out(`Claude will show a link. Open it, sign in, and paste the code it shows when asked. This machine is deleted at ${until} if you don't finish.`);
   const [bin, ...rest] = c.provider.shellArgv(sbx.id, ['claude', 'auth', 'login'], { tty: true });
   for (let n = 1; ; n++) {
     const r = c.spawn(bin, rest, { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() } });
     // Trust `claude auth status`, not the ssh exit code (unverified for `claude auth login` over instabox ssh); the machine was not signed in before this login.
     const who = !r?.error && await signedIn(sbx);
-    if (who) return saveNew(c, sbx, who.email);
+    if (who) { const saved = await saveNew(c, sbx, who.email); storeNotice(c, stored); return saved; }
     const answer = n >= 3 ? 'n' : (await c.ask('Sign-in did not finish. Try again? [Y/n] '))?.trim() ?? 'n'; // closed stdin (Ctrl-D) declines
     if (/^n/i.test(answer)) fail(`Sign-in did not finish.\n\n${fallback}`);
   }
@@ -247,11 +323,20 @@ async function start(c, args) {
   if ((await find(c.provider, 'coordinator', name)).length) guided(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`, `A coordinator named ${name} already exists.`, '', `cloudy-cloud coordinator stop ${name}`);
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
+  // A plain setup leaves a real INSTABOX_API_KEY without the coordinator copy: store or repair it now, then read the keys.
+  const stored = await storeCoordinatorSecret(c); // throws the workspace-admin error when the store was needed and failed
   const keys = coordinatorKeys(c.env, c.provider);
-  if (keys.legacy.length) throw Object.assign(new Error(`${keys.legacy[0]} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
+  if (keys.legacy.length) {
+    const k = keys.legacy[0];
+    // The coordinator copy of the Instabox key is only moved by `setup --more`; other keys keep the generic setup text.
+    const g = k === DEFAULT_PROVIDER_KEY
+      ? { whatHappened: 'A real key was about to be placed on a machine whose provider keeps keys off machines.', likelyCause: 'The key was passed the old way, not as a proxy secret.', nextStep: 'Run `cloudy-cloud setup --more` (it stores the coordinator copy of your Instabox key), or ask a workspace admin.' }
+      : guideObj('key_on_machine_refused');
+    throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { code: 'key_on_machine_refused' });
+  }
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
-  const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
+  const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
   c.progress('Creating the coordinator machine...');
   const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
@@ -281,36 +366,56 @@ async function start(c, args) {
     let pane = '';
     try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch (e) {
       // A command that ran and failed carries exitCode (no tmux session). Anything else is the provider or network: the session may be fine.
-      if (typeof e?.exitCode === 'number') fail(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`);
+      if (typeof e?.exitCode === 'number') throw Object.assign(new Error(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`), { short: 'The Claude session on the new machine exited right after it started.', reason: 'the saved Claude login is missing or expired; the machine was deleted', next: 'cloudy-cloud coordinator image' });
       screenRead = false;
     }
-    // The task is typed into the session, so its own lines can be on screen; they are not errors.
-    const st = paneState(pane, task ?? '');
+    // The task is typed into the session, so its own lines can be on screen; they are not errors. Configured values are
+    // removed before the screen is classified or fitted into an error, same as for `ls`/`status`.
+    const st = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane), task ?? '');
     const line = st.blocked;
     if (!line && st.waiting) waiting = st.waiting;
     if (line) {
       // The code comes from the matched line, never from words in this message (classify would read "spend limit" as the cause).
-      const [code, cause, next] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`]
-        : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`]
-        : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', `sign in again with cloudy-cloud coordinator image, claude auth login on it, and cloudy-cloud coordinator image --save, then run cloudy-cloud coordinator start ${name} again`];
-      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { code });
+      const again = `run cloudy-cloud coordinator image (it signs you in to Claude and saves the image), then start ${name} again`;
+      const [code, cause, next, nextCmd] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`, `check the plan at claude.ai, then start ${name} again`]
+        : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', again, 'cloudy-cloud coordinator image']
+        : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', again, 'cloudy-cloud coordinator image'];
+      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { code, short: 'The coordinator session started but is not working.', reason: `screen: ${fitCells(line, 40)}; the machine was deleted`, next: nextCmd });
     }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   if (!args.includes('--json') && skipNote && !c.ui.on) c.out(skipNote); // a colour terminal shows it below the success line
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) }));
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.on) {
     const u = c.ui;
-    const warn = !screenRead ? [u.warn('Could not read the session screen to check it started'), u.next(`cloudy-cloud coordinator attach ${name}`)] : waiting ? [u.warn('The session is waiting on a prompt', waiting), u.next(`cloudy-cloud coordinator attach ${name}`)] : [];
-    return c.out([u.ok(`Coordinator ${name} is running`, `machine ${machine}${task !== undefined ? ', started on the task' : ''}`),
-      u.hint(`It never pauses. The server deletes it ${u.rel(deleteAt)} (${deleteAt.slice(0, 16)}Z).`), ...warn, ...(needsLook ? [u.hint('Attach once and accept any trust or Remote Control prompts.')] : []), '',
-      u.block('Reach it', [['Remote Control', `open claude.ai/code or the Claude app, pick "${name}"`],
-        ['Terminal', `cloudy-cloud coordinator attach ${name}`, `runs: ${c.ssh(machine, 'tmux attach -t claude')}`]]), '',
-      u.hint(`Stop it earlier with: cloudy-cloud coordinator stop ${name}`), ...(skipNote ? ['', u.warn(skipNote)] : [])].join('\n'));
+    const head = `Coordinator ${name} is running`;
+    // The deadline lives in the ok detail; a long name drops it to its own dimmed line rather than dropping it.
+    const okLine = statusLine(u, 'ok', head, [`It never pauses; the server deletes it ${u.rel(deleteAt)}.`, `the server deletes it ${u.rel(deleteAt)}`, `deleted ${u.rel(deleteAt)}`]);
+    const warn = !screenRead ? [u.warn('Could not read the session screen to check it started'), u.hint('Attach once and accept any trust or Remote Control prompts.')]
+      : waiting ? [u.warn('The session is waiting on a prompt', fitCells(waiting, Math.max(8, u.width - 40)))] : [];
+    // The block's label column takes 21 cells (Remote Control is the widest at 14). A long name first shortens the
+    // Remote Control hint, then moves the two commands onto their own lines so they stay whole and runnable.
+    const room = u.width - 21;
+    const rc = [`open claude.ai/code or the Claude app, pick "${name}"`, `pick "${name}" on claude.ai/code or the app`, `pick "${name}"`]
+      .find((v) => cellWidth(v) <= room) ?? fitCells(`pick "${name}"`, room);
+    const reach = (rows) => u.block('Reach it', rows);
+    const full = reach([['Remote Control', rc], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
+    const block = full.split('\n').every((l) => cellWidth(l) <= u.width) ? full
+      : [reach([['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+    // The warning wraps whole words: a key name is never cut, and a custom key keeps its host-specific instructions.
+    const skipBlock = !skipNote ? [] : [
+      ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
+      ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
+      ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
+    ];
+    return c.out([okLine, ...warn, ...skipBlock, '', block,
+      ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
+      ...(needsLook ? ['', nextFit(u, `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
   }
   c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
     `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${c.ssh(machine, 'tmux attach -t claude')})\n\n${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
+  storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
 }
 
 async function attach(c, args) {
@@ -348,7 +453,8 @@ async function status(c, args) {
   if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: mach(m), state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), attach }));
   if (c.ui.on) {
     const u = c.ui;
-    return c.out([u.block(`Coordinator ${name}`, [['Machine', mach(m)], ['State', state], ['Screen', screenText(r)]]), r.waiting ? u.next(`cloudy-cloud coordinator attach ${name}`) : u.hint(`Attach with: cloudy-cloud coordinator attach ${name}`)].join('\n'));
+    const screen = !r.read ? 'screen not read' : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
+    return c.out([u.block(`Coordinator ${name}`, [['Machine', mach(m)], ['State', state], ['Screen', screen]]), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : attachFit(u, name)].join('\n'));
   }
   c.out([`Coordinator ${name} on machine ${mach(m)}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
@@ -357,7 +463,7 @@ async function ls(c) {
   const rows = await find(c.provider, 'coordinator');
   if (!rows.length) {
     if (!c.ui.on) return c.out('No coordinators.');
-    return c.out(['  No coordinators yet.', c.ui.next(c.env[SNAPSHOT_KEY] ? 'cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO' : 'cloudy-cloud coordinator image')].join('\n'));
+    return c.out(['  No coordinators yet.', c.ui.next(c.env[SNAPSHOT_KEY] ? 'cloudy-cloud coordinator start NAME --repo URL' : 'cloudy-cloud coordinator image')].join('\n'));
   }
   // Names and states come from the server, so strip terminal control characters before printing them.
   const clean = (v) => safeText(v ?? '').replace(/\n/g, ' ');
@@ -373,25 +479,35 @@ async function ls(c) {
     const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
     const noted = data.some((d) => d.screen !== '-'); // a column only when some screen needs a look
     const waitingRow = data.find((d) => d.screen.startsWith('waiting'));
-    const done = (text) => c.out(waitingRow ? `${text}\n\n${u.next(`cloudy-cloud coordinator attach ${waitingRow.name}`)}` : text);
+    const done = (text) => c.out(waitingRow ? `${text}\n\n${nextFit(u, `cloudy-cloud coordinator attach ${waitingRow.name}`)}` : text);
+    const anyNever = data.some((d) => !d.deleteAt); // with one open-ended row, the absolute dates are noise, not info
     // Try the full table, then shorten SCREEN with an ellipsis, then drop the date, then the MACHINE column.
     const build = ({ machine, date, screenMax }) => {
       const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
-        d.deleteAt ? [[u.rel(d.deleteAt)], ...(date ? [[`  ${d.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [])] : [['never', u.col.dim]]]);
+        d.deleteAt ? [[u.rel(d.deleteAt)], ...(date && !anyNever ? [[`  ${d.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [])] : [['never', u.col.dim]]]);
       if (noted) cells.forEach((row, i) => { const t = data[i].screen; row.push([[fitCells(t, screenMax), t.startsWith('waiting') ? u.col.warn : u.col.dim]]); });
       return u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', ...(noted ? ['SCREEN'] : [])], cells);
+    };
+    // A waiting prompt that cannot keep 24 cells in its column moves to a dimmed line under its own row instead of an ellipsis.
+    const buildTwo = ({ machine }) => {
+      const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
+        d.deleteAt ? [[u.rel(d.deleteAt)]] : [['never', u.col.dim]], ...(noted ? [[[d.screen.startsWith('waiting') ? 'waiting' : d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]] : [])]);
+      const lines = u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', ...(noted ? ['SCREEN'] : [])], cells).split('\n');
+      const out = [lines[0]];
+      data.forEach((d, i) => { out.push(lines[i + 1]); if (d.screen.startsWith('waiting')) out.push(`    ${u.dim(fitCells(d.screen.slice(21), Math.max(8, u.width - 4)))}`); });
+      return out.join('\n');
     };
     const widest = (t) => Math.max(...t.split('\n').map(cellWidth));
     for (const o of [{ machine: true, date: true }, { machine: true, date: false }, { machine: false, date: false }]) {
       let table = build({ ...o, screenMax: 1000 });
-      if (widest(table) > u.width && noted) { // shorten SCREEN by the excess, but keep at least 12 characters of it
+      if (widest(table) > u.width && noted) { // shorten SCREEN by the excess, but keep at least 24 characters of it
         const longest = Math.max(...data.map((d) => cellWidth(d.screen))), max = longest - (widest(table) - u.width);
-        if (max >= 12) table = build({ ...o, screenMax: max });
+        table = max >= 24 ? build({ ...o, screenMax: max }) : buildTwo(o);
       }
       if (widest(table) <= u.width) return done(table);
     }
     // A window too narrow even for that gets one short block per coordinator instead of wrapped columns.
-    return done(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${d.screen}`] : [])].join('\n')).join('\n\n'));
+    return done(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${fitCells(d.screen, u.width - 12)}`] : [])].join('\n')).join('\n\n'));
   }
   c.out(['NAME', 'STATE', 'CREATED', 'MACHINE', 'DELETES', 'WAITING'].join('\t'));
   for (const d of data) c.out([d.name, d.state, d.created, d.machine, d.deleteAt || 'never', d.screen].join('\t'));
@@ -403,7 +519,9 @@ async function stop(c, args) {
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, `No coordinator named ${name}.`, '', 'cloudy-cloud coordinator ls', true);
   c.progress('Deleting the coordinator machine...');
   await c.provider.delete(m.id, { sdk: true });
-  if (c.ui.on) return c.out([c.ui.ok(`Deleted coordinator ${name}`, `machine ${mach(m)}`), c.ui.hint(`Its workers go with its cleanup or at their own deadline. Check: ${c.provider.text.listMachines}`)].join('\n'));
+  if (c.ui.on) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${mach(m)}`]),
+    c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
+    c.ui.hint(fitCells(`List machines: ${c.provider.text.listMachines}`, c.ui.width - 4))].join('\n'));
   c.out(`Deleted coordinator ${name} (machine ${mach(m)}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
 }
 
@@ -511,21 +629,32 @@ export async function main(argv, deps = {}) {
     }
     const has = !!(fields['What happened']?.trim() && fields['Next step']?.trim());
     const f = (n) => fields[n]?.trim() || undefined;
-    const g = has && code === 'unknown'
+    // Embedded guidance fields win over the code's template: the message author chose them (e.g. setup --more for the coordinator key).
+    const g = has
       ? { code, whatHappened: f('What happened'), likelyCause: f('Likely cause'), nextStep: f('Next step'), tellUser: f('Tell the user') }
       : guideObj(code, { message, secrets });
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
-    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, short: e?.short, reason: e?.reason, next: e?.next, neutral: e?.neutral });
+    // The colour-only three-line view reads e.short/reason/next in errorScreen; plain stderr and --json keep the
+    // message plus the appended guidance, as before — so the guide text is appended whenever it was before.
+    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral });
   }
+}
+
+// How a start error prints. A guided error on a colour terminal is three lines: ✖ short, the reason, → Next.
+// Anything else is its message, styled line by line. Plain stderr is `cloudy-cloud: message`.
+export function errorScreen(e, u) {
+  const [first, ...more] = redact(safeText(e.message ?? e)).split('\n');
+  if (!u.on) return `cloudy-cloud: ${[first, ...more].join('\n')}`;
+  const fit = (s, room = u.width - 4) => fitCells(s, Math.max(8, room));
+  const style = (l) => (/^Next: /.test(l) ? nextFit(u, l.slice(6)) : `    ${u.dim(fit(l))}`);
+  return e.next
+    ? [e.neutral ? `  ${fit(e.short ?? first, 60)}` : u.err(fit(e.short ?? first, 60)), ...(e.reason ? [`    ${u.dim(fit(e.reason))}`] : []), nextFit(u, e.next)].join('\n')
+    : [u.err(fit(first)), ...more.filter((l) => l.trim()).map(style)].join('\n');
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).then((code) => { if (typeof code === 'number') process.exitCode = code; }).catch((e) => {
-    const u = makeUi({ tty: process.stderr.isTTY });
-    const [first, ...more] = redact(safeText(e.message ?? e)).split('\n');
-    const style = (l) => (/^Next: /.test(l) ? u.next(l.slice(6)) : `    ${u.dim(l)}`);
-    if (u.on && e.next) console.error([e.neutral ? `  ${e.short}` : u.err(e.short), ...(e.reason ? [`    ${u.dim(e.reason)}`] : []), u.next(e.next)].join('\n'));
-    else console.error(u.on ? [u.err(first), ...more.filter((l) => l.trim()).map(style)].join('\n') : `cloudy-cloud: ${[first, ...more].join('\n')}`);
+    console.error(errorScreen(e, makeUi({ tty: process.stderr.isTTY })));
     process.exit(1);
   });
 }
