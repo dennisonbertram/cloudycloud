@@ -439,7 +439,7 @@ test('ls on a terminal: aligned table, state colours, relative deadline with the
   f.deps.ui = tty();
   await main(['ls'], f.deps);
   const raw = f.log.out.join('\n'), text = plainText(raw);
-  assert.match(raw, /\u001b\[38;5;42mrunning/); // green
+  assert.match(raw, /\u001b\[32mrunning/); // green
   assert.match(text, /NAME\s+STATE\s+STARTED\s+MACHINE\s+DELETES/);
   assert.match(text, /boss\s+running\s+2h ago\s+coord-boss\s+in 23h\s+\d{4}-\d\d-\d\dT\d\d:\d\dZ/);
   assert.match(text, /a\s+stopped\s+.*coord-a\s+in 40h\s+\d{4}-/);
@@ -1047,7 +1047,7 @@ test('ui.next: accent arrow on a colour terminal, plain "Next:" otherwise', () =
   assert.match(plainText(tty().next('cloudy-cloud coordinator image')), /^ {2}→ Next: cloudy-cloud coordinator image$/);
   assert.ok(ANSI.test(tty().next('x')));
   assert.equal(makeUi({ tty: false }).next('x'), 'Next: x');
-  assert.equal(tty({ NO_COLOR: '1' }).next('x'), 'Next: x');
+  assert.equal(tty({ NO_COLOR: '1' }).next('x'), '  → Next: x');
 });
 
 test('image saves the signed-in email with the snapshot id; no valid email drops the key', async () => {

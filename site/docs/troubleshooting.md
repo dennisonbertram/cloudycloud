@@ -178,7 +178,7 @@ Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-
 - **ChatGPT login file** (`codex-chatgpt` only): your `codex-auth.json` is written to the worker machine, even on Instabox, because it cannot be a proxy secret. Its tokens are scrubbed from replies. Revoke it by signing out in your ChatGPT account.
 - **Provider keys** (for example Particle, OpenRouter, OpenAI): setup stores Particle.ai and OpenRouter keys as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
-Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under `.github/workflows`), and Actions read (so subagents can see CI results).
+Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under `.github/workflows`), and Actions and Commit statuses read (so subagents and Autofix can see CI results).
 
 ### The dashboard is local only
 
