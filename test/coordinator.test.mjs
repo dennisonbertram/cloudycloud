@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { main, toolRepoUrl, FIRST_RUN_SCRIPT } from '../src/coordinator.mjs';
+import { join, resolve, dirname } from 'node:path';
+import { main, toolRepoUrl, FIRST_RUN_SCRIPT, errorScreen } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -75,8 +75,11 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', auth = [SIGNED_I
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
   const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
-  const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s) };
-  return { log, deps, configFile, mk, machines };
+  // Provider CLI calls (instabox secrets set ...) are recorded, never run: argv plus what stdin would carry.
+  const store = { calls: [], fail: false };
+  const cliSpawn = async (argv, o = {}) => { store.calls.push({ argv: [...argv], input: o.input }); return store.fail ? { code: 1, stdout: '', stderr: 'denied' } : { code: 0, stdout: '', stderr: '' }; };
+  const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s), cliSpawn };
+  return { log, deps, configFile, mk, machines, store };
 }
 
 test('image creates a labelled machine, installs cloudy-cloud and prints the login steps', async () => {
@@ -403,7 +406,7 @@ test('start asks the provider for a never-suspending machine from the snapshot w
 });
 
 // ---- how it looks ----
-import { makeUi } from '../src/ui.mjs';
+import { makeUi, cellWidth } from '../src/ui.mjs';
 const tty = (env = {}) => makeUi({ tty: true, cols: 80, env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', ...env } });
 const ANSI = /\u001b\[/;
 const plainText = (s) => s.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
@@ -427,25 +430,27 @@ test('ui: relative times', () => {
 
 test('ls on a terminal: aligned table, state colours, relative deadline with the date dim', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(Date.now() - 2 * 3600e3), machine: { deleteAt: new Date(Date.now() + 23 * 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'boss' } },
-    { sandboxId: 'm2', name: 'coord-a', state: 'stopped', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+    { sandboxId: 'm2', name: 'coord-a', state: 'stopped', startedAt: new Date(), machine: { deleteAt: new Date(Date.now() + 40 * 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'a' } }] });
   f.deps.ui = tty();
   await main(['ls'], f.deps);
   const raw = f.log.out.join('\n'), text = plainText(raw);
   assert.match(raw, /\u001b\[38;5;42mrunning/); // green
   assert.match(text, /NAME\s+STATE\s+STARTED\s+MACHINE\s+DELETES/);
   assert.match(text, /boss\s+running\s+2h ago\s+coord-boss\s+in 23h\s+\d{4}-\d\d-\d\dT\d\d:\d\dZ/);
-  assert.match(text, /a\s+stopped\s+.*coord-a\s+never/);
+  assert.match(text, /a\s+stopped\s+.*coord-a\s+in 40h\s+\d{4}-/);
   for (const l of text.split('\n')) assert.ok(l.length <= 80, l);
 });
 
-test('start on a terminal shows a Reach it block; --json stays exactly the same', async () => {
+test('start on a terminal: ok with the deadline detail, a Reach it block with a Stop row; --json stays the same', async () => {
   const f = fixture();
   f.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
-  const text = plainText(f.log.out.join('\n'));
-  assert.match(text, /✔ Coordinator boss is running/);
-  assert.match(text, /Reach it\n\s+Remote Control\s+open claude\.ai\/code .* "boss"/);
-  assert.match(text, /Terminal\s+cloudy-cloud coordinator attach boss\n\s+runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude/);
+  const text = plainText(f.log.out.join('\n')), lines = text.split('\n');
+  assert.match(lines[0], /^ {2}✔ Coordinator boss is running {2}It never pauses; the server deletes it in 24h\.$/);
+  assert.match(text, /Reach it\n {4}Remote Control {3}open claude\.ai\/code or the Claude app, pick "boss"\n {4}Terminal {9}cloudy-cloud coordinator attach boss\n {4}Stop {13}cloudy-cloud coordinator stop boss/);
+  assert.doesNotMatch(text, /Next: cloudy-cloud coordinator attach/); // nothing waits: no Next line
+  assert.equal((text.match(/coordinator attach boss/g) ?? []).length, 1);
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
   const g = fixture();
   g.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
@@ -653,10 +658,10 @@ test('start attaches the Instabox key, the Claude token and provider keys as sec
 });
 
 test('a coordinator key that is not a proxy secret is refused with the setup text, before any machine is created', async () => {
-  for (const [name, proxied] of [['INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY'], ['CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_INSTABOX_API_KEY,OPENROUTER_API_KEY']]) {
+  for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']) { // the Instabox key self-stores now; these cannot
     const f = fixture();
-    f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = proxied;
-    f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+    f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,OPENROUTER_API_KEY';
+    f.deps.env[key] = TOK;
     await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => { assert.match(e.message, /keeps keys off machines/); assert.match(e.message, /cloudy-cloud setup/); assert.ok(!e.message.includes(TOK) && !e.message.includes(IBK)); return true; });
     assert.equal(f.log.create.length, 0);
   }
@@ -684,26 +689,57 @@ test('an optional profile key set only as a plain value is skipped with a plain 
   assert.doesNotMatch(f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env').d, /OPENROUTER_API_KEY/);
   const out = f.log.out.join('\n');
   assert.match(out, /Not sent to the coordinator[^\n]*OPENROUTER_API_KEY/);
-  assert.match(out, /cloudy-cloud setup/);
+  assert.match(out, /cloudy-cloud setup --more/);
   assert.ok(!out.includes(PROV));
 });
 
-test('the Instabox key not being a proxy secret still refuses, with the guidance once and its own code in --json', async () => {
+test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and start continues', async () => {
   const f = fixture();
-  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY';
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY'; // a plain setup: no coordinator copy
   f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
-  f.deps.env.OPENROUTER_API_KEY = PROV;
-  await assert.rejects(main(['start', 'rtprobe', '--repo', 'https://github.com/o/r', '--json'], f.deps), (e) => {
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const set = f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set'));
+  assert.equal(set.length, 1);
+  assert.deepEqual(set[0].argv, ['npx', '--yes', 'instabox@latest', 'secrets', 'set', 'CLOUDY_CLOUD_INSTABOX_API_KEY', '--host', 'api.instabox.sh']);
+  assert.equal(set[0].input, IBK, 'the key goes on stdin, never argv');
+  assert.ok(!set[0].argv.join(' ').includes(IBK));
+  const out = f.log.out.join('\n');
+  assert.match(out, /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
+  assert.ok(!out.includes(IBK));
+  assert.equal(f.log.create.length, 1);
+  const patch = f.log.fetches.find((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN'));
+  assert.ok(patch.body.includes('CLOUDY_CLOUD_INSTABOX_API_KEY'));
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PROXY_SECRETS=.*CLOUDY_CLOUD_INSTABOX_API_KEY/m);
+  // once: the next start sees the recorded name and does not store it again
+  await main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set')).length, 1);
+});
+
+test('the coordinator key is not stored when the proxy secret exists; --json stores it with no extra stdout', async () => {
+  const f = fixture(); // the default env already names CLOUDY_CLOUD_INSTABOX_API_KEY
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.deepEqual(f.store.calls, []);
+  const g = fixture();
+  g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  g.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
+  assert.equal(g.store.calls.filter((s) => s.argv.join(' ').includes('secrets set')).length, 1);
+  assert.equal(g.log.out.length, 1, 'exactly the JSON object, no store line on stdout');
+  assert.ok(JSON.parse(g.log.out[0]).started);
+});
+
+test('a failed coordinator-key store keeps the key_on_machine_refused refusal, before any machine', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.store.fail = true;
+  await assert.rejects(main(START, f.deps), (e) => {
     assert.equal(e.code, 'key_on_machine_refused');
-    assert.doesNotMatch(e.message, /Something failed/);
-    assert.equal(e.message.split('What happened:').length, 2, 'guidance appears once');
+    assert.match(e.message, /keeps keys off machines/);
+    assert.ok(!e.message.includes(IBK) && !e.message.includes(TOK));
     return true;
   });
   assert.equal(f.log.create.length, 0);
-  const j = JSON.parse(f.log.out.at(-1)).error;
-  assert.equal(j.code, 'key_on_machine_refused');
-  assert.match(j.whatHappened, /^A real key/);
-  assert.match(j.nextStep, /^Run `cloudy-cloud setup`/);
 });
 
 test('an error that already carries guidance but no known code keeps its own fields in --json', async () => {
@@ -1046,15 +1082,16 @@ test('attach on a terminal runs the ssh command and returns its exit code; other
   await assert.rejects(main(['attach', 'a'], { ...f.deps, tty: true, spawn: () => ({ error: new Error('spawn ENOENT') }) }), /Could not start npx \(spawn ENOENT\)/);
 });
 
-test('ls keeps the table with a long waiting SCREEN (truncated with …) and ends with one Next line', async () => {
+test('ls moves a cramped waiting prompt to a dimmed second line under its row', async () => {
   const f = fixture({ pane: `${WAIT_LINE}\n  1. Yes\n  2. No\n` });
   f.machines.push(f.mk('m1', 'coord-averyveryverylongcoordinatorname', { role: 'coordinator', name: 'averyveryverylongcoordinatorname' }));
   f.deps.ui = tty();
   await main(['ls'], f.deps);
-  const text = plainText(f.log.out.join('\n'));
-  for (const l of text.split('\n')) assert.ok(l.length <= 80, l);
+  const raw = f.log.out.join('\n'), text = plainText(raw);
+  for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
   assert.match(text, /NAME\s+STATE\s+STARTED/);
-  assert.match(text, /…/);
+  assert.match(text, /waiting\n {4}Do you want to read \/data\/tmp\/claude-1000\/brief\.md\?/);
+  assert.match(raw, /\u001b\[(?:38;5;245|2)mDo you want to read/); // the prompt line is dimmed
   assert.equal((text.match(/Next: cloudy-cloud coordinator attach averyvery/g) ?? []).length, 1);
 });
 
@@ -1096,4 +1133,221 @@ test('ls measures wide characters as two cells and never splits one', async () =
 test('a missing coordinator image stays neutral through the start error wrapper', async () => {
   const f = fixture({ snapshot: '' });
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator image');
+});
+
+// ---- r2: coordinator key self-storage (P1) ----
+
+test('storeSecret calls `instabox secrets set` with the host and the value on stdin only', async () => {
+  const { createProvider } = await import('../src/providers/instabox.mjs');
+  const calls = [];
+  const p = createProvider({ INSTABOX_API_KEY: IBK, PATH: join(mkdtempSync(join(tmpdir(), 'cc-none-')), 'bin') }, { spawn: async (argv, o) => { calls.push({ argv, input: o?.input }); return { code: o?.input === 'bad' ? 1 : 0, stdout: '', stderr: '' }; } });
+  await p.storeSecret('CLOUDY_CLOUD_INSTABOX_API_KEY', IBK);
+  assert.deepEqual(calls, [{ argv: ['npx', '--yes', 'instabox@latest', 'secrets', 'set', 'CLOUDY_CLOUD_INSTABOX_API_KEY', '--host', 'api.instabox.sh'], input: IBK }]);
+  assert.ok(!calls[0].argv.join(' ').includes(IBK), 'the key is never an argument');
+  await assert.rejects(p.storeSecret('CLOUDY_CLOUD_INSTABOX_API_KEY', 'bad'), /Could not store/);
+  await assert.rejects(p.storeSecret('NOT_A_SECRET', IBK), /no host is known/);
+});
+
+test('coordinator image stores the key before it creates the image machine', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
+  await main(['image'], f.deps);
+  const set = f.store.calls.filter((s) => s.argv.join(' ').includes('secrets set'));
+  assert.equal(set.length, 1);
+  assert.equal(set[0].input, IBK);
+  assert.equal(f.log.create.length, 1);
+  assert.match(f.log.out.join('\n'), /^Stored a coordinator copy of your Instabox key as a proxy secret \(machines see a placeholder\)\.$/m);
+});
+
+test('any provider with a storeSecret stores the coordinator key once; a failure keeps the refusal', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' });
+  provider.log.storeSecrets = [];
+  provider.failStore = false;
+  provider.storeSecret = async (name, value) => { provider.log.storeSecrets.push({ name, value }); if (provider.failStore) throw new Error('exit 1'); };
+  provider.create = async (o) => {
+    provider.log.create.push(o);
+    return { id: 'm1', name: 'coord-boss', home: '/h', files: { write: async () => {} }, kill: async () => {},
+      commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
+  };
+  const dir = mkdtempSync(join(tmpdir(), 'cc-coord-fake-'));
+  const env = { FAKE_API_KEY: 'k', INSTABOX_API_KEY: IBK, CLAUDE_CODE_OAUTH_TOKEN: TOK, CLOUDY_CLOUD_PROXY_SECRETS: 'FAKE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN',
+    CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json') };
+  const deps = { provider, env, root: resolve('.'), out: () => {}, sleep: async () => {} };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], deps);
+  assert.deepEqual(provider.log.storeSecrets, [{ name: 'CLOUDY_CLOUD_INSTABOX_API_KEY', value: IBK }]);
+  assert.deepEqual(provider.log.create[0].secrets.sort(), ['CLOUDY_CLOUD_INSTABOX_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'FAKE_API_KEY'].sort());
+  await main(['start', 'two', '--repo', 'https://github.com/o/r'], deps); // the env records it now: no second store
+  assert.equal(provider.log.storeSecrets.length, 1);
+
+  const p2 = createFakeProvider({ FAKE_API_KEY: 'k' });
+  p2.log.storeSecrets = [];
+  p2.storeSecret = async () => { throw new Error('exit 1'); };
+  const env2 = { ...env, CLOUDY_CLOUD_PROXY_SECRETS: 'FAKE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN' }; // a fresh env without the stored name
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider: p2, env: env2, root: resolve('.'), out: () => {}, sleep: async () => {} }),
+    (e) => e.code === 'key_on_machine_refused' && /keeps keys off machines/.test(e.message));
+  assert.equal(p2.log.create.length, 0);
+
+  const p3 = createFakeProvider({ FAKE_API_KEY: 'k' }); // a provider with no storeSecret keeps today's refusal
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider: p3, env: { ...env, CLOUDY_CLOUD_PROXY_SECRETS: 'FAKE_API_KEY,CLAUDE_CODE_OAUTH_TOKEN' }, root: resolve('.'), out: () => {}, sleep: async () => {} }),
+    (e) => e.code === 'key_on_machine_refused' && /INSTABOX_API_KEY is set as a real value/.test(e.message));
+  assert.equal(p3.log.create.length, 0);
+});
+
+// ---- r2: one guidance layer, three-line errors (N1) ----
+
+test('a guided start error renders exactly three lines on a colour terminal, fitted to 80', () => {
+  const e = Object.assign(new Error('The coordinator session started but is not working. Its screen shows: limit\nThe machine was deleted.'), {
+    code: 'spend_limit', short: 'The coordinator session started but is not working.', reason: 'screen: spend limit; the machine was deleted', next: 'check the plan at claude.ai, then start boss again' });
+  const s = errorScreen(e, tty()), lines = plainText(s).split('\n');
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^ {2}✖ The coordinator session started but is not working\.$/);
+  assert.match(lines[1], /^ {4}screen: spend limit; the machine was deleted$/);
+  assert.match(lines[2], /^ {2}→ Next: check the plan at claude\.ai, then start boss again$/);
+  assert.doesNotMatch(s, /What happened|Tell the user/);
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('errorScreen caps the short line at 60 cells, keeps the reason on one line, and leaves plain stderr unchanged', () => {
+  const e = Object.assign(new Error('full message'), { short: 'x'.repeat(120), reason: 'y'.repeat(200), next: `cloudy-cloud coordinator attach ${'a'.repeat(40)}` });
+  const lines = plainText(errorScreen(e, tty())).split('\n');
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+  assert.match(lines[0], /^ {2}✖ x{59}…$/); // 60 cells of short, then the mark and indent
+  assert.match(lines[1], /^ {4}y{75}…$/); // the reason stays one line
+  assert.match(lines[2], /^ {2}→ Next:$/); // a Next command too long for its line drops to the next
+  assert.match(lines[3], /^ {4}cloudy-cloud coordinator attach a{40}$/);
+  const off = errorScreen(e, { on: false });
+  assert.match(off, /^cloudy-cloud: full message/);
+});
+
+test('a spend-limit start failure shows the three-line screen and machine-readable error stays the same', async () => {
+  const f = fixture({ pane: "  You've hit your monthly spend limit\n" });
+  const e = await main([...START], f.deps).then(() => { throw new Error('start did not fail'); }, (x) => x);
+  assert.equal(e.code, 'spend_limit');
+  assert.ok(e.short && e.next, 'the error carries its own lines');
+  const lines = plainText(errorScreen(e, tty())).split('\n');
+  assert.equal(lines.length, 3);
+  assert.doesNotMatch(errorScreen(e, tty()), /What happened|Tell the user/);
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+// ---- r2: start screen order and wrap-proof lines (N2, N3) ----
+
+test('start on a terminal with a waiting prompt: ok, warning, Reach it block, then exactly one final Next', async () => {
+  const f = fixture({ pane: 'Do you trust the files in this folder?' });
+  f.deps.ui = tty();
+  await main(START, f.deps);
+  const text = plainText(f.log.out.join('\n')), lines = text.split('\n');
+  const at = (re) => lines.findIndex((l) => re.test(l));
+  const [iOk, iWarn, iReach, iNext] = [/✔/, /▲/, /Reach it/, /→ Next/].map(at);
+  assert.ok(iOk >= 0 && iWarn > iOk && iReach > iWarn && iNext > iReach, text);
+  assert.match(lines[iWarn], /The session is waiting on a prompt {2}Do you trust the files in this folder\?/);
+  assert.equal(lines.filter((l) => l.trim()).at(-1), '  → Next: cloudy-cloud coordinator attach boss');
+  assert.doesNotMatch(text, /Attach once and accept/); // a shown prompt does not need the note
+  assert.equal((text.match(/coordinator attach boss/g) ?? []).length, 2, 'attach NAME appears at most twice');
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('start on a terminal when the screen cannot be read: warning plus the attach-once hint, ending in Next', async () => {
+  const f = fixture();
+  const orig = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw Object.assign(new Error('x'), { code: 'transient' }); return run(cmd, ...r); }; return sbx; };
+  f.deps.ui = tty();
+  await main(START, f.deps);
+  const text = plainText(f.log.out.join('\n')), lines = text.split('\n');
+  assert.match(text, /▲ Could not read the session screen to check it started/);
+  assert.match(text, /Attach once and accept any trust or Remote Control prompts\./);
+  assert.equal(lines.filter((l) => l.trim()).at(-1), '  → Next: cloudy-cloud coordinator attach boss');
+  assert.equal((text.match(/coordinator attach boss/g) ?? []).length, 2);
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('image --save on a terminal puts the signed-in account on its own hint line', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm_img', name: 'img-1', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator-image' } }], auth: [withEmail('me@example.com')] });
+  f.deps.ui = tty();
+  await main(['image', '--save'], f.deps);
+  const lines = plainText(f.log.out.join('\n')).split('\n');
+  assert.match(lines[0], /^ {2}✔ Saved snapshot sn_new {2}the image machine is deleted$/);
+  assert.doesNotMatch(lines[0], /signed in as/);
+  assert.ok(lines.some((l) => /^ {2}› signed in as me@example\.com$/.test(l)), lines.join('\n'));
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('stop on a terminal keeps its hints inside 80 cells', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.ui = tty();
+  await main(['stop', 'a'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.match(text, /✔ Deleted coordinator a/);
+  assert.match(text, /Its workers go with its cleanup or at their own deadline\./);
+  assert.match(text, /List machines: npx --yes instabox@latest ls/);
+  for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+// ---- r2: status and ls (N6-N8) ----
+
+test('status on a terminal shows "no prompt waiting", and a waiting prompt in warn colour', async () => {
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  f.deps.ui = tty();
+  await main(['status', 'a'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.match(text, /Screen\s+no prompt waiting/);
+  assert.match(text, /Attach with: cloudy-cloud coordinator attach a/);
+
+  const g = fixture({ pane: `${WAIT_LINE}\n  1. Yes\n  2. No`, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  g.deps.ui = tty();
+  await main(['status', 'a'], g.deps);
+  const raw = g.log.out.join('\n'), plain = plainText(raw);
+  assert.match(raw, /\u001b\[38;5;214mDo you want to read/); // the prompt text itself is the warn colour
+  assert.match(plain, /Screen\s+waiting on a prompt: Do you want to read/);
+  assert.match(plain, /→ Next: cloudy-cloud coordinator attach a/);
+  for (const l of plain.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('ls drops the absolute date from DELETES for every row when one is never deleted; piped TSV is unchanged', async () => {
+  const machines = [
+    { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), machine: { deleteAt: new Date(Date.now() + 2 * 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'a' } },
+    { sandboxId: 'm2', name: 'coord-b', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'b' } }];
+  const f = fixture({ machines });
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.match(text, /never/);
+  assert.doesNotMatch(text, /\d{4}-\d\d-\d\dT\d\d:\d\dZ/, 'no absolute deletion date anywhere');
+  const g = fixture({ machines });
+  await main(['ls'], g.deps);
+  const tsv = g.log.out.join('\n');
+  assert.match(tsv, /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/);
+  assert.match(tsv, /\d{4}-\d\d-\d\dT/, 'the ISO date stays in the TSV');
+});
+
+test('every coordinator screen fits 80 cells at cols=80 (colour)', async () => {
+  const check = (label, out) => { for (const l of plainText(out).split('\n')) assert.ok(cellWidth(l) <= 80, `${label}: ${JSON.stringify(l)}`); };
+  for (const [label, pane] of [['start clean', ''], ['start waiting', 'Do you trust the files in this folder?']]) {
+    const f = fixture({ pane }); f.deps.ui = tty();
+    await main(START, f.deps); check(label, f.log.out.join('\n'));
+  }
+  const long = fixture({ pane: 'Do you trust the files in this folder?' }); long.deps.ui = tty();
+  await main(['start', 'averyveryveryveryveryveryveryveryverylong0'.slice(0, 40), '--repo', 'https://github.com/o/r'], long.deps); check('start long name', long.log.out.join('\n'));
+  const sk = fixture(); sk.deps.ui = tty(); sk.deps.env.OPENROUTER_API_KEY = PROV;
+  sk.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN'; // OPENROUTER stays a plain value: skipped
+  await main(START, sk.deps); check('start skipped keys', sk.log.out.join('\n'));
+  const im = fixture(); im.deps.ui = tty(); await main(['image'], im.deps); check('image ready', im.log.out.join('\n'));
+  const lm = fixture({ pane: `${WAIT_LINE}\n  1. Yes`, machines: [
+    { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), machine: { deleteAt: new Date(Date.now() + 3600e3).toISOString() }, metadata: { role: 'coordinator', name: 'a' } },
+    { sandboxId: 'm2', name: 'coord-averyveryverylongcoordinatorname', state: 'stopped', startedAt: new Date(), metadata: { role: 'coordinator', name: 'averyveryverylongcoordinatorname' } }] });
+  lm.deps.ui = tty(); await main(['ls'], lm.deps); check('ls', lm.log.out.join('\n'));
+  const le = fixture(); le.deps.ui = tty(); await main(['ls'], le.deps); check('ls empty', le.log.out.join('\n'));
+  for (const [label, pane] of [['status waiting', `${WAIT_LINE}\n  1. Yes`], ['status clean', '']]) {
+    const f = fixture({ pane, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+    f.deps.ui = tty(); await main(['status', 'a'], f.deps); check(label, f.log.out.join('\n'));
+  }
+  const st = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator', name: 'a' } }] });
+  st.deps.ui = tty(); await main(['stop', 'a'], st.deps); check('stop', st.log.out.join('\n'));
+  const sv = fixture({ machines: [{ sandboxId: 'm_img', name: 'img-1', state: 'running', startedAt: new Date(), metadata: { role: 'coordinator-image' } }], auth: [withEmail('me@example.com')] });
+  sv.deps.ui = tty(); await main(['image', '--save'], sv.deps); check('image --save', sv.log.out.join('\n'));
+  check('errorScreen', errorScreen(Object.assign(new Error('m'), { short: 'The coordinator session started but is not working.', reason: 'screen: spend limit; the machine was deleted', next: 'check the plan at claude.ai, then start boss again' }), tty()));
+  const e = fixture(); // the no-snapshot guided error renders its lines too
+  const thrown = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...e.deps, env: { ...e.deps.env, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: '' } }).then(() => { throw new Error('start did not fail'); }, (x) => x);
+  check('guided error', errorScreen(thrown, tty()));
 });
