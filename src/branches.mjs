@@ -26,10 +26,23 @@ export async function main(argv, { cwd = process.cwd(), out = console.log, err =
     for (const [sha, b] of listed) {
       const merged = await git('merge-base', '--is-ancestor', sha, base).then(() => true, () => false);
       out(`${b}  ${sha.slice(0, 7)}  ${merged ? 'prune (in ' + head + ')' : 'keep (has commits not in ' + head + ')'}`);
-      if (merged) gone.push(b);
+      if (merged) gone.push([sha, b]);
     }
     if (!del) { out(`Dry run: nothing deleted${gone.length ? `; ${gone.length} would be deleted` : ''}. Run again with --yes to delete.`); return 0; }
-    for (const b of gone) { await git('push', '-q', 'origin', '--delete', b); out(`Deleted ${b}`); }
+    if (gone.length) { // the delete push must go to the remote the listing came from
+      const fetchUrl = await git('remote', 'get-url', 'origin');
+      const pushUrls = (await git('remote', 'get-url', '--push', '--all', 'origin')).split('\n').map((s) => s.trim()).filter(Boolean);
+      if (pushUrls.length !== 1 || pushUrls[0] !== fetchUrl) throw new Error('origin pushes to a different URL than it fetches (or to several); refusing to delete remote branches. Check: git remote -v');
+    }
+    for (const [sha, b] of gone) { // the lease rejects the delete if the branch moved since it was listed
+      try {
+        await git('push', '-q', `--force-with-lease=refs/heads/${b}:${sha}`, 'origin', `:refs/heads/${b}`);
+        out(`Deleted ${b}`);
+      } catch (e) {
+        if (!String(e.stderr ?? '').includes('stale info')) throw e;
+        out(`${b} skipped (changed since check)`);
+      }
+    }
     return 0;
   } catch (e) {
     err(`cloudy-cloud branches: ${e.stderr || e.message}\nNext step: run it inside a git repo whose origin you can access.`);
