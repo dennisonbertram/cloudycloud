@@ -11,7 +11,7 @@ This runbook applies to every main session (Claude Code, Codex, opencode, pi, fr
 | macOS or Linux | Tested on macOS. |
 | `git` and Node.js 20 or later | Check with `git --version` and `node --version`. |
 | [Claude Code](https://code.claude.com) | For the default main session. Check with `claude --version`. You must be signed in. |
-| Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. These need no Claude token. |
+| Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. They need no Claude token at run time, but setup itself still asks for one (see section 2). |
 | A credential for each worker agent you use | Claude Code workers (the default): a long-lived token from `claude setup-token`, or an Anthropic API key billed separately. pi, oh-my-pi and opencode workers: `PARTICLE_API_KEY`. OpenRouter profiles: `OPENROUTER_API_KEY`. Codex workers: `OPENAI_API_KEY` or a ChatGPT login file (section 2.5). |
 | An [Instabox](https://instabox.sh) account | **Free plan:** too small for more than a few subagents at once. **Paid plan:** needed for swarms. |
 | A GitHub repository you can push to | Subagents push their branches there. |
@@ -33,6 +33,8 @@ Run it in a terminal; it asks for keys, so it will not run from a pipe. It check
 | **Instabox API key** (`ibk_…`) | Create it at https://dashboard.instabox.sh/dashboard/api-keys. The script checks it with Instabox before saving. |
 | **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
 | **GitHub token** | Create a fine-grained token (section 2.3). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
+
+Setup asks for a Claude credential even if you will not run Claude. It checks that the `claude` command is installed, and its Claude step cannot be skipped: an empty answer with nothing saved stops setup with exit status 1. A Codex, opencode or pi user must either give setup a Claude token, or save an `ANTHROPIC_API_KEY=...` line in the env file first (setup then accepts it when you answer `n` to "Replace it?"). Codex, opencode, pi and oh-my-pi workers do not use either. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
 
 The Instabox key is saved to `~/.config/cloudy-cloud/env`, which only your user account can read; it never leaves your laptop. The Claude token, the optional Particle.ai and OpenRouter keys, and the GitHub token are stored in Instabox as proxy secrets (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` for `api.anthropic.com`, `PARTICLE_API_KEY` for `api.particle.ai`, `OPENROUTER_API_KEY` for `openrouter.ai`, `GH_TOKEN` for GitHub), so a worker machine sees only a placeholder. Setup lists the stored names in `CLOUDY_CLOUD_PROXY_SECRETS` (comma-separated). Storing a secret, and turning on the usage alert emails (the last question of the Instabox key step), needs your `instabox login` session; setup runs the login if needed and sends each key on stdin, never on a command line. If a secret cannot be stored, setup says so and keeps that key in the env file instead. After the first install, run `cloudy-cloud setup` at any time (it runs `install.sh` from the folder `cloudy-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
 
@@ -90,7 +92,7 @@ Setup happens only in `install.sh`. If a key is missing, `cloudy-cloud` prints `
 
 ### 2.5 Other agents (optional)
 
-**Main session.** Run one of these from inside your repo instead of `cloudy-cloud`. Arguments after the subcommand go to that agent. Each needs only the Instabox key from setup, not a Claude token. They add the cloud tools for that session only and do not edit the agent's own config. Codex, opencode and pi cannot receive MCP task results, so the session uses `cloud_agent_wait`.
+**Main session.** Run one of these from inside your repo instead of `cloudy-cloud`. Arguments after the subcommand go to that agent. Each needs only the Instabox key from setup at run time, not a Claude token. They add the cloud tools for that session only and do not edit the agent's own config. Codex, opencode and pi cannot receive MCP task results, so the session uses `cloud_agent_wait`.
 
 ```sh
 cloudy-cloud codex

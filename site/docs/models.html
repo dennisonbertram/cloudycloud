@@ -81,7 +81,7 @@
 <p>You pay your providers directly. Cloudy Cloud does not resell model access, and this page gives no prices.</p>
 
 <h2 id="claude-credentials">Claude credentials</h2>
-<p>Applies to: workers that run Claude Code (no profile, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code>) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not need it.</p>
+<p>Applies to: workers that run Claude Code (no profile, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code>) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it at run time, but the setup command still asks for it and stops without one. See <a href="index.html#agent-credentials">Getting started</a> for the workaround.</p>
 <p>Claude Code subagents need one Claude credential. The setup step (<code>cloudy-cloud setup</code>) asks for it. Two kinds work:</p>
 <ul>
 <li><strong>A token from <code>claude setup-token</code></strong> (starts with <code>sk-ant-oat01-</code>). This uses your Claude subscription. At the Claude step, press Enter and setup runs <code>claude setup-token</code> for you, or paste a token you made yourself. Setup checks the token with one small Claude request. It is saved as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.</li>

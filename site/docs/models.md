@@ -16,7 +16,7 @@ You pay your providers directly. Cloudy Cloud does not resell model access, and 
 
 ## Claude credentials
 
-Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not need it.
+Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it at run time, but the setup command still asks for it and stops without one. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials) for the workaround.
 
 Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it. Two kinds work:
 

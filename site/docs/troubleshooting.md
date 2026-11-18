@@ -70,7 +70,7 @@ Unpushed work on that machine is lost. A failed agent cannot take messages. Use 
 
 ### "Subagent failed, exit code N"
 
-The agent run on the machine exited with an error. The paragraph below is for Claude Code workers; for Codex see Codex problems and for the other agents read the error text in the result.
+The agent run on the machine exited with an error. The paragraph below is for Claude Code workers; for Codex see Codex problems for opencode, pi and omp see opencode, pi and oh-my-pi problems.
 
 For a Claude Code worker, the run exited with an error. The result includes its error output, the push status and the token totals. If the output says `Not logged in · Please run /login` or shows a 401, no valid Claude token reached the machine. Run `claude setup-token`, then `cloudy-cloud setup` and replace the Claude token, then restart. This also happens if you only export `ANTHROPIC_API_KEY`, because wrappers such as cmux's `claude` remove it.
 
@@ -151,13 +151,21 @@ See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html) for what
 
 ## Security
 
+### opencode, pi and oh-my-pi problems
+
+- `Could not install opencode in the sandbox`, `Could not install pi in the sandbox` or `Could not install omp in the sandbox`: the worker installs its agent when it starts, so the machine needs network access to npm (omp: `omp.sh`). The message ends with the install error.
+- opencode, a provider key is missing: opencode reads its key name from `~/opencode-agent/opencode.json` on the worker. The profile needs `PARTICLE_API_KEY` (`opencode-glm`, `opencode-deepseek`, `opencode-particle`) or `OPENROUTER_API_KEY` (`opencode-openrouter`, which also needs `model`). See Profile NAME needs KEY.
+- A follow-up to an opencode, pi, omp or Codex worker fails, or the result says `No valid session_id came back, so the agent cannot be resumed`: a first turn that failed has no session to continue. Start a new agent instead of sending a message.
+- pi and omp workers: read the error text in the result. If the `MCP servers skipped` line names a server, see [MCP servers](https://cloudycloud.tech/docs/mcp.html#files) for why.
+- `free-pi` stops at its first-run consent prompt: `free-pi-cli` asks for consent the first time it runs, and that needs an interactive terminal. Start it once yourself in a terminal, answer the prompt, then use `cloudy-cloud free-pi`.
+
 ### What runs where
 
 Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-cloud` tool server run on your machine. Each subagent runs its agent (`claude -p` by default, or pi, omp, Codex or opencode for a profile) on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.
 
 ### Which credentials reach the cloud machine
 
-- **Claude token:** placed on each Claude Code worker without a profile. It can only make model requests.
+- **Claude token:** placed on each Claude Code worker without a profile (and on cloud coordinators). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
@@ -176,7 +184,7 @@ The tool server appends one JSON line per event to `~/.config/cloudy-cloud/event
 
 ### Revoking keys
 
-Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, the Claude token by revoking it in your Claude account, and any OpenAI, Particle.ai or OpenRouter key in that provider's dashboard. Then run `cloudy-cloud setup` to enter new ones. To remove saved keys from your machine:
+Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, the Claude token by revoking it in your Claude account, and any OpenAI, Particle.ai or OpenRouter key in that provider's dashboard. If you used `codex-chatgpt`, sign out in your ChatGPT account and delete the copy `~/.config/cloudy-cloud/codex-auth.json`, because that file is sent to worker machines. Then run `cloudy-cloud setup` to enter new ones. To remove saved keys from your machine:
 
 ```
 rm ~/.config/cloudy-cloud/env

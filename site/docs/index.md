@@ -53,6 +53,22 @@ Run it in a terminal. It asks for keys, so it does not work from a pipe. It chec
 | Claude token (`sk-ant-oat01-…`) | Run `claude setup-token` in another terminal, or press Enter at the Claude step and let the installer get it. Your own `claude` login is not changed. |
 | GitHub token | Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write, and Actions set to read. The Instabox command-line tool asks for it. |
 
+> Warning: **Setup asks for a Claude credential even if you will not run Claude.** Setup checks that the `claude` command is installed, and its Claude step cannot be skipped: an empty answer with nothing saved stops setup with exit status 1. So a Codex, opencode or pi user must either give setup a Claude token, or save an `ANTHROPIC_API_KEY=...` line in the env file first (setup then accepts it when you answer `n` to "Replace it?"). Neither is used by Codex, opencode, pi or oh-my-pi workers. The other route is to skip setup and save the keys by hand: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
+
+### Credentials for each worker agent
+
+Setup asks only for the three keys above, plus optional Particle.ai and OpenRouter keys. Set up the rest yourself, once, for the worker agents you use:
+
+| Worker agent and profile | Credential | How to set it up |
+|---|---|---|
+| Claude Code (no profile) | Claude token or `ANTHROPIC_API_KEY` | Asked by setup (token). The API key is a line in the env file. |
+| pi, oh-my-pi and opencode profiles, and Claude Code `glm`, `deepseek`, `particle` | `PARTICLE_API_KEY` | Optional step in setup. |
+| `openrouter`, `codex-openrouter`, `opencode-openrouter` | `OPENROUTER_API_KEY` | Optional step in setup. Pass `model` with the OpenRouter model id. |
+| Codex `codex` | `OPENAI_API_KEY` | Not asked by setup. On Instabox: `printf %s "$OPENAI_API_KEY" \| npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in the env file. Self-hosted: add `OPENAI_API_KEY=...` to the env file. |
+| Codex `codex-chatgpt` | Your ChatGPT login file | Not asked by setup. Run `codex login`, then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. |
+
+More detail is in [Models and keys](https://cloudycloud.tech/docs/models.html#codex-profiles).
+
 The Instabox key is saved in `~/.config/cloudy-cloud/env` and stays on your computer. The folder has mode 700 and the file is readable only by your user. The Claude token, the provider keys and the GitHub token are stored in Instabox as proxy secrets (for example `GH_TOKEN`), and setup lists their names in `CLOUDY_CLOUD_PROXY_SECRETS`. A subagent's machine only gets a placeholder, never the key. If setup finds a key already in the env file, it asks before moving it into a secret.
 
 Later, `cloudy-cloud setup` runs the installer again from any folder. It shows each saved key masked and asks before replacing it. Restart any open session to use new keys.

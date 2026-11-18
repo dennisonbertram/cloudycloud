@@ -10,8 +10,8 @@ This page applies to every main session (Claude Code, Codex, opencode, pi, free-
 
 ## One subagent, start to finish
 
-1. **You start `cloudy-cloud` in a git repo.** It launches Claude Code with the built-in `Agent` and `Workflow` tools disabled, an extra system prompt, and an MCP server that provides the `cloud_agent` tools. The system prompt tells Claude to use `cloud_agent` for anything that would have used a subagent. `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` and `cloudy-cloud free-pi` do the same for those agents with the same MCP server, added for that session only. Codex, opencode and pi cannot receive MCP task results, so they use `cloud_agent_wait`.
-2. **Claude calls `cloud_agent`** with a prompt and a short description. The call returns at once while the machine starts.
+1. **You start `cloudy-cloud` in a git repo.** With no subcommand it launches Claude Code with the built-in `Agent` and `Workflow` tools disabled, an extra system prompt, and an MCP server that provides the `cloud_agent` tools. The system prompt tells the session to use `cloud_agent` for anything that would have used a subagent. `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` and `cloudy-cloud free-pi` do the same for those agents with the same MCP server, added for that session only. Codex, opencode and pi cannot receive MCP task results, so they use `cloud_agent_wait`.
+2. **The main session calls `cloud_agent`** (Claude Code, Codex, opencode or pi, whichever you started) with a prompt and a short description. The call returns at once while the machine starts.
 3. **A snapshot of your repo is made.** It holds the committed files plus your uncommitted edits to tracked files. It is made without touching your working tree or index.
 4. **A machine is created** from the Instabox `agent-browser` image, and the GitHub token is attached to it as a proxy secret (see Secrets).
 5. **The snapshot is uploaded** as a git bundle and checked out on a new branch, `cloudy-cloud/<id>`. The branch is pushed to your `origin` remote right away. If the bundle is over about 9 MB, only the commits GitHub does not already have are uploaded. If that is still too large, the start fails and asks you to push the branch first.
@@ -24,16 +24,16 @@ Fetch the work with `git fetch origin cloudy-cloud/<id>`. The repo needs a `gith
 ### Getting the result: task mode or wait
 
 - **Task mode.** When your Claude Code supports MCP tasks, `cloud_agent` becomes a background task. Its progress shows in `/tasks` and the result arrives on its own.
-- **Otherwise,** `cloud_agent` returns an `agent_id` and Claude calls `cloud_agent_wait` to collect the result. The default wait is 600 seconds and the maximum is 1500. Each result is marked as reported, so a later wait does not repeat it.
+- **Otherwise,** `cloud_agent` returns an `agent_id` and the main session calls `cloud_agent_wait` to collect the result. The default wait is 600 seconds and the maximum is 1500. Each result is marked as reported, so a later wait does not repeat it.
 
 One task is stopped after 29 minutes.
 
-## The five tools
+## The six tools
 
 | Tool | What it does |
 |---|---|
 | `cloud_agent` | Starts a subagent in a new machine. |
-| `cloud_agent_message` | Sends a follow-up to an open, idle agent. It continues the same Claude session on the same machine. It is rejected if the agent is busy or gone. |
+| `cloud_agent_message` | Sends a follow-up to an open, idle agent. It continues the same session of whichever agent the worker runs, on the same machine: Claude Code resumes its session, pi and oh-my-pi use their session ID, Codex runs `codex exec resume ID`, and opencode passes `--session ses_...`. It is rejected if the agent is busy or gone. |
 | `cloud_agent_wait` | Waits for agents to finish their current turn and returns their results. |
 | `cloud_agent_list` | Lists every agent with its status, idle minutes and progress (tool uses, tokens, elapsed time, current step). |
 | `cloud_agent_stop` | Stops agents and deletes their machines. It is safe to repeat. |
@@ -44,9 +44,9 @@ An agent's status is one of `queued`, `starting`, `running`, `idle`, `failed` or
 
 | What ends it | When |
 |---|---|
-| You or Claude call `cloud_agent_stop` | Immediately. |
+| You or the main session call `cloud_agent_stop` | Immediately. |
 | Idle timeout | 60 minutes after the agent went idle. |
-| Session end | When you quit Claude Code, `cloudy-cloud` deletes every open machine. |
+| Session end | When you quit your main session, `cloudy-cloud` deletes every open machine. |
 | Cleanup process | A separate process deletes the session's machines after the session is gone, even after a hard kill. It checks every 2 seconds. |
 | Delete deadline | Instabox deletes the machine at a fixed time in any state. The default is 6 hours. Set `CLOUDY_CLOUD_WORKER_HOURS` to change it, up to 24. |
 

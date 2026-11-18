@@ -44,6 +44,16 @@ The default `linux` machine is right for almost everything. Pass `machine` only 
 - With no browser tool, run `cloudy-cloud display <agent-id> --screenshot shot.png` and read the PNG.
 - A display link is a secret: anyone holding it sees the screen. Never paste it into a PR, an issue, a report or a message. When done, run `cloudy-cloud display <agent-id> --unshare`.
 
+## Starting a session and credentials
+
+Start the main session from inside the repo: `cloudy-cloud` (Claude Code), `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. Codex needs `npm install -g @openai/codex` and opencode needs `npm install -g opencode-ai`; pi and free-pi run through `npx` if they are not installed. Sign in to the agent itself first (`codex login`); Cloudy Cloud does not do that.
+
+Setup asks for the Instabox key, a Claude token and the GitHub token, plus optional Particle.ai and OpenRouter keys. It does not ask for the keys that Codex workers need. If a worker uses a Codex profile, tell the user to set it up once:
+- `codex`: create an OpenAI key, then on Instabox run `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com` and add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`.
+- `codex-chatgpt`: run `codex login` with "Sign in with ChatGPT", then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`.
+- opencode, pi and omp profiles use `PARTICLE_API_KEY` (or `OPENROUTER_API_KEY`), which setup does ask for as an optional step.
+Never ask for these keys in chat.
+
 ## Before using a repo
 
 Check these once per repo, before the first subagent or coordinator. Tell the user plainly about any that fail. Never change GitHub settings yourself; the one command that does, `cloudy-cloud protect`, asks the user for a yes itself.
@@ -168,7 +178,7 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - "Commit early and often, and push to your `cloudy-cloud/<id>` branch before you finish. Work that is not pushed is lost."
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
-- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` and Codex workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
+- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line). Some agents skip servers they cannot deliver safely, and the reply names each skipped server and why: `pi` skips `sse` servers; Codex skips `sse` servers and entries that put a secret reference inside a longer value; opencode skips servers whose values contain `{env:...}` or `{file:...}`; omp skips headers or env values that start with `!` or are a bare variable name. Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
 
 When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present.
 
