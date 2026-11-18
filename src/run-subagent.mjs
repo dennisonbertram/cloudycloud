@@ -1006,7 +1006,7 @@ export async function runSubagent(args, deps) {
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
   a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
-  a.emit({ type: 'agent', description: a.description, profile: profile?.name, role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
+  a.emit({ type: 'agent', description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: `cloudy-cloud/${id}`, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   a.emit({ type: 'message', text: prompt });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
