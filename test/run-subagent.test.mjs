@@ -14,7 +14,7 @@ import { createStartQueue } from '../src/limits.mjs';
 import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
-import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -241,6 +241,37 @@ test('unparseable output returns the raw stdout and says so', async () => {
   const r = await wait([id]);
   assert.match(r, /not json/);
   assert.match(r, /Could not parse/);
+  assert.match(r, /status: failed/); // no final result and no session id: the turn failed and cannot be resumed
+});
+
+test('a first turn with a session but no final result is an error, and the agent stays open and resumable', async () => {
+  let sbx, first = true;
+  const { start, wait, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => {
+        if (cmd.includes('claude -p') && first) {
+          first = false;
+          o?.onStdout?.(`{"type":"system","subtype":"init","session_id":"${SID}"}\n`);
+          return Promise.resolve({ stdout: `{"type":"system","subtype":"init","session_id":"${SID}"}\n`, stderr: '', exitCode: 0 });
+        }
+        return run(cmd, o);
+      };
+      sbx = s;
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /ERROR/);
+  assert.match(r, /Could not parse/);
+  assert.equal(open.get(id).status, 'idle');
+  await msg(id, 'hi');
+  assert.match(await wait([id]), /status: idle[\s\S]*hello/);
+  assert.ok(sbx.cmds.some((c) => c.includes(`--resume ${SID}`)), 'the kept session id resumes the next turn');
 });
 
 test('a failed turn reports error, scrubs secrets, still pushes commits; agent with no session is failed', async () => {
@@ -493,7 +524,7 @@ test('a push failure is reported; the agent stays idle and messageable', async (
   await msg(id, 'UNPUSHED');
   const r = await wait([id]);
   assert.match(r, /status: idle/);
-  assert.doesNotMatch(r, /ERROR/);
+  assert.match(r, /ERROR/); // a rejected push is an error the caller sees; the agent stays open and resumable
   assert.match(r, /Push failed: .*denied by test.*; the agent is still open, ask it to push\./s);
   assert.ok(open.has(id));
   await rejectPushes(false);
@@ -565,7 +596,9 @@ test('claude runs with background tasks disabled on the first turn and on a resu
   await wait([id]);
   await msg(id, 'again');
   await wait([id]);
-  assert.equal(await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8'), '1 1680000 1680000\n1 1680000 1680000\n');
+  const envlog = (await readFile(join(created[0].dir, 'home', 'envlog.txt'), 'utf8')).trim().split('\n');
+  assert.equal(envlog.length, 2);
+  for (const line of envlog) assert.match(line, /^1 (1680000|167\d{4}) \1$/); // the shared turn deadline shaves a few ms off 28 min
   assert.ok(created[0].cmds.filter((c) => c.includes('claude -p')).length === 2);
 });
 
@@ -656,6 +689,39 @@ test('the safety push retries once', async () => {
   assert.match(r, /Pushed to origin cloudy-cloud\//);
   assert.equal(pushes, 2);
   assert.equal(sleeps.length, 1);
+});
+
+test('a finished turn whose safety push cannot reach the sandbox reports the agent gone', async () => {
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' })) : run(cmd, o));
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /could not be reached to push/);
+  assert.equal(open.get(id).status, 'failed');
+});
+
+test('a file name containing NOCHANGE is not read as the push result', async () => {
+  const { start, wait } = await setup({
+    sleep: async () => {},
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
+      return s;
+    },
+  });
+  const r = await wait([await start({ prompt: 'EDIT' })]);
+  assert.match(r, /Push failed/);
+  assert.doesNotMatch(r, /No changes, no branch pushed/);
 });
 
 // ---- model profiles ----
@@ -2144,8 +2210,10 @@ test('#50 CLOUDY_CLOUD_TURN_MINUTES sets the command timeout, the Bash timeouts 
     const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox()()), env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', ...env } });
     await wait([await start()]);
     const { cmd, o } = sbx.agentRuns[0];
-    assert.equal(o.timeoutMs, minutes * 60_000);
-    assert.match(cmd, new RegExp(`BASH_DEFAULT_TIMEOUT_MS=${(minutes - 1) * 60_000} BASH_MAX_TIMEOUT_MS=${(minutes - 1) * 60_000}`));
+    assert.ok(o.timeoutMs <= minutes * 60_000 && o.timeoutMs > (minutes - 1) * 60_000, `timeoutMs ${o.timeoutMs} is the ${minutes}-minute deadline minus elapsed time`);
+    const bash = Number(cmd.match(/BASH_DEFAULT_TIMEOUT_MS=(\d+)/)?.[1]);
+    assert.ok(bash <= (minutes - 1) * 60_000 && bash > (minutes - 2) * 60_000, `BASH timeout ${bash} is a minute under the turn deadline`);
+    assert.match(cmd, /BASH_DEFAULT_TIMEOUT_MS=(\d+) BASH_MAX_TIMEOUT_MS=\1/);
     const deadline = cmd.match(/This turn ends at (\d{4}-\d\d-\d\dT[\d:.]+Z); commit, push and finish before then\./)?.[1];
     assert.ok(deadline, 'hint has the deadline');
     assert.ok(Math.abs(Date.parse(deadline) - (before + minutes * 60_000)) < 60_000);
@@ -2232,6 +2300,72 @@ test('when the retries run out the result names the provider status and a next s
   assert.ok(!r.includes(PKEY));
 });
 
+test('provider retries share one deadline: a later attempt gets only the time left, and a retry needs five minutes', async () => {
+  answeredProfiles.add('pi-glm');
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    const errOut = await ERR_FIXTURE('503 overloaded');
+    const timeouts = [];
+    let piRuns = 0;
+    const { start, wait } = await setup({
+      env: { ...pEnv, CLOUDY_CLOUD_TURN_MINUTES: '6' },
+      sleep: async (ms) => { now += ms; }, // the fake clock spends the backoff for real
+      createSandbox: async (envs) => {
+        const sbx = await fakeSandbox(getGithub());
+        sbx.envs = envs;
+        const real = sbx.commands.run;
+        sbx.commands.run = async (cmd, o) => {
+          if (!cmd.includes('pi --mode json')) return real(cmd, o);
+          timeouts.push(o.timeoutMs);
+          piRuns++;
+          return { stdout: errOut, stderr: '', exitCode: 0 };
+        };
+        return sbx;
+      },
+    });
+    const r = await wait([await start({ profile: 'pi-glm' })]);
+    assert.deepEqual(timeouts, [360_000, 330_000]); // attempt 2 gets the 30 s the wait already spent, not a fresh clock
+    assert.equal(piRuns, 2); // 60 s more was slept, then under five minutes remained: no third attempt
+    assert.match(r, /Gave up after 2 attempts/);
+  } finally { Date.now = real; }
+});
+
+test('a cancel during the provider retry wait ends the turn instead of running another attempt', async () => {
+  answeredProfiles.add('pi-glm');
+  const errOut = await ERR_FIXTURE('503 overloaded');
+  let piRuns = 0;
+  const { start, wait, msg, deps } = await setup({
+    env: pEnv,
+    sleep: () => new Promise(() => {}), // only cancellation may end the wait
+    cancelWaitMs: 50,
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => (cmd.includes('pi --mode json') && ++piRuns >= 2 ? { stdout: errOut, stderr: '', exitCode: 0 } : real(cmd, o));
+      return sbx;
+    },
+  });
+  const id = await start({ profile: 'pi-glm' });
+  assert.match(await wait([id]), /status: idle/); // turn 1 (pi run 1) is fine
+  await msg(id, 'again');
+  for (let i = 0; piRuns < 2 && i < 100; i++) await tick(10); // turn 2's first run fails, then the backoff begins
+  await cancelTask(`cc-${id}-t2`, deps);
+  const r = await wait([id], 5);
+  assert.match(r, /status: idle/);
+  assert.match(r, /Turn cancelled/);
+  assert.equal(piRuns, 2); // no retry ran after the cancelled wait
+});
+
+test('a successful omp turn marks the profile answered, even though omp never reports progress.answered', async () => {
+  answeredProfiles.delete('omp-glm');
+  const { start, wait } = await profileSetup();
+  await wait([await start({ profile: 'omp-glm' })]);
+  assert.ok(answeredProfiles.has('omp-glm'));
+});
+
 // ---- preflight, fallback ----
 const fetchWith = (status, body = '{"error":{"code":"model_not_found"}}', log = []) => async (url, o) => { log.push({ url, o }); return { status, text: async () => body }; };
 
@@ -2298,6 +2432,25 @@ test('a profile at its maxConcurrent cap queues the next start with a status lin
   await q.create(other, async () => {}); // no cap on another profile
 });
 
+test('the profile cap counts only running or starting machines from provider.list', async () => {
+  for (const [rows, shouldRun] of [
+    [[{ id: 'm1', state: 'stopped', status: 'stopped' }], true],
+    [[{ id: 'm1', state: 'running', status: 'running' }], false],
+    [[{ id: 'm1', state: 'starting', status: 'starting' }], false],
+  ]) {
+    const provider = { name: 'fake', caps: { startsPerMin: 25 }, list: async () => rows };
+    const open = new Map();
+    const q = startQueue({}, provider, () => open.values(), { sleep: () => new Promise(() => {}) });
+    const me = (id) => ({ id, status: 'starting', profile: { name: 'pi-x', maxConcurrent: 1 }, emit() {} });
+    await q.create(me('a'), async () => {}); // triggers the provider.list lookup; its answer lands for the next check
+    await tick(20);
+    let started = false;
+    const p = q.create(me('b'), async () => { started = true; });
+    await Promise.race([p, tick(100)]); // a held slot would wait forever on the injected sleep
+    assert.equal(started, shouldRun, `rows=${JSON.stringify(rows)}`);
+  }
+});
+
 test('an agent that commits nothing leaves no cloudy-cloud branch on the remote', async () => {
   const { start, wait, remote } = await setup();
   const id = await start();
@@ -2325,5 +2478,31 @@ test('an unknown or invalid base fails before any machine is created', async () 
     assert.ok(r.isError, `${base}`);
     assert.match(text(r), /base/);
   }
+  assert.equal(created.length, 0);
+});
+
+// Host-side git talks to the fake GitHub through the same insteadOf rewrite the sandbox uses.
+const rewriteGithub = (repo, github) => sh(repo, `git config url.${github}/.insteadOf https://github.com/`);
+
+test('base that exists only on origin resolves to the sha ls-remote reported, not the local HEAD', async () => {
+  const { start, wait, repo, bare, github, created } = await setup();
+  await rewriteGithub(repo, github);
+  await sh(repo, `git push -q ${bare} HEAD:refs/heads/remoteonly`);
+  const tip = await sh(repo, 'git rev-parse HEAD');
+  await sh(repo, 'echo later > later.txt && git add -A && git commit -qm later'); // local HEAD moves past the branch
+  const id = await start({ base: 'remoteonly' });
+  await wait([id]);
+  assert.ok(created[0].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)), 'checked out the remote tip');
+});
+
+test('a base missing on origin fails cleanly; a stale remote-tracking ref or FETCH_HEAD is never used', async () => {
+  const { repo, bare, github, deps, text, created } = await setup();
+  await rewriteGithub(repo, github);
+  await sh(repo, `git push -q ${bare} HEAD:refs/heads/remoteonly`);
+  await sh(repo, `git update-ref refs/remotes/origin/ghost HEAD`);
+  await sh(repo, `git fetch -q origin remoteonly`); // poisons FETCH_HEAD with an unrelated branch
+  const r = await runSubagent({ description: 'd', prompt: 'hi', base: 'ghost' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /base ghost was not found locally or on origin/);
   assert.equal(created.length, 0);
 });

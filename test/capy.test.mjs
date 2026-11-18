@@ -7,11 +7,12 @@ import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeSandbox, setGithub, createFakeProvider } from './fake-provider.mjs';
-import { runSubagent, messageAgent, waitAgents } from '../src/run-subagent.mjs';
+import { runSubagent, messageAgent, waitAgents, resultAgent, stopAgents } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
 const text = (r) => r.content[0].text;
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 const PR = 'https://github.com/test/repo/pull/7';
 const fail = (stderr) => Object.assign(new Error('exit'), { exitCode: 1, stdout: '', stderr });
 
@@ -137,6 +138,36 @@ test('when gh cannot read the issue, the call fails and no machine exists', asyn
   assert.equal(open.size, 0);
 });
 
+test('two issue agents starting together cannot both pass the session cap', async () => {
+  // Hold both issue fetches until both calls are waiting on them, so both pass the first cap check.
+  let calls = 0, release;
+  const gate = new Promise((r) => { release = r; });
+  const { g, deps, open, wait } = await setup({ deps: { fetchIssue: async (n, repo) => { calls++; await gate; return { title: `issue ${n}`, body: 'b' }; } } }, { CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: '1' });
+  const p1 = runSubagent({ description: 'd', prompt: 'hi', issue: '1' }, deps);
+  const p2 = runSubagent({ description: 'd', prompt: 'hi', issue: '2' }, deps);
+  for (let i = 0; calls < 2 && i < 100; i++) await tick(10);
+  release();
+  const rs = await Promise.all([p1, p2]);
+  const bad = rs.filter((r) => r.isError), ok = rs.filter((r) => !r.isError);
+  assert.equal(ok.length, 1, `expected exactly one start, got: ${rs.map((r) => text(r)).join('\n---\n')}`);
+  assert.equal(bad.length, 1);
+  assert.match(text(bad[0]), /already started 1 agents/);
+  assert.equal(open.size, 1);
+  assert.equal(deps.count.started, 1);
+  await wait([...open.keys()]);
+});
+
+test('the result error of a stopped issue agent still names its issue branch', async () => {
+  const { deps, start, wait } = await setup();
+  const id = await start({ issue: '12' });
+  await wait([id]);
+  await stopAgents({ agent_ids: [id] }, deps);
+  const r = await resultAgent({ agent_id: id }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), new RegExp(`git fetch origin cloudy-cloud/issue-12-${id}`));
+  assert.doesNotMatch(text(r), new RegExp(`git fetch origin cloudy-cloud/${id}\\b`));
+});
+
 test('issue + autofix: the pull request body says Fixes #<n> and the title is the branch', async () => {
   const { g, start, wait } = await setup();
   const id = await start({ issue: '12', autofix: true });
@@ -172,15 +203,16 @@ test('preview_port: a later turn reuses the link instead of publishing again', a
   assert.match(r, /Preview: https:\/\/fake\.example\//);
 });
 
-test('preview_port + autofix: the pull request body contains the preview URL', async () => {
+test('preview_port + autofix: the preview URL stays out of the pull request body and appears only in the result', async () => {
   const { g, provider, start, wait } = await setup();
   const id = await start({ autofix: true, preview_port: 8080 });
-  await wait([id]);
+  const r = await wait([id]);
   const machine = provider.log.ports[0].id;
   const create = g.calls.find((c) => c.startsWith('gh pr create'));
   assert.ok(create);
-  assert.match(create, new RegExp(`Preview: https://fake\\.example/${machine}/8080`));
-  assert.match(create, /--body 'Opened by cloudy-cloud autofix\. Preview: /);
+  assert.doesNotMatch(create, /fake\.example|Preview/);
+  assert.match(create, /--body 'Opened by cloudy-cloud autofix\.'/);
+  assert.match(r, new RegExp(`Preview: https://fake\\.example/${machine}/8080`));
 });
 
 test('preview_port: a publish failure leaves the turn successful and names the by-hand command', async () => {
