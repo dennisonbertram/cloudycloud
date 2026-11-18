@@ -12,7 +12,7 @@ Subagents on your laptop share its CPU, memory and battery with you. Their build
 
 ## Every subagent gets its own computer.
 
-When your Claude Code session starts a subagent, Cloudy Cloud gives it a fresh cloud machine. The subagent runs a full Claude Code there, on a copy of your repo. Your laptop only runs your own session.
+When your session starts a subagent, Cloudy Cloud gives it a fresh cloud machine. The subagent runs a full coding agent there (Claude Code by default), on a copy of your repo. Your laptop only runs your own session.
 
 - Sees your tracked files, including uncommitted edits
 - Runs in the cloud, not on your laptop
@@ -104,11 +104,11 @@ $ git merge origin/cloudy-cloud/569dac7c
 
 Real output, lightly trimmed.
 
-## Claude for your session. Your choice of model for workers.
+## Your agent for your session. Your choice of agent and model for workers.
 
-Workers can use Claude, or GLM, DeepSeek, Particle or OpenRouter with your own provider key. Send bulk, well-specified work to a cheaper open model and keep Claude for the hard parts.
+Your session can be Claude Code, Codex, opencode, pi or free-pi. Workers can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or on GLM, DeepSeek, Particle, OpenRouter or OpenAI models with your own key. Send bulk, well-specified work to a cheaper open model and keep a stronger one for the hard parts. Codex and opencode workers have not yet been run on a real cloud machine.
 
-Claude — your normal login
+Claude Code — your normal login
 
 GLM — profile: glm
 
@@ -117,6 +117,12 @@ DeepSeek — profile: deepseek
 Particle — profile: particle
 
 OpenRouter — profile: openrouter
+
+Codex — profile: codex
+
+opencode — profile: opencode-glm
+
+pi and oh-my-pi — profile: pi-glm, omp-glm
 
 Your own provider
 
@@ -142,7 +148,7 @@ When Claude Code hands a piece of work to a helper agent, that helper is a subag
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.
+An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.
 
 ### What can a subagent see?
 

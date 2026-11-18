@@ -1,14 +1,29 @@
 # Cloudy Cloud: what is built, and what has been proven
 
-As of 2026-11-11. **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
+As of 2026-11-17 (agent support), 2026-11-11 (rest). **"Proven live"** means it was run against real Instabox machines, a real Claude login and real GitHub, and the result was checked on GitHub or Instabox, not taken from an agent's reply.
 
 Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_PROVIDER` (`instabox`, the default, or `self-hosted`). `install.sh` asks which one, and `cloudy-cloud setup --provider` skips the question. See [sandbox provider research](research/sandbox-providers.md).
+
+## Supported agents and what is proven
+
+Main sessions (the agent you talk to) and workers (the agent on each cloud machine) are chosen independently. Coordinators always run Claude Code, and refuse pi, omp, Codex and opencode profiles. The branch `feat/multi-agent` merges the Codex, opencode and pi host branches (87d7503); nothing is pushed yet.
+
+| Agent | As main session | As worker (profiles) | Proven |
+|---|---|---|---|
+| Claude Code | `cloudy-cloud` | default; `glm`, `deepseek`, `particle`, `openrouter` | Live |
+| pi | `cloudy-cloud pi` | `pi-glm`, `pi-deepseek`, `pi-particle` | Worker: live. Main session: MCP connection only, no model turn |
+| oh-my-pi | none | `omp-glm`, `omp-deepseek`, `omp-particle` | Worker: live (follow-ups by unit tests only) |
+| Codex | `cloudy-cloud codex` | `codex`, `codex-chatgpt`, `codex-openrouter` | Main session: live, six cloud tools listed (codex-cli 0.166.0). Worker: fake-sandbox tests only, **not run on a real machine** |
+| opencode | `cloudy-cloud opencode` | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` | Main session: live. Worker: fake-sandbox tests only, **not run on a real machine** |
+| free-pi | `cloudy-cloud free-pi` | none (blocked: no headless mode, and its terms forbid it) | `mcp list` only |
+
+Credentials: Claude Code workers use the Claude token or API key; pi, omp and opencode profiles use `PARTICLE_API_KEY` (opencode also `OPENROUTER_API_KEY`); `codex` uses `OPENAI_API_KEY`; `codex-chatgpt` uses `~/.config/cloudy-cloud/codex-auth.json`; the OpenRouter profiles use `OPENROUTER_API_KEY`. Setup asks only for the Claude token, Particle.ai and OpenRouter keys. The integrated suite on 2026-11-17 had 930 tests: 928 passed, 1 failed (`a plain worker without mcp.json runs the same claude command`, an old expectation about the `mcp.json` fallback, failing the same way before the merge), 1 skipped. No live run was made after the merge.
 
 ## What it is
 
 `cloudy-cloud` starts Claude Code with every subagent running on its own Instabox cloud machine.
 - **Pushing:** each subagent works on branch `cloudy-cloud/<id>`, and commits and pushes its own work to the repo's GitHub origin.
-- **Models:** subagents can run Claude, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter.
+- **Agents and models:** subagents can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or on open models such as GLM and DeepSeek through Particle.ai or OpenRouter, or OpenAI models through Codex. The main session can be Claude Code, Codex, opencode, pi or free-pi.
 - **Coordinators:** a coordinator, nested inside a session or long-lived in the cloud, can run its own fleet and merge the work into one branch.
 
 ## Components
@@ -16,15 +31,15 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | Part | Where | What it does |
 | --- | --- | --- |
 | Installer | `install.sh` | Checks prerequisites and asks for each key with a one-line note on where to get it: Instabox, Claude token, GitHub token, and optional Particle or OpenRouter keys. It checks keys before saving. The Instabox key stays in the env file (mode 600); the others are stored as Instabox proxy secrets with a host list and listed in `CLOUDY_CLOUD_PROXY_SECRETS`. Keys already in the env file are moved after a yes. Shown masked. |
-| Launcher | `bin/cloudy-cloud` | Starts Claude Code with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `cloudy-cloud setup` and offers to run it. It warns about folders that aren't repos or have no GitHub origin. |
-| Cloud tools (MCP server) | `src/server.mjs`, `src/mcp.mjs` | `cloud_agent`, `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_list` and `cloud_agent_stop`. On terminal sessions they run as **MCP tasks**: footer count, live progress in `/tasks`, stop with `x`, automatic completion. |
+| Launcher | `bin/cloudy-cloud` | Starts Claude Code, or with `codex`, `opencode`, `pi` or `free-pi` that agent, with the built-in `Agent` and `Workflow` tools turned off and the cloud tools added. If setup is missing, it points to `cloudy-cloud setup` and offers to run it. It warns about folders that aren't repos or have no GitHub origin. |
+| Cloud tools (MCP server) | `src/server.mjs`, `src/mcp.mjs` | `cloud_agent`, `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result`, `cloud_agent_list` and `cloud_agent_stop`. On terminal sessions they run as **MCP tasks**: footer count, live progress in `/tasks`, stop with `x`, automatic completion. |
 | Agent lifecycle | `src/run-subagent.mjs` | Snapshot upload, branch setup, push retries, the after-each-task safety push, follow-ups through `--resume`, a 60-minute idle stop, depth and per-session limits. |
 | Instabox provider | `src/providers/instabox.mjs`, `src/limits.mjs` | Machine creation and the `GH_TOKEN` proxy secret. Paced starts (25 a minute) with retries on `rate_limited` and `quota_exceeded`. One global limit of 24 Instabox calls. Sliced job waits that survive brief request errors. |
 | MCP server sync | `src/mcpsync.mjs`, `src/mcp-cli.mjs` | `cloudy-cloud mcp add\|ls\|rm`: copies chosen servers from Claude Code settings to `~/.config/cloudy-cloud/mcp.json` (remote `https` and `npx`/`uvx` only), rewrites secrets to `${MCP_<NAME>_TOKEN}` Instabox secrets, validates again at agent start, writes the file to the machine and passes `--mcp-config --strict-mcp-config`. Footer line, `cloud_agent_list` and dashboard MCP row show the names. `--allow-literal` is the confirmed exception that copies the real token. Covered by unit tests; not yet proven live end to end with a real MCP server (see issue #9 for the proxy-secret spike). |
 | Cleanup | `src/reaper.mjs` | A separate process that deletes a session's machines when the session ends, even after a hard kill. |
-| Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway), and `omp-glm`, `omp-deepseek` and `omp-particle` (the `omp` harness, with no gateway). |
+| Model profiles | `src/profiles.mjs` | `glm`, `deepseek` and `particle` (Claude Code through a LiteLLM gateway on the worker machine), `openrouter`, `pi-glm`, `pi-deepseek` and `pi-particle` (the `pi` harness, with no gateway), `omp-glm`, `omp-deepseek` and `omp-particle` (the `omp` harness, with no gateway), `codex`, `codex-chatgpt` and `codex-openrouter` (the `codex` harness), and `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (the `opencode` harness). |
 | Progress | `src/progress.mjs`, `src/progress-pi.mjs`, `src/progress-omp.mjs` | Streams tool uses, tokens, elapsed time and the current step from Claude Code, `pi` or `omp`. |
-| The `omp` harness | `src/profiles.mjs`, `src/run-subagent.mjs` | `omp-glm`, `omp-deepseek` and `omp-particle` run oh-my-pi (`omp`, pinned v18.18.7, installed on each worker with the official installer in `--binary` mode) with the same Particle.ai models as `pi-*`. `"harness"` in `profiles.json` may be `claude`, `pi` or `omp`. Config is in `~/omp-agent`. Follow-ups resume the omp session. Coordinators refuse `pi` and `omp` profiles. Proven live once (see below); follow-ups covered by unit tests only. |
+| The `omp` harness | `src/profiles.mjs`, `src/run-subagent.mjs` | `omp-glm`, `omp-deepseek` and `omp-particle` run oh-my-pi (`omp`, pinned v18.18.7, installed on each worker with the official installer in `--binary` mode) with the same Particle.ai models as `pi-*`. `"harness"` in `profiles.json` may be `claude`, `pi` or `omp`. Config is in `~/omp-agent`. Follow-ups resume the omp session. Coordinators refuse `pi`, `omp`, Codex and opencode profiles. Proven live once (see below); follow-ups covered by unit tests only. |
 | MCP servers for `pi` and `omp` workers | `src/mcpsync.mjs`, `src/run-subagent.mjs` | The servers from `cloudy-cloud mcp add` are written to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` (mode 600). `pi` skips `sse` servers with a reason in the reply; `omp` accepts them. The footer lists delivered servers and does not confirm a connection. Proven live with a stdio server (see below). |
 | Self-hosted provider (your own machine over SSH) | `src/providers/self-hosted.mjs`, `src/providers/ssh.mjs`, `src/self-hosted-setup.mjs`: one Docker container per subagent, `setup --provider self-hosted`, `doctor`, slots, consented GitHub token, `open` through an SSH bridge. Covered by unit tests and an opt-in local test against a throwaway sshd container. Docs: [RUNBOOK section 9](RUNBOOK.md#9-your-own-machine). **Not yet proven live:** the first live check on a Mac Studio over Tailscale is still to do. Coordinators use `docker commit --pause=true` images named `cloudy-cloud-coordinator:<name>` (issue #35); they are covered by unit tests only and not proven live on a Mac Studio. Coordinators on this provider start workers as sibling containers through the box's Docker socket (`CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes`, local transport `src/providers/local.mjs`, #41); covered by unit tests and an opt-in local test with a real coordinator container starting a sibling worker, not proven live on a Mac Studio. |
 | Autofix (`cloud_agent` with `autofix: true`) | `src/run-subagent.mjs` (`autofix`), `test/autofix.test.mjs` | The server opens a PR with `gh`, polls `gh pr checks`, collects failed-run logs, review comments and merge conflicts, and runs up to 3 fix turns in the same task. Covered by unit tests with a scripted `gh` only. **Not proven live:** real `gh` output shapes (`pr checks --json`, `pr view --json reviews`), the token's permission to create PRs, and timing against real CI have not been run against GitHub. |
@@ -32,7 +47,7 @@ Provider interface refactor (2026-11-10): provider selection uses `CLOUDY_CLOUD_
 | The `opencode` harness and host | `src/harness-opencode.mjs`, `src/progress-opencode.mjs`, `src/host-opencode.mjs` | Worker: `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (model per call) run `opencode run --format json` (opencode-ai pinned 1.18.31, installed with npm under `~/.local`) with an openai-compatible provider; the config `~/opencode-agent/opencode.json` (mode 600) holds only key names (`{env:NAME}`) and the MCP servers from `cloudy-cloud mcp add`. Follow-ups use `--session ses_...`. Host: `cloudy-cloud opencode [args]` starts opencode with the cloud tools (named `cloud_cloud_agent` and so on) through `OPENCODE_CONFIG_CONTENT`, and denies opencode's own `task` tool. opencode has no MCP task support, so it uses `cloud_agent_wait`. No profile uses opencode's own login, because that would copy a credential to the machine. See the live-check results in the handoff of the branch `feat/agent-opencode`. |
 | Fleet skill | `skills/cloud-fleet/SKILL.md` | Teaches Claude flat fan-out, trunk merging into `fleet/<topic>`, waves, model choice per level, briefs and safety. |
 
-## Codex support (branch feat/agent-codex, not yet merged)
+## Codex support (merged on feat/multi-agent, not yet in the main branch)
 
 | Part | Where | What |
 |---|---|---|

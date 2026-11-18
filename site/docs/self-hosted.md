@@ -6,6 +6,8 @@ Source: https://cloudycloud.tech/docs/self-hosted.html
 
 Instead of Instabox, subagents can run in Docker containers on a computer you own, such as a Mac Studio or a Linux server. Cloudy Cloud reaches it over SSH. Tools, branches and follow-ups work the same way.
 
+This page applies to the main sessions and worker agents the same way as on Instabox, except for the key handling described under Keys for other agents. The provider itself is not yet proven live, and no Codex, opencode, pi or omp worker has been run on a self-hosted machine.
+
 ## How it works
 
 Set `CLOUDY_CLOUD_PROVIDER=self-hosted` (setup does this). Each subagent gets its own container on the machine, named `cc-<id>`, started from a worker image that setup builds there. Cloudy Cloud runs every command through one shared SSH connection and uses `docker exec` inside the container. The reaper that deletes a session's machines also removes that session's containers.
@@ -97,6 +99,7 @@ Doctor prints these with your real values. What happens to containers when the m
 - **Coordinators start workers through Docker.** Setup asks once: Coordinators on <host> can start containers through Docker, which gives them full control of Docker on that machine. Allow? If you say yes, a coordinator container gets the machine's Docker socket (workers never do) and starts its workers as sibling containers, so no SSH key is copied onto it. Its settings file holds the Claude login and sizing settings, plus the GitHub token only if you allowed it, and never the SSH host or key. The risk: a coordinator can control every container on that machine. Without the consent, coordinators are refused and the reply says to run setup. Docker only, not Podman.
 - **No published links.** `open --share` is refused.
 - **Docker and rootless Podman.** Docker is the supported route. Podman is accepted but its limits may not apply when rootless.
+- **Keys for other agents.** A self-hosted machine has no proxy secrets, so a provider key such as `PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is a plain `NAME=value` line in `~/.config/cloudy-cloud/env`, and a worker that uses it holds the real value. The `codex-chatgpt` profile reads `~/.config/cloudy-cloud/codex-auth.json` as on Instabox.
 - **Setup asks for no Instabox key.** It still asks for your Claude token and optional model provider keys.
 - **The agent can reach your network.** A container on your machine can reach the other devices that machine can reach.
 

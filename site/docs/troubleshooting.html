@@ -76,6 +76,7 @@
 <p class="lede">Find the message you see, what causes it, and the command that fixes it. The security and FAQ sections follow.</p>
 
 <h2 id="troubleshooting">Troubleshooting</h2>
+<p>This page applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Entries that apply to one agent say so.</p>
 
 <h3 id="not-set-up">"cloudy-cloud is not set up yet"</h3>
 <p>A key is missing from <code>~/.config/cloudy-cloud/env</code>. In a terminal, <code>cloudy-cloud</code> asks <code>Run setup now? [Y/n]</code>. Without a terminal it exits with status 1. Run setup yourself:</p>
@@ -114,7 +115,29 @@ npm install -g cloudycloud</code></pre>
 <p>Unpushed work on that machine is lost. A failed agent cannot take messages. Use <code>cloud_agent_wait</code> to read the error, then <code>cloud_agent_stop</code>.</p>
 
 <h3 id="subagent-failed">"Subagent failed, exit code N"</h3>
-<p>The Claude run on the machine exited with an error. The result includes its error output, the push status and the token totals. If the output says <code>Not logged in · Please run /login</code> or shows a 401, no valid Claude token reached the machine. Run <code>claude setup-token</code>, then <code>cloudy-cloud setup</code> and replace the Claude token, then restart. This also happens if you only export <code>ANTHROPIC_API_KEY</code>, because wrappers such as cmux's <code>claude</code> remove it.</p>
+<p>The agent run on the machine exited with an error. The paragraph below is for Claude Code workers; for Codex see <a href="#codex-problems">Codex problems</a> and for the other agents read the error text in the result.</p>
+<p>For a Claude Code worker, the run exited with an error. The result includes its error output, the push status and the token totals. If the output says <code>Not logged in · Please run /login</code> or shows a 401, no valid Claude token reached the machine. Run <code>claude setup-token</code>, then <code>cloudy-cloud setup</code> and replace the Claude token, then restart. This also happens if you only export <code>ANTHROPIC_API_KEY</code>, because wrappers such as cmux's <code>claude</code> remove it.</p>
+
+<h3 id="host-missing">The agent for <code>cloudy-cloud codex</code>, <code>opencode</code>, <code>pi</code> or <code>free-pi</code> is not found</h3>
+<ul>
+<li>Codex: <code>the codex command was not found.</code> Run <code>npm install -g @openai/codex</code>.</li>
+<li>opencode: <code>opencode is not installed.</code> Run <code>npm install -g opencode-ai</code>.</li>
+<li>pi and free-pi: if <code>pi</code> or <code>free-pi-cli</code> is not on your PATH, Cloudy Cloud runs a pinned copy through <code>npx</code>, so Node.js and network access are needed. If registering the tools fails it prints <code>Could not register the cloud tools with free-pi</code> with the command to retry.</li>
+<li>All four need the Instabox key (or the self-hosted settings). Without it they print <code>cloudy-cloud is not set up yet</code> and tell you to run <code>cloudy-cloud setup</code>.</li>
+</ul>
+
+<h3 id="profile-key">"Profile NAME needs KEY, which is not set"</h3>
+<p>The profile's provider key is missing: <code>PARTICLE_API_KEY</code> for the pi, omp and opencode profiles, <code>OPENROUTER_API_KEY</code> for the OpenRouter profiles, <code>OPENAI_API_KEY</code> for <code>codex</code>. Add it with <code>cloudy-cloud setup</code> (Particle.ai and OpenRouter) or as described in <a href="models.html#codex-profiles">The codex profiles</a> (OpenAI). If the message says the key is set as a real value, not as a proxy secret, store it as an Instabox secret: on Instabox a real key is never copied to a machine.</p>
+
+<h3 id="codex-problems">Codex problems</h3>
+<ul>
+<li><code>The Codex ChatGPT login file ... was not found</code>: sign in on your computer with <code>codex login</code> (choose "Sign in with ChatGPT"), then run <code>install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json</code>.</li>
+<li><code>The Codex login file ... can be read by other users</code>: run <code>chmod 600 ~/.config/cloudy-cloud/codex-auth.json</code>.</li>
+<li>A 401 or an expired token with <code>codex-chatgpt</code>: run <code>codex login</code> again and repeat the <code>install</code> command above.</li>
+<li><code>model is not supported when using Codex with a ChatGPT account</code>: start the worker without <code>model</code>, or use a model your plan supports.</li>
+<li><code>incorrect api key</code> with <code>codex</code>: check <code>OPENAI_API_KEY</code> in your Instabox secrets and in <code>CLOUDY_CLOUD_PROXY_SECRETS</code>.</li>
+</ul>
+<p>Codex and opencode workers are not proven live yet. If one fails in a way not listed here, the error text in the result is the best clue; please report it.</p>
 
 <h3 id="queued">A subagent stays "queued"</h3>
 <p>Starts are paced (<code>CLOUDY_CLOUD_STARTS_PER_MIN</code>, default 25 a minute), or your Instabox plan's machine limit is full (<code>quota_exceeded</code>). Paused machines count toward the limit. A subagent blocked by the quota retries every 60 seconds for up to 30 minutes, then fails with Instabox's message. Stop subagents you do not need, delete leftover machines (below), or upgrade the plan.</p>
@@ -163,15 +186,16 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <h2 id="security">Security</h2>
 
 <h3 id="what-runs-where">What runs where</h3>
-<p>Your Claude Code session and the <code>cloudy-cloud</code> tool server run on your machine. Each subagent runs <code>claude -p</code> on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.</p>
+<p>Your main session (Claude Code, Codex, opencode, pi or free-pi) and the <code>cloudy-cloud</code> tool server run on your machine. Each subagent runs its agent (<code>claude -p</code> by default, or pi, omp, Codex or opencode for a profile) on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.</p>
 
 <h3 id="credentials">Which credentials reach the cloud machine</h3>
 <ul>
-<li><strong>Claude token:</strong> placed on each machine. It can only make model requests.</li>
+<li><strong>Claude token:</strong> placed on each Claude Code worker without a profile. It can only make model requests.</li>
 <li><strong>GitHub token:</strong> never reaches the machine. Instabox stores it as the secret <code>GH_TOKEN</code>. The machine sees a placeholder that Instabox's proxy replaces on requests to <code>github.com</code> and <code>api.github.com</code>.</li>
 <li><strong>Instabox key:</strong> stays in <code>~/.config/cloudy-cloud/env</code> (readable only by you) and in the tool server. It is never put in process arguments.</li>
 <li><strong>MCP server tokens:</strong> only for servers you added with <code>cloudy-cloud mcp add</code>. The token stays in Instabox as <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without <code>--host</code>. With <code>--allow-literal</code> the real token is on the machine. See <a href="mcp.html">MCP servers for subagents</a>.</li>
-<li><strong>Provider keys</strong> (for example Particle): setup stores them as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See <a href="models.html">Models and keys</a>.</li>
+<li><strong>ChatGPT login file</strong> (<code>codex-chatgpt</code> only): your <code>codex-auth.json</code> is written to the worker machine, even on Instabox, because it cannot be a proxy secret. Its tokens are scrubbed from replies. Revoke it by signing out in your ChatGPT account.</li>
+<li><strong>Provider keys</strong> (for example Particle, OpenRouter, OpenAI): setup stores Particle.ai and OpenRouter keys as Instabox proxy secrets, so workers see a placeholder. A key you chose to keep in the env file sits on the worker machines that use it. See <a href="models.html">Models and keys</a>.</li>
 </ul>
 <p>Create the GitHub token as a fine-grained token, limited to the repos you use, with Contents read and write, Pull requests read and write, Workflows read and write (to push files under <code>.github/workflows</code>), and Actions read (so subagents can see CI results).</p>
 
@@ -182,7 +206,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <p>The tool server appends one JSON line per event to <code>~/.config/cloudy-cloud/events.jsonl</code> (folder mode 700, file mode 600). Prompts can contain code, so the file stays on your machine. Exact secret values are scrubbed and key-shaped text is redacted before writing. The file is never rotated. Delete it to clear history.</p>
 
 <h3 id="revoking-keys">Revoking keys</h3>
-<p>Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, and the Claude token by revoking it in your Claude account. Then run <code>cloudy-cloud setup</code> to enter new ones. To remove saved keys from your machine:</p>
+<p>Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, the Claude token by revoking it in your Claude account, and any OpenAI, Particle.ai or OpenRouter key in that provider's dashboard. Then run <code>cloudy-cloud setup</code> to enter new ones. To remove saved keys from your machine:</p>
 <pre><code>rm ~/.config/cloudy-cloud/env</code></pre>
 
 <div class="warn"><p>On a cloud coordinator, <code>~/.config/cloudy-cloud/env</code> holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.</p></div>
@@ -193,7 +217,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <p>The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
 
 <h3 id="faq-models">Which models can subagents use?</h3>
-<p>Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See <a href="models.html">Models and keys</a>.</p>
+<p>Claude Code by default. A <code>profile</code> can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. See <a href="models.html">Models and keys</a>.</p>
 
 <h3 id="faq-untracked">Does it copy untracked files?</h3>
 <p>No. A subagent gets files tracked by git, including uncommitted edits to them. Add a new file with <code>git add</code> if the subagent needs it.</p>

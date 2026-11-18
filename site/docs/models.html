@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Models and keys · Cloudy Cloud docs</title>
-<meta name="description" content="Choose Claude or an open model for a subagent and set up the keys each one needs.">
+<meta name="description" content="Choose the agent and model for a subagent (Claude Code, pi, oh-my-pi, Codex or opencode) and set up the keys each one needs.">
 <!--seo-->
 <link rel="canonical" href="https://cloudycloud.tech/docs/models.html">
 <link rel="alternate" type="text/markdown" href="models.md">
 <meta property="og:site_name" content="Cloudy Cloud">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Models and keys · Cloudy Cloud docs">
-<meta property="og:description" content="Choose Claude or an open model for a subagent and set up the keys each one needs.">
+<meta property="og:description" content="Choose the agent and model for a subagent (Claude Code, pi, oh-my-pi, Codex or opencode) and set up the keys each one needs.">
 <meta property="og:url" content="https://cloudycloud.tech/docs/models.html">
 <meta property="og:image" content="https://cloudycloud.tech/og.jpg">
 <meta property="og:image:width" content="1200">
@@ -20,8 +20,8 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
 <meta name="twitter:title" content="Models and keys · Cloudy Cloud docs">
-<meta name="twitter:description" content="Choose Claude or an open model for a subagent and set up the keys each one needs.">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Models and keys","description":"Choose Claude or an open model for a subagent and set up the keys each one needs.","url":"https://cloudycloud.tech/docs/models.html","mainEntityOfPage":"https://cloudycloud.tech/docs/models.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
+<meta name="twitter:description" content="Choose the agent and model for a subagent (Claude Code, pi, oh-my-pi, Codex or opencode) and set up the keys each one needs.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Models and keys","description":"Choose the agent and model for a subagent (Claude Code, pi, oh-my-pi, Codex or opencode) and set up the keys each one needs.","url":"https://cloudycloud.tech/docs/models.html","mainEntityOfPage":"https://cloudycloud.tech/docs/models.html","inLanguage":"en","dateModified":"2026-11-09","author":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"},"publisher":{"@type":"Organization","name":"Cloudy Cloud","url":"https://cloudycloud.tech/"}}</script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Cloudy Cloud","item":"https://cloudycloud.tech/"},{"@type":"ListItem","position":2,"name":"Docs","item":"https://cloudycloud.tech/docs/"}
 ,{"@type":"ListItem","position":3,"name":"Models and keys","item":"https://cloudycloud.tech/docs/models.html"}]}</script>
 <!--/seo-->
@@ -73,14 +73,16 @@
   <main id="content" tabindex="-1">
     <article>
 <h1>Models and keys</h1>
-<p class="lede">Cloudy Cloud uses your own keys. By default each subagent runs Claude, and you can run a subagent on another model by naming a profile.</p>
+<p class="lede">Cloudy Cloud uses your own keys. By default each subagent runs Claude Code. You can run a subagent on another agent or model by naming a profile.</p>
+<p>This page covers every worker agent: Claude Code (the default), pi, oh-my-pi (<code>omp</code>), Codex and opencode. Each section says which credential that agent needs. The main session, which you start with <code>cloudy-cloud</code>, <code>cloudy-cloud codex</code>, <code>cloudy-cloud opencode</code>, <code>cloudy-cloud pi</code> or <code>cloudy-cloud free-pi</code>, is covered in <a href="index.html#other-hosts">Getting started</a>.</p>
 
 <h2 id="bring-your-own-keys">Bring your own keys</h2>
 <p>Each user supplies their own credentials, because Anthropic's terms require each end user to use their own.</p>
 <p>You pay your providers directly. Cloudy Cloud does not resell model access, and this page gives no prices.</p>
 
 <h2 id="claude-credentials">Claude credentials</h2>
-<p>Subagents need one Claude credential. The setup step (<code>cloudy-cloud setup</code>) asks for it. Two kinds work:</p>
+<p>Applies to: workers that run Claude Code (no profile, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code>) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not need it.</p>
+<p>Claude Code subagents need one Claude credential. The setup step (<code>cloudy-cloud setup</code>) asks for it. Two kinds work:</p>
 <ul>
 <li><strong>A token from <code>claude setup-token</code></strong> (starts with <code>sk-ant-oat01-</code>). This uses your Claude subscription. At the Claude step, press Enter and setup runs <code>claude setup-token</code> for you, or paste a token you made yourself. Setup checks the token with one small Claude request. It is saved as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.</li>
 <li><strong>An Anthropic API key</strong> (<code>ANTHROPIC_API_KEY</code>). Setup does not ask for it. Add the line <code>ANTHROPIC_API_KEY=...</code> to the env file yourself (see below). Usage is billed per use.</li>
@@ -89,8 +91,21 @@
 <p>Setup saves all keys to <code>~/.config/cloudy-cloud/env</code>. Setup creates the folder with mode 700 and writes the file so that only your user account can read it. The file is plain text with one <code>NAME=value</code> line per key. To use another location, set <code>CLOUDY_CLOUD_CONFIG</code>.</p>
 
 <h2 id="default-model">Default model and choosing another</h2>
-<p>With no <code>profile</code>, a subagent runs Claude. To pick a Claude model, pass the optional <code>model</code> argument of <code>cloud_agent</code>, for example <code>haiku</code>.</p>
-<p>To run a subagent on a non-Claude model, pass the <code>profile</code> argument of <code>cloud_agent</code>. Do not use <code>model</code> for non-Claude models. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.</p>
+<p>With no <code>profile</code>, a subagent runs Claude Code. To pick a Claude model, pass the optional <code>model</code> argument of <code>cloud_agent</code>, for example <code>haiku</code>.</p>
+<p>To run a subagent on another agent or a non-Claude model, pass the <code>profile</code> argument of <code>cloud_agent</code>. Do not use <code>model</code> for non-Claude models, except as noted for <code>openrouter</code>, <code>codex-openrouter</code> and <code>opencode-openrouter</code>. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.</p>
+
+<h2 id="agents">Worker agents at a glance</h2>
+<table>
+<thead><tr><th>Agent on the machine</th><th>Profiles</th><th>Credential it needs</th><th>Started as</th><th>Proven live</th></tr></thead>
+<tbody>
+<tr><td>Claude Code (default)</td><td>none, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code></td><td>Claude token or API key; for the four profiles, the provider key instead</td><td><code>claude -p ... --output-format stream-json</code></td><td>Yes, including GLM and DeepSeek through Particle.ai</td></tr>
+<tr><td>pi</td><td><code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>pi --mode json --provider worker --model ... --session ID</code></td><td>Yes (<code>pi-glm</code>)</td></tr>
+<tr><td>oh-my-pi</td><td><code>omp-glm</code>, <code>omp-deepseek</code>, <code>omp-particle</code></td><td><code>PARTICLE_API_KEY</code></td><td><code>omp -p --mode json --model worker/MODEL [--session ID] ...</code></td><td>Yes (<code>omp-glm</code>)</td></tr>
+<tr><td>Codex</td><td><code>codex</code>, <code>codex-chatgpt</code>, <code>codex-openrouter</code></td><td><code>OPENAI_API_KEY</code>, your ChatGPT login file, or <code>OPENROUTER_API_KEY</code></td><td><code>CODEX_HOME=~/codex-home codex exec [resume ID] --json --dangerously-bypass-approvals-and-sandbox -c developer_instructions=... -</code></td><td>No. Only fake-sandbox tests have run it.</td></tr>
+<tr><td>opencode</td><td><code>opencode-glm</code>, <code>opencode-deepseek</code>, <code>opencode-particle</code>, <code>opencode-openrouter</code></td><td><code>PARTICLE_API_KEY</code> or <code>OPENROUTER_API_KEY</code></td><td><code>opencode run --format json --model worker/MODEL [--session ses_...]</code></td><td>No. Only fake-sandbox tests have run it.</td></tr>
+</tbody>
+</table>
+<p>free-pi can be a main session but not a worker: free-pi-cli has no headless mode, and its terms forbid scripted use.</p>
 
 <h2 id="profiles">Built-in profiles</h2>
 <table>
@@ -105,27 +120,53 @@
 <tr><td><code>omp-glm</code></td><td>Particle.ai</td><td><code>z-ai/glm-5.3-flash</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi (<code>omp</code>) coding agent, not Claude Code.</td></tr>
 <tr><td><code>omp-deepseek</code></td><td>Particle.ai</td><td><code>deepseek-ai/deepseek-v41-flash-1017</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi coding agent.</td></tr>
 <tr><td><code>omp-particle</code></td><td>Particle.ai</td><td><code>particle-ai/particle-1</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs the oh-my-pi coding agent.</td></tr>
-<tr><td><code>openrouter</code></td><td>OpenRouter</td><td>None built in. You pass one.</td><td><code>OPENROUTER_API_KEY</code></td><td>See <a href="#openrouter">OpenRouter</a>.</td></tr>
+<tr><td><code>codex</code></td><td>OpenAI</td><td>Codex's own default</td><td><code>OPENAI_API_KEY</code></td><td>Runs the Codex CLI. See <a href="#codex-profiles">The codex profiles</a>.</td></tr>
+<tr><td><code>codex-chatgpt</code></td><td>OpenAI, through your ChatGPT plan</td><td>Codex's own default</td><td>The login file <code>~/.config/cloudy-cloud/codex-auth.json</code></td><td>Runs the Codex CLI.</td></tr>
+<tr><td><code>codex-openrouter</code></td><td>OpenRouter</td><td>None built in. You pass one.</td><td><code>OPENROUTER_API_KEY</code></td><td>Runs the Codex CLI.</td></tr>
+<tr><td><code>opencode-glm</code></td><td>Particle.ai</td><td><code>z-ai/glm-5.3-flash</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs opencode. See <a href="#opencode-profiles">The opencode profiles</a>.</td></tr>
+<tr><td><code>opencode-deepseek</code></td><td>Particle.ai</td><td><code>deepseek-ai/deepseek-v41-flash-1017</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs opencode.</td></tr>
+<tr><td><code>opencode-particle</code></td><td>Particle.ai</td><td><code>particle-ai/particle-1</code></td><td><code>PARTICLE_API_KEY</code></td><td>Runs opencode.</td></tr>
+<tr><td><code>opencode-openrouter</code></td><td>OpenRouter</td><td>None built in. You pass one.</td><td><code>OPENROUTER_API_KEY</code></td><td>Runs opencode.</td></tr>
+<tr><td><code>openrouter</code></td><td>OpenRouter</td><td>None built in. You pass one.</td><td><code>OPENROUTER_API_KEY</code></td><td>Runs Claude Code. See <a href="#openrouter">OpenRouter</a>.</td></tr>
 </tbody>
 </table>
-<p>A profile worker receives only its own provider key. It never receives your Claude credential. If the key for a profile is missing, <code>cloud_agent</code> fails at once and names the key.</p>
+<p>A profile worker receives only its own provider key. It never receives your Claude credential. The one exception to "a key" is <code>codex-chatgpt</code>, which receives your ChatGPT login file. If the key for a profile is missing, <code>cloud_agent</code> fails at once and names the key. Coordinators always run Claude Code, so a coordinator cannot use a pi, omp, Codex or opencode profile.</p>
 
 <h3 id="pi-profiles">The pi profiles</h3>
-<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. A pi profile is for workers only, because coordinators always run Claude Code. Results from pi workers have no cost line. They get the MCP servers from <code>cloudy-cloud mcp add</code>, except <code>sse</code> servers, because pi has no SSE transport. See <a href="mcp.html">MCP servers for subagents</a>.</p>
+<p>The <code>pi-*</code> profiles run the <a href="https://pi.dev">pi coding agent</a> in the worker instead of Claude Code. They use none of your Claude allowance. Results from pi workers have no cost line. They get the MCP servers from <code>cloudy-cloud mcp add</code>, except <code>sse</code> servers, because pi has no SSE transport. See <a href="mcp.html">MCP servers for subagents</a>.</p>
 
 <h3 id="omp-profiles">The omp profiles</h3>
 <p>The <code>omp-*</code> profiles run <a href="https://github.com/can1357/oh-my-pi">oh-my-pi</a> (the <code>omp</code> command) in the worker instead of Claude Code. oh-my-pi is a fork of pi rewritten as a coding-first agent. It adds LSP support, persistent Python and Bun kernels, subagents and many providers. The profiles use the same three Particle.ai models as the pi profiles, and none of your Claude allowance.</p>
-<p>Each omp worker installs the pinned oh-my-pi release v18.18.7 with the official installer, which checks the binary's SHA-256. The binary is about 243 MB and is downloaded on every omp worker, so an omp worker starts slower than a pi or Claude worker. In one live check the whole omp worker setup (clone, first push, omp install and config) took about 20 seconds from machine creation to running, against 11 seconds for a pi worker started at the same time (one run each). An omp profile is for workers only, because coordinators always run Claude Code. Results from omp workers have no cost line. A follow-up resumes the same omp session. omp workers get the servers from <code>cloudy-cloud mcp add</code>, including <code>sse</code> servers.</p>
+<p>Each omp worker installs the pinned oh-my-pi release v18.18.7 with the official installer, which checks the binary's SHA-256. The binary is about 243 MB and is downloaded on every omp worker, so an omp worker starts slower than a pi or Claude worker. In one live check the whole omp worker setup (clone, first push, omp install and config) took about 20 seconds from machine creation to running, against 11 seconds for a pi worker started at the same time (one run each). Results from omp workers have no cost line. A follow-up resumes the same omp session. omp workers get the servers from <code>cloudy-cloud mcp add</code>, including <code>sse</code> servers.</p>
+
+<h3 id="codex-profiles">The codex profiles</h3>
+<p>The <code>codex</code>, <code>codex-chatgpt</code> and <code>codex-openrouter</code> profiles run the <a href="https://github.com/openai/codex">Codex CLI</a> in the worker. Cloudy Cloud installs the pinned <code>@openai/codex@0.166.0</code> under <code>~/.local</code> and runs <code>codex exec --json</code> with <code>CODEX_HOME=~/codex-home</code>. Follow-up messages use <code>codex exec resume ID</code>. Servers from <code>cloudy-cloud mcp add</code> go into <code>~/codex-home/config.toml</code>, except <code>sse</code> servers and entries that Codex cannot read a secret from. Skipped servers are named in the reply.</p>
+<p>Codex only speaks the Responses API, and Particle.ai does not offer it, so there is no <code>codex-glm</code>. Set up the credential for the profile you use:</p>
+<ul>
+<li><strong><code>codex</code> (OpenAI API key).</strong> Create a key at <a href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</a>. <code>cloudy-cloud setup</code> does not ask for it. On Instabox, store it as a proxy secret limited to OpenAI, then add the name to <code>CLOUDY_CLOUD_PROXY_SECRETS</code> in <code>~/.config/cloudy-cloud/env</code>:
+<pre><code>printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com</code></pre>
+On a self-hosted machine, add the line <code>OPENAI_API_KEY=...</code> to the env file.</li>
+<li><strong><code>codex-chatgpt</code> (ChatGPT plan).</strong> On your computer run <code>codex login</code> and choose "Sign in with ChatGPT". Then copy the login file where Cloudy Cloud reads it:
+<pre><code>install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json</code></pre>
+Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have mode 600. This is the one real credential that Cloudy Cloud sends to a machine as a file, even on Instabox, because a ChatGPT login cannot be a proxy secret. Its tokens are scrubbed from replies, and the machine may refresh them. Do not pass <code>model</code> unless your plan supports it: with no model, Codex uses the default model of your plan.</li>
+<li><strong><code>codex-openrouter</code>.</strong> Uses <code>OPENROUTER_API_KEY</code>, set up as in <a href="#openrouter">OpenRouter</a>. Pass the OpenRouter model id in <code>model</code>.</li>
+</ul>
+<div class="note"><p>Not proven live: no Codex worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox. Resume and the ChatGPT-login error message were also recorded locally with <code>codex exec</code>.</p></div>
+
+<h3 id="opencode-profiles">The opencode profiles</h3>
+<p>The <code>opencode-*</code> profiles run <a href="https://opencode.ai">opencode</a> in the worker. Cloudy Cloud installs the pinned <code>opencode-ai@1.18.31</code> with npm under <code>~/.local</code> and runs <code>opencode run --format json --model worker/MODEL</code>. A follow-up passes <code>--session ses_...</code>. The configuration is <code>~/opencode-agent/opencode.json</code> (mode 600). It holds key names such as <code>{env:PARTICLE_API_KEY}</code>, never key values, and the servers from <code>cloudy-cloud mcp add</code>. Keys: <code>opencode-glm</code>, <code>opencode-deepseek</code> and <code>opencode-particle</code> use <code>PARTICLE_API_KEY</code>, and <code>opencode-openrouter</code> uses <code>OPENROUTER_API_KEY</code> and needs <code>model</code>. Both are set up with <code>cloudy-cloud setup</code> (see <a href="#openrouter">OpenRouter</a> for the second).</p>
+<p>No profile uses opencode's own login, because that would copy a login to the machine.</p>
+<div class="note"><p>Not proven live: no opencode worker has run on a real Instabox machine yet. The code has passed tests against a fake sandbox.</p></div>
 
 <h2 id="openrouter">OpenRouter</h2>
 <p>To use OpenRouter:</p>
 <ol>
 <li>Create a key at <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li>
 <li>Run <code>cloudy-cloud setup</code> and paste it at the OpenRouter step. It is saved as <code>OPENROUTER_API_KEY</code>.</li>
-<li>Start a subagent with <code>profile: "openrouter"</code> and pass the OpenRouter model id in <code>model</code>. This is the one case where <code>model</code> goes with a non-Claude model, because the profile has no built-in model.</li>
+<li>Start a subagent with <code>profile: "openrouter"</code> (Claude Code), <code>"codex-openrouter"</code> (Codex) or <code>"opencode-openrouter"</code> (opencode), and pass the OpenRouter model id in <code>model</code>. These are the cases where <code>model</code> goes with a non-Claude model, because the profiles have no built-in model.</li>
 </ol>
 <p>If you pass no model, the call fails with "needs a model". To avoid passing it every time, set a <code>model</code> for <code>openrouter</code> in <code>profiles.json</code> (below).</p>
-<div class="note"><p>Signing in with OpenRouter or ChatGPT is not available. You paste an API key.</p></div>
+<div class="note"><p>Signing in with OpenRouter is not available: you paste an API key. A ChatGPT sign-in works only through the <code>codex-chatgpt</code> profile (see above).</p></div>
 
 <h2 id="own-profiles">Your own profiles</h2>
 <p>Create <code>~/.config/cloudy-cloud/profiles.json</code> (or point <code>CLOUDY_CLOUD_PROFILES</code> at another file) to override a built-in profile or add one:</p>
@@ -137,11 +178,11 @@
     "keyName": "OPENROUTER_API_KEY"
   }
 }</code></pre>
-<p><code>format</code> is <code>anthropic</code> or <code>openai</code>. <code>keyName</code> must be a key in your env file whose name ends in <code>_API_KEY</code>. An optional <code>"harness"</code> is <code>"claude"</code> (the default), <code>"pi"</code> or <code>"omp"</code>. <code>"pi"</code> runs the pi agent and <code>"omp"</code> runs oh-my-pi. Replace <code>MODEL-ID</code> with a model id from your provider.</p>
+<p><code>format</code> is <code>anthropic</code> or <code>openai</code>. <code>keyName</code> must be a key in your env file whose name ends in <code>_API_KEY</code>. An optional <code>"harness"</code> is <code>"claude"</code> (the default), <code>"pi"</code>, <code>"omp"</code>, <code>"codex"</code> or <code>"opencode"</code>. It picks the agent that runs on the machine. The <code>codex</code> and <code>opencode</code> harnesses need <code>"format": "openai"</code>, and <code>codex</code> needs a provider that offers the Responses API. A <code>codex</code> profile can use <code>"auth": "chatgpt"</code> instead of <code>keyName</code>. Replace <code>MODEL-ID</code> with a model id from your provider.</p>
 
 <h2 id="change-keys">Adding or changing keys later</h2>
 <ul>
-<li>Run <code>cloudy-cloud setup</code> again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip.</li>
+<li>Run <code>cloudy-cloud setup</code> again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup does not ask for <code>OPENAI_API_KEY</code> or the Codex login file: see <a href="#codex-profiles">The codex profiles</a>.</li>
 <li>Or edit <code>~/.config/cloudy-cloud/env</code> directly. Keep the file private. To remove all saved keys, delete it.</li>
 <li>Restart <code>cloudy-cloud</code> afterwards. It reads keys once at start, so a running session keeps the old ones.</li>
 </ul>

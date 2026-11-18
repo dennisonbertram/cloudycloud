@@ -5,20 +5,20 @@ description: How to run fleets of cloudy-cloud subagents (Instabox cloud machine
 
 # Managing a Cloudy Cloud fleet
 
-Each `cloud_agent` is a full Claude Code on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
+This skill applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Each `cloud_agent` is a full coding agent (Claude Code by default) on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
-Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?, machine?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`.
+Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?, machine?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`. In an opencode session the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on. Codex, opencode and pi sessions cannot receive MCP task results, so call `cloud_agent_wait` for results.
 
 ## Choosing a worker's model
 
-Workers can run Claude or open models. Do not tell the user otherwise.
+Workers can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or on other models. Do not tell the user otherwise. Your own session may be any supported agent; it does not limit what workers run.
 
 | Want | Use |
 | --- | --- |
 | A Claude model | `cloud_agent` with `model` (for example `haiku`), or nothing for the default |
-| A non-Claude model | `cloud_agent` with `profile`, never `model` |
+| A non-Claude model or another agent | `cloud_agent` with `profile`, never `model` (except `openrouter`, `codex-openrouter` and `opencode-openrouter`, which also need `model`) |
 
-Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness, no gateway; each worker installs `omp`, so it starts slower); `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`. `particle` means Particle.ai's `particle-1` model.
+Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness, no gateway; each worker installs `omp`, so it starts slower); `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`; `opencode-particle`, `opencode-glm`, `opencode-deepseek` and `opencode-openrouter` (opencode, no gateway); `codex` (Codex with `OPENAI_API_KEY`), `codex-chatgpt` (Codex with the user's ChatGPT login file) and `codex-openrouter` (Codex through OpenRouter). Codex and opencode workers have not been run on a real machine yet, so run one first and check its branch before you start many. There is no free-pi worker. `particle` means Particle.ai's `particle-1` model.
 
 - Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
 - If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
@@ -150,9 +150,9 @@ Use when later work depends on earlier work (for example: wave 1 adds an API, wa
 | Opus coordinator, 5 Opus sub-coordinators, each 10 to 20 workers | Big migrations, many areas |
 | Claude coordinators, open-model workers at the leaves | Bulk work where each task is small and clearly specified |
 
-- Keep coordinators and sub-coordinators on Claude. Merging, resolving conflicts and judging results needs the strongest model.
+- Keep coordinators and sub-coordinators on Claude Code. They cannot use a pi, omp, Codex or opencode profile. Merging, resolving conflicts and judging results needs the strongest model.
 - Use Claude workers for design, tricky bugs, anything needing judgment, and for tasks that change shared code.
-- Use open-model workers for bulk, well-specified tasks: mechanical renames, adding tests to existing code, filling in many similar files, doc updates. Set `profile` to `glm`, `deepseek`, `particle` or `openrouter` (for `openrouter`, also pass `model`). The user must have the profile's key installed; a missing key makes `cloud_agent` fail at once.
+- Use open-model workers for bulk, well-specified tasks: mechanical renames, adding tests to existing code, filling in many similar files, doc updates. Set `profile` to `glm`, `deepseek`, `particle` or `openrouter` (for `openrouter`, also pass `model`), or to a pi, omp, Codex or opencode profile above. The user must have the profile's key installed; a missing key makes `cloud_agent` fail at once.
 - Check an open-model worker's output more carefully. Run the tests on every branch before you merge it.
 
 Example: an Opus coordinator starts 5 Opus sub-coordinators. Each starts 15 `deepseek` workers for its area. The result is one PR with 75 workers behind it.
@@ -168,7 +168,7 @@ A worker sees only your prompt and the repo. Write each brief so it can work alo
 - "Commit early and often, and push to your `cloudy-cloud/<id>` branch before you finish. Work that is not pushed is lost."
 - Do not push to `main`, do not open PRs, do not touch other branches.
 - What to put in the final reply: one short paragraph, the files changed, the test result.
-- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
+- A worker has only the MCP servers the user saved with `cloudy-cloud mcp add` (listed in the reply's `MCP servers:` line, and `pi` and Codex workers skip `sse` servers). Do not tell it to use other tools such as a Notion or Linear server unless `cloudy-cloud mcp ls` shows it.
 
 When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present.
 

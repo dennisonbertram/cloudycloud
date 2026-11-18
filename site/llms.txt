@@ -11,7 +11,7 @@ Each page below also has its text as Markdown at its URL with `.html` replaced b
 - [Getting started](https://cloudycloud.tech/docs/index.md): Install Cloudy Cloud, start a session and run your first subagent on a cloud machine.
 - [What is Cloudy Cloud?](https://cloudycloud.tech/docs/what-is-cloudy-cloud.md): What Cloudy Cloud is, how it differs from running subagents locally, who it is for and what it costs.
 - [How it works](https://cloudycloud.tech/docs/how-it-works.md): What runs where when a subagent runs on a cloud machine, what it can see, and how its work comes back.
-- [Models and keys](https://cloudycloud.tech/docs/models.md): Choose Claude or an open model for a subagent and set up the keys each one needs.
+- [Models and keys](https://cloudycloud.tech/docs/models.md): Choose the agent and model for a subagent (Claude Code, pi, oh-my-pi, Codex or opencode) and set up the keys each one needs.
 - [Coordinators and fleets](https://cloudycloud.tech/docs/fleets.md): Run a cloud coordinator that manages many workers, and the limits that apply.
 - [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.md): Watch your cloud agents in a local web page and open apps running on their machines.
 - [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.md): Choose which of your MCP servers cloud subagents get with cloudy-cloud mcp add, what is allowed, and how tokens stay in Instabox.

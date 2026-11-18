@@ -75,13 +75,15 @@
 <h1>Command and tool reference</h1>
 <p class="lede">This page lists every <code>cloudy-cloud</code> command and flag, the five tools Claude uses to run cloud agents, and the environment variables and files that change how they behave.</p>
 
-<h2 id="cli">Command line</h2>
-<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>dashboard</code>, <code>open</code>, <code>shell</code>, <code>display</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
+<p>These commands and tools apply to every main session: Claude Code (<code>cloudy-cloud</code>), Codex (<code>cloudy-cloud codex</code>), opencode (<code>cloudy-cloud opencode</code>), pi (<code>cloudy-cloud pi</code>) and free-pi (<code>cloudy-cloud free-pi</code>). The <code>cloud_agent</code> <code>profile</code> argument picks the worker agent: Claude Code, pi, oh-my-pi, Codex or opencode. An opencode main session names the tools <code>cloud_cloud_agent</code>, <code>cloud_cloud_agent_wait</code> and so on.</p>
 
-<h3 id="cli-session">cloudy-cloud</h3>
+<h2 id="cli">Command line</h2>
+<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>codex</code>, <code>opencode</code>, <code>pi</code>, <code>free-pi</code>, <code>dashboard</code>, <code>open</code>, <code>shell</code>, <code>display</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
+
+<h3 id="cli-session">cloudy-cloud (Claude Code as the main session)</h3>
 <pre><code>cloudy-cloud [claude arguments]</code></pre>
 <p>The package installs the same command under two names, <code>cloudy-cloud</code> and <code>cloudycloud</code>; use either. Without a global install, <code>npx cloudycloud</code> runs the same command. Plain <code>claude</code> is not affected.</p>
-<p>Starts a normal Claude Code session in the current folder. In that session the built-in <code>Agent</code> and <code>Workflow</code> tools are denied, and Claude starts subagents with the five cloud tools described <a href="#tools">below</a>. Run it from inside a git repository that has a <code>github.com</code> origin, because each cloud agent pushes its work to a branch there.</p>
+<p>Starts a normal Claude Code session in the current folder. In that session the built-in <code>Agent</code> and <code>Workflow</code> tools are denied, and Claude starts subagents with the cloud tools described <a href="#tools">below</a>. Run it from inside a git repository that has a <code>github.com</code> origin, because each cloud agent pushes its work to a branch there.</p>
 <p>Every argument is passed to <code>claude</code> after the flags that <code>cloudy-cloud</code> adds itself (<code>--mcp-config</code>, <code>--settings</code> and <code>--append-system-prompt</code>). There are no <code>cloudy-cloud</code> flags of its own for a session.</p>
 <p>Before it starts Claude, the command checks three things:</p>
 <ul>
@@ -92,6 +94,23 @@
 <p>Example:</p>
 <pre><code>cloudy-cloud --model opus</code></pre>
 <p>It also sets <code>MCP_TOOL_TIMEOUT</code> to 1800000 (30 minutes) unless you already set it.</p>
+
+<h3 id="cli-hosts">cloudy-cloud codex, opencode, pi and free-pi</h3>
+<pre><code>cloudy-cloud codex [codex arguments]
+cloudy-cloud opencode [opencode arguments]
+cloudy-cloud pi [pi arguments]
+cloudy-cloud free-pi [free-pi-cli arguments]</code></pre>
+<p>Each command starts another coding agent as your main session, with the same cloud tools. Every argument after the subcommand goes to that agent. They are subcommands, not a flag, because Claude Code already has its own <code>--agent</code> option. None of them needs a Claude token. They check only that the Instabox key (or the self-hosted settings) is saved, and run from inside a git repository with a <code>github.com</code> origin like <code>cloudy-cloud</code>.</p>
+<table>
+<thead><tr><th>Command</th><th>How the tools are added</th><th>If the agent is missing</th><th>Checked live</th></tr></thead>
+<tbody>
+<tr><td><code>cloudy-cloud codex</code></td><td>Codex <code>-c mcp_servers.cloud.*</code> overrides and <code>developer_instructions</code>. <code>~/.codex/config.toml</code> is not edited. The tools keep their names.</td><td>Prints <code>npm install -g @openai/codex</code></td><td>Yes. With codex-cli 0.166.0, <code>cloudy-cloud codex exec</code> listed the six cloud tools.</td></tr>
+<tr><td><code>cloudy-cloud opencode</code></td><td>One <code>OPENCODE_CONFIG_CONTENT</code> value for this session. Your <code>opencode.json</code> is not edited. opencode's own <code>task</code> tool is denied. The tools are named <code>cloud_cloud_agent</code> and so on.</td><td>Prints <code>npm install -g opencode-ai</code></td><td>Yes, by the opencode build.</td></tr>
+<tr><td><code>cloudy-cloud pi</code></td><td>A per-session pi extension and an appended system prompt.</td><td>Runs the pinned <code>@earendil-works/pi-coding-agent@1.5.0</code> with <code>npx</code></td><td>The MCP connection only. No model turn was run.</td></tr>
+<tr><td><code>cloudy-cloud free-pi</code></td><td>Writes a <code>cloud</code> entry into <code>~/.free-pi/agent/mcp.json</code> with <code>free-pi-cli mcp add</code> on every start.</td><td>Runs the pinned <code>free-pi-cli@0.6.23</code> with <code>npx</code></td><td><code>mcp list</code> only.</td></tr>
+</tbody>
+</table>
+<p>The Codex, opencode and pi hosts cannot receive MCP task results, so the session starts agents and then calls <code>cloud_agent_wait</code>. free-pi is a main session only. It cannot be a worker.</p>
 
 <h3 id="cli-help">cloudy-cloud --help and --version</h3>
 <pre><code>cloudy-cloud --help
@@ -168,7 +187,7 @@ cloudy-cloud display &lt;agent-id-or-machine&gt; --unshare</code></pre>
 
 <h3 id="cli-coordinator">cloudy-cloud coordinator</h3>
 <pre><code>cloudy-cloud coordinator image [--save]
-cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--json]
+cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator status NAME [--json]
@@ -196,10 +215,11 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <tr><td><code>--task TEXT</code></td><td>none</td><td>A task for the coordinator to start on. Up to 100,000 bytes. Cannot be empty.</td></tr>
 <tr><td><code>--task-file PATH</code></td><td>none</td><td>Read the task from a local file instead. Same limits.</td></tr>
 <tr><td><code>--max-hours N</code></td><td>24</td><td>Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended.</td></tr>
-<tr><td><code>--json</code></td><td>off</td><td>Print one line of JSON with <code>name</code>, <code>machine</code>, <code>remoteControlName</code> and <code>attach</code> instead of the usual text.</td></tr>
+<tr><td><code>--model NAME</code></td><td>Claude Code's default</td><td>Model for the coordinator's Claude Code session, such as <code>opus</code> or <code>claude-opus-5-5</code>. Rejected before any machine is created if it has characters other than letters, digits and <code>._:[]-</code>.</td></tr>
+<tr><td><code>--json</code></td><td>off</td><td>Print one line of JSON with <code>name</code>, <code>machine</code>, <code>remoteControlName</code>, <code>attach</code> and <code>started</code> (<code>true</code>) instead of the usual text.</td></tr>
 </tbody>
 </table>
-<p>If neither <code>--task</code> nor <code>--task-file</code> is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved.</p>
+<p>About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or a login problem, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and <code>waiting</code> in <code>--json</code>) says to run <code>coordinator attach NAME</code> and accept it. The session runs with <code>--strict-mcp-config</code> and has <code>cloudy-cloud</code> on <code>PATH</code>. If neither <code>--task</code> nor <code>--task-file</code> is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.</p>
 <p>Example:</p>
 <pre><code>cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO --task-file task.md --max-hours 8</code></pre>
 
@@ -235,25 +255,25 @@ cloudy-cloud mcp ls
 cloudy-cloud mcp rm NAME</code></pre>
 <p>Chooses which of your Claude Code MCP servers cloud subagents get. <code>add</code> copies one server from your Claude Code settings (local, project or user scope) to <code>~/.config/cloudy-cloud/mcp.json</code>, replaces a secret value with <code>${MCP_&lt;NAME&gt;_TOKEN}</code> and prints the <code>npx --yes instabox@latest secrets set ... --host ...</code> command that stores the value once in Instabox. <code>ls</code> lists the saved servers and the secrets they need. <code>rm</code> removes one. Only <code>https</code> servers on public hosts and <code>npx</code> or <code>uvx</code> servers are accepted; a refused server prints <code>Not added: REASON</code> and exits with status 1. <code>--allow-literal</code> asks you to confirm and then copies the real token to the machines instead of using an Instabox secret. All of this is described in <a href="mcp.html">MCP servers for subagents</a>.</p>
 
-<h2 id="tools">Tools Claude uses (MCP)</h2>
+<h2 id="tools">Tools the session uses (MCP)</h2>
 <p><code>cloudy-cloud</code> adds an MCP server named <code>cloud</code> to the session. Claude sees its tools as <code>mcp__cloud__cloud_agent</code> and so on. The session is configured to allow these five tools without asking and to deny the built-in <code>Agent</code> and <code>Workflow</code> tools. You normally ask for subagents in plain language and Claude calls the tools. This section is for when you want to know exactly what each tool takes.</p>
 <p>In a terminal Claude Code session that supports MCP tasks, <code>cloud_agent</code> and <code>cloud_agent_message</code> run as background tasks. Their progress shows in <code>/tasks</code> and the result arrives on its own with the agent id, so Claude does not need <code>cloud_agent_wait</code>. In other clients these two tools return an agent id at once and Claude calls <code>cloud_agent_wait</code>. The server also answers the task methods <code>tasks/get</code> and <code>tasks/cancel</code>.</p>
 
 <h3 id="tool-cloud-agent">cloud_agent</h3>
-<p>Starts a Claude subagent in a remote sandbox on the committed and tracked files of the current repository. It does not include untracked files. The repository needs a <code>github.com</code> origin. The call returns at once while the sandbox starts and the task runs. The agent pushes its work to the origin branch <code>cloudy-cloud/&lt;id&gt;</code>. Nothing is copied into your local repository. The agent stays open for follow-ups until it is stopped or has been idle for 60 minutes.</p>
+<p>Starts a subagent in a remote sandbox on the committed and tracked files of the current repository. It does not include untracked files. The repository needs a <code>github.com</code> origin. The call returns at once while the sandbox starts and the task runs. The agent pushes its work to the origin branch <code>cloudy-cloud/&lt;id&gt;</code>. Nothing is copied into your local repository. The agent stays open for follow-ups until it is stopped or has been idle for 60 minutes.</p>
 <table>
 <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
 <tbody>
 <tr><td><code>prompt</code></td><td>string</td><td>yes</td><td>none</td><td>The full task for the subagent.</td></tr>
 <tr><td><code>description</code></td><td>string</td><td>yes</td><td>none</td><td>A short label for the task.</td></tr>
-<tr><td><code>model</code></td><td>string</td><td>no</td><td>the Claude default</td><td>A Claude model name, such as <code>haiku</code>. For a non-Claude model, use <code>profile</code> instead. It may contain only letters, digits and <code>. _ : -</code>. When <code>profile</code> is also set, <code>/</code> is allowed too.</td></tr>
-<tr><td><code>profile</code></td><td>string</td><td>no</td><td>Claude</td><td>Runs the worker on another model. Built in: <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>pi-glm</code>, <code>pi-deepseek</code>, <code>pi-particle</code>, <code>omp-glm</code>, <code>omp-deepseek</code>, <code>omp-particle</code> and <code>openrouter</code>. You can add names in <code>profiles.json</code>. An unknown name, or a profile whose key is missing, makes the call fail at once. See <a href="models.html">Models and keys</a>.</td></tr>
-<tr><td><code>role</code></td><td>string, <code>worker</code> or <code>coordinator</code></td><td>no</td><td><code>worker</code></td><td>A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A coordinator cannot use a <code>pi-</code> profile.</td></tr>
+<tr><td><code>model</code></td><td>string</td><td>no</td><td>the Claude default</td><td>A Claude model name, such as <code>haiku</code>. For a non-Claude model, use <code>profile</code> instead. It is needed with a profile only for <code>openrouter</code>, <code>codex-openrouter</code> and <code>opencode-openrouter</code>, which have no built-in model. It may contain only letters, digits and <code>. _ : -</code>. When <code>profile</code> is also set, <code>/</code> is allowed too.</td></tr>
+<tr><td><code>profile</code></td><td>string</td><td>no</td><td>Claude</td><td>Runs the worker on another agent or model. Built in: <code>glm</code>, <code>deepseek</code>, <code>particle</code> and <code>openrouter</code> (Claude Code on another model); <code>pi-glm</code>, <code>pi-deepseek</code> and <code>pi-particle</code> (pi); <code>omp-glm</code>, <code>omp-deepseek</code> and <code>omp-particle</code> (oh-my-pi); <code>codex</code>, <code>codex-chatgpt</code> and <code>codex-openrouter</code> (Codex); <code>opencode-glm</code>, <code>opencode-deepseek</code>, <code>opencode-particle</code> and <code>opencode-openrouter</code> (opencode). You can add names in <code>profiles.json</code>. An unknown name, or a profile whose key is missing, makes the call fail at once. See <a href="models.html">Models and keys</a>.</td></tr>
+<tr><td><code>role</code></td><td>string, <code>worker</code> or <code>coordinator</code></td><td>no</td><td><code>worker</code></td><td>A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A coordinator always runs Claude Code, so it cannot use a pi, omp, Codex or opencode profile.</td></tr>
 <tr><td><code>machine</code></td><td>string</td><td>no</td><td><code>linux</code></td><td>The kind of machine: <code>linux</code>, <code>android</code>, <code>omarchy</code>, <code>gpu</code>, <code>gpu:TYPE</code>, <code>gpu:TYPE:COUNT</code> (COUNT 1 to 8), <code>macos</code> or <code>macos:MODEL</code>. <code>gpu</code> and <code>macos</code> cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until <code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code> in <code>~/.config/cloudy-cloud/env</code> names them (for example <code>gpu,macos</code>). Only on Instabox.</td></tr>
-<tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code>. It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
+<tr><td><code>subagent_type</code></td><td>string</td><td>no</td><td>none</td><td>The name of an agent to run, passed to Claude Code as <code>--agent</code> (Claude Code workers only). It may contain only letters, digits and <code>. _ : -</code>.</td></tr>
 </tbody>
 </table>
-<p>When <code>~/.config/cloudy-cloud/mcp.json</code> holds at least one valid server, a Claude subagent (not a <code>pi</code> profile) starts with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>, so a repo's own <code>.mcp.json</code> is not loaded on the machine. The reply ends with an <code>MCP servers:</code> line. See <a href="mcp.html">MCP servers for subagents</a>.</p>
+<p>When <code>~/.config/cloudy-cloud/mcp.json</code> holds at least one valid server, a Claude Code subagent (not a pi, omp, Codex or opencode worker) starts with <code>--mcp-config</code> for that file and <code>--strict-mcp-config</code>, so a repo's own <code>.mcp.json</code> is not loaded on the machine. pi, omp, Codex and opencode workers get the same servers in their own config files. The reply ends with an <code>MCP servers:</code> line. See <a href="mcp.html">MCP servers for subagents</a>.</p>
 <p>The call is refused if the session has already started <code>CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION</code> agents (default 200), or if the folder is not a git repository with at least one commit and a <code>github.com</code> origin.</p>
 
 <h3 id="tool-cloud-agent-message">cloud_agent_message</h3>
@@ -273,6 +293,15 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tbody>
 <tr><td><code>agent_ids</code></td><td>array of strings</td><td>yes</td><td>none</td><td>The agent ids to wait for.</td></tr>
 <tr><td><code>timeout_seconds</code></td><td>number</td><td>no</td><td>600</td><td>How long to wait. Values above 1500 are limited to 1500.</td></tr>
+</tbody>
+</table>
+
+<h3 id="tool-cloud-agent-result">cloud_agent_result</h3>
+<p>Returns an agent's latest result again, as often as asked, even after <code>cloud_agent_wait</code> or a task notification delivered it. If the agent has no result yet it says <code>no result yet, status running</code>. If the agent is not open it returns an error with a next step. The tool is read-only.</p>
+<table>
+<thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>agent_id</code></td><td>string</td><td>yes</td><td>The agent id.</td></tr>
 </tbody>
 </table>
 
@@ -322,6 +351,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>GH_TOKEN</code></td><td>none</td><td>Your GitHub token. On a self-hosted machine it is read from the config file and placed in each worker container if you allowed that. See <a href="self-hosted.html#github-token">Run on your own machine</a>.</td></tr>
 <tr><td><code>ANTHROPIC_API_KEY</code></td><td>none</td><td>An Anthropic API key, used by cloud agents when there is no Claude token. It is billed separately.</td></tr>
 <tr><td><code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, and any other name ending in <code>_API_KEY</code></td><td>none</td><td>Provider keys for model profiles. A profile's <code>keyName</code> must name one of these. A worker that uses a profile receives that profile's key.</td></tr>
+<tr><td><code>OPENAI_API_KEY</code></td><td>none</td><td>Your OpenAI API key, for the <code>codex</code> profile. Setup does not ask for it. See <a href="models.html#codex-profiles">The codex profiles</a>.</td></tr>
 </tbody>
 </table>
 <div class="note"><p>The launcher only checks the config file for the Claude token, not the environment, so save it there with <code>cloudy-cloud setup</code>. The Instabox key can come from either place.</p></div>
@@ -365,6 +395,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <thead><tr><th>Path</th><th>What it holds</th></tr></thead>
 <tbody>
 <tr><td><code>~/.config/cloudy-cloud/env</code></td><td>The config file. One <code>NAME=value</code> per line, mode 600. <code>cloudy-cloud setup</code> writes it. Only the settings and keys listed above are read from it, plus <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code>, which <code>coordinator image --save</code> writes. Change the location with <code>CLOUDY_CLOUD_CONFIG</code>.</td></tr>
+<tr><td><code>~/.config/cloudy-cloud/codex-auth.json</code></td><td>Optional. A copy of <code>~/.codex/auth.json</code> (mode 600) for the <code>codex-chatgpt</code> profile. Create it with <code>install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json</code>. Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/profiles.json</code></td><td>Optional. Adds or overrides model profiles. See <a href="models.html">Models and keys</a>.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/mcp.json</code></td><td>Optional. The MCP servers that cloud subagents get, in Claude Code's <code>mcpServers</code> format, mode 600. <code>cloudy-cloud mcp add</code> writes it. Secret values are stored as <code>${MCP_&lt;NAME&gt;_TOKEN}</code> references unless you used <code>--allow-literal</code>. See <a href="mcp.html">MCP servers for subagents</a>.</td></tr>
 <tr><td><code>~/.config/cloudy-cloud/events.jsonl</code></td><td>The event log. The MCP server appends one JSON line per agent event (agent, message, machine, status, progress, reply). The file has mode 600 inside a folder with mode 700. It holds your prompts and replies, so it stays on your computer. Key-shaped text is redacted before writing, and each text is cut at 20,000 characters. It is never rotated: delete it to clear the history. The dashboard reads the newest 16 MB.</td></tr>

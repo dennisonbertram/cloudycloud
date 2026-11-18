@@ -4,16 +4,18 @@
 
 Source: https://cloudycloud.tech/docs/
 
-Cloudy Cloud runs each Claude Code subagent on its own cloud machine, with a copy of your repo and its own branch. You stay in your local Claude Code session and fetch the finished work from GitHub.
+Cloudy Cloud runs each subagent of your coding agent on its own cloud machine, with a copy of your repo and its own branch. You stay in your local session and fetch the finished work from GitHub.
+
+This page applies to every supported main session (Claude Code, Codex, opencode, pi and free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex and opencode). Where steps differ by agent, the step says which.
 
 ## Before you start
 
 You need these accounts and tools:
 
 - **An Instabox account.** Instabox is the cloud provider supported today. The free plan is too small for more than a few subagents at once; swarms need a paid plan.
-- **A Claude subscription or an Anthropic API key.** Subagents use a long-lived token from `claude setup-token`. An API key works too but is billed separately.
+- **A credential for each agent you use.** Claude Code workers (the default) use a Claude subscription token from `claude setup-token`, or an Anthropic API key that is billed separately. Workers on another agent use that profile's key instead: `PARTICLE_API_KEY` for pi, oh-my-pi and opencode, `OPENROUTER_API_KEY` for the OpenRouter profiles, and `OPENAI_API_KEY` or a ChatGPT login file for Codex. [Models and keys](https://cloudycloud.tech/docs/models.html#agents) lists them all. A session that uses only non-Claude workers needs no Claude credential.
 - **A GitHub repository you can push to.** The repo you work in must have a `github.com` remote named `origin`.
-- **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and [Claude Code](https://code.claude.com) signed in.
+- **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and the agent you will start as your main session: [Claude Code](https://code.claude.com) signed in (the default), or Codex, opencode, pi or free-pi (see Start a session with another agent).
 
 ## Install
 
@@ -64,7 +66,7 @@ cd <your repo>
 cloudy-cloud
 ```
 
-This is an ordinary Claude Code session with one change: the built-in `Agent` tool is turned off, and every subagent goes to a cloud machine through the `cloud_agent` tools. Plain `claude` is unaffected. If a key is missing, `cloudy-cloud` says `cloudy-cloud is not set up yet` and offers to run setup. If the folder is not a git repo, or has no `github.com` origin, it warns you that subagents cannot start or push.
+With no subcommand this is an ordinary Claude Code session with one change: the built-in `Agent` tool is turned off, and every subagent goes to a cloud machine through the `cloud_agent` tools. Plain `claude` is unaffected. If a key is missing, `cloudy-cloud` says `cloudy-cloud is not set up yet` and offers to run setup. If the folder is not a git repo, or has no `github.com` origin, it warns you that subagents cannot start or push.
 
 ### Run without the interactive UI
 
@@ -82,9 +84,25 @@ cloudy-cloud -p "<prompt>" --allowedTools "Bash(git fetch *)" "Bash(git show *)"
 
 Put `--allowedTools` after the prompt, because it takes a list. See `claude --help` for all options. `cloudy-cloud --help` prints Cloudy Cloud's own help, and `cloudy-cloud --version` prints the version.
 
+## Start a session with another agent
+
+The main session does not have to be Claude Code. Run the subcommand for your agent from inside your repo. The cloud tools are added for that session only, and your own settings for the agent are not edited. All of them need the Instabox key from setup (or the self-hosted settings), and none needs a Claude token.
+
+| Main session | Command | Install the agent first | Checked live |
+|---|---|---|---|
+| Claude Code | `cloudy-cloud` | See [code.claude.com](https://code.claude.com) | Yes |
+| Codex | `cloudy-cloud codex` | `npm install -g @openai/codex` | Yes: it listed the six cloud tools (codex-cli 0.166.0) |
+| opencode | `cloudy-cloud opencode` | `npm install -g opencode-ai` | Yes |
+| pi | `cloudy-cloud pi` | Optional: without `pi` on your PATH it runs a pinned copy through `npx` | The MCP connection only, no model turn |
+| free-pi | `cloudy-cloud free-pi` | Optional: without `free-pi-cli` on your PATH it runs a pinned copy through `npx` | `mcp list` only |
+
+Arguments after the subcommand go to that agent, for example `cloudy-cloud codex exec` uses Codex's non-interactive mode. Codex, opencode and pi cannot receive MCP task results, so the session calls `cloud_agent_wait` to get results; there is no `/tasks` view. In opencode the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on. free-pi writes a `cloud` entry into `~/.free-pi/agent/mcp.json` each time it starts. free-pi can only be a main session, not a worker.
+
+Which agent a *worker* runs is separate from your main session: it is set by the `profile` argument of `cloud_agent`. Any main session can start any kind of worker. See [Models and keys](https://cloudycloud.tech/docs/models.html#agents).
+
 ## Your first subagent
 
-Ask in plain language. This prompt is the runbook's check that everything works:
+These steps are the same on every main session. Ask in plain language. This prompt is the runbook's check that everything works:
 
 ```
 use a subagent to run hostname, write it to proof.txt, commit and push, and tell me the result

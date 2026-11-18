@@ -30,7 +30,15 @@ The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud 
 
 ### Profile
 
-A named setting that runs a worker on another model, such as `glm`, `deepseek` or `openrouter`. With no profile, a subagent runs Claude.
+A named setting that runs a worker on another model or another agent, such as `glm`, `pi-glm`, `omp-glm`, `codex`, `opencode-glm` or `openrouter`. With no profile, a subagent runs Claude Code. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+
+### Harness
+
+The coding agent that runs on a worker machine: `claude` (Claude Code), `pi`, `omp` (oh-my-pi), `codex` or `opencode`. A profile sets it, and `"harness"` sets it in `profiles.json`.
+
+### Main session (host)
+
+The coding agent you talk to, started with `cloudy-cloud` (Claude Code), `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. It gets the `cloud_agent` tools. It is separate from the harness of the workers it starts.
 
 ### MCP sync
 

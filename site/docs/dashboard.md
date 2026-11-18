@@ -6,6 +6,8 @@ Source: https://cloudycloud.tech/docs/dashboard.html
 
 The dashboard is a read-only web page on your own computer that shows your cloud agents and the messages between them and your session. To look at an app a cloud agent is running, use `cloudy-cloud open`.
 
+The dashboard and `cloudy-cloud open` work for every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode), because they read the event log that the cloud tools write. The Model column shows the profile name for a worker on another agent.
+
 ## Start the dashboard
 
 ```

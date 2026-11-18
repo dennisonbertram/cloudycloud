@@ -4,12 +4,15 @@ This covers setting up `cloudy-cloud`, using it, operating it day to day, and fi
 
 ## 1. What you need
 
+This runbook applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Steps that differ by agent say so. Commands that start a session use Claude Code unless a section says otherwise.
+
 | Item | Notes |
 | --- | --- |
 | macOS or Linux | Tested on macOS. |
 | `git` and Node.js 20 or later | Check with `git --version` and `node --version`. |
-| [Claude Code](https://code.claude.com) | Check with `claude --version`. You must be signed in. |
-| A Claude subscription or Anthropic API key | Subagents use a long-lived token from `claude setup-token`. An API key works too but is billed separately. |
+| [Claude Code](https://code.claude.com) | For the default main session. Check with `claude --version`. You must be signed in. |
+| Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. These need no Claude token. |
+| A credential for each worker agent you use | Claude Code workers (the default): a long-lived token from `claude setup-token`, or an Anthropic API key billed separately. pi, oh-my-pi and opencode workers: `PARTICLE_API_KEY`. OpenRouter profiles: `OPENROUTER_API_KEY`. Codex workers: `OPENAI_API_KEY` or a ChatGPT login file (section 2.5). |
 | An [Instabox](https://instabox.sh) account | **Free plan:** too small for more than a few subagents at once. **Paid plan:** needed for swarms. |
 | A GitHub repository you can push to | Subagents push their branches there. |
 
@@ -85,7 +88,37 @@ cloudy-cloud
 
 Setup happens only in `install.sh`. If a key is missing, `cloudy-cloud` prints `cloudy-cloud is not set up yet (...). Run: cloudy-cloud setup`. In a terminal it also asks `Run setup now? [Y/n]` and continues into the session after setup; without a terminal it exits 1.
 
-### 2.5 MCP servers for subagents (optional)
+### 2.5 Other agents (optional)
+
+**Main session.** Run one of these from inside your repo instead of `cloudy-cloud`. Arguments after the subcommand go to that agent. Each needs only the Instabox key from setup, not a Claude token. They add the cloud tools for that session only and do not edit the agent's own config. Codex, opencode and pi cannot receive MCP task results, so the session uses `cloud_agent_wait`.
+
+```sh
+cloudy-cloud codex
+cloudy-cloud opencode
+cloudy-cloud pi
+cloudy-cloud free-pi
+```
+
+Checked live: Codex (codex-cli 0.166.0 listed the six cloud tools) and opencode. pi: the MCP connection only, no model turn. free-pi: `mcp list` only; it writes the `cloud` entry into `~/.free-pi/agent/mcp.json` on each start. free-pi cannot be a worker, because free-pi-cli has no headless mode and its terms forbid scripted use. In opencode the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on.
+
+**Worker profiles.** Pass `profile` to `cloud_agent` (or ask "use a codex subagent"). Coordinators refuse pi, omp, Codex and opencode profiles.
+
+| Agent | Profiles | Credential |
+| --- | --- | --- |
+| Claude Code (default) | no profile; `glm`, `deepseek`, `particle`; `openrouter` (pass `model`) | Claude token or API key; the profiles use `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` |
+| pi | `pi-glm`, `pi-deepseek`, `pi-particle` | `PARTICLE_API_KEY` |
+| oh-my-pi | `omp-glm`, `omp-deepseek`, `omp-particle` | `PARTICLE_API_KEY` |
+| Codex | `codex`, `codex-chatgpt`, `codex-openrouter` (pass `model`) | `OPENAI_API_KEY`, the ChatGPT login file, `OPENROUTER_API_KEY` |
+| opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` (pass `model`) | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` |
+
+Setup asks for `PARTICLE_API_KEY` and `OPENROUTER_API_KEY`. It does not ask for the Codex credentials. Set them by hand:
+
+- `codex`: on Instabox run `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`. On a self-hosted machine add the line `OPENAI_API_KEY=...` to that file.
+- `codex-chatgpt`: run `codex login` and choose "Sign in with ChatGPT", then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. The file must have mode 600. It is copied to the worker machine as a file, even on Instabox. If a worker reports a 401, repeat both commands.
+
+Not proven live: no Codex or opencode worker has run on a real Instabox machine. Both have passed tests against a fake sandbox only.
+
+### 2.6 MCP servers for subagents (optional)
 
 By default a subagent has no MCP servers. To give it some, copy them from your Claude Code settings, one at a time:
 
@@ -97,7 +130,7 @@ By default a subagent has no MCP servers. To give it some, copy them from your C
    ```
 
    You must be signed in with `npx --yes instabox@latest login`. The Instabox API key in your cloudy-cloud config fails here with `missing_scope: workspace:admin`. Always keep `--host`: without it, Instabox would add the token to a request to any host.
-3. Start subagents as usual. The reply ends with `MCP servers: notion`, or `MCP servers: notion, context7 (failed: linear)` when a server did not connect. For `pi` and `omp` workers the line is `MCP servers: a, b`, the servers delivered; it does not confirm that they connected. `cloud_agent_list` and the dashboard also show the names.
+3. Start subagents as usual. The reply ends with `MCP servers: notion`, or `MCP servers: notion, context7 (failed: linear)` when a server did not connect. For pi, omp, Codex and opencode workers the line is `MCP servers: a, b`, the servers delivered; it does not confirm that they connected. `cloud_agent_list` and the dashboard also show the names.
 
 Other commands: `cloudy-cloud mcp ls` lists what is saved and which secrets it needs, and `cloudy-cloud mcp rm <name>` removes a server (the Instabox secret stays; remove it with `npx --yes instabox@latest secrets rm MCP_<NAME>_TOKEN`). The file is read every time a subagent starts, so no restart is needed.
 
@@ -179,6 +212,11 @@ git show FETCH_HEAD:proof.txt
 | You changed a key but the session still uses the old one | `cloudy-cloud` reads keys once at start. Restart it. |
 | `cloudy-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
 | `The first push to origin cloudy-cloud/<id> failed` | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `cloudy-cloud setup` and replace the GitHub token, and check the token's repository list. |
+| `the codex command was not found` or `opencode is not installed` | Install the main-session agent: `npm install -g @openai/codex` or `npm install -g opencode-ai`. |
+| `Profile NAME needs KEY, which is not set` | The profile's provider key is missing (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`). Run `cloudy-cloud setup` for the first two; see section 2.5 for `OPENAI_API_KEY`. |
+| `The Codex ChatGPT login file ... was not found` | Run `codex login`, then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. |
+| `The Codex login file ... can be read by other users` | Run `chmod 600 ~/.config/cloudy-cloud/codex-auth.json`. |
+| `coordinator cannot use a pi, omp, codex or opencode profile` | Coordinators always run Claude Code. Start the coordinator without a profile; its workers can use any profile. |
 | `The Instabox secret MCP_<NAME>_TOKEN could not be attached` | The MCP token secret does not exist. Create it with `printf %s "$TOKEN" \| npx --yes instabox@latest secrets set MCP_<NAME>_TOKEN --host <host>`, signed in with `instabox login` (section 2.5). |
 | `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `cloudy-cloud setup` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
 | `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `cloudy-cloud setup` and replace the Claude token, and restart `cloudy-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
@@ -198,14 +236,14 @@ git show FETCH_HEAD:proof.txt
 
 ## 7. How it works
 
-1. **The launcher.** `bin/cloudy-cloud` starts Claude Code with three changes:
+1. **The launcher.** `bin/cloudy-cloud` starts Claude Code with three changes (`cloudy-cloud codex|opencode|pi|free-pi` start those agents with the same MCP server instead):
    - the built-in `Agent` and `Workflow` tools turned off;
    - an extra system prompt;
    - an MCP server, `src/server.mjs`, that provides the `cloud_agent_*` tools.
 2. **Starting a subagent.** `cloud_agent` takes a snapshot of your repo's tracked files, including uncommitted edits, without touching your working tree. Then:
    - it creates an Instabox machine and attaches the `GH_TOKEN` secret;
    - it uploads the snapshot and checks it out on branch `cloudy-cloud/<id>`;
-   - it pushes that branch, then runs `claude -p` in the background.
+   - it pushes that branch, then runs the worker agent in the background: `claude -p` by default, or `pi --mode json`, `omp -p --mode json`, `codex exec --json` or `opencode run --format json` for a profile.
 
    The call returns at once, because Claude Code runs MCP tools one at a time unless they're marked read-only. When the client supports MCP tasks, the call returns a task (id `cc-<agent id>-t<turn number>`, for example `cc-3f2a91bc-t2`). The server detects this from the client capabilities that Claude Code sends with each request on MCP revision 2026-07-28, and the server answers `tasks/get` and `tasks/cancel` for the task.
 3. **Getting answers.** In task mode, Claude Code polls `tasks/get` and passes on the result when the task ends. Otherwise `cloud_agent_wait`, which is read-only, collects answers. Follow-ups use `claude -p --resume <session>` on the same machine. The machine runs `claude -p --output-format stream-json --verbose`; the server reads that stream as it arrives to count tool uses and tokens and to find the current step.

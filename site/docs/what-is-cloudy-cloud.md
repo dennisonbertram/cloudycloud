@@ -4,7 +4,9 @@
 
 Source: https://cloudycloud.tech/docs/what-is-cloudy-cloud.html
 
-Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.
+Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
+
+It works with Claude Code, Codex, opencode, pi and free-pi as your main session, and Claude Code, pi, oh-my-pi, Codex and opencode as the agent that runs on each cloud machine. Claude Code is the default for both. free-pi can only be a main session.
 
 ## What is Cloudy Cloud?
 

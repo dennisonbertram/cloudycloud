@@ -4,7 +4,9 @@
 
 Source: https://cloudycloud.tech/docs/fleets.html
 
-A coordinator is a Claude session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
+A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
+
+A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. This page was written for Claude Code coordinators; whether a coordinator can start `codex-chatgpt` workers (which need your ChatGPT login file) has not been checked.
 
 ## When to use a coordinator
 
@@ -122,7 +124,7 @@ For large jobs, the top coordinator gives each area to a sub-coordinator with it
 
 For waves, merge wave 1 into the trunk and push it before you start wave 2. Never start a dependent worker before its dependency is merged and pushed.
 
-Keep coordinators on Claude, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See [Models and keys](https://cloudycloud.tech/docs/models.html). Check their branches more carefully.
+Keep coordinators on Claude Code, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See [Models and keys](https://cloudycloud.tech/docs/models.html). Check their branches more carefully.
 
 ## Limits and costs to watch
 

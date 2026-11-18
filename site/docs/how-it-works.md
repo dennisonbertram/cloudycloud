@@ -4,16 +4,18 @@
 
 Source: https://cloudycloud.tech/docs/how-it-works.html
 
-The `cloudy-cloud` command starts Claude Code with its built-in subagents turned off. Every subagent runs on its own cloud machine and pushes its work to a branch on GitHub.
+The `cloudy-cloud` command starts your coding agent with its built-in subagents turned off. Every subagent runs on its own cloud machine and pushes its work to a branch on GitHub.
+
+This page applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Differences are marked.
 
 ## One subagent, start to finish
 
-1. **You start `cloudy-cloud` in a git repo.** It launches Claude Code with the built-in `Agent` and `Workflow` tools disabled, an extra system prompt, and an MCP server that provides the `cloud_agent` tools. The system prompt tells Claude to use `cloud_agent` for anything that would have used a subagent.
+1. **You start `cloudy-cloud` in a git repo.** It launches Claude Code with the built-in `Agent` and `Workflow` tools disabled, an extra system prompt, and an MCP server that provides the `cloud_agent` tools. The system prompt tells Claude to use `cloud_agent` for anything that would have used a subagent. `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` and `cloudy-cloud free-pi` do the same for those agents with the same MCP server, added for that session only. Codex, opencode and pi cannot receive MCP task results, so they use `cloud_agent_wait`.
 2. **Claude calls `cloud_agent`** with a prompt and a short description. The call returns at once while the machine starts.
 3. **A snapshot of your repo is made.** It holds the committed files plus your uncommitted edits to tracked files. It is made without touching your working tree or index.
 4. **A machine is created** from the Instabox `agent-browser` image, and the GitHub token is attached to it as a proxy secret (see Secrets).
 5. **The snapshot is uploaded** as a git bundle and checked out on a new branch, `cloudy-cloud/<id>`. The branch is pushed to your `origin` remote right away. If the bundle is over about 9 MB, only the commits GitHub does not already have are uploaded. If that is still too large, the start fails and asks you to push the branch first.
-6. **Claude runs on the machine** with `claude -p` in the repo folder. The subagent is told to commit after each meaningful step and to push to its own branch only.
+6. **The worker agent runs on the machine** in the repo folder. With no profile that is `claude -p`. A profile can pick another agent: `pi --mode json` (pi profiles), `omp -p --mode json` (oh-my-pi), `codex exec --json` (Codex) or `opencode run --format json` (opencode). Each is installed on the machine from a pinned version when it is not part of the image. The subagent is told to commit after each meaningful step and to push to its own branch only.
 7. **After the turn, the tool pushes once more** in case the subagent forgot (and retries once if GitHub rejects it). It never commits for the subagent. If files were left uncommitted, the reply lists them.
 8. **The result comes back** with the branch name and commit, and token and tool-use totals.
 
@@ -65,11 +67,11 @@ Your plan's machine limit still caps how many run at the same time. The rest wai
 ## What reaches the machine
 
 - **GitHub token:** not sent to the machine. The machine gets a placeholder named `GH_TOKEN`, and Instabox's proxy swaps in the real token for requests to `github.com` and `api.github.com`.
-- **Claude credential:** sent to the machine, as `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. For a subagent on another model, the provider key for that profile is sent instead of your Claude credential.
+- **Claude credential:** sent to the machine, as `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, for Claude Code workers with no profile. For a subagent on a profile, the provider key for that profile is sent instead of your Claude credential: `PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The `codex-chatgpt` profile sends your ChatGPT login file (`codex-auth.json`) to the machine as a file, even on Instabox.
 - **MCP server tokens:** only if you added a server that needs one. The token stays in Instabox as a secret named `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you chose. With `mcp add --allow-literal` the real value is on the machine instead.
 - **Instabox API key:** not sent to the machine. It stays in your config file and the local server.
 
-> Warning: Each machine runs Claude with permission checks off, and the Claude credential is on it. A prompt injection on the machine could misuse or leak that credential. A subagent can also push to any branch the GitHub token can reach, so protect your main branch.
+> Warning: Each machine runs its agent with permission checks off (Codex runs with `--dangerously-bypass-approvals-and-sandbox`), and the worker's credential is on it. A prompt injection on the machine could misuse or leak that credential. A subagent can also push to any branch the GitHub token can reach, so protect your main branch.
 
 Output shown to you is scrubbed of known key values. See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troubleshooting.html) for more.
 

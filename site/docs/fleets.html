@@ -73,7 +73,9 @@
   <main id="content" tabindex="-1">
     <article>
 <h1>Coordinators and fleets</h1>
-<p class="lede">A coordinator is a Claude session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
+<p class="lede">A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
+
+<p>A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through <code>profile</code>. This page was written for Claude Code coordinators; whether a coordinator can start <code>codex-chatgpt</code> workers (which need your ChatGPT login file) has not been checked.</p>
 
 <h2 id="when-to-use-one">When to use a coordinator</h2>
 <p>For a few independent tasks, start plain cloud agents from your own session. You wait for them and review their branches yourself.</p>
@@ -158,7 +160,7 @@ git push origin fleet/&lt;topic&gt;</code></pre></li>
 <h3 id="sub-coordinators">Sub-coordinators and waves</h3>
 <p>For large jobs, the top coordinator gives each area to a sub-coordinator with its own sub-trunk <code>fleet/&lt;topic&gt;/&lt;area&gt;</code>. Each sub-coordinator merges its workers, tests its area, and reports. The top coordinator merges the sub-trunks and opens the PR. Git cannot hold both <code>fleet/x</code> and <code>fleet/x/y</code>, so if that happens name them <code>fleet/&lt;topic&gt;-&lt;area&gt;</code>.</p>
 <p>For waves, merge wave 1 into the trunk and push it before you start wave 2. Never start a dependent worker before its dependency is merged and pushed.</p>
-<p>Keep coordinators on Claude, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See <a href="models.html">Models and keys</a>. Check their branches more carefully.</p>
+<p>Keep coordinators on Claude Code, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See <a href="models.html">Models and keys</a>. Check their branches more carefully.</p>
 
 <h2 id="limits">Limits and costs to watch</h2>
 <table>
