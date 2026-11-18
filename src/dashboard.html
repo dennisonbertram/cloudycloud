@@ -52,6 +52,8 @@
   .live.off .sd { background: var(--s-failed); animation: none; }
   .live.wait .sd { background: var(--s-queued); animation: none; }
   .tag { font-size: 11px; font-weight: 500; line-height: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-3); }
+  .tag.ok { color: var(--t-running); } .tag.warn { color: var(--t-starting); }
+  a.tag { text-decoration: none; } a.tag:hover { color: var(--text); }
   .toggle { display: inline-flex; padding: 2px; gap: 2px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--border); }
   .toggle button { height: 24px; padding: 0 12px; border-radius: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); border: 1px solid transparent; }
   .toggle button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); box-shadow: var(--pop); }
@@ -299,6 +301,18 @@
   const kindBase = (b) => (b.machineKind || '').split(':')[0];
   const label = (b) => b.kind === 'coordinator' ? 'coordinator' : b.profile || (b.model ? b.model.replace(/^claude-/, '') : 'claude');
   const harnessTag = (b) => b.harness ? h('span', { class: 'tag', title: 'The harness this worker runs', text: b.harness }) : null;
+  const GH_PULL = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/(\d{1,10})$/;
+  const autofixTag = (b) => {
+    const f = b.autofix;
+    if (!f || typeof f.state !== 'string') return null;
+    const n = f.round != null ? (f.cap != null ? ' ' + f.round + ' of ' + f.cap : ' ' + f.round) : '';
+    const cls = f.state === 'clean' ? ' ok' : f.state === 'not clean' ? ' warn' : '';
+    return h('span', { class: 'tag' + cls, title: 'Autofix status on the pull request', text: 'Autofix' + n + ' · ' + f.state });
+  };
+  const prLink = (b) => {
+    const m = GH_PULL.exec(b.autofix?.pr ?? '');
+    return m && h('a', { class: 'tag', href: b.autofix.pr, target: '_blank', rel: 'noopener noreferrer', title: 'Open the pull request', text: 'PR #' + m[1], onclick: (e) => e.stopPropagation() });
+  };
   const titleOf = (b) => b.title || b.description || '(no description)';
   const stamp = (b) => b.lastActivity || b.startedAt;
 
@@ -346,6 +360,7 @@
     if (b.status !== 'running') parts.push(h('span', { class: 'st ' + b.status, text: statusWord(b.status) }));
     parts.push(h('span', { class: 'mono', text: b.id }), h('span', { class: 'mono', text: label(b) }));
     const ht = harnessTag(b); if (ht) parts.push(ht);
+    const af = autofixTag(b); if (af) { parts.push(af); const pr = prLink(b); if (pr) parts.push(pr); }
     const kb = kindBadge(b); if (kb) parts.push(h('span', { class: 'tag', title: 'Machine kind', text: kb }));
     if (kids) parts.push(h('span', { text: kids.length + (kids.length === 1 ? ' worker' : ' workers') }));
     else if (lvl === 1 && b.startedBy && b.startedBy !== 'this session') parts.push(h('span', { text: 'started by ' + b.startedBy }));
@@ -683,6 +698,7 @@
         prop('Model', b.model && h('span', { class: 'mono', text: b.model }), !b.model && b.profile && h('span', { text: b.profile })),
         prop('Started', b.startedAt && h('span', { title: new Date(b.startedAt).toLocaleString() }, live('ago', b.startedAt))),
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') }), harnessTag(b)),
+        autofixTag(b) && prop('Autofix', autofixTag(b), prLink(b)),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
         prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) })),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
@@ -847,11 +863,11 @@
       tick(); return;
     }
     if (!main.contains($('rail'))) { S.sigs = {}; main.replaceChildren($('rail'), $('panel')); }
-    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.harness, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b)])]);
+    const r = sig(['r', S.sel, [...S.collapsed], boxes.map((b) => [b.id, b.status, b.waiting, b.fatal, b.description, b.title, b.note, b.parent, b.startedBy, b.lastActivity, b.deadline, soon(b), needsYou(b), b.machineKind, b.harness, b.autofix, b.usage?.cpuPct, b.usage?.memUsed, b.usage?.at, isQuiet(b)])]);
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.autofix, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();

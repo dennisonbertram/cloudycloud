@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
 import { buildState, createHandler, isQuiet, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
-import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
+import { autofixOf, createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 import { planSnapshot, planSettled } from '../src/machine.mjs';
@@ -1202,4 +1202,48 @@ test('the agent event carries the harness, the demo shows all five, and the page
   for (const harness of ['claude', 'pi', 'omp', 'codex', 'opencode']) assert.ok(have.has(harness), harness);
   const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
   assert.ok((html.match(/harnessTag\(b\)/g) || []).length >= 2, 'rail row and panel both use the tag');
+});
+
+// ---- autofix status per agent ----
+test('autofixOf reads the lines the server writes; fields only when known; the last match wins', () => {
+  assert.deepEqual(autofixOf('autofix 0/3: opening the pull request'), { state: 'running', round: 0, cap: 3 });
+  assert.deepEqual(autofixOf('autofix 2/3: worker is fixing'), { state: 'running', round: 2, cap: 3 });
+  const clean = 'Autofix: pull request https://github.com/acme/widgets/pull/12 is clean (checks pass, no new review comments, no merge conflicts) after 1 fix round.';
+  assert.deepEqual(autofixOf(clean), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/12' });
+  const dirty = 'Autofix: pull request https://github.com/acme/widgets/pull/9 is NOT clean after 3 fix rounds (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=3). Still failing:\n- Failed check "lint"';
+  assert.deepEqual(autofixOf(dirty), { state: 'not clean', round: 3, cap: 3, pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: checks on https://github.com/acme/widgets/pull/9 were still running after 30 minutes.'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: the fix turn failed. Still failing on https://github.com/acme/widgets/pull/9:'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: gh could not create a pull request. gh said: nope'), { state: 'stopped' });
+  assert.deepEqual(autofixOf('Autofix: pull request https://github.com/acme/widgets/pull/9 could not be confirmed clean after 2 fix rounds: the inline review comments could not be read.'), { state: 'stopped', round: 2, pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix: pull request https://github.com/acme/widgets/pull/9 could not be confirmed clean: GitHub shows it at commit abc1234 instead of the pushed def5678.'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.equal(autofixOf('nothing about autofix here'), undefined);
+  assert.equal(autofixOf('autofixing 1/3: not the prefix'), undefined);
+  assert.equal(autofixOf('Autofix: pull request https://evil.example/acme/widgets/pull/9 is clean (x) after 0 fix rounds.').pr, undefined);
+  assert.equal(autofixOf('Autofix: pull request https://github.com/acme/widgets/pulls/9 is clean (x) after 0 fix rounds.').pr, undefined);
+  const last = 'autofix 1/3: waiting for checks\nAutofix: pull request https://github.com/acme/widgets/pull/2 is clean (x) after 1 fix round.';
+  assert.deepEqual(autofixOf(last), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/2' });
+});
+
+test('foldAgents sets a.autofix from reply and progress text; demo has a clean and a not-clean agent', () => {
+  const ev = [
+    { type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker' },
+    { type: 'progress', id: 'a1', t: 2, text: 'autofix 0/3: waiting for checks' },
+    { type: 'reply', id: 'a1', t: 3, text: 'Autofix: pull request https://github.com/acme/widgets/pull/5 is clean (checks pass, no new review comments, no merge conflicts) after 0 fix rounds.' },
+  ];
+  const [a] = foldAgents(ev, { alive: () => true });
+  assert.deepEqual(a.autofix, { state: 'clean', round: 0, pr: 'https://github.com/acme/widgets/pull/5' });
+  const d = demoState();
+  assert.equal(d.boxes.find((b) => b.id === 'b42f0d17').autofix.state, 'clean');
+  assert.match(d.boxes.find((b) => b.id === 'b42f0d17').autofix.pr, /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/);
+  assert.equal(d.boxes.find((b) => b.id === 'a7716be4').autofix.state, 'not clean');
+});
+
+test('the page shows the autofix tag in the row and the panel, and links only a valid GitHub pull URL', () => {
+  assert.match(PAGE, /'Autofix' \+/);
+  assert.match(PAGE, /target: '_blank'/);
+  assert.match(PAGE, /rel: 'noopener noreferrer'/);
+  assert.match(PAGE, /'PR #'/);
+  assert.ok((PAGE.match(/autofixTag\(b\)/g) || []).length >= 2, 'row and panel both use the tag');
+  assert.match(PAGE, /github\\\.com\\\//); // the page's GitHub pull-URL regex
 });

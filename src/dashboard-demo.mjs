@@ -1,5 +1,5 @@
 // Sample data for `cloudy-cloud dashboard --demo`. Nothing here is real.
-import { pushOf } from './events.mjs';
+import { autofixOf, pushOf } from './events.mjs';
 import { isQuiet } from './dashboard.mjs';
 
 const M = 60_000, H = 60 * M;
@@ -27,9 +27,10 @@ const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { 
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const lastPush = (msgs) => { const r = msgs.findLast((m) => m.kind === 'reply'), p = r && pushOf(r.text); return p ? { push: { ...p, t: r.t } } : {}; };
+  const lastAutofix = (msgs) => { let f; for (const m of msgs) if (m.kind !== 'out') f = autofixOf(m.text) ?? f; return f ? { autofix: f } : {}; };
   const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33']); // the demo coordinator's workers; the rest were started by this session
   const box = (o) => ({
-    kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
+    kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), ...lastAutofix(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
     title: o.description, titleSource: 'log', source: 'log', turns: o.messages.filter((m) => m.kind === 'out').length,
     labels: { purpose: 'cloudy-cloud', ...(o.machineKind && { kind: o.machineKind }), role: 'worker', profile: o.profile ?? 'claude', parent: kids.has(o.id) ? 'fleet-main' : 'demo-session', agent: o.id, description: o.description },
     ...(kids.has(o.id) && { parent: 'fleet-main' }), startedBy: kids.has(o.id) ? 'fleet-main' : 'this session',
@@ -58,7 +59,7 @@ export function demoState(now = Date.now()) {
         { t: ago(41 * M), kind: 'reply', text: 'Two problems.\n\n1. The idempotency check reads processedEvents, then writes it in a separate query (lines 84-97). Two deliveries arriving together both pass the check.\n2. A failed handler still marks the event as processed, so Stripe\'s retry is ignored.\n\nPushed to origin cloudy-cloud/b42f0d17 at 3fa9c01. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 2 tool uses, 6.8k in / 0.9k out tokens, 41s' },
         { t: ago(30 * M), kind: 'out', text: 'Fix problem 1 only, with a unique constraint and an insert-or-ignore. Keep the change small.' },
         { t: ago(26 * M), kind: 'progress', text: 'Edit src/billing/webhook.ts' },
-        { t: ago(14 * M), kind: 'reply', text: 'Done. The event id is now inserted first; a duplicate insert returns early. Added a migration and one test that sends the same event twice.\n\nPushed to origin cloudy-cloud/b42f0d17 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 5 tool uses, 14.2k in / 1.7k out tokens, 3m 12s' },
+        { t: ago(14 * M), kind: 'reply', text: 'Done. The event id is now inserted first; a duplicate insert returns early. Added a migration and one test that sends the same event twice.\n\nPushed to origin cloudy-cloud/b42f0d17 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 5 tool uses, 14.2k in / 1.7k out tokens, 3m 12s\n\nAutofix: pull request https://github.com/acme/widgets/pull/42 is clean (checks pass, no new review comments, no merge conflicts) after 1 fix round.' },
       ],
     }),
     box({
@@ -85,7 +86,7 @@ export function demoState(now = Date.now()) {
       startedAt: ago(5 * H), lastActivity: ago(4.2 * H), stoppedAt: ago(4.2 * H),
       messages: [
         { t: ago(5 * H), kind: 'out', text: 'Read the commits since v2.3.0 and draft CHANGELOG.md for 2.4 in the existing style.' },
-        { t: ago(4.5 * H), kind: 'reply', text: 'CHANGELOG.md has a new 2.4 section with 14 entries, grouped as Added, Changed and Fixed.\n\nPushed to origin cloudy-cloud/a7716be4 at 1c80e55. Fetch with: git fetch origin cloudy-cloud/a7716be4.\nModel: claude-sonnet-5-5\nTotal: 7 tool uses, 22.5k in / 2.4k out tokens, 4m 50s' },
+        { t: ago(4.5 * H), kind: 'reply', text: 'CHANGELOG.md has a new 2.4 section with 14 entries, grouped as Added, Changed and Fixed.\n\nPushed to origin cloudy-cloud/a7716be4 at 1c80e55. Fetch with: git fetch origin cloudy-cloud/a7716be4.\nModel: claude-sonnet-5-5\nTotal: 7 tool uses, 22.5k in / 2.4k out tokens, 4m 50s\n\nAutofix: pull request https://github.com/acme/widgets/pull/43 is NOT clean after 3 fix rounds (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=3). Still failing:\n- Failed check "lint"' },
       ],
     }),
     box({

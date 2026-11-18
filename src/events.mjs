@@ -73,6 +73,25 @@ export function pushOf(text) {
   }
 }
 
+// A GitHub pull request URL, the only PR link the autofix lines may carry.
+const GH_PULL = /https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}(?![\d/])/;
+// The autofix progress and result lines run-subagent.mjs writes (progress "autofix N/CAP: <note>" and the reply's
+// "Autofix: ..." / "Autofix stopped: ..." lines); the last matching line wins.
+// Returns { state: 'running'|'clean'|'not clean'|'stopped', round?, cap?, pr? } — fields only when known — or undefined.
+export function autofixOf(text) {
+  let out;
+  for (const line of String(text).split('\n')) {
+    const pr = GH_PULL.exec(line)?.[0];
+    let m;
+    if ((m = /^autofix (\d+)\/(\d+): /.exec(line))) out = { state: 'running', round: Number(m[1]), cap: Number(m[2]) };
+    else if ((m = /^Autofix: pull request \S+ is clean .+ after (\d+) fix rounds?\./.exec(line))) out = { state: 'clean', round: Number(m[1]), ...(pr && { pr }) };
+    else if ((m = /^Autofix: pull request \S+ is NOT clean after (\d+) fix rounds? \(the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=(\d+)\)/.exec(line))) out = { state: 'not clean', round: Number(m[1]), cap: Number(m[2]), ...(pr && { pr }) };
+    else if ((m = /^Autofix: pull request \S+ could not be confirmed clean(?: after (\d+) fix rounds?)?/.exec(line))) out = { state: 'stopped', ...(m[1] !== undefined && { round: Number(m[1]) }), ...(pr && { pr }) };
+    else if (line.startsWith('Autofix stopped: ')) out = { state: 'stopped', ...(pr && { pr }) };
+  }
+  return out;
+}
+
 // Folds events into one record per agent: { id, description, status, profile, role, model, branch, machine, startedAt,
 // lastActivity, deadline, stoppedAt, push: {sha, branch, t} | {failed, t} from the last reply, messages: [{t, kind: out|reply|progress, text, error?}] }.
 // An agent whose server process has died while it looked active is shown as stopped (the reaper deletes its machine).
@@ -95,8 +114,8 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
     } else if (e.type === 'message') { a.turns = (a.turns ?? 0) + 1; a.messages.push({ t: e.t, kind: 'out', text: e.text }); } // `turns` counts every message; `messages` keeps the last 300
-    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; }
-    else if (e.type === 'progress') a.messages.push({ t: e.t, kind: 'progress', text: e.text });
+    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; const f = autofixOf(e.text); if (f) a.autofix = f; }
+    else if (e.type === 'progress') { a.messages.push({ t: e.t, kind: 'progress', text: e.text }); const f = autofixOf(e.text); if (f) a.autofix = f; }
   }
   for (const a of agents.values()) {
     if (ACTIVE.has(a.status) && a.pid && !alive(a.pid)) { a.status = 'stopped'; a.stoppedAt = a.lastActivity; a.sessionEnded = true; }
