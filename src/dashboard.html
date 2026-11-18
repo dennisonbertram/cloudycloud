@@ -42,7 +42,7 @@
   .brand { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1; white-space: nowrap; }
   .brand svg { height: 16px; width: 23px; }
   .brand b { font-weight: 600; }
-  .summary .spend { color: var(--text-3); }
+  .summary .spend { min-width: 0; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .summary { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: 8px; font-size: 12px; color: var(--text-2); }
   .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .stat b { font-weight: 500; color: var(--text); }
@@ -222,6 +222,7 @@
     .back { display: inline-block; }
     .panel-head, .seclabel, .thread, .subbar { padding-left: 16px; padding-right: 16px; }
     .badge { margin-left: 0; }
+    .l2 { white-space: normal; overflow-wrap: anywhere; }
     .props { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .props.cmds { grid-template-columns: minmax(0, 1fr); }
     .panel { overflow-y: auto; } /* the whole panel scrolls once; the timeline keeps a fixed height instead of being squeezed */
@@ -381,6 +382,8 @@
 
   const today = (b) => (b.stoppedAt || b.lastActivity || 0) >= new Date().setHours(0, 0, 0, 0);
   const needsYou = (b) => b.status === 'idle' || !!b.waiting || (b.status === 'failed' && today(b));
+  // One unit for the header chip and the group heading: agents, at any depth (a waiting worker counts even nested under its coordinator).
+  const needsYouCount = (boxes) => boxes.filter(needsYou).length;
   // A coordinator is grouped by its workers too, so a worker that needs you is never hidden under a closed coordinator.
   const fam = (f) => (b) => f(b) || (S.kids[b.id] || []).some(f);
   const groupsOf = (boxes) => { const need = fam(needsYou), act = fam(active); return [['Needs you', boxes.filter(need)], ['Active', boxes.filter((b) => !need(b) && act(b))], ['Finished', boxes.filter((b) => !need(b) && !act(b))]].filter(([, l]) => l.length); };
@@ -396,7 +399,7 @@
     const top = rail.scrollTop;
     const wrap = h('div', { role: 'tree', 'aria-label': 'Agent list' });
     wrap.addEventListener('keydown', listKeys);
-    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, list.length), list.flatMap((b) => [row(b), ...(S.kids[b.id] && !S.collapsed.has(b.id) ? S.kids[b.id].map((c) => row(c, 2)) : [])])));
+    for (const [name, list] of groupsOf(boxes)) wrap.append(h('div', { role: 'group', 'aria-label': name }, grp(name, name === 'Needs you' ? needsYouCount(list.flatMap((b) => [b, ...(S.kids[b.id] || [])])) : list.length), list.flatMap((b) => [row(b), ...(S.kids[b.id] && !S.collapsed.has(b.id) ? S.kids[b.id].map((c) => row(c, 2)) : [])])));
     rail.replaceChildren(wrap);
     rail.scrollTop = top;
     if (focusId) (wrap.querySelector('[data-id="' + CSS.escape(focusId) + '"]') || wrap.querySelector('.row[tabindex="0"]'))?.focus({ preventScroll: true });
@@ -805,15 +808,15 @@
   // Same sentence as usageLine in src/machine.mjs (a test keeps them equal); null when the figures are missing.
   const usageSentence = (u) => { const n = (x) => typeof x === 'number' && isFinite(x), m = (x) => '$' + x.toFixed(2); if (!u || !n(u.costUSD)) return null; if (!n(u.allowanceUSD)) return null; const inc = u.allowanceUSD; return 'Instabox this month: ' + (!inc ? m(u.costUSD) + ' used (pay as you go)' : n(u.overageUSD) && u.overageUSD > 0 ? m(u.costUSD) + ' used, ' + m(inc) + ' included, ' + m(u.overageUSD) + ' beyond it (pay as you go)' : m(u.costUSD) + ' of ' + m(inc) + ' included used'); };
 
-  // Counts for the top bar and the tab title; returns the two the title needs.
+  // Counts for the top bar and the tab title; returns the one the title needs.
   function summary(boxes) {
     const c = (f) => boxes.filter(f).length;
-    const failed = c((b) => b.status === 'failed' && today(b)), idle = c((b) => b.status === 'idle');
-    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['idle', 'Waiting for you', idle], ['failed', 'Failed', failed]].filter((i) => i[2]);
+    const need = needsYouCount(boxes);
+    const items = [['running', 'Running', c((b) => b.status === 'running')], ['starting', 'Starting', c((b) => b.status === 'starting' || b.status === 'queued')], ['failed', 'Needs you', need]].filter((i) => i[2]);
     items.push(['stopped', 'Finished today', c((b) => b.status === 'stopped' && today(b))]);
     const spend = usageSentence(S.data && S.data.usage);
-    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)).concat(spend ? [h('span', { class: 'spend', text: spend })] : []));
-    return { failed, idle };
+    put($('summary'), items.map(([st, name, n]) => h('span', { class: 'stat' + (st === 'failed' ? ' failed' : '') }, h('span', { class: 'sd ' + st, style: 'animation:none' }), h('b', { text: String(n) }), name)).concat(spend ? [h('span', { class: 'spend', text: spend, title: spend })] : []));
+    return { need };
   }
 
   function banner() {
@@ -832,7 +835,7 @@
     const d = S.data, main = $('main');
     banner();
     $('demo').hidden = !(d && d.demo);
-    const setTitle = (n) => { const parts = []; if (n?.failed) parts.push(n.failed + ' failed'); if (n?.idle) parts.push(n.idle + ' waiting for you'); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
+    const setTitle = (n) => { const parts = []; if (n?.need) parts.push(n.need + (n.need === 1 ? ' needs you' : ' need you')); document.title = ({ down: 'Offline · ', auth: 'Old link · ', error: 'Error · ' }[S.net] || '') + (parts.length ? '(' + parts.join(', ') + ') ' : '') + (d && d.demo ? 'Demo · ' : '') + 'Cloudy Cloud dashboard'; };
     setTitle();
     main.classList.toggle('stale', !!d && S.net !== 'ok');
     $('v-list').setAttribute('aria-pressed', String(S.view === 'list'));

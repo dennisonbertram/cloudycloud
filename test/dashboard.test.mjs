@@ -701,6 +701,25 @@ test('the page lists a waiting coordinator under Needs you with its line and the
   assert.match(page, /coordinator attach/);
 });
 
+test('the Needs-you chip and the list heading share one count: agents at any depth, not top-level rows', () => {
+  const src = ['const today', 'const needsYou', 'const needsYouCount'].map(pageLine).join('\n');
+  const { needsYou, needsYouCount } = new Function(`${src}\nreturn { needsYou, needsYouCount };`)();
+  const t = Date.now(), boxes = [
+    { id: 'c1', status: 'running' },                                           // a coordinator row is not a needy item itself
+    { id: 'w1', status: 'idle', parent: 'c1' },                                // waiting for you, nested under c1
+    { id: 'w2', status: 'running', parent: 'c1', waiting: 'answer a prompt' }, // waiting on a prompt, nested
+    { id: 'f1', status: 'failed', lastActivity: t },                           // failed today
+    { id: 'f9', status: 'failed', lastActivity: t - 48 * 3_600_000 },          // failed days ago: does not count
+  ];
+  for (const b of boxes.slice(1, 4)) assert.ok(needsYou(b), b.id);
+  assert.ok(!needsYou(boxes[0]) && !needsYou(boxes[4]));
+  assert.equal(needsYouCount(boxes), 3);
+  assert.equal(needsYouCount(boxes.filter((b) => !b.parent)), 1, 'a row count would hide the two nested workers');
+  assert.match(PAGE, /'Needs you' \? needsYouCount/, 'the Needs-you heading counts agents with the shared function');
+  assert.match(PAGE, /'Needs you', need\]/, 'the header chip uses the same shared count');
+  assert.doesNotMatch(PAGE, /'Waiting for you', idle/, 'the old per-status chips are gone');
+});
+
 test('a fatal pane state reaches the box as waiting with fatal; the attach name is the label; a stopped coordinator drops the alert (#88)', async () => {
   const clock = { t: 100_000 }, { getState, reader, env, provider } = await coordWithLog([{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }], clock);
   reader.capturePane = async () => ({ lines: ['Not logged in \u00b7 Please run /login'], fetchedAt: clock.t });
@@ -1054,7 +1073,7 @@ test('page: list rows and fleet cards show a quiet tag from usage.quiet, fleet t
   assert.equal((PAGE.match(/quietTag\(b\)/g) || []).length >= 3, true, 'list row and fleet card use the tag');
   assert.match(PAGE, /usageLine\(b, true\)/); assert.match(PAGE, /'\/' \+ gib\(u\.memTotal\) \+ ' GiB'/);
   assert.match(PAGE, /st === 'idle' \? 'waiting for you'/);
-  assert.match(PAGE, /'Waiting for you', idle/);
+  assert.match(PAGE, /'Needs you', need\]/);
   assert.equal((PAGE.match(/isQuiet\((b|c|sb)\)\]?[,\]]/g) || []).length >= 3, true, 'the quiet state is in the rebuild signatures');
 });
 
