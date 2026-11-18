@@ -24,6 +24,8 @@ const tools = [
         size: { type: 'string', description: 'Optional machine size as VCPUSxGIB, for example 4x8 (default), 2x4 or 8x16. Sizes and cost an hour: 2x4 $0.017, 4x8 $0.034 (default), 8x16 $0.068 on every paid plan; builder adds 16x32 ($0.136); team adds 32x64 ($0.272). Your plan decides which are allowed; a size no plan lists is refused.' },
         base: { type: 'string', description: 'Optional branch name or commit SHA to start the worker from instead of the local HEAD (fetched from origin if needed). Uncommitted edits are ignored when set.' },
         subagent_type: { type: 'string', description: 'Optional Claude Code agent name, passed to claude as --agent. Only for Claude Code workers (no profile, or glm, deepseek, particle, openrouter); pi, omp, Codex and opencode workers ignore it.' },
+        issue: { type: 'string', description: 'Optional GitHub issue in this repo\'s origin: a number ("12") or a URL (https://github.com/<owner>/<repo>/issues/<n>). The issue title and body are quoted into the prompt as untrusted data, the branch is named cloudy-cloud/issue-<n>-<id>, and an autofix pull request gets "Fixes #<n>". Workers only.' },
+        preview_port: { type: 'integer', description: 'Optional port (1-65535, a digit string also works) of an app already running on the machine; after a turn that pushes, a private link is published (like cloudy-cloud open <id> <port> --share) and the result shows "Preview: <url>". Needs a provider that supports published links.' },
       },
       required: ['prompt', 'description'],
     },
