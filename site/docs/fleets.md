@@ -119,7 +119,7 @@ git push origin fleet/<topic>
 
 4. On a conflict, resolve small ones yourself, or abort the merge and ask the worker to rebase. If the tests fail after a merge, do not push it. Send the worker the failing output.
 5. When every good branch is merged and the full tests pass, open one PR from `fleet/<topic>`.
-6. Delete merged worker branches: `git push origin --delete cloudy-cloud/<id>`. Keep the branch of a failed worker until you decide what to keep.
+6. Delete merged worker branches: `git push origin --delete cloudy-cloud/<id>`, or run `cloudy-cloud branches prune --yes` to delete every empty or merged `cloudy-cloud/<id>` branch (without `--yes` it only lists them). Keep the branch of a failed worker until you decide what to keep.
 
 > Note: Do not trust a worker that says it is done. Fetch its branch, read the diff and run the tests before merging. If a worker pushed nothing, retry it with a narrower brief that names what is missing.
 

@@ -609,6 +609,15 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 
 `format` is `anthropic` or `openai`. `keyName` must be a key in your env file whose name ends in `_API_KEY`. An optional `"harness"` is `"claude"` (the default), `"pi"`, `"omp"`, `"codex"` or `"opencode"`. It picks the agent that runs on the machine. The `codex` and `opencode` harnesses need `"format": "openai"`, and `codex` needs a provider that offers the Responses API. A `codex` profile can use `"auth": "chatgpt"` instead of `keyName`. Replace `MODEL-ID` with a model id from your provider.
 
+Two more optional fields on any profile:
+
+- `"fallback"`: a list of profile names. When the profile has no key, or the provider refuses a one-token check before the machine starts, the server tries these profiles in order. The result says which profile ran. A `fallback` argument on `cloud_agent` overrides it, and `"preflight": false` on the call skips the check.
+- `"maxConcurrent"`: a positive whole number, the most agents this profile runs at once. Extra agents wait in the queue. `CLOUDY_CLOUD_PROFILE_MAX` sets the same cap for every profile that has no `maxConcurrent`.
+
+```
+{ "my-openrouter": { "format": "anthropic", "baseUrl": "https://openrouter.ai/api", "model": "MODEL-ID", "keyName": "OPENROUTER_API_KEY", "fallback": ["glm"], "maxConcurrent": 6 } }
+```
+
 ## Adding or changing keys later
 
 - Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for `OPENAI_API_KEY` when you choose codex, and does not set up the Codex login file: see The codex profiles.
@@ -734,6 +743,21 @@ Example:
 
 ```
 cloudy-cloud dashboard --port 5000 --no-open
+```
+
+### cloudy-cloud branches
+
+```
+cloudy-cloud branches prune [--yes] [--dry-run]
+```
+
+Run it inside your repository. It lists the `cloudy-cloud/<8 hex characters>` branches on origin and compares each with origin's default branch. A branch that adds no commits to the default branch (it is empty, or already merged) is marked `prune`. A branch with commits not in the default branch is marked `keep`. It never touches a branch with another name.
+
+It is a dry run: nothing is deleted unless you pass `--yes`. `--dry-run` forces a dry run even with `--yes`.
+
+```
+cloudy-cloud branches prune
+cloudy-cloud branches prune --yes
 ```
 
 ### cloudy-cloud open
@@ -904,6 +928,8 @@ In a terminal Claude Code session that supports MCP tasks, `cloud_agent` and `cl
 
 Starts a subagent in a remote sandbox on the committed and tracked files of the current repository. It does not include untracked files. The repository needs a `github.com` origin. The call returns at once while the sandbox starts and the task runs. The agent pushes its work to the origin branch `cloudy-cloud/<id>`. Nothing is copied into your local repository. The agent stays open for follow-ups until it is stopped or has been idle for 60 minutes.
 
+Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` changes the limit (see Settings), and the prompt tells the agent when its turn ends. If a turn fails or hits the limit after the agent has started, the agent stays open with its session: call `cloud_agent_message` to continue it. A worker that commits nothing pushes no branch; the result says `No changes, no branch pushed.` and autofix does not start.
+
 | Parameter | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `prompt` | string | yes | none | The full task for the subagent. |
@@ -914,6 +940,9 @@ Starts a subagent in a remote sandbox on the committed and tracked files of the 
 | `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 8), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
 | `size` | string | no | `4x8` | Machine size as VCPUSxGIB, for example `2x4`, `4x8` or `8x16`. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused. |
 | `autofix` | boolean | no | `false` | After the worker pushes, the server opens a pull request for its branch and keeps the worker fixing failed checks, review comments and merge conflicts, for at most `CLOUDY_CLOUD_AUTOFIX_ROUNDS` rounds, before the task ends. The result says whether the pull request is clean. Not for coordinators. |
+| `base` | string | no | the local `HEAD` | A branch name or a commit hash of 7 to 40 hex characters. The worker starts from it instead of your local `HEAD`; the server fetches it from origin if needed. Uncommitted edits are ignored when `base` is set. |
+| `fallback` | array of strings | no | the profile's `fallback` in `profiles.json`, else none | Profile names to try, in order, when the chosen profile has no key or the provider refuses the one-token check before the machine starts. It overrides the profile's own `fallback`. The result says which profile ran. |
+| `preflight` | boolean | no | `true` | Set `false` to skip the one-token provider check that runs before the machine is created. |
 | `subagent_type` | string | no | none | The name of an agent to run, passed to Claude Code as `--agent` (Claude Code workers only). It may contain only letters, digits and `. _ : -`. |
 
 When `~/.config/cloudy-cloud/mcp.json` holds at least one valid server, a Claude Code subagent (not a pi, omp, Codex or opencode worker) starts with `--mcp-config` for that file and `--strict-mcp-config`, so a repo's own `.mcp.json` is not loaded on the machine. pi, omp, Codex and opencode workers get the same servers in their own config files. The reply ends with an `MCP servers:` line. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
@@ -1012,12 +1041,15 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_SELF_HOSTED_CPUS` | 2 if unset | Self-hosted: CPU limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_MEMORY` | 4g if unset | Self-hosted: memory limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX` | unset | Self-hosted: `yes` means you allowed the GitHub token inside worker containers on your machine. Without it, workers do not start. |
-| `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. Each entry can set `harness` to choose the agent (`claude`, `pi`, `omp`, `codex` or `opencode`). |
+| `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. Each entry can set `harness` to choose the agent (`claude`, `pi`, `omp`, `codex` or `opencode`), `fallback` (profile names to try in order) and `maxConcurrent` (a positive whole number). |
 | `CLOUDY_CLOUD_MCP` | `~/.config/cloudy-cloud/mcp.json` | Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent. |
 | `CLOUDY_CLOUD_EVENTS` | `~/.config/cloudy-cloud/events.jsonl` | Path of the event log that the dashboard reads. Set it in the environment before you start `cloudy-cloud` and the dashboard. |
 | `CLOUDY_CLOUD_WORKER_HOURS` | 6 | Hours until the server deletes a worker or nested coordinator machine. At most 24. A value that is not a positive number uses 6. |
 | `CLOUDY_CLOUD_STARTS_PER_MIN` | 25 | The most machine starts per minute. Extra agents wait in the queue. |
 | `CLOUDY_CLOUD_MAX_INSTABOX_CALLS` | 24 | The most Instabox command and file requests that run at once. Instabox's own limit is 32. |
+| `CLOUDY_CLOUD_TURN_MINUTES` | 29 | The most minutes one agent turn may run. A whole number from 5 to the provider's machine lifetime in minutes minus 30; any other value is refused with the allowed range. The server sets `CLOUDY_CLOUD_TURN_DEADLINE` (the turn's end time) inside the worker command. You do not set it. |
+| `CLOUDY_CLOUD_PROVIDER_RETRIES` | 3 | How many times a pi, omp, Codex or opencode turn is retried after a transient provider error (model not found, 429, 5xx or a connection error). Errors such as 400, 401 and 403 are not retried. |
+| `CLOUDY_CLOUD_PROFILE_MAX` | no cap | The default most agents one profile may run at once. A profile's `maxConcurrent` in `profiles.json` overrides it. Agents over the cap wait in the queue and say why in `cloud_agent_list`. The count covers this server's own agents only. |
 | `CLOUDY_CLOUD_AUTOFIX_ROUNDS` | 3 | The most fix rounds `autofix` runs on a pull request (0 to 10). |
 | `CLOUDY_CLOUD_MAX_DEPTH` | 3 | How many levels of coordinators can exist below your session. Starting a coordinator past this is refused. Workers do not add depth. Passed down to child coordinators. |
 | `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` | 200 | How many agents one cloudy-cloud session may start. Passed down to child coordinators. |
@@ -1029,7 +1061,7 @@ Environment variables win over values in the config file. An empty value counts 
 | `MCP_TOOL_TIMEOUT` | 1800000 | Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not. |
 | `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb` | unset | Any of these turns off colour and the animated setup display. Output is plain text with the same messages. |
 
-> Note: You can set `CLOUDY_CLOUD_STARTS_PER_MIN`, `CLOUDY_CLOUD_MAX_INSTABOX_CALLS`, `CLOUDY_CLOUD_WORKER_HOURS`, `CLOUDY_CLOUD_MAX_DEPTH`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`, `CLOUDY_CLOUD_PROXY_SECRETS` and `CLOUDY_CLOUD_APT_PACKAGES` in the config file as well as in the environment.
+> Note: You can set `CLOUDY_CLOUD_STARTS_PER_MIN`, `CLOUDY_CLOUD_MAX_INSTABOX_CALLS`, `CLOUDY_CLOUD_WORKER_HOURS`, `CLOUDY_CLOUD_TURN_MINUTES`, `CLOUDY_CLOUD_MAX_DEPTH`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`, `CLOUDY_CLOUD_PROXY_SECRETS` and `CLOUDY_CLOUD_APT_PACKAGES` in the config file as well as in the environment.
 
 ### Files
 
@@ -1168,7 +1200,7 @@ git push origin fleet/<topic>
 
 4. On a conflict, resolve small ones yourself, or abort the merge and ask the worker to rebase. If the tests fail after a merge, do not push it. Send the worker the failing output.
 5. When every good branch is merged and the full tests pass, open one PR from `fleet/<topic>`.
-6. Delete merged worker branches: `git push origin --delete cloudy-cloud/<id>`. Keep the branch of a failed worker until you decide what to keep.
+6. Delete merged worker branches: `git push origin --delete cloudy-cloud/<id>`, or run `cloudy-cloud branches prune --yes` to delete every empty or merged `cloudy-cloud/<id>` branch (without `--yes` it only lists them). Keep the branch of a failed worker until you decide what to keep.
 
 > Note: Do not trust a worker that says it is done. Fetch its branch, read the diff and run the tests before merging. If a worker pushed nothing, retry it with a narrower brief that names what is missing.
 
@@ -1235,6 +1267,8 @@ The page has two views, switched at the top: **List** and **Fleet**.
 - **List** has the boxes in a left column and the selected box in a detail pane. Workers started by a cloud coordinator are nested under it; use the arrow next to the coordinator, or the Left and Right arrow keys, to close or open them.
 - **Fleet** shows one tile per box, with its status, description, id and time since last activity, and a *Workers of* heading under each coordinator. Select a tile to open it in the List view.
 
+In the Fleet view, boxes whose brief names a trunk branch (`fleet/<topic>`) get their own section above the groups. The section heading says how many of the workers' branches are merged into that trunk, and each tile says *merged* or *not merged*. The check runs `git branch -r --merged origin/<trunk>` in the folder where the dashboard runs, and is cached for about 30 seconds. If git cannot answer, the heading says *merge status unknown*. Other boxes are grouped as below.
+
 Boxes are grouped as **Needs you**, **Active** and **Finished**.
 
 - **Needs you:** agents that are idle, and agents that failed today.
@@ -1248,6 +1282,8 @@ The top bar counts running, starting, idle and failed agents and those finished 
 Select a box to see:
 
 - **Status**, **Model** (or profile), **Started**, **Role**, **Started by** (this session, or the coordinator that started it) and the **Machine**.
+- **Harness**: the agent that runs the worker (`claude`, `pi`, `omp`, `codex` or `opencode`). It also shows as a tag on the box.
+- **Autofix**: for an agent started with `autofix`, the state (for example running, with the round and the most rounds) and a link to the pull request, taken from the progress and result lines. It is shown only when the agent's text has them.
 - **MCP**: the names of the MCP servers the subagent has, when it has any.
 - **Branch**: the `cloudy-cloud/<id>` branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.
 - **Deletes**: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (`CLOUDY_CLOUD_WORKER_HOURS`, at most 24), which can be earlier.
@@ -1639,9 +1675,15 @@ git remote add origin https://github.com/OWNER/REPO.git
 
 Your GitHub token must also include that repository.
 
-### The first push failed, or "Push failed"
+### A turn failed or hit the time limit
 
-`The first push to origin cloudy-cloud/<id> failed` usually means the `GH_TOKEN` Instabox secret is missing or the token cannot write to this repo. Run `cloudy-cloud setup`, replace the GitHub token, and check the token's repository list. The secret must be named exactly `GH_TOKEN`. The same fix applies to `The GH_TOKEN Instabox secret could not be attached`.
+Each turn is limited to 29 minutes by default (`CLOUDY_CLOUD_TURN_MINUTES`, a whole number from 5). If a turn fails or hits the limit after the agent has started, the agent stays `idle` with its session and the machine. The result is marked as an error. Send `cloud_agent_message` with a message such as "continue where you stopped". A Codex or opencode first turn that times out still fails, because those agents do not report their session id early.
+
+### The GitHub access check failed, or "Push failed"
+
+`The GitHub access check for origin cloudy-cloud/<id> failed` (the setup check runs `git ls-remote origin HEAD`) usually means the `GH_TOKEN` Instabox secret is missing or the token cannot write to this repo. Run `cloudy-cloud setup`, replace the GitHub token, and check the token's repository list. The secret must be named exactly `GH_TOKEN`. The same fix applies to `The GH_TOKEN Instabox secret could not be attached`.
+
+If the worker committed nothing, no branch is pushed and the result says `No changes, no branch pushed.` That is not a failure.
 
 After each task, `cloudy-cloud` pushes once more, retrying once after five seconds. If that fails, the result says `Push failed: ...; the agent is still open, ask it to push.` It may also list `Uncommitted changes left in the sandbox`. The tool never commits for the agent. While the agent is open, ask it to commit and push.
 
@@ -1816,7 +1858,7 @@ rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/clou
 
 If you installed from a git clone, run `npm unlink -g cloudycloud` instead (also `npm unlink -g cloudy-cloud` for a clone from before the package was renamed), then delete the clone.
 
-To delete the subagent branches on GitHub, run this in your repo:
+To delete only the empty or merged subagent branches on GitHub, run `cloudy-cloud branches prune` in your repo (a dry run), then `cloudy-cloud branches prune --yes`. To delete all of them, run this in your repo:
 
 ```
 git ls-remote --heads origin 'cloudy-cloud/*' | awk '{print $2}' | xargs -n 50 git push origin --delete

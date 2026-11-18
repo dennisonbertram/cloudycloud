@@ -195,6 +195,8 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 - Start all agents first, in one go. The tool queues and paces starts and limits Instabox calls itself. Do not add sleeps or batch them by hand.
 - In task mode (terminal Claude Code 2.1.304 or later) results arrive on their own. Do not call `cloud_agent_wait`. Otherwise call `cloud_agent_wait` with all the ids, and again after each `cloud_agent_message`.
 - **A nested coordinator's workers are deleted when its reply ends.** Each coordinator turn is one `-p` run, and its workers go when that run exits, pushed or not. A coordinator always calls `cloud_agent_wait` on every worker and does not end its reply until all have finished.
+- **`base`:** `cloud_agent` takes `base` (a branch name or a 7 to 40 character commit hash). The worker starts from it instead of your local HEAD, and uncommitted edits are ignored. Use it to start workers from the trunk. A worker that commits nothing pushes no branch (the result says "No changes, no branch pushed.").
+- **Fallback and caps:** `fallback` (a list of profile names) is tried in order when a profile's key is missing or the provider check fails; `preflight: false` skips that check. A profile in `profiles.json` can set `maxConcurrent`; agents over it wait in the queue.
 - **Each turn is limited to 29 minutes** by default (the user can change it with `CLOUDY_CLOUD_TURN_MINUTES`, 5 or more). The prompt of every turn states its end time in UTC, and the environment holds it in `CLOUDY_CLOUD_TURN_DEADLINE`. Size tasks to fit one turn, or tell the agent to commit and push in steps. If a turn fails or hits the limit after the agent has started, the agent stays open: send `cloud_agent_message` (for example "continue where you stopped") and it resumes with its context. Only an agent whose setup failed or whose machine is gone is `failed`.
 - Use `cloud_agent_list` to see status and progress. `queued` is normal while machines start.
 - Never trust a worker's reply. A worker saying "done" does not mean the work is pushed or correct. Fetch the branch, look at the diff, run the tests, then merge.
@@ -228,7 +230,7 @@ git push origin --delete cloudy-cloud/<id>
 
 Delete several at once: `git push origin --delete cloudy-cloud/<id1> cloudy-cloud/<id2>`.
 
-Do this only for branches already merged. Keep the branch of a failed worker until you have decided what to keep. After the trunk PR merges, delete `fleet/<topic>` and any `fleet/<topic>/*` branches the same way. Prune local refs with `git fetch --prune`. Then run `cloud_agent_list` and `cloud_agent_stop` any agents still open.
+Do this only for branches already merged. Keep the branch of a failed worker until you have decided what to keep. After the trunk PR merges, delete `fleet/<topic>` and any `fleet/<topic>/*` branches the same way. To delete every empty or merged `cloudy-cloud/<id>` branch at once, run `cloudy-cloud branches prune` (a dry run that lists them) and then `cloudy-cloud branches prune --yes`. Prune local refs with `git fetch --prune`. Then run `cloud_agent_list` and `cloud_agent_stop` any agents still open.
 
 ## Final report to the user
 

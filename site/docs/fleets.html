@@ -156,7 +156,7 @@ git merge --no-ff origin/cloudy-cloud/&lt;id&gt; -m "Merge &lt;description&gt; (
 git push origin fleet/&lt;topic&gt;</code></pre></li>
 <li>On a conflict, resolve small ones yourself, or abort the merge and ask the worker to rebase. If the tests fail after a merge, do not push it. Send the worker the failing output.</li>
 <li>When every good branch is merged and the full tests pass, open one PR from <code>fleet/&lt;topic&gt;</code>.</li>
-<li>Delete merged worker branches: <code>git push origin --delete cloudy-cloud/&lt;id&gt;</code>. Keep the branch of a failed worker until you decide what to keep.</li>
+<li>Delete merged worker branches: <code>git push origin --delete cloudy-cloud/&lt;id&gt;</code>, or run <code>cloudy-cloud branches prune --yes</code> to delete every empty or merged <code>cloudy-cloud/&lt;id&gt;</code> branch (without <code>--yes</code> it only lists them). Keep the branch of a failed worker until you decide what to keep.</li>
 </ol>
 <div class="note"><p>Do not trust a worker that says it is done. Fetch its branch, read the diff and run the tests before merging. If a worker pushed nothing, retry it with a narrower brief that names what is missing.</p></div>
 <p>Only push to <code>cloudy-cloud/*</code> and <code>fleet/*</code> branches. Never push to <code>main</code>. Protect your main branch with a GitHub ruleset, because workers run with permission checks off.</p>
