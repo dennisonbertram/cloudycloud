@@ -149,6 +149,16 @@ test('autofix: gh pr create failing leaves the agent idle and explains the next 
   assert.equal(turns(g), 1);
 });
 
+test('autofix: a token missing the pull-requests permission is told which permission to add', async () => {
+  const { g, start, wait } = await setup({ createError: 'GraphQL: Resource not accessible by personal access token (repository.pullRequests)' });
+  const id = await start({ autofix: true });
+  const r = await wait([id]);
+  assert.match(r, /Autofix stopped: gh could not create a pull request/);
+  assert.match(r, /Pull requests to read and write/);
+  assert.doesNotMatch(r, /gh auth status/);
+  assert.equal(turns(g), 1);
+});
+
 test('autofix: cancelling during the checks wait ends the task promptly', async () => {
   const { g, deps, start } = await setup({ checks: [[{ name: 'test', bucket: 'pending', link: RUN_LINK }]], deps: { autofixPollMs: 60_000, autofixChecksMs: 600_000, asTask: true } });
   const out = await runSubagent({ description: 'd', prompt: 'hi', autofix: true }, deps);
