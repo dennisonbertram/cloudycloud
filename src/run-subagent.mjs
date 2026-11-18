@@ -22,6 +22,7 @@ import { createOpencodeProgress, parseOpencodeStream } from './progress-opencode
 import { OPENCODE_VERSION, OPENCODE_SESSION, opencodeDir, opencodeInstructions, opencodeConfig, opencodeCommand } from './harness-opencode.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
 import { redact, redactText } from './events.mjs';
+import { writeSecretFile } from './providers/index.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
 
@@ -267,6 +268,7 @@ async function writeMeta(a, ctx) {
 
 async function turn(a, message, ctx, t) {
   const { scrub } = ctx;
+  const pat = (x) => (harnessOf(a) === 'codex' ? redactText(x) : x); // the machine may refresh the ChatGPT login, so exact values are not enough there
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
   } catch (e) {
@@ -317,7 +319,7 @@ async function turn(a, message, ctx, t) {
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}` };
+    return { error: true, gone: failed, text: pat(`Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -336,11 +338,11 @@ async function turn(a, message, ctx, t) {
     text = j.result;
     error = j.is_error === true;
     if (j.session_id !== undefined) {
-      if (typeof j.session_id === 'string' && (SESSION.test(j.session_id) || (harnessOf(a) === 'opencode' && OPENCODE_SESSION.test(j.session_id)))) a.sessionId = j.session_id;
+      if (typeof j.session_id === 'string' && (harnessOf(a) === 'opencode' ? OPENCODE_SESSION : SESSION).test(j.session_id)) a.sessionId = j.session_id;
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: `${text}\n\n${where}\n${totals(a, t)}`, error: error || failed, pushed: where.startsWith('Pushed to') };
+  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed, pushed: where.startsWith('Pushed to') };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -491,7 +493,7 @@ async function setup(a, ctx) {
       // can enter it, whatever the file mode) and an empty mode-600 file exists before the write; the chmod after is a
       // second guard. The token travels in the write body, never on a command line.
       await a.sandbox.commands.run(`umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && : > ${dir}/mcp.json`, { cwd: a.home, timeoutMs: SETUP_MS });
-      await a.sandbox.files.write(`${dir}/mcp.json`, mcpConfigText(a.mcp.servers));
+      await (a.mcp.literal.length ? writeSecretFile : (sbx, path, data) => sbx.files.write(path, data))(a.sandbox, `${dir}/mcp.json`, mcpConfigText(a.mcp.servers)); // a real token must not go through the exec fallback
       await a.sandbox.commands.run(`chmod 600 ${dir}/mcp.json`, { cwd: a.home, timeoutMs: SETUP_MS });
     }
     if (harnessOf(a) === 'pi') await setupPi(a, ctx);
@@ -554,7 +556,7 @@ async function setupOpencode(a, ctx) {
   await sh(`mkdir -p ${dir} && npm install -g --prefix ${a.home}/.local opencode-ai@${OPENCODE_VERSION}`, INSTALL_MS)
     .catch((e) => { throw new Error(`Could not install opencode in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
   await sh(`umask 077 && chmod 700 ${dir} && : > ${dir}/opencode.json`, SETUP_MS);
-  await a.sandbox.files.write(`${dir}/opencode.json`, opencodeConfig(a.profile, { home: a.home, servers: a.mcp?.servers }));
+  await (a.mcp?.literal?.length ? writeSecretFile : (sbx, path, data) => sbx.files.write(path, data))(a.sandbox, `${dir}/opencode.json`, opencodeConfig(a.profile, { home: a.home, servers: a.mcp?.servers }));
   await sh(`chmod 600 ${dir}/opencode.json`, SETUP_MS);
 }
 

@@ -10,6 +10,8 @@ import { promisify } from 'node:util';
 import { parseCodexStream, createCodexProgress } from '../src/progress-codex.mjs';
 import { modelLine, totalLine } from '../src/progress.mjs';
 import { resolveProfile, loadProfiles } from '../src/profiles.mjs';
+import { consentedLiterals } from '../src/mcpsync.mjs';
+import { redactText } from '../src/events.mjs';
 import { CODEX_VERSION, codexConfig, codexCommand, codexAuth, codexNextStep, codexMcp } from '../src/harness-codex.mjs';
 import { codexHostArgs, codexPrompt } from '../src/host-codex.mjs';
 import { forHarness } from '../src/mcpsync.mjs';
@@ -196,7 +198,7 @@ test('bin/cloudy-cloud codex --help passes the argument to codex (no Claude toke
 const FAKE_CODEX = (fixtures) => `#!/bin/sh
 p=$(cat)
 echo "ARGS $* HOME=$CODEX_HOME KEY=$OPENAI_API_KEY PROMPT=$p" >> ../codex.log
-case "$p" in CODEXERR*) cat ${fixtures}codex-json-error.jsonl; exit 1 ;; *) case "$*" in *resume*) cat ${fixtures}codex-json-resume.jsonl ;; *) cat ${fixtures}codex-json-sample.jsonl ;; esac ;; esac
+case "$p" in CODEXLEAK*) printf '%s\\n' '{"type":"thread.started","thread_id":"01a1ec3c-b453-7fc1-9285-7b6d7c3dadd8"}' '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"refreshed eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4In0.c2lnbmF0dXJl and rt_RefreshedTokenValue1234567890abcdef"}}' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}' ;; CODEXERR*) cat ${fixtures}codex-json-error.jsonl; exit 1 ;; *) case "$*" in *resume*) cat ${fixtures}codex-json-resume.jsonl ;; *) cat ${fixtures}codex-json-sample.jsonl ;; esac ;; esac
 `;
 const FIX = new URL('./fixtures/', import.meta.url).pathname;
 
@@ -209,6 +211,7 @@ async function world(envOver = {}, provOpts = { hasProxySecrets: false, hasConse
   await sh(github, `git init -q --bare -b main ${join(github, 'test', 'repo.git')}`);
   setGithub(github);
   const sandboxes = [];
+  const secretHook = {}; // a test sets secretHook.fn to give every sandbox a writeSecret (the upload-only call of a provider that has one)
   const env = { GH_TOKEN: 'ghp_secret', OPENAI_API_KEY: KEY, OPENROUTER_API_KEY: 'or-secret-1', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json', CLOUDY_CLOUD_CODEX_AUTH: authFile(), ...envOver };
   const deps = {
     env, cwd: repo, open: new Map(), provider: createFakeProvider({ FAKE_API_KEY: 'k' }, provOpts),
@@ -221,6 +224,7 @@ async function world(envOver = {}, provOpts = { hasProxySecrets: false, hasConse
       sbx.written = {};
       const w = sbx.files.write;
       sbx.files.write = (p, d) => { sbx.written[p] = String(d); return w(p, d); };
+      if (secretHook.fn) sbx.files.writeSecret = async (p, d) => { await secretHook.fn(p, d, sbx); sbx.secretWritten = { ...sbx.secretWritten, [p]: String(d) }; return w(p, d); };
       sandboxes.push(sbx);
       return sbx;
     },
@@ -228,7 +232,7 @@ async function world(envOver = {}, provOpts = { hasProxySecrets: false, hasConse
   const text = (r) => r.content[0].text;
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
   const wait = (ids) => waitAgents({ agent_ids: ids, timeout_seconds: 120 }, deps).then(text);
-  return { deps, sandboxes, text, start, wait, env };
+  return { deps, sandboxes, text, start, wait, env, secretHook };
 }
 const codexLog = (sbx) => readFile(join(sbx.dir, 'home', 'codex.log'), 'utf8');
 
@@ -323,4 +327,72 @@ test('on a provider with proxy secrets the OpenAI key is delivered as a proxy se
   await wait([id]);
   assert.deepEqual(sandboxes[0].opts.secrets, ['OPENAI_API_KEY']);
   assert.deepEqual(Object.keys(sandboxes[0].envs), []);
+});
+
+
+// ---- Astra review fixes ----
+test('codexAuth accepts only a real ChatGPT token record: a file with an OPENAI_API_KEY is refused with the next step', () => {
+  const key = codexAuth({ CLOUDY_CLOUD_CODEX_AUTH: authFile({ OPENAI_API_KEY: 'sk-proj-abcdefghijklmnop1234' }) });
+  assert.match(key.error, /OPENAI_API_KEY/);
+  assert.match(key.error, /Next step:.*profile codex|Next step:.*codex login/s);
+  const both = codexAuth({ CLOUDY_CLOUD_CODEX_AUTH: authFile({ auth_mode: 'chatgpt', OPENAI_API_KEY: 'sk-proj-abcdefghijklmnop1234', tokens: { access_token: TOKEN, refresh_token: REFRESH } }) });
+  assert.match(both.error, /OPENAI_API_KEY/);
+  assert.match(codexAuth({ CLOUDY_CLOUD_CODEX_AUTH: authFile({ tokens: { access_token: TOKEN } }) }).error, /not a Codex login file/);
+  assert.ok(codexAuth({ CLOUDY_CLOUD_CODEX_AUTH: authFile({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { access_token: TOKEN, refresh_token: REFRESH } }) }).text, 'the null OPENAI_API_KEY that codex login writes is fine');
+});
+
+test('codexAuth sends only the fields codex needs, not the whole file', () => {
+  const a = codexAuth({ CLOUDY_CLOUD_CODEX_AUTH: authFile({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, last_refresh: '2026-01-01T00:00:00Z', unrelated: 'EXTRA-SECRET-FIELD', tokens: { id_token: 'idt', access_token: TOKEN, refresh_token: REFRESH, account_id: 'acct', other: 'EXTRA-TOKEN-FIELD' } }) });
+  assert.deepEqual(Object.keys(JSON.parse(a.text)).sort(), ['auth_mode', 'last_refresh', 'tokens']);
+  assert.deepEqual(Object.keys(JSON.parse(a.text).tokens).sort(), ['access_token', 'account_id', 'id_token', 'refresh_token']);
+  assert.ok(!a.text.includes('EXTRA'));
+});
+
+test('secret files go through writeSecret when the provider has one, and a refusal fails the worker with a next step', async () => {
+  const w = await world();
+  w.secretHook.fn = () => {};
+  await w.wait([await w.start({ profile: 'codex-chatgpt' })]);
+  assert.equal(JSON.parse(w.sandboxes[0].secretWritten['/home/user/codex-home/auth.json']).tokens.access_token, TOKEN);
+  const bad = await world();
+  bad.secretHook.fn = () => { throw Object.assign(new Error('The upload route is not available, so a secret file cannot be written safely.\nNext step: retry in a minute.'), { code: 'secret_write_unsupported' }); };
+  const r = await bad.wait([await bad.start({ profile: 'codex-chatgpt' })]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /cannot be written safely/);
+  assert.ok(!JSON.stringify(bad.sandboxes[0].cmds).includes(TOKEN));
+});
+
+test('an MCP server that carries an allowed literal token is written with writeSecret; a config without one is not', async () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'cx-lit-')), 'mcp.json');
+  writeFileSync(f, JSON.stringify({ mcpServers: { lit: { command: 'npx', args: ['-y', 'x'], env: { X_API_KEY: 'literal-token-value-123456' }, cloudyCloudAllowLiteral: true } } }));
+  const w = await world({ CLOUDY_CLOUD_MCP: f });
+  w.secretHook.fn = () => {};
+  await w.wait([await w.start({ profile: 'codex' })]);
+  assert.ok(w.sandboxes[0].secretWritten['/home/user/codex-home/config.toml'].includes('literal-token-value-123456'));
+  const plain = await world();
+  plain.secretHook.fn = () => {};
+  await plain.wait([await plain.start({ profile: 'codex' })]);
+  assert.equal(plain.sandboxes[0].secretWritten?.['/home/user/codex-home/config.toml'], undefined);
+});
+
+test('config.toml is created and left mode 600, like auth.json', async () => {
+  const { start, wait, sandboxes } = await world();
+  await wait([await start({ profile: 'codex' })]);
+  const cmds = sandboxes[0].cmds;
+  assert.ok(cmds.some((c) => /: > \S+codex-home\/config\.toml/.test(c)), 'an empty mode-600 file exists before the write');
+  assert.ok(cmds.some((c) => /chmod 600 \S+codex-home\/config\.toml/.test(c)));
+});
+
+test('a codex reply that echoes a refreshed token the laptop never saw is redacted by pattern, and the login tokens are known literals', async () => {
+  const { start, wait } = await world();
+  const r = await wait([await start({ profile: 'codex-chatgpt', prompt: 'CODEXLEAK now' })]);
+  assert.match(r, /refreshed \[redacted\] and \[redacted\]/);
+  assert.ok(!r.includes('eyJhbGciOiJSUzI1NiJ9') && !r.includes('RefreshedTokenValue'));
+  assert.deepEqual(consentedLiterals({ CLOUDY_CLOUD_CODEX_AUTH: authFile(), CLOUDY_CLOUD_MCP: '/nonexistent' }).sort(), [REFRESH, TOKEN].sort(), 'the dashboard scrubs the login tokens too');
+  assert.equal(redactText('x rt_RefreshedTokenValue1234567890abcdef y'), 'x [redacted] y');
+});
+
+test('a Bearer reference in a header other than Authorization is skipped with a reason, not written as literal text', () => {
+  const r = forHarness({ servers: { w: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Api': 'Bearer ${MCP_W_TOKEN}' } } }, skipped: [], secrets: ['MCP_W_TOKEN'], literal: [] }, 'codex');
+  assert.deepEqual(Object.keys(r.servers), []);
+  assert.match(r.skipped[0].reason, /Authorization/);
 });

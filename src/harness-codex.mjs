@@ -5,6 +5,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { writeSecretFile } from './providers/index.mjs';
 
 export const CODEX_VERSION = '0.166.0';
 const PROVIDER = 'worker';
@@ -29,8 +30,8 @@ export function codexReason(e) {
   if (e.type === 'sse') return 'codex does not support the SSE transport';
   if (e.type === 'http') {
     if (REF_IN.test(e.url)) return 'the url holds a variable reference, which codex does not expand';
-    const bad = Object.values(e.headers ?? {}).find((v) => REF_IN.test(v) && !REF.test(v.replace(/^Bearer /, '')));
-    return bad === undefined ? undefined : 'a header mixes text with a secret reference, which codex cannot expand; use the whole value or "Bearer " plus the reference';
+    const bad = Object.entries(e.headers ?? {}).find(([k, v]) => REF_IN.test(v) && !(REF.test(v) || (/^authorization$/i.test(k) && REF.test(v.replace(/^Bearer /, '')))));
+    return bad === undefined ? undefined : 'a header mixes text with a secret reference, or has "Bearer " plus a reference outside the Authorization header, which codex cannot expand; use the whole value, or "Bearer " plus the reference in Authorization';
   }
   if ((e.args ?? []).some((a) => REF_IN.test(a))) return 'an argument holds a variable reference, which codex does not expand';
   const bad = Object.entries(e.env ?? {}).find(([k, v]) => REF_IN.test(v) && !(REF.test(v) && VAR.test(k)));
@@ -99,9 +100,13 @@ export function codexAuth(env = process.env) {
   if (st.mode & 0o077) return { error: `The Codex login file ${file} can be read by other users.\nNext step: run: chmod 600 ${file}` };
   let j;
   try { j = JSON.parse(text); } catch { /* checked below */ }
-  if (!j || typeof j !== 'object' || Array.isArray(j) || (!j.tokens && !j.OPENAI_API_KEY)) return { error: `${file} is not a Codex login file (expected the JSON that codex login writes to ~/.codex/auth.json).\nNext step: run: codex login, then: ${AUTH_INSTALL}` };
-  const values = [...Object.values(j.tokens ?? {}), j.OPENAI_API_KEY].filter((v) => typeof v === 'string' && v.length >= 16);
-  return { text, values };
+  if (j && typeof j === 'object' && typeof j.OPENAI_API_KEY === 'string' && j.OPENAI_API_KEY) return { error: `${file} holds an OPENAI_API_KEY, which is an API key, not a ChatGPT login. A key must never be sent to a worker as a file.\nNext step: store the key as a proxy secret with cloudy-cloud setup and use profile codex, or sign in with ChatGPT (codex logout, then codex login and choose "Sign in with ChatGPT"), then run: ${AUTH_INSTALL}` };
+  const t = j?.tokens;
+  if (!j || typeof j !== 'object' || !t || typeof t !== 'object' || typeof t.access_token !== 'string' || typeof t.refresh_token !== 'string') return { error: `${file} is not a Codex login file (expected the JSON that codex login writes to ~/.codex/auth.json after signing in with ChatGPT).\nNext step: run: codex login, then: ${AUTH_INSTALL}` };
+  // Only what codex reads leaves this computer; any other field of the file stays here.
+  const send = { auth_mode: 'chatgpt', tokens: Object.fromEntries(['id_token', 'access_token', 'refresh_token', 'account_id'].filter((k) => typeof t[k] === 'string').map((k) => [k, t[k]])), ...(typeof j.last_refresh === 'string' && { last_refresh: j.last_refresh }) };
+  const values = Object.values(send.tokens).filter((v) => v.length >= 16);
+  return { text: JSON.stringify(send), values };
 }
 
 // An exact next step for failures we know; '' otherwise.
@@ -128,9 +133,13 @@ export async function setupCodex(a, ctx, { tail, installMs, setupMs }) {
   await sh(`npm install -g --ignore-scripts --prefix ${a.home}/.local @openai/codex@${CODEX_VERSION}`, installMs)
     .catch((e) => { throw new Error(`Could not install codex in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
   await sh(auth ? `${prep} && : > ${dir}/auth.json` : prep, setupMs);
-  await a.sandbox.files.write(`${dir}/config.toml`, codexConfig(a.profile, a.mcp?.servers));
+  await sh(`umask 077 && : > ${dir}/config.toml`, setupMs);
+  // The config may hold an MCP token the user allowed; the login always is a secret. Neither may travel inside a command.
+  const write = a.mcp?.literal?.length ? writeSecretFile : (sbx, path, data) => sbx.files.write(path, data);
+  await write(a.sandbox, `${dir}/config.toml`, codexConfig(a.profile, a.mcp?.servers));
+  await sh(`chmod 600 ${dir}/config.toml`, setupMs);
   if (auth) {
-    await a.sandbox.files.write(`${dir}/auth.json`, auth.text);
+    await writeSecretFile(a.sandbox, `${dir}/auth.json`, auth.text);
     await sh(`chmod 600 ${dir}/auth.json`, setupMs);
   }
 }

@@ -74,3 +74,9 @@ export async function loadProvider(env = process.env, deps = {}) {
   if (!Object.hasOwn(REGISTRY, name)) throw new Error(`Unknown CLOUDY_CLOUD_PROVIDER "${name}". Known: ${Object.keys(REGISTRY).join(', ')}.`);
   return (await REGISTRY[name]()).createProvider(env, deps);
 }
+
+/**
+ * Writes a file that holds a real secret (a login, or an MCP token the user allowed). A provider whose files.write can fall back
+ * to a base64 shell command (Instabox) offers files.writeSecret, which uploads or fails; the others write through stdin or a file API.
+ */
+export const writeSecretFile = (sandbox, path, data) => (sandbox.files.writeSecret ?? sandbox.files.write)(path, data);

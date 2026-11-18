@@ -29,5 +29,6 @@ export const opencodeConfig = (p, { home, servers = {} }) => JSON.stringify({
   experimental: { mcp_timeout: MCP_TIMEOUT_MS },
 }, null, 2);
 
-// The config is read from its file at run time, so no value but a name is in the command string. p.model, the session id and home are validated.
-export const opencodeCommand = (p, { home, sessionId }) => `OPENCODE_CONFIG_CONTENT="$(cat ${opencodeDir(home)}/opencode.json)" PATH=${home}/.local/bin:$PATH opencode run --format json --model ${OPENCODE_PROVIDER}/${p.model}${sessionId ? ` --session ${sessionId}` : ''} < ${home}/prompt.txt`;
+// OPENCODE_DISABLE_PROJECT_CONFIG=1 (checked on 1.18.31 with `opencode debug config`) drops the checked-out repository's opencode.json and .opencode/
+// (MCP servers, plugins), so only the file below is used. The config is read from its file at run time, so no value but a name is in the command string. p.model, the session id and home are validated.
+export const opencodeCommand = (p, { home, sessionId }) => `OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_CONFIG_CONTENT="$(cat ${opencodeDir(home)}/opencode.json)" PATH=${home}/.local/bin:$PATH opencode run --format json --model ${OPENCODE_PROVIDER}/${p.model}${sessionId ? ` --session ${sessionId}` : ''} < ${home}/prompt.txt`;

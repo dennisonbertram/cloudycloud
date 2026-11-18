@@ -15,6 +15,7 @@ const SECRET_RES = [
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g,
   /\b(?:ghp|gho|ghu|ghs|ghr|github_pat|ibk|xox[abp])[_-][A-Za-z0-9_-]{8,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
+  /\brt_[A-Za-z0-9._-]{20,}/g, // a ChatGPT (Codex) refresh token
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g,
   /(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi,
   /(\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*[=:]\s*)["']?[^\s"']{6,}["']?/g,

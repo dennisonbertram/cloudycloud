@@ -165,7 +165,17 @@ export function createProvider(env, deps = {}) {
       id: sbx.sandboxId,
       ...(name !== undefined && { name }),
       home: '/data/home', // macOS replaces this with the machine's $HOME in create
-      files: { write: (...a) => call(() => sbx.files.write(...a)), read: (...a) => call(() => sbx.files.read(...a)) },
+      files: {
+        write: (...a) => call(() => sbx.files.write(...a)),
+        read: (...a) => call(() => sbx.files.read(...a)),
+        // files.write falls back to sending the file as base64 inside a shell command when the upload route is missing. That is
+        // fine for a config, not for a secret, so this uses the upload route only (the SDK's writeStream) and fails closed.
+        writeSecret: (path, data) => call(async () => {
+          if ((await sbx.files.writeStream?.(path, typeof data === 'string' ? new TextEncoder().encode(data) : data)) !== true) {
+            throw Object.assign(new Error(`The file upload route of this Instabox machine is not available, so ${path} (it holds a secret) was not written: the only other route sends the file inside a shell command, where it can appear in logs.\nNext step: start the agent again in a minute. If it keeps failing, do not use a login file or an MCP server with a real token (cloudy-cloud mcp rm NAME), and use proxy secrets instead.`), { code: 'secret_write_unsupported' });
+          }
+        }),
+      },
       kill: () => sbx.kill(),
       // The server's machine name, fetched on demand (the coordinator asks after setup, as it did before the adapter).
       loadName: async () => (nameFromInfo ? (sandbox.name = (await sbx.getInfo()).name) : sandbox.name),

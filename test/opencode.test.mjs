@@ -1,10 +1,10 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, chmod } from 'node:fs/promises';
-import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseOpencodeStream } from '../src/progress-opencode.mjs';
@@ -60,7 +60,7 @@ test('the worker config names the key by reference, never by value, and ships th
 
 test('the command reads the prompt and the config from files, resumes by session id, and leaks no value', () => {
   const first = opencodeCommand(P, { home: '/home/user' });
-  assert.equal(first, 'OPENCODE_CONFIG_CONTENT="$(cat /home/user/opencode-agent/opencode.json)" PATH=/home/user/.local/bin:$PATH opencode run --format json --model worker/z-ai/glm-5.3-flash < /home/user/prompt.txt');
+  assert.equal(first, 'OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_CONFIG_CONTENT="$(cat /home/user/opencode-agent/opencode.json)" PATH=/home/user/.local/bin:$PATH opencode run --format json --model worker/z-ai/glm-5.3-flash < /home/user/prompt.txt');
   assert.match(opencodeCommand(P, { home: '/home/user', sessionId: 'ses_e13c38fd9ffejvQOtGfP3pbJkf' }), /--model worker\/z-ai\/glm-5\.3-flash --session ses_e13c38fd9ffejvQOtGfP3pbJkf </);
 });
 
@@ -146,7 +146,7 @@ const PKEY = 'pk-particle-secret-999';
 const FAKE = `#!/bin/sh
 p=$(cat)
 echo "ARGS $* CFG=$(printf %s "$OPENCODE_CONFIG_CONTENT" | wc -c) PROMPT=$p" >> ../opencode.log
-case "$p" in OCERR*) cat ${new URL('./fixtures/', import.meta.url).pathname}opencode-json-error.jsonl; exit 1 ;; *) cat ${new URL('./fixtures/', import.meta.url).pathname}opencode-json-sample.jsonl ;; esac
+case "$p" in OCUUID*) sed 's/ses_e13c38fd9ffejvQOtGfP3pbJkf/11111111-2222-3333-4444-555555555555/g' ${new URL('./fixtures/', import.meta.url).pathname}opencode-json-sample.jsonl ;; OCERR*) cat ${new URL('./fixtures/', import.meta.url).pathname}opencode-json-error.jsonl; exit 1 ;; *) cat ${new URL('./fixtures/', import.meta.url).pathname}opencode-json-sample.jsonl ;; esac
 `;
 async function setup() {
   const repo = await mkdtemp(join(tmpdir(), 'oc-repo-'));
@@ -224,4 +224,32 @@ test('an opencode worker cannot be a coordinator', async () => {
   const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'opencode-glm', role: 'coordinator' }, deps);
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /coordinator.*opencode/);
+});
+
+
+// ---- Astra review fixes ----
+test('a worker run turns off project config, so a checked-out repository cannot add MCP servers or plugins', () => {
+  assert.match(opencodeCommand(P, { home: '/home/user' }), /^OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_CONFIG_CONTENT=/);
+});
+
+test('an opencode session id must look like ses_..., not a UUID', async () => {
+  const { start, wait } = await setup();
+  const r = await wait([await start({ profile: 'opencode-glm', prompt: 'OCUUID now' })]);
+  assert.match(r, /invalid session_id/);
+});
+
+test('the opencode launcher forwards SIGTERM to opencode and exits when it exits', async () => {
+  const dir = (await mkdtemp(join(tmpdir(), 'oc-sig-')));
+  const stub = join(dir, 'opencode');
+  writeFileSync(stub, `#!/bin/sh\ntrap 'echo TERM > "${dir}/got"; exit 0' TERM\necho up > "${dir}/ready"\nwhile :; do sleep 0.1; done\n`);
+  chmodSync(stub, 0o755);
+  writeFileSync(join(dir, 'env'), 'INSTABOX_API_KEY=ibk_FAKE\n');
+  const p = spawn('node', [resolve('src/host-opencode.mjs')], { cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_OPENCODE_BIN: stub }, stdio: 'ignore' });
+  const closed = new Promise((r) => p.on('close', (code, sig) => r({ code, sig })));
+  for (let i = 0; i < 100 && !existsSync(join(dir, 'ready')); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(existsSync(join(dir, 'ready')), 'the stub started');
+  p.kill('SIGTERM');
+  const res = await Promise.race([closed, new Promise((r) => setTimeout(() => { p.kill('SIGKILL'); r('hung'); }, 5000))]);
+  assert.notEqual(res, 'hung', 'the launcher exits after SIGTERM');
+  assert.equal(readFileSync(join(dir, 'got'), 'utf8').trim(), 'TERM');
 });

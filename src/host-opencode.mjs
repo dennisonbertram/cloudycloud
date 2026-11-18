@@ -47,7 +47,8 @@ function main(args) {
   const done = (code) => { rmSync(dir, { recursive: true, force: true }); process.exit(code); };
   child.on('error', (e) => { console.error(e.code === 'ENOENT' ? '  ! opencode is not installed.  Run: npm install -g opencode-ai' : `  ! could not start opencode: ${e.message}`); done(1); });
   child.on('exit', (code, sig) => done(code ?? (sig ? 1 : 0)));
-  for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => {}); // opencode gets the same signal from the terminal; exit with it
+  // Forward the signal (a kill of this process does not reach opencode by itself); done() runs when the child exits.
+  for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => child.kill(s));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) { const c = main(process.argv.slice(2)); if (c) process.exit(c); }
