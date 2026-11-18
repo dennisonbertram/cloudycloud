@@ -1165,3 +1165,21 @@ test('/api/stream redacts a refreshed Codex token that came from a machine and i
     assert.ok(!body.includes('RefreshedTokenValue'));
   } finally { s.close(); }
 });
+
+test('/api/stream shows a codex answer that follows retry error notices, not a failed turn', async () => {
+  const stream = [
+    { type: 'thread.started', thread_id: 't1' }, { type: 'turn.started' },
+    { type: 'error', message: 'Reconnecting... 1/5' }, { type: 'error', message: 'Reconnecting... 2/5' },
+    { type: 'item.completed', item: { id: 'i0', type: 'agent_message', text: 'all good' } },
+    { type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 2 } },
+  ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+  const { dir, opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running', turns: 1 }], fakeReader());
+  putLocal(dir, 'a1', 1, stream);
+  const s = await serve(opts);
+  try {
+    const r = JSON.parse((await get(s.address().port, `/api/stream?box=a1&turn=1&t=${TOKEN}`)).body);
+    const res = r.events.find((e) => e.kind === 'result');
+    assert.equal(res.text, 'all good');
+    assert.notEqual(res.is_error, true);
+  } finally { s.close(); }
+});

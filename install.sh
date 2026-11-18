@@ -223,6 +223,9 @@ banner() {
 
 cfg() { printf '%s' "${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}"; }
 
+# The ChatGPT login file, resolved like codexAuth in src/harness-codex.mjs: CLOUDY_CLOUD_CODEX_AUTH first, then the config folder.
+codex_auth_file() { printf '%s' "${CLOUDY_CLOUD_CODEX_AUTH:-$(dirname "$(cfg)")/codex-auth.json}"; }
+
 valid_ibk() { [[ $1 =~ ^ibk_[a-z2-7]{52}$ ]]; }
 valid_claude() { [[ $1 == sk-ant-oat01-* ]]; }
 mask() { printf '%s…%s' "$1" "${2: -4}"; } # mask PREFIX VALUE
@@ -414,7 +417,11 @@ check_setup() {
       if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
       elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
     done
-    [ -f "$(dirname "$(cfg)")/codex-auth.json" ] && usable=1
+    [ -f "$(codex_auth_file)" ] && usable=1
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker is still allowed when a Claude credential exists
+      if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
+      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+    done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
     elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
     else bad "No worker credential is saved, so cloud_agent has no profile it can use" "run $(rerun_cmd) and save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or the Codex login file"; fails=1; fi
@@ -1149,7 +1156,7 @@ has_worker_key() {
   for k in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
     [ -z "$(get_saved $k)" ] && ! is_proxied $k || return 0
   done
-  [ -f "$(dirname "$(cfg)")/codex-auth.json" ]
+  [ -f "$(codex_auth_file)" ]
 }
 
 main() {

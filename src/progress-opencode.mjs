@@ -22,7 +22,7 @@ export const createOpencodeProgress = (now) => {
       tin += num(t?.input) + num(t?.cache?.read) + num(t?.cache?.write);
       tout += num(t?.output) + num(t?.reasoning);
       if (part.reason !== 'tool-calls') p.final = { subtype: part.reason, is_error: false, session_id: sessionId, result: text.trim() };
-    } else if (j?.type === 'error') {
+    } else if (j?.type === 'error' && typeof j.sessionID === 'string') { // codex retry notices are top-level errors without a sessionID
       const e = j.error ?? {};
       p.final = { subtype: 'error', is_error: true, session_id: sessionId, result: [e.data?.message ?? e.message ?? e.name ?? 'opencode reported an error', e.data?.ref && `(ref ${e.data.ref})`].filter(Boolean).join(' ') };
     }

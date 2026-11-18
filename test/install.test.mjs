@@ -1055,3 +1055,17 @@ test('check-only fails with a next step when no chosen agent has a usable worker
   const claude = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=x\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, {}, { stub: npxStub({ secrets: JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'CLAUDE_CODE_OAUTH_TOKEN', hosts: ['api.anthropic.com'] }]) }) });
   assert.equal(claude.status, 0, 'a Claude-only user is unchanged');
 });
+
+test('check-only counts a saved Claude credential as a worker credential when claude is not in the chosen agents', () => {
+  const sec = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'CLAUDE_CODE_OAUTH_TOKEN', hosts: ['api.anthropic.com'] }]);
+  const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=opencode\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, {}, { stub: npxStub({ secrets: sec }) });
+  assert.equal(r.status, 0, r.stdout);
+});
+
+test('check-only finds a ChatGPT login at CLOUDY_CLOUD_CODEX_AUTH, as the runtime does', () => {
+  const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
+  const auth = join(tmp(), 'custom-auth.json');
+  writeFileSync(auth, '{}', { mode: 0o600 });
+  const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=codex\n`, { CLOUDY_CLOUD_CODEX_AUTH: auth }, { stub: npxStub({ secrets: gh }) });
+  assert.equal(r.status, 0, r.stdout);
+});
