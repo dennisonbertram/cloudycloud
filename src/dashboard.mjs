@@ -117,7 +117,7 @@ const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.filter((
 const capFull = (s) => ({ text: redactText(s).slice(0, FULL_MAX), truncated: s.length > FULL_MAX });
 
 // The harness is not recorded with the stream, so each format is tried and the one that yields most events wins.
-const parseStream = (raw, turn) => ['claude', 'pi', 'omp'].map((harness) => normalise(raw, { harness, turn })).reduce((a, b) => (b.length > a.length ? b : a));
+const parseStream = (raw, turn) => ['claude', 'pi', 'omp', 'codex', 'opencode'].map((harness) => normalise(raw, { harness, turn })).reduce((a, b) => (b.length > a.length ? b : a));
 
 // The untruncated (still redacted) input or result text of one event, from its source line (`off` is a byte offset into raw).
 function fullEvent(ev, raw) {

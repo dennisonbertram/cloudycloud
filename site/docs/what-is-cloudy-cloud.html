@@ -73,10 +73,11 @@
   <main id="content" tabindex="-1">
     <article>
 <h1>What is Cloudy Cloud?</h1>
-<p class="lede">Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.</p>
+<p class="lede">Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.</p>
+<p>It works with Claude Code, Codex, opencode, pi and free-pi as your main session, and Claude Code, pi, oh-my-pi, Codex and opencode as the agent that runs on each cloud machine. Claude Code is the default for both. free-pi can only be a main session.</p>
 
 <h2 id="what-is-it">What is Cloudy Cloud?</h2>
-<p>Cloudy Cloud is a command, <code>cloudy-cloud</code>, that starts Claude Code with an extra MCP server. The server adds tools such as <code>cloud_agent</code>. When Claude hands work to a subagent, Cloudy Cloud creates a cloud machine, uploads a snapshot of your repo, runs Claude there, and pushes the result to a branch named <code>cloudy-cloud/&lt;id&gt;</code> on your GitHub repo.</p>
+<p>Cloudy Cloud is a command, <code>cloudy-cloud</code>, that starts a coding agent (Claude Code by default) with an extra MCP server. The server adds tools such as <code>cloud_agent</code>. When your session hands work to a subagent, Cloudy Cloud creates a cloud machine, uploads a snapshot of your repo, runs the worker agent there (Claude Code by default), and pushes the result to a branch named <code>cloudy-cloud/&lt;id&gt;</code> on your GitHub repo.</p>
 <p>In a <code>cloudy-cloud</code> session, the built-in <code>Agent</code> and <code>Workflow</code> tools are turned off, so subagents run in the cloud and not on your laptop. Sessions you start with plain <code>claude</code> are not changed. See <a href="how-it-works.html">How it works</a> for each step.</p>
 
 <h2 id="vs-local">How is it different from running subagents locally?</h2>
@@ -89,23 +90,23 @@
 </ul>
 
 <h2 id="who-for">Who is it for?</h2>
-<p>It is for people who use Claude Code and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.</p>
+<p>It is for people who use a coding agent (Claude Code, Codex, opencode, pi or free-pi) and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.</p>
 <p>For a long job that must keep going with your laptop closed, use a <a href="fleets.html">cloud coordinator</a>, which runs on its own machine.</p>
 
 <h2 id="what-you-need">What do I need?</h2>
 <ul>
 <li>An account with a cloud sandbox provider. Instabox is supported today.</li>
-<li>A Claude subscription or API key.</li>
+<li>A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see <a href="models.html">Models and keys</a>. Setup asks for a Claude token only if you use Claude; see <a href="index.html#agent-credentials">Getting started</a>.</li>
 <li>A GitHub repo you can push to.</li>
 <li>Node.js 20 or later.</li>
 </ul>
-<p>Subagents run Claude by default. They can also run open models such as GLM and DeepSeek. See <a href="models.html">Models and keys</a>.</p>
+<p>Subagents run Claude Code by default. A profile can run them on open models such as GLM and DeepSeek, or on another agent: pi, oh-my-pi, Codex or opencode. See <a href="models.html">Models and keys</a>.</p>
 
 <h2 id="cost">What does it cost?</h2>
-<p>Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once.</p>
+<p>Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your Instabox plan, your Claude subscription or API usage, and any other provider (OpenAI, open-model hosts) you use. The free Instabox plan is too small for more than a few subagents at once.</p>
 
 <h2 id="start">How do I start it?</h2>
-<p>In a terminal, inside a git repo with a GitHub remote, run <code>cloudy-cloud</code> where you would run <code>claude</code>. It opens a normal Claude Code session; when Claude uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch <code>cloudy-cloud/&lt;id&gt;</code>. <code>cloudycloud</code> is the same command, and <code>npx cloudycloud</code> works without a global install.</p>
+<p>In a terminal, inside a git repo with a GitHub remote, run the command for your agent where you would run that agent: <code>cloudy-cloud</code> for Claude Code, <code>cloudy-cloud codex</code>, <code>cloudy-cloud opencode</code>, <code>cloudy-cloud pi</code> or <code>cloudy-cloud free-pi</code>. It opens a normal session of that agent; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch <code>cloudy-cloud/&lt;id&gt;</code>. <code>cloudycloud</code> is the same command, and <code>npx cloudycloud</code> works without a global install.</p>
 
 <h2 id="install">How do I install it?</h2>
 <p>Run this once in a terminal:</p>

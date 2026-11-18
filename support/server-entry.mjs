@@ -38,5 +38,6 @@ const createSandbox = async () => {
 };
 
 // Only these settings of the test process reach the server under test.
-const env = Object.fromEntries(['CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MCP'].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
+// A plain worker needs a Claude credential to start, so the fake one is a proxy secret name here.
+const env = { ANTHROPIC_API_KEY: 'sk-ant-test-claude-key', CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY', ...Object.fromEntries(['CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MCP'].filter((k) => process.env[k]).map((k) => [k, process.env[k]])) };
 serveStdio(() => buildServer({ createSandbox, provider: createFakeProvider(), env, open: new Map(), tasks: new Map(), cancelWaitMs: 3000 }));

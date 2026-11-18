@@ -210,3 +210,15 @@ test('forHarness for omp skips values omp would run or resolve as a variable nam
   assert.deepEqual(r.secrets, ['MCP_OK_TOKEN']);
   assert.equal(Object.keys(forHarness(mcp, 'claude').servers).length, 4);
 });
+
+
+test('opencode: {env:...} or {file:...} in a header or env KEY is not delivered, not only in a value', () => {
+  const mcp = { servers: {
+    h: { type: 'http', url: 'https://a.example.com/mcp', headers: { '{env:HOME}': 'x' } },
+    e: { command: 'npx', args: ['-y', 'x'], env: { '{file:/etc/passwd}': 'x' } },
+    ok: { command: 'npx', args: ['-y', 'x'], env: { MODE: 'fast' } },
+  }, skipped: [], secrets: [], literal: [] };
+  const r = forHarness(mcp, 'opencode');
+  assert.deepEqual(Object.keys(r.servers), ['ok']);
+  assert.deepEqual(r.skipped.map((s) => s.name).sort(), ['e', 'h']);
+});

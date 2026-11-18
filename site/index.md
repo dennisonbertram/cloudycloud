@@ -12,7 +12,7 @@ Subagents on your laptop share its CPU, memory and battery with you. Their build
 
 ## Every subagent gets its own computer.
 
-When your Claude Code session starts a subagent, Cloudy Cloud gives it a fresh cloud machine. The subagent runs a full Claude Code there, on a copy of your repo. Your laptop only runs your own session.
+When your session starts a subagent, Cloudy Cloud gives it a fresh cloud machine. The subagent runs a full coding agent there (Claude Code by default), on a copy of your repo. Your laptop only runs your own session.
 
 - Sees your tracked files, including uncommitted edits
 - Runs in the cloud, not on your laptop
@@ -47,11 +47,11 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Add your keys
 
-2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
+2. Setup asks which agents you run (Claude Code, Codex, opencode, pi or free-pi), then asks for your cloud and GitHub keys and for the credentials those agents need, and tells you where to get each. A Claude token is asked for only if you use Claude Code. The setup skill is for Claude Code. Setup does not set up the ChatGPT login file for Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
 
 ### Start a session
 
-3. Run `cloudy-cloud` instead of `claude`, then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
+3. Run `cloudy-cloud` instead of `claude`, or `cloudy-cloud codex`, `opencode`, `pi` or `free-pi` for another agent. Then `git fetch origin cloudy-cloud/<id>` to pull a subagent's work. Plain `claude` is unchanged.
 
 ```
 $ npx cloudycloud setup
@@ -60,7 +60,7 @@ $ npx cloudycloud setup
   Checks your tools, links the command and saves your keys.
 
   ●━━○━━○━━○  Tools  1 of 4
-  ✔ git, node, npm, curl and claude are installed
+  ✔ git, node, npm and curl are installed
   ✔ Dependencies installed
   ✔ cloudy-cloud already runs from this folder
   ✔ Fleet skill available in every project
@@ -104,11 +104,11 @@ $ git merge origin/cloudy-cloud/569dac7c
 
 Real output, lightly trimmed.
 
-## Claude for your session. Your choice of model for workers.
+## Your agent for your session. Your choice of agent and model for workers.
 
-Workers can use Claude, or GLM, DeepSeek, Particle or OpenRouter with your own provider key. Send bulk, well-specified work to a cheaper open model and keep Claude for the hard parts.
+Your session can be Claude Code, Codex, opencode, pi or free-pi. Workers can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or on GLM, DeepSeek, Particle, OpenRouter or OpenAI models with your own key. Send bulk, well-specified work to a cheaper open model and keep a stronger one for the hard parts. Codex and opencode workers have not yet been run on a real cloud machine.
 
-Claude — your normal login
+Claude Code — your normal login
 
 GLM — profile: glm
 
@@ -118,15 +118,21 @@ Particle — profile: particle
 
 OpenRouter — profile: openrouter
 
+Codex — profile: codex
+
+opencode — profile: opencode-glm
+
+pi and oh-my-pi — profile: pi-glm, omp-glm
+
 Your own provider
 
 ## Other ways to run agents in the cloud.
 
-Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the Claude Code session you already use.
+Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the coding agent session you already use: Claude Code, Codex, opencode, pi or free-pi.
 
 | Product | Starts from your local coding agent session | One machine per subagent | Results land as | Models for workers | Hosted app, no setup |
 |---|---|---|---|---|---|
-| Cloudy Cloud | Yes | Yes | A git branch per subagent | Claude or open models (GLM, DeepSeek, OpenRouter) | No, you run it yourself |
+| Cloudy Cloud | Yes | Yes | A git branch per subagent | Claude Code, pi, oh-my-pi, Codex or opencode, on Claude, GLM, DeepSeek, Particle, OpenRouter or OpenAI models | No, you run it yourself |
 | Claude Code on the web | No, a separate cloud session | No, subagents share the session's machine | A branch and pull request | Claude only | Yes |
 | Cloud sandboxes: Instabox, boat, Maritime, E2B, Daytona | No, you wire it up yourself | You build it | Files on the machine | Whatever you install | Machines and an API, not an agent |
 | Hosted coding agents: Codex cloud, Cursor, Copilot, Devin | No, their own agent and app | One machine per task | A branch or pull request | The vendor's choice | Yes |
@@ -138,15 +144,15 @@ Based on each product's public docs, November 2026. Products change; check their
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.
+An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`.
 
 ### What happens to the machines?
 

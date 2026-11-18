@@ -10,11 +10,11 @@ The terms used in the Cloudy Cloud docs, with one short definition each.
 
 ### Subagent
 
-A helper agent that Claude Code hands a piece of work to. Cloudy Cloud runs each subagent on its own cloud machine instead of on your laptop.
+A helper agent that your main session (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to. Cloudy Cloud runs each subagent on its own cloud machine instead of on your laptop.
 
 ### Cloud agent
 
-A Claude subagent started with the `cloud_agent` tool: it runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.
+A subagent started with the `cloud_agent` tool. It runs Claude Code by default, or pi, oh-my-pi, Codex or opencode when a profile says so. It runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.
 
 ### Worker
 
@@ -30,11 +30,19 @@ The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud 
 
 ### Profile
 
-A named setting that runs a worker on another model, such as `glm`, `deepseek` or `openrouter`. With no profile, a subagent runs Claude.
+A named setting that runs a worker on another model or another agent, such as `glm`, `pi-glm`, `omp-glm`, `codex`, `opencode-glm` or `openrouter`. With no profile, a subagent runs Claude Code. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+
+### Harness
+
+The coding agent that runs on a worker machine: `claude` (Claude Code), `pi`, `omp` (oh-my-pi), `codex` or `opencode`. A profile sets it, and `"harness"` sets it in `profiles.json`.
+
+### Main session (host)
+
+The coding agent you talk to, started with `cloudy-cloud` (Claude Code), `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. It gets the `cloud_agent` tools. It is separate from the harness of the workers it starts.
 
 ### MCP sync
 
-The opt-in copy of chosen MCP servers from your Claude Code settings to cloud subagents. You add each server with `cloudy-cloud mcp add NAME`. The list is saved in `~/.config/cloudy-cloud/mcp.json`, and tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
+The opt-in copy of chosen MCP servers from your Claude Code settings to cloud subagents, whichever agent each one runs (Claude Code, pi, oh-my-pi, Codex or opencode). You add each server with `cloudy-cloud mcp add NAME`. The list is saved in `~/.config/cloudy-cloud/mcp.json`, and tokens stay in Instabox. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 ### Branch cloudy-cloud/<id>
 

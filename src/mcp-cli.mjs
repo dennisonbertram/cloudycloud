@@ -77,7 +77,7 @@ async function add(name, ctx, allowLiteral = false) {
   let literal = false;
   if (allowLiteral && literals) {
     out('WARNING: with --allow-literal the real token is copied onto the machine of each subagent you start, though not onto the workers a coordinator starts (in a mode-600 file) instead of staying in Instabox.');
-    out('Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere.');
+    out('Cloud machines run agents with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere.');
     if (!ctx.isTTY) { err('Not added: --allow-literal needs a terminal so you can confirm.'); return 1; }
     const yes = /^y(es)?$/i.test((await ctx.ask(`Copy the real ${name} token onto cloud machines? [y/N] `)).trim());
     if (!yes) { err('Not added. Run without --allow-literal to keep the token in Instabox.'); return 1; }
@@ -121,7 +121,7 @@ async function add(name, ctx, allowLiteral = false) {
   if (literal) out(`${name} will carry its real token on cloud machines because you allowed it. Remove it with: cloudy-cloud mcp rm ${name}`);
   if (uniq.length) {
     const h = hosts.map((x) => `--host ${shq(x)}`).join(' ');
-    out('This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.');
+    out('This server sends a secret. Cloud machines run agents with permission checks off, so the value is not copied.');
     out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}; Instabox adds the real value to requests to ${redact(hosts.join(', '))} only.`);
     for (const r of uniq) out(`  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${shq(r)} ${h}`);
   }

@@ -44,6 +44,11 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# `cloudy-cloud pi|free-pi [args]` starts pi or free-pi as the main session with the cloud_agent tools.
+if [ "${1:-}" = pi ] || [ "${1:-}" = free-pi ]; then
+  exec node "$root/src/host-pi.mjs" "$@"
+fi
+
 # `cloudy-cloud coordinator ...` manages cloud coordinators instead of starting Claude Code.
 if [ "${1:-}" = coordinator ]; then
   shift
@@ -57,6 +62,14 @@ if [ "${1:-}" = mcp ]; then
     4:add) if [ "${4:-}" = --allow-literal ]; then shift; exec node "$root/src/mcp-cli.mjs" "$@"; fi ;; esac
 fi
 
+# `cloudy-cloud opencode [args]` starts opencode (instead of Claude Code) with the cloud_agent tools. A subcommand, because
+# `--agent` is already a Claude Code option that is passed through.
+if [ "${1:-}" = opencode ]; then
+  shift
+  . "$root/bin/migrate-config.sh"; migrate_config
+  exec node "$root/src/host-opencode.mjs" "$@"
+fi
+
 # `cloudy-cloud setup` (or --setup) runs install.sh from this folder, whatever the current folder is.
 case ${1:-} in setup|--setup) shift; exec "$root/install.sh" "$@" ;; esac
 
@@ -66,7 +79,7 @@ if [ $# -eq 1 ]; then
     --version) sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json"; exit 0 ;;
     --help|-h|help)
       cat <<'EOF'
-Cloudy Cloud: Claude Code with every subagent on its own cloud machine.
+Cloudy Cloud: give every subagent of your coding agent its own cloud machine.
 
 Usage: cloudy-cloud [command]
 
@@ -78,6 +91,10 @@ Usage: cloudy-cloud [command]
   shell <agent> [-- cmd] open a shell on a cloud machine, or run one command there
   display <agent>        print a link to a cloud machine's desktop (or --screenshot FILE)
   protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
+  codex [args]           start the Codex CLI with the cloud_agent tools instead of Claude Code
+  opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
+  pi [args]              start pi as the main session with the cloud_agent tools
+  free-pi [args]         start free-pi as the main session with the cloud_agent tools
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version
@@ -90,6 +107,11 @@ EOF
       exit 0 ;;
   esac
 fi
+
+# `cloudy-cloud codex [codex args]` starts the Codex CLI (instead of Claude Code) with the same cloud_agent tools. It is a subcommand
+# rather than --agent codex because claude already has its own --agent flag, which every other argument is passed to.
+agent=claude
+if [ "${1:-}" = codex ]; then agent=codex; shift; fi
 
 # Messages use the same look as install.sh: colour only on a colour terminal (not with NO_COLOR, CLICOLOR=0 or TERM=dumb).
 say_init() {
@@ -141,7 +163,8 @@ find_missing() {
   # Only the saved file counts for the subagent's Claude login: wrappers such as cmux's
   # `claude` can remove ANTHROPIC_API_KEY from the environment before Claude Code starts.
   # A Claude secret named in CLOUDY_CLOUD_PROXY_SECRETS (stored as an Instabox secret) counts too.
-  if [ -z "$missing" ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
+  # A Codex host needs no Claude login; a worker that does needs it is refused with its own next step.
+  if [ -z "$missing" ] && [ "$agent" = claude ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
     && { [ "$provider" = self-hosted ] || ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | tr -d ' \t' | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; }; then
     missing='Claude token'
   fi
@@ -168,10 +191,11 @@ case $root in *'"'*|*'\'*) warn "cloudy-cloud: install path contains a quote or 
 # Single quotes keep ${VAR:-} literal; Claude Code expands them, so secrets never appear in argv.
 # CLOUDY_CLOUD_CONFIG is included so the server reads the same file as this launcher.
 export CLOUDY_CLOUD_CONFIG="$config"
+if [ "$agent" = codex ]; then exec node "$root/src/host-codex.mjs" "$@"; fi
 envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","CLOUDY_CLOUD_PROVIDER":"${CLOUDY_CLOUD_PROVIDER:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}","CLOUDY_CLOUD_PROXY_SECRETS":"${CLOUDY_CLOUD_PROXY_SECRETS:-}","CLOUDY_CLOUD_APT_PACKAGES":"${CLOUDY_CLOUD_APT_PACKAGES:-}"}'
 mcp="{\"mcpServers\":{\"cloud\":{\"command\":\"node\",\"args\":[\"$root/src/server.mjs\"],\"env\":$envjson}}}"
 settings='{"permissions":{"allow":["mcp__cloud__cloud_agent","mcp__cloud__cloud_agent_message","mcp__cloud__cloud_agent_wait","mcp__cloud__cloud_agent_result","mcp__cloud__cloud_agent_list","mcp__cloud__cloud_agent_stop"],"deny":["Agent","Workflow"]}}'
-prompt='Workers can run Claude or open models: for a non-Claude model use the profile argument of cloud_agent (pi-particle, pi-glm, pi-deepseek, omp-particle, omp-glm, omp-deepseek, particle, glm, deepseek, openrouter), never the model argument. The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. cloud_agent accepts profile to run a worker on another model; the built-in profiles are glm, deepseek, particle and openrouter. Each cloud agent is a full Claude in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first; it returns at once and the agent works in the background. There are two modes, and the tool result tells you which one you are in. (1) Task mode: cloud_agent and cloud_agent_message return an MCP task. Each agent then shows in /tasks with live progress (tool uses, tokens, elapsed time, current step), and its result reaches you automatically when it finishes, with its agent_id. Do not call cloud_agent_wait for these; tell the user they can watch /tasks and stop an agent there. (2) Otherwise the call returns an agent_id and you call cloud_agent_wait with all the agent_ids to get results, and again after each cloud_agent_message. In both modes use cloud_agent_message for follow-ups, cloud_agent_list to check state and progress, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. Starts are paced and queued automatically; a queued agent starts when a machine is free, so start as many as you need at once. Each agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo automatically. Get an agent'"'"'s work with git fetch origin cloudy-cloud/<id> (the result says when it was pushed). If an agent fails or disappears, whatever it pushed is still on origin cloudy-cloud/<id>. When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present. cloud_agent also takes machine (linux by default; android, omarchy, gpu, macos). gpu and macos need consent in the env file, so relay the error Tell the user line and do not retry. To look at a worker, run cloudy-cloud shell <id> -- <cmd> or cloudy-cloud display <id>; a display link is a secret, never put it in a PR, issue or report.'
+prompt='Workers can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or open models: for any other agent or model use the profile argument of cloud_agent (Claude Code on another model: glm, deepseek, particle, openrouter; pi: pi-glm, pi-deepseek, pi-particle; oh-my-pi: omp-glm, omp-deepseek, omp-particle; Codex: codex, codex-chatgpt, codex-openrouter; opencode: opencode-glm, opencode-deepseek, opencode-particle, opencode-openrouter), never the model argument. The openrouter, codex-openrouter and opencode-openrouter profiles also need model (the OpenRouter model id). The built-in Agent and Workflow tools are disabled. ALL delegation that would use a subagent must use the mcp__cloud__cloud_agent tool. Any instruction that mentions the Agent tool means mcp__cloud__cloud_agent. cloud_agent accepts profile to run a worker on another agent or model. Each cloud agent is a full agent (Claude Code by default) in a remote sandbox with the repo'"'"'s committed and tracked files (including uncommitted edits to tracked files), not local untracked files. Workflow: start every subagent with cloud_agent first; it returns at once and the agent works in the background. There are two modes, and the tool result tells you which one you are in. (1) Task mode: cloud_agent and cloud_agent_message return an MCP task. Each agent then shows in /tasks with live progress (tool uses, tokens, elapsed time, current step), and its result reaches you automatically when it finishes, with its agent_id. Do not call cloud_agent_wait for these; tell the user they can watch /tasks and stop an agent there. (2) Otherwise the call returns an agent_id and you call cloud_agent_wait with all the agent_ids to get results, and again after each cloud_agent_message. In both modes use cloud_agent_message for follow-ups, cloud_agent_list to check state and progress, and cloud_agent_stop when an agent is finished. Agents stay open until stopped or 60 idle minutes pass, so stop them when done. Starts are paced and queued automatically; a queued agent starts when a machine is free, so start as many as you need at once. Each agent pushes its work to origin branch cloudy-cloud/<id>; nothing is copied into the local repo automatically. Get an agent'"'"'s work with git fetch origin cloudy-cloud/<id> (the result says when it was pushed). If an agent fails or disappears, whatever it pushed is still on origin cloudy-cloud/<id>. When a cloud_agent tool returns an error, follow its Next step, and relay its Tell the user line to the user when present. cloud_agent also takes machine (linux by default; android, omarchy, gpu, macos). gpu and macos need consent in the env file, so relay the error Tell the user line and do not retry. To look at a worker, run cloudy-cloud shell <id> -- <cmd> or cloudy-cloud display <id>; a display link is a secret, never put it in a PR, issue or report.'
 
 # On a coordinator machine (set by `coordinator start`) the keys are placeholders that Instabox swaps for the real values.
 if [ -n "${CLOUDY_CLOUD_COORDINATOR:-}" ]; then

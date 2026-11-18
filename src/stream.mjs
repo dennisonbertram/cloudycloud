@@ -8,6 +8,8 @@ import { appendFileSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { redact, redactText } from './events.mjs';
+import { createCodexProgress } from './progress-codex.mjs';
+import { createOpencodeProgress } from './progress-opencode.mjs';
 
 const INPUT_MAX = 4096;
 const SUMMARY_MAX = 400;
@@ -76,10 +78,26 @@ function pi(j, o) {
   return [];
 }
 
+// codex and opencode: the worker's own progress parsers read each line (so there is one parser per format), and what they find
+// becomes events: a tool_use when the tool count grows, and one result when they report a final answer. Their tool results are not
+// in the progress state, so none are shown. State is kept per call, so resume these from the start, like pi.
+const viaProgress = (create) => (j, o) => {
+  const p = (o.prog ??= create()), tools = p.tools, before = p.final;
+  p.event(j);
+  const evs = [];
+  if (p.tools > tools) evs.push({ kind: 'tool_use', id: `t${p.tools}`, name: p.step.split(' ')[0], input: redact(JSON.stringify({ step: p.step })), inputBytes: 0, truncated: false });
+  if (p.final && p.final !== before) {
+    const t = p.totals();
+    evs.push({ kind: 'result', text: redact(p.final.result), isError: p.final.is_error, sessionId: p.final.session_id, usage: { input: t.in, output: t.out, cacheRead: 0, cacheCreation: 0 } });
+  }
+  return evs;
+};
+const HANDLERS = { claude, pi, omp: pi, codex: viaProgress(createCodexProgress), opencode: viaProgress(createOpencodeProgress) };
+
 export function normalise(source, { harness = 'claude', turn, from = 0, seq = 0, thinking = process.env.CLOUDY_CLOUD_STREAM_THINKING === '1' } = {}) {
   const text = Array.isArray(source) ? source.join('\n') : String(source ?? '');
   const o = { harness, thinking, seen: new Set(), state: { input: 0, output: 0 } };
-  const handle = harness === 'claude' ? claude : pi;
+  const handle = HANDLERS[harness] ?? pi;
   const out = [];
   let skipped = 0, off = from, next = from;
   const parts = text.split('\n'), last = parts.length - 1;

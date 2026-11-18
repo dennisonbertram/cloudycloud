@@ -71,15 +71,15 @@ test('pi built-ins use the pi harness; others default to claude', () => {
 
 test('profileKeyNames lists the keys profiles use, not every *_API_KEY in the environment', () => {
   const none = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'missing.json');
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const f = file({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'mm', keyName: 'OTHER_API_KEY' }, bad: { keyName: 'lower' }, worse: null });
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
   // A coordinator has no profiles.json, so it still needs the key of a built-in profile that the laptop file overrides.
   const over = file({ openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', model: 'mm', keyName: 'MINE_API_KEY' } });
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const broken = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'p.json');
   writeFileSync(broken, '{not json');
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
 });
 
 test('omp built-ins and profiles.json use the omp harness; other harness names are rejected', () => {
@@ -89,7 +89,7 @@ test('omp built-ins and profiles.json use the omp harness; other harness names a
   assert.equal(resolveProfile('omp-particle', undefined, env).ok.model, 'particle-ai/particle-1');
   const mk = (h) => ({ ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: h, format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
   assert.equal(resolveProfile('mine', undefined, mk('omp')).ok.harness, 'omp');
-  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi" or "omp"/);
+  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi", "omp", "codex" or "opencode"/);
 });
 
 test('ompModels names the key variable and never holds a value; ompConfig turns off imports and project MCP', () => {
@@ -137,4 +137,27 @@ test('a custom profile key set as a real value is refused with the exact steps f
   assert.match(r.error, /secrets set ACME_API_KEY --host api\.acme\.example/);
   assert.match(r.error, /CLOUDY_CLOUD_PROXY_SECRETS/);
   assert.ok(!r.error.includes('plainvalue'));
+});
+
+
+// ---- Astra review fixes ----
+test('coordinatorKeys does not forward an ambient OPENAI_API_KEY; it needs the env file or a proxy secret. Claude-only users see no change', async () => {
+  const { coordinatorKeys } = await import('../src/profiles.mjs');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-amb-')), 'env');
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\n');
+  const self = { keyName: 'X_API_KEY', caps: { hasProxySecrets: false } };
+  const base = { CLOUDY_CLOUD_CONFIG: file, CLAUDE_CODE_OAUTH_TOKEN: 'oat', PARTICLE_API_KEY: 'pk-saved', CLOUDY_CLOUD_PROFILES: '/nonexistent' };
+  const without = coordinatorKeys(base, self);
+  const ambient = coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-ambient-shell-key' }, self);
+  assert.deepEqual(ambient, without, 'a shell-only OPENAI_API_KEY changes nothing');
+  assert.ok(!JSON.stringify(ambient).includes('sk-ambient'));
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\nOPENAI_API_KEY=sk-saved-key\n');
+  assert.ok(coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-saved-key' }, self).lines.includes('OPENAI_API_KEY=sk-saved-key'), 'saved in the env file: chosen');
+  const inst = { keyName: 'INSTABOX_API_KEY', caps: { hasProxySecrets: true } };
+  assert.ok(coordinatorKeys({ ...base, OPENAI_API_KEY: 'x', CLOUDY_CLOUD_PROXY_SECRETS: 'OPENAI_API_KEY' }, inst).secrets.includes('OPENAI_API_KEY'), 'a proxy secret: chosen');
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\\n');
+  assert.ok(!coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-ambient-shell-key' }, inst).skipped.includes('OPENAI_API_KEY'), 'not even reported as skipped');
 });

@@ -10,19 +10,19 @@ Short answers about what Cloudy Cloud does, what it needs, what it keeps and how
 
 ### What is a subagent?
 
-When Claude Code hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
+When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.
 
 ### How do I start Cloudy Cloud?
 
-Run `cloudy-cloud` instead of `claude`, from inside a git repo with a GitHub remote. It starts a normal Claude Code session in which every subagent runs on its own cloud machine. `cloudycloud` is the same command; if you skipped the global install, use `npx cloudycloud`. Set it up first with `npx -y cloudycloud setup`.
+Run `cloudy-cloud` instead of `claude`, from inside a git repo with a GitHub remote. It starts a normal Claude Code session in which every subagent runs on its own cloud machine. To use another main session, run `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. `cloudycloud` is the same command; if you skipped the global install, use `npx cloudycloud`. Set it up first with `npx -y cloudycloud setup`.
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a Claude subscription or API key, a GitHub repo you can push to, and Node.js 20 or later.
+An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile (Particle.ai, OpenRouter or OpenAI, or a ChatGPT login for Codex). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### What can a subagent see?
 
-Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal Claude settings. It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
+Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with `cloudy-cloud mcp add`. Add a new file with `git add` if the subagent needs it.
 
 ### Can subagents use my MCP servers?
 
@@ -48,9 +48,9 @@ No. Only sessions you start with `cloudy-cloud` use the cloud.
 
 The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.
 
-### Which models can subagents use?
+### Which models and agents can subagents use?
 
-Claude by default, or open models such as GLM and DeepSeek through Particle.ai or OpenRouter. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Status of each agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Can I use my own computer?
 

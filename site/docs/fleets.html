@@ -73,7 +73,12 @@
   <main id="content" tabindex="-1">
     <article>
 <h1>Coordinators and fleets</h1>
-<p class="lede">A coordinator is a Claude session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
+<p class="lede">A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.</p>
+
+<p>A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through <code>profile</code>. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: <code>coordinator image</code> signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start <code>codex-chatgpt</code> workers has not been checked, and the code does not copy your ChatGPT login file (<code>codex-auth.json</code>) to a coordinator machine, so plan on <code>codex-chatgpt</code> not working from a coordinator.</p>
+<p><strong>Worker credentials on a coordinator.</strong> A coordinator can start a worker only if its machine holds that profile's key. On Instabox, <code>coordinator start</code> attaches every provider key that is stored as a proxy secret (listed in <code>CLOUDY_CLOUD_PROXY_SECRETS</code>), including <code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code> and <code>OPENAI_API_KEY</code>, and the coordinator's <code>~/.config/cloudy-cloud/env</code> holds their names. So before you start a fleet that uses <code>codex</code> workers, store <code>OPENAI_API_KEY</code> as an Instabox secret and add it to <code>CLOUDY_CLOUD_PROXY_SECRETS</code> on your computer, as in <a href="models.html#codex-profiles">The codex profiles</a>. A key that is only a plain line in your env file is not sent; <code>coordinator start</code> says which keys it skipped. The opencode, pi and omp profiles use <code>PARTICLE_API_KEY</code> or <code>OPENROUTER_API_KEY</code>, which setup stores as proxy secrets.</p>
+<h3 id="worker-harness">Picking a worker agent for a fleet</h3>
+<p>Keep the coordinator and any sub-coordinators on Claude Code. For the workers, set <code>profile</code> per task. For bulk, well-specified work (renames, adding tests, filling in similar files, doc updates), use an open-model profile: <code>glm</code>, <code>deepseek</code> or <code>particle</code> (Claude Code), <code>pi-glm</code> or <code>pi-deepseek</code>, or <code>omp-glm</code>. These are the ones verified live. Use <code>openrouter</code>, or <code>codex-openrouter</code> and <code>opencode-openrouter</code>, only with a <code>model</code> argument. Keep the default Claude profile for judgment-heavy tasks. Codex and opencode workers are not verified on a real machine (see <a href="models.html#verified">the status table</a>), so try one before you start many. The <code>cloud-fleet</code> skill is a Claude Code skill.</p>
 
 <h2 id="when-to-use-one">When to use a coordinator</h2>
 <p>For a few independent tasks, start plain cloud agents from your own session. You wait for them and review their branches yourself.</p>
@@ -104,7 +109,8 @@
 <li><code>--branch B</code>: the branch to clone. Optional.</li>
 <li><code>--task TEXT</code> or <code>--task-file PATH</code>: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.</li>
 <li><code>--max-hours N</code>: when the server deletes the machine. Default and maximum 24.</li>
-<li><code>--json</code>: print the machine name, Remote Control name and attach command as JSON.</li>
+<li><code>--model NAME</code>: the Claude Code model for the coordinator's session, such as <code>opus</code> or <code>claude-opus-5-5</code>. Optional.</li>
+<li><code>--json</code>: print the machine name, Remote Control name and attach command as JSON, with <code>started: true</code>.</li>
 </ul>
 <p>The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.</p>
 
@@ -158,7 +164,7 @@ git push origin fleet/&lt;topic&gt;</code></pre></li>
 <h3 id="sub-coordinators">Sub-coordinators and waves</h3>
 <p>For large jobs, the top coordinator gives each area to a sub-coordinator with its own sub-trunk <code>fleet/&lt;topic&gt;/&lt;area&gt;</code>. Each sub-coordinator merges its workers, tests its area, and reports. The top coordinator merges the sub-trunks and opens the PR. Git cannot hold both <code>fleet/x</code> and <code>fleet/x/y</code>, so if that happens name them <code>fleet/&lt;topic&gt;-&lt;area&gt;</code>.</p>
 <p>For waves, merge wave 1 into the trunk and push it before you start wave 2. Never start a dependent worker before its dependency is merged and pushed.</p>
-<p>Keep coordinators on Claude, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See <a href="models.html">Models and keys</a>. Check their branches more carefully.</p>
+<p>Keep coordinators on Claude Code, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See <a href="models.html">Models and keys</a>. Check their branches more carefully.</p>
 
 <h2 id="limits">Limits and costs to watch</h2>
 <table>

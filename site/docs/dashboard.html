@@ -75,6 +75,8 @@
 <h1>Dashboard and app previews</h1>
 <p class="lede">The dashboard is a read-only web page on your own computer that shows your cloud agents and the messages between them and your session. To look at an app a cloud agent is running, use <code>cloudy-cloud open</code>.</p>
 
+<p>The dashboard and <code>cloudy-cloud open</code> work for every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode), because they read the event log that the cloud tools write. The Model column shows the profile name for a worker on another agent.</p>
+
 <h2 id="start">Start the dashboard</h2>
 <pre><code>cloudy-cloud dashboard</code></pre>
 <p>This prints a link and opens it in your browser. The page is served from <code>127.0.0.1</code> on port 4477, or on a free port if 4477 is taken. Press Ctrl+C in the terminal to stop it.</p>

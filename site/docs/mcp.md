@@ -8,7 +8,7 @@ Cloud subagents have no MCP servers unless you choose some. `cloudy-cloud mcp ad
 
 ## Add a server
 
-Three steps. Replace `notion` with the name Claude Code shows in `claude mcp list`.
+Three steps. Replace `notion` with the name of the server in your Claude Code settings (`claude mcp list` shows it). `mcp add` reads only Claude Code's settings, whichever agent is your main session, so a server that is set up only in Codex, opencode or pi must be added to Claude Code first, or written into `mcp.json` by hand.
 
 1. Copy the server: `cloudy-cloud mcp add notion`. It finds the server in your Claude Code settings, shows what it found, and saves it.
 2. If the server needs a token, run the `secrets set` command that step 1 printed. You run it once per token.
@@ -22,7 +22,7 @@ Found notion in ~/.claude.json (user scope):
   type     http
   url      https://mcp.notion.com/mcp
   headers  Authorization: Bearer ntn_…9f3a
-This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.
+This server sends a secret. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so the value is not copied.
 It is written as ${MCP_NOTION_TOKEN}; Instabox adds the real value to requests to mcp.notion.com only.
   Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com
 Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start from now on gets it.
@@ -37,6 +37,8 @@ The list is read each time a subagent starts, so you do not need to restart `clo
 It searches your Claude Code settings in this order and uses the first match: the local scope (the entry for the current folder in `~/.claude.json`), the project scope (`.mcp.json` in the repo root), then the user scope (`mcpServers` in `~/.claude.json`). The first output line says which one it used. If the name is not found, it prints `No MCP server named NAME in your Claude Code config. See: claude mcp list` and exits with status 1.
 
 If the name is already in the list, the command prints `Replacing the existing NAME entry.` and overwrites it.
+
+This page applies to every worker agent: Claude Code, pi, oh-my-pi (`omp`), Codex and opencode. The list is the same for all of them. Only the file it is written to on the machine, and which servers are skipped, differ (see Files and what the machine gets). `cloudy-cloud mcp add` reads your Claude Code settings, so it works whichever agent you use as your main session, but the server must be in Claude Code's configuration. If you use Codex, opencode, pi or free-pi and have no Claude Code settings, there is nothing for `mcp add` to copy: install Claude Code, add the server there, then run `mcp add`, or write `~/.config/cloudy-cloud/mcp.json` by hand in the format below.
 
 ## Commands
 
@@ -72,7 +74,7 @@ Everything else is refused with a reason on the line `Not added: REASON`, and `m
 
 The same checks run again every time a subagent starts, on whatever is in `mcp.json`.
 
-> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, and no `sse` servers for the `pi` profiles (pi has no SSE transport).
+> Warning: These are limits of the current version: no OAuth servers, no servers that run from a local path or listen on localhost, no secrets in URLs or arguments, no `sse` servers for the `pi` profiles (pi has no SSE transport), and no `sse` servers for the Codex profiles (Codex has none either). See the per-agent rules below.
 
 ## Tokens and secrets
 
@@ -105,15 +107,17 @@ Two server names that map to the same secret name (`my-srv` and `my_srv`) cannot
 
 Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to the machine of each subagent you start. A coordinator's own session gets it, but the workers a coordinator starts do not: consent is not passed down, so those workers skip the server. It only applies to values in `env` and `headers`. It is off unless you pass the flag.
 
-> Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
+> Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
 
 The command prints this warning, then asks `Copy the real NAME token onto cloud machines? [y/N]`. Anything other than `y` or `yes` cancels it with `Not added. Run without --allow-literal to keep the token in Instabox.` It also needs a terminal, so you can confirm. Without one it prints `Not added: --allow-literal needs a terminal so you can confirm.` No Instabox secret is created for a server added this way. The entry in `mcp.json` gets `"cloudyCloudAllowLiteral": true`, which is removed before the file is sent to the machine. Remove the server with `cloudy-cloud mcp rm NAME`.
 
 ## Files and what the machine gets
 
 - `~/.config/cloudy-cloud/mcp.json` on your computer, in Claude Code's own format: `{"mcpServers": {...}}`. `mcp add` writes it with mode 600 in a folder with mode 700. Set `CLOUDY_CLOUD_MCP` to use another path. If the file does not exist, the feature is off and nothing changes. If it is not valid JSON, `cloud_agent` fails with `Could not read FILE: ...` and the parse error.
-- On each cloud machine, the checked servers are written to `~/.config/cloudy-cloud/mcp.json` (mode 600), and Claude is started with `--mcp-config` for that file and `--strict-mcp-config`. This happens only for Claude subagents and only when at least one server passed the checks.
-- On a `pi` or `omp` worker the file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` instead (mode 600, folder mode 700). The servers and the `MCP_<NAME>_TOKEN` Instabox secrets are the same. `pi` has no SSE transport, so `sse` servers are skipped for `pi` workers and the reply says `MCP servers skipped: NAME (pi does not support the SSE transport)`. `omp` accepts `sse`. `omp` is also set to ignore MCP servers from other tools and from the repo's own config, so only these servers load.
+- On each cloud machine, the checked servers are written to `~/.config/cloudy-cloud/mcp.json` (mode 600), and Claude is started with `--mcp-config` for that file and `--strict-mcp-config`. This is the Claude Code way of loading the file: it happens only for Claude Code workers and only when at least one server passed the checks. Workers on other agents get the same servers through their own config file, as the next items describe.
+- On a Codex worker the servers go into `~/codex-home/config.toml`. Codex has no SSE transport and does not expand `${...}`, so it skips `sse` servers and entries that put a secret reference inside a longer value. A header must be exactly the secret or `Bearer ` plus the secret. The reply names each skipped server and the reason.
+- On an opencode worker the servers go into `~/opencode-agent/opencode.json` (mode 600). opencode accepts `sse` servers. An entry whose value contains `{env:...}` or `{file:...}` is skipped, because opencode would replace it with a variable or file from the worker. Use a `${MCP_<NAME>_TOKEN}` reference instead (`mcp add` creates one).
+- On a `pi` or `omp` worker the file goes to `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json` instead (mode 600, folder mode 700). The servers and the `MCP_<NAME>_TOKEN` Instabox secrets are the same. `pi` has no SSE transport, so `sse` servers are skipped for `pi` workers and the reply says `MCP servers skipped: NAME (pi does not support the SSE transport)`. `omp` accepts `sse` servers, but skips an entry whose header or env value starts with `!` or is a bare variable name, because omp would run it or replace it with the worker's own variable. `omp` is also set to ignore MCP servers from other tools and from the repo's own config, so only these servers load.
 - Because of `--strict-mcp-config`, a repo's own `.mcp.json` is not loaded on the machine once you have a server in the list. Without the list, nothing changes from before.
 - Coordinators get the same list. The list holds references, not secret values, so it adds no secret to a coordinator machine.
 
@@ -122,7 +126,7 @@ The command prints this warning, then asks `Copy the real NAME token onto cloud 
 - **The reply footer** ends with a line such as `MCP servers: notion, context7 (failed: linear)`. It lists the servers that connected and, in brackets, the ones that did not. If none connected it says `MCP servers: none connected`.
 - If you allowed a real token, another line says `MCP servers with a real token on the machine (you allowed it): NAME`.
 - Entries that did not pass the checks appear as `MCP servers skipped: NAME (REASON)`.
-- For a `pi` or `omp` worker the line is `MCP servers: a, b`, the names of the servers that were delivered to the machine. Unlike Claude's start-up report, it does not confirm that a server connected.
+- For a pi, omp, Codex or opencode worker the line is `MCP servers: a, b`, the names of the servers that were delivered to the machine. Unlike Claude's start-up report, it does not confirm that a server connected.
 - **`cloud_agent_list`** shows a line `mcp notion, context7` under each subagent that has servers.
 - **The dashboard** shows an MCP row in the agent's details with the server names. It never shows entries or tokens.
 

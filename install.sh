@@ -223,6 +223,9 @@ banner() {
 
 cfg() { printf '%s' "${CLOUDY_CLOUD_CONFIG:-$HOME/.config/cloudy-cloud/env}"; }
 
+# The ChatGPT login file, resolved like codexAuth in src/harness-codex.mjs: CLOUDY_CLOUD_CODEX_AUTH first, then the config folder.
+codex_auth_file() { printf '%s' "${CLOUDY_CLOUD_CODEX_AUTH:-$(dirname "$(cfg)")/codex-auth.json}"; }
+
 valid_ibk() { [[ $1 =~ ^ibk_[a-z2-7]{52}$ ]]; }
 valid_claude() { [[ $1 == sk-ant-oat01-* ]]; }
 mask() { printf '%s…%s' "$1" "${2: -4}"; } # mask PREFIX VALUE
@@ -299,6 +302,7 @@ secret_hosts() {
     CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY) echo api.anthropic.com ;;
     PARTICLE_API_KEY) echo api.particle.ai ;;
     OPENROUTER_API_KEY) echo openrouter.ai ;;
+    OPENAI_API_KEY) echo api.openai.com ;;
     CLOUDY_CLOUD_INSTABOX_API_KEY) echo api.instabox.sh ;;
     *) return 1 ;;
   esac
@@ -405,6 +409,24 @@ check_setup() {
   fi
   step 3 "Claude token"
   local n name="" lit=""
+  if ! agents_has claude; then
+    ok "No Claude token is needed" "agents: $AGENTS"
+    # Without a Claude token every worker needs a profile, and a profile needs one of these credentials.
+    local usable="" plain=""
+    for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
+      if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
+      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+    done
+    [ -f "$(codex_auth_file)" ] && usable=1
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
+      [ -n "$(eff $n)" ] || is_proxied $n || continue
+      if is_proxied $n || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
+      break
+    done
+    if [ -n "$usable" ]; then ok "A worker credential is saved"
+    elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
+    else bad "No worker credential is saved, so cloud_agent has no profile it can use" "run $(rerun_cmd) and save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or the Codex login file"; fails=1; fi
+  else
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
     if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
   done
@@ -412,6 +434,7 @@ check_setup() {
   elif [ "$provider" != self-hosted ] && [ -n "$lit" ] && ! is_proxied "$name"; then
     bad "$name is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
   else ok "A Claude credential is saved"; fi
+  fi
   step 4 "GitHub token, secrets and coordinators"
   if [ "$provider" = self-hosted ]; then
     if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push" "$fix"; fails=1
@@ -460,6 +483,10 @@ read_secret() {
 
 stop_empty() { warn "Stopped. Run $(rerun_cmd) again to continue." >&2; exit 1; }
 
+# AGENTS: the agents this setup is for, as a comma list (claude, codex, opencode, pi, free-pi). Saved as CLOUDY_CLOUD_AGENTS.
+AGENTS=""
+agents_has() { case ",$AGENTS," in *",$1,"*) return 0 ;; esac; return 1; }
+
 check_prereqs() {
   local nope=0 v major
   command -v git >/dev/null || { bad "git is missing" "Install it: https://git-scm.com/downloads"; nope=1; }
@@ -471,7 +498,8 @@ check_prereqs() {
   fi
   command -v npm >/dev/null || { bad "npm is missing"; nope=1; }
   command -v curl >/dev/null || { bad "curl is missing"; nope=1; }
-  command -v claude >/dev/null || { bad "Claude Code is missing" "Install it: https://code.claude.com"; nope=1; }
+  # Claude Code is needed only when claude is a chosen agent (before the question, AGENTS is empty).
+  if agents_has claude; then command -v claude >/dev/null || { bad "Claude Code is missing" "Install it: https://code.claude.com"; nope=1; }; fi
   return $nope
 }
 
@@ -1034,8 +1062,8 @@ setup_github() {
 }
 
 # Optional: a provider key for open-model workers (profiles glm, deepseek, particle, openrouter).
-setup_provider() { # setup_provider NAME LABEL WHERE
-  local name=$1 label=$2 where=$3 saved key
+setup_provider() { # setup_provider NAME LABEL WHERE [WORKERS [EXTRA HINT]]
+  local name=$1 label=$2 where=$3 workers=${4:-open-model workers} saved key
   migrate_key "$name" || true
   saved=$(get_saved "$name")
   if [ -n "$saved" ] || is_proxied "$name"; then
@@ -1043,7 +1071,7 @@ setup_provider() { # setup_provider NAME LABEL WHERE
     yn "Replace it?" || return 0
   fi
   drain_tty
-  ask "$label key for open-model workers (optional)" "Get one at $where"
+  ask "$label key for $workers (optional)" "Get one at $where" ${5:+"$5"}
   ask_line "Paste it (nothing shows as you paste; Enter to skip):"
   read_secret key
   [ -n "$key" ] || { hint "Skipped $label."; return 0; }
@@ -1079,14 +1107,61 @@ choose_provider() {
   case $a in 2) PROVIDER=self-hosted ;; *) PROVIDER=instabox ;; esac
 }
 
+# choose_agents: sets AGENTS from what you run locally. Enter accepts the saved choice, else the agents found on PATH, else claude.
+choose_agents() {
+  local a c det="" def input tries=0 unknown parts list
+  for a in claude codex opencode pi free-pi; do
+    c=$a; [ "$a" != free-pi ] || c=free-pi-cli
+    ! command -v "$c" >/dev/null || det="${det:+$det,}$a"
+  done
+  def=$(get_saved CLOUDY_CLOUD_AGENTS); [ -n "$def" ] || def=$det; [ -n "$def" ] || def=claude
+  while [ "$tries" -lt 3 ]; do
+    drain_tty
+    ask "Which agents do you run locally?" "Choose from: claude, codex, opencode, pi, free-pi (several, separated by spaces)." "Found on this computer: ${det:-none}. Only what these agents need is asked for."
+    ask_line "Enter for $def, or type your choice:"
+    IFS= read -r input </dev/tty || input=""
+    input=${input//,/ }
+    [ -n "${input//[[:space:]]/}" ] || input=${def//,/ }
+    read -ra parts <<<"$input"
+    unknown=""; list=""
+    for a in "${parts[@]}"; do
+      case $a in
+        claude|codex|opencode|pi|free-pi) case ",$list," in *",$a,"*) ;; *) list="${list:+$list,}$a" ;; esac ;;
+        *) unknown=$a ;;
+      esac
+    done
+    if [ -n "$unknown" ]; then bad "Unknown agent \"$unknown\"" "choose from claude, codex, opencode, pi, free-pi"; tries=$((tries + 1)); continue; fi
+    AGENTS=$list; break
+  done
+  [ -n "$AGENTS" ] || stop_empty
+  if ! agents_has claude && yn "Also run Claude Code workers in the cloud? (needs a Claude token)"; then AGENTS="$AGENTS,claude"; fi
+  # Claude alone is the default when nothing is saved, so an existing Claude user's config stays as it was.
+  if [ "$AGENTS" != claude ] || [ -n "$(get_saved CLOUDY_CLOUD_AGENTS)" ]; then
+  write_env CLOUDY_CLOUD_AGENTS "$AGENTS" || { bad "Could not write $(cfg)." >&2; exit 1; }
+  fi
+  ok "Agents" "$AGENTS"
+  if agents_has claude && ! command -v claude >/dev/null; then
+    bad "Claude Code is missing" "Install it: https://code.claude.com, or run $(rerun_cmd) again without claude"; exit 1
+  fi
+}
+
 # setup_self_hosted ROOT: the self-hosted questions live in src/self-hosted-setup.mjs.
 setup_self_hosted() {
   if node "$1/src/self-hosted-setup.mjs" setup; then STATUS_SH="OK ($(get_saved CLOUDY_CLOUD_SSH_HOST), $(get_saved CLOUDY_CLOUD_SELF_HOSTED_SLOTS) at once)"
   else bad "Self-hosted setup did not finish. Run $(rerun_cmd) again." >&2; exit 1; fi
 }
 
+# has_worker_key: a credential for a non-Claude worker is saved (an env line, an Instabox secret, or the Codex login file).
+has_worker_key() {
+  local k
+  for k in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
+    [ -z "$(get_saved $k)" ] && ! is_proxied $k || return 0
+  done
+  [ -f "$(codex_auth_file)" ]
+}
+
 main() {
-  local provider_arg=""
+  local provider_arg="" host
   if [ "${1:-}" = --provider ]; then
     [ $# -ge 2 ] || { bad "--provider needs instabox or self-hosted" >&2; exit 1; }
     provider_arg=$2; shift 2
@@ -1099,9 +1174,9 @@ main() {
   trap 'exit 130' INT TERM
   [ "${1:-}" = --check-only ] || banner
   step 1 Tools
-  if [ "${1:-}" = --check-only ]; then check_prereqs || PREREQ_FAIL=1; check_setup; exit $?; fi
+  if [ "${1:-}" = --check-only ]; then AGENTS=$(eff CLOUDY_CLOUD_AGENTS); [ -n "$AGENTS" ] || AGENTS=claude; check_prereqs || PREREQ_FAIL=1; check_setup; exit $?; fi
   check_prereqs || exit 1
-  ok "git, node, npm, curl and claude are installed"
+  ok "git, node, npm and curl are installed"
 
   local root branch sha log
   root=$(cd "$(dirname "$0")" && pwd)
@@ -1118,12 +1193,15 @@ main() {
   rm -f "$log"
   link_command "$root"
   link_skill "$root"
-  LOCAL_ACCOUNT=$(claude_account)
-  [ -z "$LOCAL_ACCOUNT" ] || ok "Your local Claude" "$LOCAL_ACCOUNT"
 
   choose_provider "$provider_arg"
+  choose_agents
+  if agents_has claude; then
+    LOCAL_ACCOUNT=$(claude_account)
+    [ -z "$LOCAL_ACCOUNT" ] || ok "Your local Claude" "$LOCAL_ACCOUNT"
+    warn_shell_env CLAUDE_CODE_OAUTH_TOKEN
+  fi
   warn_shell_env INSTABOX_API_KEY
-  warn_shell_env CLAUDE_CODE_OAUTH_TOKEN
   if [ "$PROVIDER" = self-hosted ]; then
     step 2 "Your own machine"
     setup_self_hosted "$root"
@@ -1135,10 +1213,11 @@ main() {
     store_coordinator_key || true # whether or not you build a coordinator image: nested coordinators need it too
     setup_alerts
   fi
-  step 3 "Claude token"
-  setup_claude
+  if agents_has claude; then step 3 "Claude token"; setup_claude
+  else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
   if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token, optional keys and coordinators"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
+  ! agents_has codex || setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
   setup_provider PARTICLE_API_KEY Particle.ai https://platform.particle.ai
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
   offer_coordinators "$root"
@@ -1148,15 +1227,18 @@ main() {
   box_open Summary
   if [ "$PROVIDER" = self-hosted ]; then
     summary_row "Your machine" "$STATUS_SH"
-    summary_row "Claude token" "$STATUS_CLAUDE"
+    ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
   else
     summary_row "Instabox key" "$STATUS_INSTABOX"
-    summary_row "Claude token" "$STATUS_CLAUDE"
+    ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
     summary_row "GitHub token" "$STATUS_GH"
     summary_row "Coordinators" "$STATUS_COORD"
   fi
   box_close
   echo
+  if ! agents_has claude && ! has_worker_key; then
+    warn "No worker credential is saved yet, so workers cannot start" "run $(rerun_cmd) again and save an OpenAI, Particle.ai or OpenRouter key, or choose claude"
+  fi
   if from_npm "$root"; then
     hint "To update, run: npm install -g cloudycloud@latest"
   else
@@ -1170,7 +1252,8 @@ main() {
   hint "Subagents can push to any branch the token reaches. In a repo, run: cloudy-cloud protect"
   box_open Next
   box_text "In a repo with a github.com origin, run:"
-  box_text "  cloudy-cloud" "$C_B$C_ACC"
+  host=${AGENTS%%,*}; [ "$host" != claude ] || host=""
+  box_text "  cloudy-cloud${host:+ $host}" "$C_B$C_ACC"
   box_text "then type:"
   box_text "  use a subagent to run hostname, write it to proof.txt," "$C_ACC"
   box_text "  commit and push, and tell me the result" "$C_ACC"

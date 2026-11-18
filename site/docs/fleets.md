@@ -4,7 +4,15 @@
 
 Source: https://cloudycloud.tech/docs/fleets.html
 
-A coordinator is a Claude session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
+A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
+
+A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: `coordinator image` signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start `codex-chatgpt` workers has not been checked, and the code does not copy your ChatGPT login file (`codex-auth.json`) to a coordinator machine, so plan on `codex-chatgpt` not working from a coordinator.
+
+**Worker credentials on a coordinator.** A coordinator can start a worker only if its machine holds that profile's key. On Instabox, `coordinator start` attaches every provider key that is stored as a proxy secret (listed in `CLOUDY_CLOUD_PROXY_SECRETS`), including `PARTICLE_API_KEY`, `OPENROUTER_API_KEY` and `OPENAI_API_KEY`, and the coordinator's `~/.config/cloudy-cloud/env` holds their names. So before you start a fleet that uses `codex` workers, store `OPENAI_API_KEY` as an Instabox secret and add it to `CLOUDY_CLOUD_PROXY_SECRETS` on your computer, as in [The codex profiles](https://cloudycloud.tech/docs/models.html#codex-profiles). A key that is only a plain line in your env file is not sent; `coordinator start` says which keys it skipped. The opencode, pi and omp profiles use `PARTICLE_API_KEY` or `OPENROUTER_API_KEY`, which setup stores as proxy secrets.
+
+### Picking a worker agent for a fleet
+
+Keep the coordinator and any sub-coordinators on Claude Code. For the workers, set `profile` per task. For bulk, well-specified work (renames, adding tests, filling in similar files, doc updates), use an open-model profile: `glm`, `deepseek` or `particle` (Claude Code), `pi-glm` or `pi-deepseek`, or `omp-glm`. These are the ones verified live. Use `openrouter`, or `codex-openrouter` and `opencode-openrouter`, only with a `model` argument. Keep the default Claude profile for judgment-heavy tasks. Codex and opencode workers are not verified on a real machine (see [the status table](https://cloudycloud.tech/docs/models.html#verified)), so try one before you start many. The `cloud-fleet` skill is a Claude Code skill.
 
 ## When to use a coordinator
 
@@ -55,7 +63,8 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 - `--branch B`: the branch to clone. Optional.
 - `--task TEXT` or `--task-file PATH`: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.
 - `--max-hours N`: when the server deletes the machine. Default and maximum 24.
-- `--json`: print the machine name, Remote Control name and attach command as JSON.
+- `--model NAME`: the Claude Code model for the coordinator's session, such as `opus` or `claude-opus-5-5`. Optional.
+- `--json`: print the machine name, Remote Control name and attach command as JSON, with `started: true`.
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 
@@ -122,7 +131,7 @@ For large jobs, the top coordinator gives each area to a sub-coordinator with it
 
 For waves, merge wave 1 into the trunk and push it before you start wave 2. Never start a dependent worker before its dependency is merged and pushed.
 
-Keep coordinators on Claude, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See [Models and keys](https://cloudycloud.tech/docs/models.html). Check their branches more carefully.
+Keep coordinators on Claude Code, because merging and judging results needs a strong model. Open-model workers suit bulk, well-specified tasks. See [Models and keys](https://cloudycloud.tech/docs/models.html). Check their branches more carefully.
 
 ## Limits and costs to watch
 

@@ -591,3 +591,19 @@ test('a prerelease of the floor is below it; a prerelease of a newer version is 
   assert.equal(argv0('echo instabox 0.8.289-rc.1')[0], 'npx');
   const [a, bin] = argv0('echo instabox 0.8.290-rc.1'); assert.equal(a, bin);
 });
+
+test('files.writeSecret uploads through the SDK upload route only, and fails closed when only the base64 exec fallback is left', async () => {
+  const seen = [];
+  const mk = (writeStream) => {
+    const { sdk } = fakeSdk();
+    const create = sdk.Sandbox.create;
+    sdk.Sandbox.create = async (...a) => { const b = await create(...a); b.files = { write: async (p, d) => { seen.push(['write', p]); }, writeStream }; return b; };
+    return createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing }).create({ image: 'x', envs: {}, labels: {}, ttlSeconds: 60 });
+  };
+  const ok = await mk(async (p, bytes) => { seen.push(['stream', p, Buffer.from(bytes).toString()]); return true; });
+  await ok.files.writeSecret('/home/user/a.json', 'TOKEN');
+  assert.deepEqual(seen, [['stream', '/home/user/a.json', 'TOKEN']]);
+  const bad = await mk(async () => false); // the SDK returns false when the route is missing; its write() would then run the base64 command
+  await assert.rejects(bad.files.writeSecret('/home/user/a.json', 'TOKEN'), (e) => e.code === 'secret_write_unsupported' && /Next step/.test(e.message));
+  assert.ok(!seen.some(([k]) => k === 'write'), 'files.write (and so the exec fallback) was never called');
+});

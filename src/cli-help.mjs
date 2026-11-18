@@ -1,17 +1,17 @@
 // Help for `cloudy-cloud coordinator`. The top-level help lives in bin/cloudy-cloud.
 const guides = {
-  image: ['Prepare a reusable Claude sign-in for coordinators.', 'image [--save]', [
+  image: ['Prepare a reusable Claude Code sign-in for coordinators.', 'image [--save]', [
     ['image', 'Create a machine to sign in on'],
     ['image --save', 'Save its snapshot and delete the machine'],
   ], 'Sign in on the image machine (claude auth login) before you save it.'],
-  start: ['Start an always-on cloud coordinator.', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]', [
+  start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]', [
     ['NAME', 'Lowercase letters, digits and hyphens, up to 40'],
     ['--repo URL', 'Required GitHub https URL'],
     ['--branch BRANCH', 'Branch to clone (default: the repo default)'],
     ['--task TEXT', 'Start the coordinator on this task'],
     ['--task-file PATH', 'Same, read from a file'],
     ['--max-hours N', 'Delete the machine after N hours (up to 24, the default)'],
-    ['--model NAME', 'Claude model for the session (for example opus or claude-opus-5-5)'],
+    ['--model NAME', 'Claude Code model for the session (for example opus or claude-opus-5-5)'],
     ['--json', 'Print the result as JSON (includes started: true)'],
   ], 'Run "image" and "image --save" once first. Stop the coordinator when you are done.'],
   attach: ['Print the SSH command for a coordinator.', 'attach NAME', [], 'Run the printed command to connect.'],
@@ -30,7 +30,7 @@ export function coordinatorHelp(command) {
       ...(options.length ? ['', ...options.map(([a, b]) => `  ${a.padEnd(18)} ${b}`)] : []),
       '', note, '', 'All coordinator commands: cloudy-cloud coordinator --help'].join('\n');
   }
-  return `Cloudy Cloud coordinators: always-on Claude sessions on their own cloud machines.
+  return `Cloudy Cloud coordinators: always-on Claude Code sessions on their own cloud machines. A coordinator always runs Claude Code, never pi, omp, Codex or opencode.
 
 Usage: cloudy-cloud coordinator <command>
 
