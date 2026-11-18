@@ -170,7 +170,7 @@ async function setup() {
     return sbx;
   };
   const env = { PARTICLE_API_KEY: PKEY, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open: new Map(), cwd: repo, env };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open: new Map(), cwd: repo, env, fetchFn: async () => ({ status: 200, text: async () => "{}" }) };
   const text = (r) => r.content[0].text;
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
   const wait = (ids) => waitAgents({ agent_ids: ids, timeout_seconds: 120 }, deps).then(text);

@@ -30,7 +30,7 @@ export const isQuotaExceeded = (e) => /quota_exceeded|concurrency_limit/.test(co
 // Start queue: at most perMin (a number or a function returning one) machine creates per rolling minute, in arrival order.
 // create(a, fn) waits for a slot, runs fn (the machine create) and retries it on rate_limited / quota_exceeded.
 // a.status is 'queued' while it waits and 'starting' while fn runs. cancel(a) makes a pending create() reject.
-export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES, liveCount, maxRunning, tierName, softPollMs = 5000, softWaitMs = 10 * MINUTE } = {}) {
+export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSleep, quotaRetryMs = QUOTA_RETRY_MS, quotaGiveUpMs = QUOTA_GIVE_UP_MS, maxTries = MAX_START_TRIES, liveCount, maxRunning, tierName, profileBusy, softPollMs = 5000, softWaitMs = 10 * MINUTE } = {}) {
   const waiting = []; // { a, grant, reject }
   const stamps = []; // times of recent create attempts
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
@@ -55,12 +55,15 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
     while (waiting.length) {
       const head = waiting[0];
       while (stamps.length && now() - stamps[0] >= MINUTE) stamps.shift();
-      let ms;
+      let ms, pb;
       if (full(head)) {
         capNote = `waiting for a free machine slot (${liveCount(head.a, true)} running on the ${tierName?.() ? `${tierName()} ` : ''}plan)`;
         ms = softPollMs;
+      } else if ((pb = profileBusy?.(head.a))) {
+        capNote = pb; // the agent's profile is at its concurrency cap; same wait as a full plan
+        ms = softPollMs;
       } else if (stamps.length >= rate()) ms = stamps[0] + MINUTE - now();
-      if (!full(head)) capNote = undefined;
+      if (!full(head) && !pb) capNote = undefined;
       if (ms !== undefined) labelWaiting();
       else if (head.a.queueNote) { delete head.a.queueNote; head.a.emit?.({ type: 'status', status: 'starting' }); } // the note ends when the machine starts; the dashboard clears it from this event
       if (ms === undefined) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await Promise.race([sleep(ms), new Promise((r) => { wake = r; })]);
@@ -106,3 +109,21 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   };
   return q;
 }
+
+// Provider errors in a worker's final text (pi, omp, codex, opencode). Harness-neutral: it only reads the words.
+// Retryable: model_not_found (a busy or rate-limited model), 429, 5xx and connection errors. Not retryable: 400, 401, 403.
+export function classifyProviderError(text) {
+  const s = String(text ?? '');
+  const status = Number(/\b([45]\d\d)\b/.exec(s)?.[1]) || undefined;
+  if (/model_not_found|model[ _]not[ _]found/i.test(s)) return { kind: 'model_not_found', status: status ?? 404, retryable: true };
+  if (status === 401 || status === 403 || status === 400) return { kind: 'rejected', status, retryable: false };
+  if (status === 429 || /rate.?limit|too many requests/i.test(s)) return { kind: 'rate_limited', status: status ?? 429, retryable: true };
+  if (status >= 500) return { kind: 'server_error', status, retryable: true };
+  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|overloaded|connection (error|reset|refused)/i.test(s)) return { kind: 'connection', status: undefined, retryable: true };
+  return null;
+}
+// One short line for the result: "Provider status: 404 model_not_found". The text is scrubbed by the caller.
+export const providerDetail = (text) => {
+  const c = classifyProviderError(text);
+  return c ? `Provider status: ${[c.status, c.kind].filter(Boolean).join(' ')}` : '';
+};

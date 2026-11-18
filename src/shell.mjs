@@ -1,4 +1,5 @@
 // `cloudy-cloud shell <agent-id-or-machine> [-- cmd...]`: a shell on a cloud machine, for you and the local Claude session.
+import { helpText } from './cli-help.mjs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { constants } from 'node:os';
@@ -9,11 +10,7 @@ import { loadProvider } from './providers/index.mjs';
 import { ID_RE, ID_ERR, resolveTarget } from './open.mjs';
 import { guide } from './errors.mjs';
 
-export const USAGE = `Usage: cloudy-cloud shell <agent-id-or-machine> [-- command [args...]]
-Open a shell on a cloud machine, or run one command there. The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.
-  (no command)   interactive login shell on the machine
-  -- command     run the command, stream its output, and exit with its exit code
-Each argument after -- reaches the machine unchanged. Do not put secrets in the command.`;
+export const USAGE = helpText('shell', true);
 
 const fail = (m) => { throw new Error(m); };
 
@@ -31,7 +28,7 @@ export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const err = deps.err ?? ((s) => console.error(s));
   try {
-    if (argv.slice(0, argv.includes('--') ? argv.indexOf('--') : undefined).some((x) => x === '--help' || x === '-h')) { (deps.out ?? ((s) => console.log(s)))(USAGE); return 0; }
+    if (argv.slice(0, argv.includes('--') ? argv.indexOf('--') : undefined).some((x) => x === '--help' || x === '-h')) { (deps.out ?? ((s) => console.log(s)))(helpText('shell')); return 0; }
     const a = parseArgs(argv);
     const provider = deps.provider ?? await loadProvider(env);
     const Name = provider.name[0].toUpperCase() + provider.name.slice(1);

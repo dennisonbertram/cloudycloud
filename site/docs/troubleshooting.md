@@ -52,9 +52,15 @@ git remote add origin https://github.com/OWNER/REPO.git
 
 Your GitHub token must also include that repository.
 
-### The first push failed, or "Push failed"
+### A turn failed or hit the time limit
 
-`The first push to origin cloudy-cloud/<id> failed` usually means the `GH_TOKEN` Instabox secret is missing or the token cannot write to this repo. Run `cloudy-cloud setup`, replace the GitHub token, and check the token's repository list. The secret must be named exactly `GH_TOKEN`. The same fix applies to `The GH_TOKEN Instabox secret could not be attached`.
+Each turn is limited to 29 minutes by default (`CLOUDY_CLOUD_TURN_MINUTES`, a whole number from 5). If a turn fails or hits the limit after the agent has started, the agent stays `idle` with its session and the machine. The result is marked as an error. Send `cloud_agent_message` with a message such as "continue where you stopped". A Codex or opencode first turn that times out still fails, because those agents do not report their session id early.
+
+### The GitHub access check failed, or "Push failed"
+
+`The GitHub access check for origin cloudy-cloud/<id> failed` (the setup check runs `git ls-remote origin HEAD`) usually means the `GH_TOKEN` Instabox secret is missing or the token cannot write to this repo. Run `cloudy-cloud setup`, replace the GitHub token, and check the token's repository list. The secret must be named exactly `GH_TOKEN`. The same fix applies to `The GH_TOKEN Instabox secret could not be attached`.
+
+If the worker committed nothing, no branch is pushed and the result says `No changes, no branch pushed.` That is not a failure.
 
 After each task, `cloudy-cloud` pushes once more, retrying once after five seconds. If that fails, the result says `Push failed: ...; the agent is still open, ask it to push.` It may also list `Uncommitted changes left in the sandbox`. The tool never commits for the agent. While the agent is open, ask it to commit and push.
 
@@ -229,7 +235,7 @@ rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/clou
 
 If you installed from a git clone, run `npm unlink -g cloudycloud` instead (also `npm unlink -g cloudy-cloud` for a clone from before the package was renamed), then delete the clone.
 
-To delete the subagent branches on GitHub, run this in your repo:
+To delete only the empty or merged subagent branches on GitHub, run `cloudy-cloud branches prune` in your repo (a dry run), then `cloudy-cloud branches prune --yes`. To delete all of them, run this in your repo:
 
 ```
 git ls-remote --heads origin 'cloudy-cloud/*' | awk '{print $2}' | xargs -n 50 git push origin --delete
