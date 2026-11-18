@@ -71,15 +71,15 @@ test('pi built-ins use the pi harness; others default to claude', () => {
 
 test('profileKeyNames lists the keys profiles use, not every *_API_KEY in the environment', () => {
   const none = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'missing.json');
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: none, STRIPE_API_KEY: 'x' }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const f = file({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'mm', keyName: 'OTHER_API_KEY' }, bad: { keyName: 'lower' }, worse: null });
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: f, STRIPE_API_KEY: 'x' }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OTHER_API_KEY', 'PARTICLE_API_KEY']);
   // A coordinator has no profiles.json, so it still needs the key of a built-in profile that the laptop file overrides.
   const over = file({ openrouter: { format: 'anthropic', baseUrl: 'https://openrouter.ai/api', model: 'mm', keyName: 'MINE_API_KEY' } });
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: over }).sort(), ['MINE_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
   const broken = join(mkdtempSync(join(tmpdir(), 'cc-prof-')), 'p.json');
   writeFileSync(broken, '{not json');
-  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
+  assert.deepEqual(profileKeyNames({ CLOUDY_CLOUD_PROFILES: broken }).sort(), ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'PARTICLE_API_KEY']);
 });
 
 test('omp built-ins and profiles.json use the omp harness; other harness names are rejected', () => {
@@ -89,7 +89,7 @@ test('omp built-ins and profiles.json use the omp harness; other harness names a
   assert.equal(resolveProfile('omp-particle', undefined, env).ok.model, 'particle-ai/particle-1');
   const mk = (h) => ({ ...env, CLOUDY_CLOUD_PROFILES: file({ mine: { harness: h, format: 'openai', baseUrl: 'https://x.test/v1', model: 'm', keyName: 'PARTICLE_API_KEY' } }) });
   assert.equal(resolveProfile('mine', undefined, mk('omp')).ok.harness, 'omp');
-  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi" or "omp"/);
+  assert.match(resolveProfile('mine', undefined, mk('x')).error, /harness must be "claude", "pi", "omp" or "codex"/);
 });
 
 test('ompModels names the key variable and never holds a value; ompConfig turns off imports and project MCP', () => {

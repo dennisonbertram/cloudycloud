@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { redact } from './events.mjs';
+import { codexReason } from './harness-codex.mjs';
 
 export const mcpFile = (env = process.env) => env.CLOUDY_CLOUD_MCP || join(homedir(), '.config/cloudy-cloud/mcp.json');
 export const SECRET_REF = /^\$\{(MCP_[A-Z0-9_]+_TOKEN)\}$/;
@@ -150,13 +151,14 @@ export const mcpConfigText = (servers) => JSON.stringify({ mcpServers: servers }
 const OMP_SPECIAL = /^\s*!|^[A-Za-z_][A-Za-z0-9_]*$/;
 const ompUnsafe = (e) => [...Object.values(e.headers ?? {}), ...Object.values(e.env ?? {})].some((v) => OMP_SPECIAL.test(v));
 
-// The servers a harness can use: pi has no SSE transport, and omp cannot take values it would resolve itself, so those entries
+// The servers a harness can use: pi has no SSE transport, codex has none either and cannot expand references (codexReason), and omp cannot take values it would resolve itself, so those entries
 // move to skipped. Claude gets the input as is.
 export function forHarness(mcp, harness) {
-  if (harness !== 'pi' && harness !== 'omp') return mcp;
+  if (harness !== 'pi' && harness !== 'omp' && harness !== 'codex') return mcp;
   const servers = {}, skipped = [...mcp.skipped];
   for (const [name, e] of Object.entries(mcp.servers)) {
     if (harness === 'pi' && e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' });
+    else if (harness === 'codex' && codexReason(e)) skipped.push({ name, reason: codexReason(e) });
     else if (harness === 'omp' && ompUnsafe(e)) skipped.push({ name, reason: 'a header or env value starts with ! or is a bare variable name, which omp would run or replace with the worker\'s own variable; put the value in a ${MCP_<NAME>_TOKEN} reference with cloudy-cloud mcp add, or prefix the value with text such as "Bearer "' });
     else servers[name] = e;
   }
