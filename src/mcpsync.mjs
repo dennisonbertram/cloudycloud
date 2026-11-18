@@ -149,16 +149,20 @@ export const mcpConfigText = (servers) => JSON.stringify({ mcpServers: servers }
 // name is replaced by that variable's value (docs/mcp-config.md, "Pre-connect env/header resolution"). There is no escape, and
 // the worker's environment holds the provider key, so such a value is not delivered. `${MCP_X_TOKEN}` and `Bearer ...` are literal to OMP.
 const OMP_SPECIAL = /^\s*!|^[A-Za-z_][A-Za-z0-9_]*$/;
+// opencode substitutes {env:X} and {file:path} anywhere in its config, so a literal value with that text is not delivered.
+const OPENCODE_SUBST = /\{(env|file):/;
+const opencodeUnsafe = (e) => [e.command, ...(e.args ?? []), e.url, ...Object.values(e.headers ?? {}), ...Object.values(e.env ?? {})].some((v) => typeof v === 'string' && OPENCODE_SUBST.test(v));
 const ompUnsafe = (e) => [...Object.values(e.headers ?? {}), ...Object.values(e.env ?? {})].some((v) => OMP_SPECIAL.test(v));
 
 // The servers a harness can use: pi has no SSE transport, codex has none either and cannot expand references (codexReason), and omp cannot take values it would resolve itself, so those entries
 // move to skipped. Claude gets the input as is.
 export function forHarness(mcp, harness) {
-  if (harness !== 'pi' && harness !== 'omp' && harness !== 'codex') return mcp;
+  if (harness !== 'pi' && harness !== 'omp' && harness !== 'codex' && harness !== 'opencode') return mcp;
   const servers = {}, skipped = [...mcp.skipped];
   for (const [name, e] of Object.entries(mcp.servers)) {
     if (harness === 'pi' && e.type === 'sse') skipped.push({ name, reason: 'pi does not support the SSE transport' });
     else if (harness === 'codex' && codexReason(e)) skipped.push({ name, reason: codexReason(e) });
+    else if (harness === 'opencode' && opencodeUnsafe(e)) skipped.push({ name, reason: 'a value contains {env:...} or {file:...}, which opencode would replace with a variable or a file from the worker; use a ${MCP_<NAME>_TOKEN} reference with cloudy-cloud mcp add' });
     else if (harness === 'omp' && ompUnsafe(e)) skipped.push({ name, reason: 'a header or env value starts with ! or is a bare variable name, which omp would run or replace with the worker\'s own variable; put the value in a ${MCP_<NAME>_TOKEN} reference with cloudy-cloud mcp add, or prefix the value with text such as "Bearer "' });
     else servers[name] = e;
   }

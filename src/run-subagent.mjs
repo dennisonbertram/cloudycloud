@@ -18,6 +18,8 @@ import { createPiProgress, parsePiStream } from './progress-pi.mjs';
 import { createOmpProgress, parseOmpStream } from './progress-omp.mjs';
 import { createCodexProgress, parseCodexStream } from './progress-codex.mjs';
 import { setupCodex, codexCommand, codexNextStep } from './harness-codex.mjs';
+import { createOpencodeProgress, parseOpencodeStream } from './progress-opencode.mjs';
+import { OPENCODE_VERSION, OPENCODE_SESSION, opencodeDir, opencodeInstructions, opencodeConfig, opencodeCommand } from './harness-opencode.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
 import { redact, redactText } from './events.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
@@ -113,9 +115,9 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
-const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex'
-const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress };
-const PARSE = { claude: parseStream, pi: parsePiStream, omp: parseOmpStream, codex: parseCodexStream };
+const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
+const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
+const PARSE = { claude: parseStream, pi: parsePiStream, omp: parseOmpStream, codex: parseCodexStream, opencode: parseOpencodeStream };
 
 // Consent path: a server whose token cannot go through an Instabox proxy secret is delivered only when its entry in
 // mcp.json carries "cloudyCloudAllowLiteral": true (the user put it there on purpose; the real value then sits on the
@@ -294,7 +296,9 @@ async function turn(a, message, ctx, t) {
   try {
     const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
     const codexCmd = harnessOf(a) === 'codex' && codexCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
-    stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
+    const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
+    if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
+    stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
       cwd: `${a.home}/repo`, timeoutMs: AGENT_MS, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
@@ -309,8 +313,8 @@ async function turn(a, message, ctx, t) {
   if (t.cancelled) return { cancelled: true, gone: failed, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
-    // omp and codex exit 1 with the error in their own events; show that rather than an empty stderr.
-    const h = harnessOf(a), f = (h === 'omp' || h === 'codex') && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
+    // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
+    const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
     return { error: true, gone: failed, text: `Subagent failed, exit code ${code}.\n${stderr}\n${where}\n${totals(a, t)}` };
@@ -332,7 +336,7 @@ async function turn(a, message, ctx, t) {
     text = j.result;
     error = j.is_error === true;
     if (j.session_id !== undefined) {
-      if (typeof j.session_id === 'string' && SESSION.test(j.session_id)) a.sessionId = j.session_id;
+      if (typeof j.session_id === 'string' && (SESSION.test(j.session_id) || (harnessOf(a) === 'opencode' && OPENCODE_SESSION.test(j.session_id)))) a.sessionId = j.session_id;
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
@@ -479,7 +483,7 @@ async function setup(a, ctx) {
     const apt = aptPackages(env).list; // validated at start
     if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
     if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
-    if (hasMcp(a) && harnessOf(a) !== 'codex') { // codex gets its servers in config.toml (setupCodex). References only, except servers the user allowed to carry a real value
+    if (hasMcp(a) && !['codex', 'opencode'].includes(harnessOf(a))) { // codex gets its servers in config.toml (setupCodex), opencode in opencode.json. References only, except servers the user allowed to carry a real value
       // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
       const dir = { pi: `${a.home}/pi-agent`, omp: `${a.home}/omp-agent` }[harnessOf(a)] ?? `${a.home}/.config/cloudy-cloud`;
       // The file may hold a real token. files.write of the SDK sends it to a temp file beside the target and renames it,
@@ -493,6 +497,7 @@ async function setup(a, ctx) {
     if (harnessOf(a) === 'pi') await setupPi(a, ctx);
     else if (harnessOf(a) === 'omp') await setupOmp(a, ctx);
     else if (harnessOf(a) === 'codex') await setupCodex(a, ctx, { tail, installMs: INSTALL_MS, setupMs: SETUP_MS });
+    else if (harnessOf(a) === 'opencode') await setupOpencode(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -538,6 +543,19 @@ async function setupOmp(a, ctx) {
   await a.sandbox.files.write(`${a.home}/omp-agent/models.yml`, ompModels(a.profile));
   await a.sandbox.files.write(`${a.home}/omp-agent/config.yml`, ompConfig());
   await a.sandbox.files.write(`${a.home}/omp-agent/overlay.yml`, ompConfig());
+}
+
+// Installs pinned opencode under ~/.local (its npm package needs its own postinstall to place the binary, so no --ignore-scripts)
+// and writes its one config file: provider, instructions and MCP servers, key names only. Mode 600 like the other MCP files:
+// a server the user allowed to carry a real value may put one in it. The token travels in the write body, never on a command line.
+async function setupOpencode(a, ctx) {
+  const sh = (cmd, timeoutMs) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
+  const dir = opencodeDir(a.home);
+  await sh(`mkdir -p ${dir} && npm install -g --prefix ${a.home}/.local opencode-ai@${OPENCODE_VERSION}`, INSTALL_MS)
+    .catch((e) => { throw new Error(`Could not install opencode in the sandbox: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
+  await sh(`umask 077 && chmod 700 ${dir} && : > ${dir}/opencode.json`, SETUP_MS);
+  await a.sandbox.files.write(`${dir}/opencode.json`, opencodeConfig(a.profile, { home: a.home, servers: a.mcp?.servers }));
+  await sh(`chmod 600 ${dir}/opencode.json`, SETUP_MS);
 }
 
 // Starts LiteLLM in the sandbox so claude can talk to an OpenAI-format provider, and waits until it is healthy.
@@ -880,7 +898,7 @@ export async function runSubagent(args, deps) {
     if (!plan?.specs) sizeNote = `Your Instabox plan could not be read, so size ${size.label} was not checked against it and Instabox may refuse it (read the reason with cloud_agent_result).`;
   }
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
-  if (role === 'coordinator' && (profile?.harness === 'pi' || profile?.harness === 'omp' || profile?.harness === 'codex')) return fail('A coordinator cannot use a pi, omp or codex profile, because coordinators run Claude Code. Use a pi, omp or codex profile for workers only.');
+  if (role === 'coordinator' && ['pi', 'omp', 'codex', 'opencode'].includes(profile?.harness)) return fail('A coordinator cannot use a pi, omp, codex or opencode profile, because coordinators run Claude Code. Use such a profile for workers only.');
   let root;
   try {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
