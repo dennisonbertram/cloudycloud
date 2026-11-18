@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync, renameSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, symlinkSync, readlinkSync, mkdirSync, lstatSync, rmSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -558,8 +558,25 @@ test('link_command (npm mode): a cloudy-cloud found only in the npx cache does n
   const npx = run(bin);
   assert.match(npx, /ASKED/);
   assert.doesNotMatch(npx, /already on your PATH/);
-  const global = stubDir(['cloudy-cloud']); // a real global install lives outside node_modules
-  assert.match(run(global), /already on your PATH/);
+  const prefix = tmp(), pkg = join(prefix, 'lib/node_modules/cloudycloud/bin');
+  mkdirSync(pkg, { recursive: true }); mkdirSync(join(prefix, 'bin'));
+  writeFileSync(join(pkg, 'cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(pkg, 'cloudy-cloud'), 0o755);
+  symlinkSync(join(pkg, 'cloudy-cloud'), join(prefix, 'bin/cloudy-cloud'));
+  const npm = stubDir(['npm'], { npm: `#!/bin/sh\n[ "$*" = "prefix -g" ] && echo "${realpathSync(prefix)}"\n` });
+  assert.match(run(`${join(prefix, 'bin')}:${npm}`), /already on your PATH/);
+});
+
+test('link_command (npm mode): a cloudy-cloud that is not the npm global install is replaced only with a yes', () => {
+  const old = tmp(); mkdirSync(join(old, 'bin'), { recursive: true }); // an old worktree link
+  writeFileSync(join(old, 'bin/cloudy-cloud'), '#!/bin/sh\nexit 0\n'); chmodSync(join(old, 'bin/cloudy-cloud'), 0o755);
+  const s = npmStub(false);
+  const run = (answer) => fn(`yn() { case "$1" in Install*) return 1 ;; *) return ${answer} ;; esac; }; link_command "${tmp()}/node_modules/cloudycloud"`, [], { PATH: `${join(old, 'bin')}:${s.dir}:/usr/bin:/bin` });
+  const no = run(1);
+  assert.match(no.stdout, /Left it in place[^\n]*npm install -g cloudycloud/);
+  assert.doesNotMatch(readFileSync(s.calls, 'utf8'), /install -g/);
+  const yes = run(0);
+  assert.match(yes.stdout, /Installed the cloudy-cloud command/);
+  assert.match(readFileSync(s.calls, 'utf8'), /install -g cloudycloud/);
 });
 
 // A stub npm that logs its calls; "install" fails with EEXIST while the old link exists unless it was removed first.

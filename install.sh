@@ -565,7 +565,19 @@ link_command() { # link_command ROOT
     cur=$(command -v cloudy-cloud) || cur=""
     # npx puts its own temporary .bin first on PATH; a command found there (or inside this package's node_modules) is not installed.
     case $cur in */_npx/* | "${root%/node_modules/*}"/node_modules/*) cur="" ;; esac
-    if [ -n "$cur" ]; then ok "cloudy-cloud is already on your PATH" "$cur"; return; fi
+    if [ -n "$cur" ]; then
+      other=$(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "$cur" 2>/dev/null) || other=$cur
+      if [ "${other#"$(npm prefix -g 2>/dev/null)/lib/node_modules/cloudycloud/"}" = "$other" ]; then
+        if yn "cloudy-cloud on your PATH runs from ${other%/bin/cloudy-cloud}. Replace it with the npm global install?"; then
+          install_global
+        else
+          warn "Left it in place. Replace it later: npm install -g cloudycloud"
+        fi
+      else
+        ok "cloudy-cloud is already on your PATH" "$cur"
+      fi
+      return
+    fi
     if yn "Install the cloudy-cloud command globally (npm install -g cloudycloud)?"; then
       install_global
     else
