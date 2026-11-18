@@ -103,7 +103,7 @@ test('wait returns the result once, then marks it reported; agent stays open', a
   const first = await wait([id]);
   assert.match(first, /status: idle/);
   assert.match(first, /hello/);
-  assert.match(first, /Pushed to origin cloudy-cloud\//);
+  assert.match(first, /No changes, no branch pushed/);
   const second = await wait([id]);
   assert.match(second, /already delivered; call cloud_agent_result/);
   assert.doesNotMatch(second, /hello/);
@@ -399,7 +399,7 @@ test('a bundle over the limit is thin: the machine fetches the commits GitHub ha
   assert.ok(i > s.cmds.indexOf('gh auth setup-git'), 'prerequisites are fetched after gh auth');
   assert.match(s.cmds[i], /git fetch -q origin [0-9a-f]{40} && git fetch -q \.\.\/in\.bundle /);
   assert.ok(s.cmds[0].includes('git remote add origin') && !s.cmds[0].includes('in.bundle'));
-  assert.equal(await remote(`git show cloudy-cloud/${id}:b.txt`), 'local');
+  assert.equal(deps.open.get(id).sha, await sh(repo, 'git rev-parse HEAD'));
 });
 
 test('changes too large even for a thin bundle fail with a clear error', async () => {
@@ -428,7 +428,8 @@ test('first-turn command is stream-json output with the commit-and-push hint; id
   assert.ok(created[0].cmds.some((c) => c.includes('git config user.name cloudy-cloud') && c.includes('user.email cloudy-cloud@localhost')));
   assert.ok(created[0].cmds.some((c) => c.includes(`git remote add origin '${ORIGIN}'`) && c.includes(`git checkout -q -b cloudy-cloud/${id}`)));
   assert.ok(created[0].cmds.includes('gh auth setup-git'));
-  assert.ok(created[0].cmds.includes(`git push -q -u origin cloudy-cloud/${id}`));
+  assert.ok(created[0].cmds.some((c) => c.startsWith('git ls-remote') && c.includes(`branch.cloudy-cloud/${id}.merge`)));
+  assert.ok(!created[0].cmds.some((c) => c.includes('git push -q -u')));
 });
 
 test('origin: https accepted, ssh converted, missing or non-GitHub or malicious rejected before any sandbox', async () => {
@@ -480,8 +481,7 @@ test('uncommitted files are listed, not committed', async () => {
   const r = await wait([id]);
   assert.match(r, /Uncommitted changes left in the sandbox \(ask the agent to commit and push\): .*notes\.txt/);
   assert.match(r, /a\.txt/);
-  assert.equal(await remote(`git ls-tree -r --name-only cloudy-cloud/${id}`), 'a.txt');
-  assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'orig');
+  assert.equal(await remote('git branch --list "cloudy-cloud/*"'), '');
   assert.ok(!created[0].cmds.some((c) => /git (add|commit)/.test(c)), 'the server never commits for the agent');
 });
 
@@ -502,14 +502,11 @@ test('a push failure is reported; the agent stays idle and messageable', async (
   assert.equal(await remote(`git show cloudy-cloud/${id}:unpushed.txt`), 'unpushed');
 });
 
-test('a failed first push fails the agent with a clear, scrubbed message', async () => {
-  const { start, wait, rejectPushes, created } = await setup({ provider: proxyProvider(), env: PROXY_ENV });
-  await rejectPushes(true);
+test('a failed GitHub check fails the agent with a clear, scrubbed message', async () => {
+  const { start, wait } = await setup({ ...flakyFirstPush(9, 'remote: denied by test. fatal: 403'), provider: proxyProvider(), env: PROXY_ENV });
   const r = await wait([await start()]);
   assert.match(r, /status: failed/);
-  assert.match(r, /first push.*GH_TOKEN.*RUNBOOK\.md, step 2\.4.*denied by test/s);
-  assert.ok(created[0].killed);
-  assert.ok(!created[0].cmds.some((c) => c.includes('claude -p')));
+  assert.match(r, /GitHub access check.*GH_TOKEN.*RUNBOOK\.md, step 2\.4.*denied by test/s);
 });
 
 test('a missing gh fails the agent with a clear message', async () => {
@@ -598,7 +595,7 @@ function flakyFirstPush(n, stderr) {
   const createSandbox = async () => {
     const s = await fakeSandbox();
     const run = s.commands.run;
-    s.commands.run = (cmd, o) => (cmd.startsWith('git push -q -u') && fails++ < n
+    s.commands.run = (cmd, o) => (cmd.startsWith('git ls-remote') && fails++ < n
       ? Promise.reject(Object.assign(new Error('exit'), { exitCode: 1, stderr }))
       : run(cmd, o));
     return s;
@@ -637,7 +634,7 @@ test('without proxy secrets an auth failure on the first push gives the provider
   const provider = createFakeProvider(undefined, { hasProxySecrets: false, hasConsentedSecrets: true });
   const { start, wait } = await setup({ ...f, provider });
   const r = await wait([await start()]);
-  assert.match(r, /first push to origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
+  assert.match(r, /GitHub access check for origin \S+ failed\. Create the GH_TOKEN secret\. Also check that the token has write access to this repo\./);
   assert.ok(!r.includes('step 2.4'));
 });
 
@@ -655,7 +652,7 @@ test('the safety push retries once', async () => {
       return s;
     },
   });
-  const r = await wait([await start()]);
+  const r = await wait([await start({ prompt: 'EDIT' })]);
   assert.match(r, /Pushed to origin cloudy-cloud\//);
   assert.equal(pushes, 2);
   assert.equal(sleeps.length, 1);
@@ -708,7 +705,7 @@ test('an openai profile writes a key-free config, starts the gateway, waits for 
   const i = sbx.cmds.findIndex((c) => c.includes('litellm --config'));
   const j = sbx.cmds.findIndex((c) => c.includes('health/liveliness'));
   const k = sbx.cmds.findIndex((c) => c.includes('claude -p'));
-  assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git push -q -u')) && j > i && k > j, 'order: push, gateway, health, claude');
+  assert.ok(i > sbx.cmds.findIndex((c) => c.includes('git ls-remote')) && j > i && k > j, 'order: push, gateway, health, claude');
   assert.match(sbx.cmds[i], /nohup uvx --from 'litellm\[proxy\]' litellm .*--port 4000 > .*gateway\.log/);
   const c = sbx.cmds[k];
   for (const v of ['ANTHROPIC_BASE_URL=http://127.0.0.1:4000', 'ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY"', 'ANTHROPIC_API_KEY= ', 'ANTHROPIC_MODEL=worker', 'ANTHROPIC_SMALL_FAST_MODEL=worker']) assert.ok(c.includes(v), v);
@@ -2299,4 +2296,34 @@ test('a profile at its maxConcurrent cap queues the next start with a status lin
   assert.ok(started);
   const other = { id: 'd', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
   await q.create(other, async () => {}); // no cap on another profile
+});
+
+test('an agent that commits nothing leaves no cloudy-cloud branch on the remote', async () => {
+  const { start, wait, remote } = await setup();
+  const id = await start();
+  assert.match(await wait([id]), /No changes, no branch pushed/);
+  assert.equal(await remote('git branch --list "cloudy-cloud/*"'), '');
+});
+
+test('base starts the worker from another branch, not the local HEAD', async () => {
+  const { start, wait, repo, created } = await setup();
+  await sh(repo, 'git checkout -q -b other && echo o > o.txt && git add -A && git commit -qm other && git checkout -q -');
+  const tip = await sh(repo, 'git rev-parse other'), head = await sh(repo, 'git rev-parse HEAD');
+  assert.notEqual(tip, head);
+  const id = await start({ base: 'other' });
+  await wait([id]);
+  assert.ok(created[0].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)));
+  const id2 = await start({ base: tip.slice(0, 10) });
+  await wait([id2]);
+  assert.ok(created[1].cmds.some((c) => c.includes(`git checkout -q --detach ${tip}`)));
+});
+
+test('an unknown or invalid base fails before any machine is created', async () => {
+  const { deps, text, created } = await setup();
+  for (const base of ['nope', '--upload-pack=x', 'a..b', 'a//b', 'x.lock', 5]) {
+    const r = await runSubagent({ description: 'd', prompt: 'hi', base }, deps);
+    assert.ok(r.isError, `${base}`);
+    assert.match(text(r), /base/);
+  }
+  assert.equal(created.length, 0);
 });

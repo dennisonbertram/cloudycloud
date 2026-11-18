@@ -28,7 +28,7 @@
   },
   {
     "op": "run",
-    "cmd": "git push -q -u origin cloudy-cloud/<ID>",
+    "cmd": "git ls-remote -q origin HEAD >/dev/null && git config branch.cloudy-cloud/<ID>.remote origin && git config branch.cloudy-cloud/<ID>.merge refs/heads/cloudy-cloud/<ID>",
     "cwd": "/home/user/repo",
     "timeoutMs": 120000,
     "onStdout": false
@@ -55,7 +55,7 @@
   },
   {
     "op": "run",
-    "cmd": "if err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
+    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
     "cwd": "/home/user/repo",
     "timeoutMs": 120000,
     "onStdout": false
@@ -82,7 +82,7 @@
   },
   {
     "op": "run",
-    "cmd": "if err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
+    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
     "cwd": "/home/user/repo",
     "timeoutMs": 120000,
     "onStdout": false
