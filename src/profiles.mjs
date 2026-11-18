@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -104,13 +105,13 @@ export function resolveProfile(name, model, env = process.env, { proxyOnly = fal
   if (typeof p.baseUrl !== 'string' || !URL_OK.test(p.baseUrl)) return { error: `profile ${name}: baseUrl is missing or has unsafe characters` };
   if (!chatgpt && (typeof p.keyName !== 'string' || !PROVIDER_KEY.test(p.keyName))) return { error: `profile ${name}: keyName must match ${PROVIDER_KEY}` };
   if (typeof m !== 'string' || !MODEL.test(m)) return { error: `profile ${name} needs a model: pass model to cloud_agent or set it in profiles.json` };
-  if (chatgpt) {
-    const a = codexAuth(env);
-    return a.error ? { error: `Profile ${name}: ${a.error}` } : { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, auth: 'chatgpt', proxied: false } };
-  }
   if (p.fallback !== undefined && !(Array.isArray(p.fallback) && p.fallback.every((n) => typeof n === 'string' && NAME.test(n)))) return { error: `profile ${name}: fallback must be a list of profile names.\nNext step: edit profiles.json so "fallback" looks like ["pi-glm", "pi-particle"].` };
   if (p.maxConcurrent !== undefined && !(Number.isInteger(p.maxConcurrent) && p.maxConcurrent > 0)) return { error: `profile ${name}: maxConcurrent must be a positive whole number.\nNext step: edit profiles.json so "maxConcurrent" is a number such as 6, or remove it.` };
   const extra = { ...(p.fallback && { fallback: p.fallback }), ...(p.maxConcurrent && { maxConcurrent: p.maxConcurrent }) };
+  if (chatgpt) {
+    const a = codexAuth(env);
+    return a.error ? { fallback: Array.isArray(p.fallback) ? p.fallback : undefined, error: `Profile ${name}: ${a.error}` } : { ok: { name, harness, format: p.format, baseUrl: p.baseUrl, model: m, auth: 'chatgpt', proxied: false, ...extra } };
+  }
   const proxied = proxySecrets(env).has(p.keyName); // an Instabox secret holds the value; env has at most its name
   if (!env[p.keyName] && !proxied) return { fallback: Array.isArray(p.fallback) ? p.fallback : undefined, missingKey: true, error: `Profile ${name} needs ${p.keyName}, which is not set.\n${guide('secret_missing', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
   if (proxyOnly && !proxied) return { error: `Profile ${name}: ${p.keyName} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused', { secret: p.keyName, host: URL.canParse(p.baseUrl) ? new URL(p.baseUrl).host : undefined })}` };
@@ -124,8 +125,12 @@ const preflightCache = new Map();
 export const resetPreflightCache = () => preflightCache.clear();
 export async function preflightProfile(p, env = process.env, { fetchFn = fetch, now = Date.now, timeoutMs = 5000 } = {}) {
   const key = p.keyName && env[p.keyName];
-  if (p.format !== 'openai' || p.auth === 'chatgpt' || p.proxied || !key) return { ok: true, skipped: true };
-  const ck = `${p.name}|${p.model}`, hit = preflightCache.get(ck);
+  // Codex profiles are skipped: they call the Responses API, not /chat/completions, and "default" passes no model.
+  // A plain-http probe would send the key in cleartext, so only a loopback http target is probed.
+  const u = URL.canParse(p.baseUrl) ? new URL(p.baseUrl) : undefined;
+  const cleartext = u?.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  if (p.format !== 'openai' || p.auth === 'chatgpt' || p.proxied || !key || p.harness === 'codex' || p.model === 'default' || cleartext) return { ok: true, skipped: true };
+  const ck = `${p.name}|${p.model}|${p.baseUrl}|${createHash('sha256').update(key).digest('hex')}`, hit = preflightCache.get(ck);
   if (hit && now() - hit.at < 60_000) return hit.r;
   let r = { ok: true };
   try {
