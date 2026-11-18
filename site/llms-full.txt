@@ -1,10 +1,10 @@
 Source: https://cloudycloud.tech/
 
-# Cloudy Cloud: Claude Code subagents on their own cloud machines
+# Cloudy Cloud: keep your coding agent, give it a cloud fleet
 
-> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.
+> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
 
-Every Claude Code subagent gets its own cloud machine, a copy of your repo, and its own branch. Your laptop stays free for you.
+Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own cloud machine, a copy of your repo, and its own branch.
 
 ## Run it from your laptop. Run it at any scale.
 
@@ -124,12 +124,13 @@ Your own provider
 
 Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the Claude Code session you already use.
 
-| Product | Starts from your local Claude Code session | One machine per subagent | Results land as | Models for workers | Hosted app, no setup |
+| Product | Starts from your local coding agent session | One machine per subagent | Results land as | Models for workers | Hosted app, no setup |
 |---|---|---|---|---|---|
 | Cloudy Cloud | Yes | Yes | A git branch per subagent | Claude or open models (GLM, DeepSeek, OpenRouter) | No, you run it yourself |
 | Claude Code on the web | No, a separate cloud session | No, subagents share the session's machine | A branch and pull request | Claude only | Yes |
 | Cloud sandboxes: Instabox, boat, Maritime, E2B, Daytona | No, you wire it up yourself | You build it | Files on the machine | Whatever you install | Machines and an API, not an agent |
 | Hosted coding agents: Codex cloud, Cursor, Copilot, Devin | No, their own agent and app | One machine per task | A branch or pull request | The vendor's choice | Yes |
+| Capy | No, Capy's own app and agent (web, desktop, Slack, Linear, GitHub) | Usually. A subagent that writes code gets its own machine; others can share the parent's machine | A pull request, with Autofix for CI and review comments | Many: ChatGPT, Copilot or SuperGrok subscriptions, gateways such as OpenRouter, API keys | Yes |
 
 Based on each product's public docs, November 2026. Products change; check their docs for the latest.
 

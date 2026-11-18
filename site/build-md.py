@@ -13,7 +13,7 @@ SITE = Path(__file__).resolve().parent
 BASE = 'https://cloudycloud.tech'
 LASTMOD = '2026-11-09'
 DEFINITION = ('Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives '
-              'every Claude Code subagent its own cloud machine, a copy of your repo, and its own branch.')
+              'every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.')
 GH = 'https://github.com/dennisonbertram/cloudycloud'
 NPM = 'https://www.npmjs.com/package/cloudycloud'
 DOC_SLUGS = ['index', 'how-it-works', 'models', 'reference', 'fleets', 'dashboard', 'mcp', 'self-hosted', 'troubleshooting',
