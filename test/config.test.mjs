@@ -41,6 +41,14 @@ test('CLOUDY_CLOUD_ALLOW_MACHINE_KINDS is read from the env file', () => {
   assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file }).CLOUDY_CLOUD_ALLOW_MACHINE_KINDS, 'gpu');
 });
 
+test('the profile cap and provider retry keys load from the env file', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_PROFILE_MAX=3\nCLOUDY_CLOUD_PROVIDER_RETRIES=2\n');
+  const env = loadEnv({ CLOUDY_CLOUD_CONFIG: file });
+  assert.equal(env.CLOUDY_CLOUD_PROFILE_MAX, '3');
+  assert.equal(env.CLOUDY_CLOUD_PROVIDER_RETRIES, '2');
+});
+
 
 test('defaultWorkerNote recommends only a profile that resolveProfile accepts under the provider\'s rules', () => {
   const base = { CLOUDY_CLOUD_PROFILES: '/nonexistent', CLOUDY_CLOUD_CODEX_AUTH: '/nonexistent/auth.json' };

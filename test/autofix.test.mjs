@@ -425,6 +425,17 @@ test('newer comments from people without write access cannot crowd out an older 
   assert.equal(g.permCalls.filter((l) => l === 'spam').length, 2); // asked once per review check, never once per comment
 });
 
+test('when the 30-lookup cap skips authors the pull request is not reported clean', async () => {
+  const inline = [], perms = {};
+  for (let i = 1; i <= 31; i++) { inline.push({ id: i, user: { login: `u${i}` }, path: 'a.txt', body: `note ${i}` }); perms[`u${i}`] = 'read'; }
+  const { g, start, wait } = await setup({ perms, inline, checks: [PASS] });
+  const r = await wait([await start({ autofix: true })]);
+  assert.match(r, /could not be confirmed clean/);
+  assert.match(r, /review comments from 1 author could not be checked/);
+  assert.match(r, /30 comments from people without write access were ignored/);
+  assert.equal(g.permCalls.length, 30);
+});
+
 test('a collaborator demoted to read-only is not trusted at the next review check', async () => {
   const { g, deps, start, wait } = await setup({ perms: { rev: 'write' }, checks: [PASS], inline: [{ id: 1, user: { login: 'rev' }, path: 'a.txt', body: 'first note' }] });
   const id = await start({ autofix: true });
