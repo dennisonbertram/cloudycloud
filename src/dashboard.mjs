@@ -195,13 +195,15 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     const k = `${machine}/${name}`;
     let st = remote.get(k);
     remote.delete(k); // most recently used last; the oldest goes with the memo's oldest, so neither grows without bound
-    if (!st) st = { raw: '', next: 0, at: -Infinity, fetchedAt: 0 };
+    if (!st) st = { raw: '', next: 0, at: -Infinity, fetchedAt: 0, more: false };
     remote.set(k, st);
     if (remote.size > MEMO_MAX) remote.delete(remote.keys().next().value);
-    if (now() - st.at >= REMOTE_MS) {
+    // While the tail still holds unread bytes (`more`, #83) a poll reads on at once; the reader's own limit still applies.
+    if (now() - st.at >= REMOTE_MS || st.more) {
       const r = await reader.readTail(machine, name, st.next);
       st.at = now();
       if (r.from === st.next && (!r.data || st.raw.length < 20 * 1024 * 1024)) { st.raw += r.data; st.next = r.next; } // `next` always moves: the reader skips an oversize line with no data
+      st.more = r.size > r.next;
       if (r.source !== 'cache') st.fetchedAt = r.fetchedAt;
     }
     return st;
@@ -209,7 +211,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
   // Where the stream of one box and turn comes from: this laptop's copy, the box's machine, then the reader's cache.
   async function resolve(box, n, boxes) {
     const agent = box.kind === 'agent' ? box.id : box.labels?.agent, rel = `stream/t${n}.jsonl`;
-    const found = (kind, machine, path, fetchedAt, key, sig, raw) => ({ kind, machine, path, fetchedAt, ...parsed(key, sig, raw, n) });
+    const found = (kind, machine, path, fetchedAt, key, sig, raw, more) => ({ kind, machine, path, fetchedAt, ...(more !== undefined && { more }), ...parsed(key, sig, raw, n) });
     if (demo) { const raw = demo.stream(box.id, n); return raw ? found('local', undefined, `streams/${box.id}/t${n}.jsonl`, now(), `demo/${box.id}/${n}`, 0, () => raw) : { kind: 'none', reason: 'no_stream_yet' }; }
     if (agent && SAFE_ID.test(agent)) {
       const f = join(sdir, agent, `t${n}.jsonl`);
@@ -221,7 +223,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     if (isLive(box)) {
       try {
         const st = await fromMachine(reader, box.machine, rel);
-        if (st.raw) return found('machine', box.machine, rel, st.fetchedAt, `${box.machine}/${rel}`, st.raw.length, () => st.raw);
+        if (st.raw) return found('machine', box.machine, rel, st.fetchedAt, `${box.machine}/${rel}`, st.raw.length, () => st.raw, st.more);
       } catch (e) { reason = reasonOf(e); }
     }
     // A coordinator keeps its workers' streams under streams/<agent>/, even after the worker's machine is deleted.
@@ -229,7 +231,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     if (co && isLive(co) && /^[0-9a-f]{8}$/.test(agent)) {
       try {
         const st = await fromMachine(reader, co.machine, crel);
-        if (st.raw) return found('coordinator', co.machine, crel, st.fetchedAt, `${co.machine}/${crel}`, st.raw.length, () => st.raw);
+        if (st.raw) return found('coordinator', co.machine, crel, st.fetchedAt, `${co.machine}/${crel}`, st.raw.length, () => st.raw, st.more);
       } catch (e) { if (reasonOf(e) === 'provider_error') reason = 'provider_error'; }
     }
     for (const [m, name] of [[box.machine, rel], [co?.machine, crel]]) {
@@ -298,7 +300,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
           if (!ev) return json(404, { error: 'unknown event' });
           out = [fullEvent(ev, r.raw)];
         }
-        return json(200, { box: box.id, turn: Number(turn), events: out, next, complete: events.some((e) => e.kind === 'result') || ['stopped', 'failed'].includes(box.status), source, totals: totalsOf(events) });
+        return json(200, { box: box.id, turn: Number(turn), events: out, next, complete: events.some((e) => e.kind === 'result') || (['stopped', 'failed'].includes(box.status) && !r.more), source, totals: totalsOf(events) });
       } catch (e) { return send(500, JSON.stringify({ error: redact(e.message) }), 'application/json'); }
     }
     return send(404, 'Not found\n');

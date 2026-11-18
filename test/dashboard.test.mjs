@@ -623,7 +623,7 @@ test('page: an event with no timestamp renders without a time element instead of
 });
 
 test('page: an inactive agent keeps fetching its stream while the server says it is not complete and next advances, within a bound', () => {
-  assert.match(PAGE, /!st\.complete && st\.next > nextBefore && \+\+st\.hops <= 20/);
+  assert.match(PAGE, /!st\.complete && st\.next > nextBefore && \+\+st\.hops <= 60/);
 });
 
 test('page: a turn\'s messages come from the retained outgoing messages offset by the dropped ones, never the whole history', () => {
@@ -1325,4 +1325,45 @@ test('the fleet view adds a trunk section per fleet with a merged count and per-
   assert.match(PAGE, /'merged'/);
   assert.match(PAGE, /merge status unknown/);
   assert.match(PAGE, / of /);
+});
+
+// ---- issue #83: a stopped box is not complete while its stream still has unread data ----
+test('a stopped box with more stream on its machine is not complete until the tail is read (#83)', async () => {
+  const clock = { t: 10_000 };
+  const big = 'a'.repeat(600); // two 300-byte chunks, no events in them
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'stopped', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reads = [];
+  const reader = {
+    readTail: async (m, name, from) => { reads.push(from); const data = big.slice(from, from + 300); return { data, from, next: from + data.length, size: big.length, fetchedAt: clock.t }; },
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r1 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r1.complete, false);
+    const r2 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body); // back to back, as the page polls
+    assert.equal(r2.complete, true);
+    assert.deepEqual(reads, [0, 300]);
+  } finally { s.close(); }
+});
+
+test('a stopped box stays complete on the first response when the whole stream was read (#83)', async () => {
+  const clock = { t: 10_000 };
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'stopped', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reader = {
+    readTail: async (m, name, from) => ({ data: 'x', from, next: from + 1, size: from + 1, fetchedAt: clock.t }),
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r.complete, true);
+  } finally { s.close(); }
+});
+
+test('page: a finished box keeps pulling stream chunks while they arrive, with a bound of at most 60 hops', () => {
+  const m = /\+\+st\.hops <= (\d+)/.exec(PAGE);
+  assert.ok(m && Number(m[1]) > 20 && Number(m[1]) <= 60);
 });
