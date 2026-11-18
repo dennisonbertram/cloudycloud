@@ -1,5 +1,6 @@
 // `cloudy-cloud display <agent|machine|coordinator> [--control] [--ttl SECONDS] [--screenshot FILE] [--unshare]`: see a cloud machine's desktop.
 // The link is a bearer token: it goes to stdout only, never to the event log, a file or stderr.
+import { helpText } from './cli-help.mjs';
 import { fileURLToPath } from 'node:url';
 import { writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -10,16 +11,7 @@ import { loadProvider } from './providers/index.mjs';
 import { ID_RE, ID_ERR, resolveTarget } from './open.mjs';
 import { guide, CODES } from './errors.mjs';
 
-export const USAGE = `Usage: cloudy-cloud display <agent-id-or-machine> [--control] [--ttl SECONDS]
-       cloudy-cloud display <agent-id-or-machine> --screenshot FILE
-       cloudy-cloud display <agent-id-or-machine> --unshare
-Print a link to the machine's desktop; only the link goes to stdout. linux, android and gpu have one (gpu's first start is slow);
-omarchy does not, and macos is not verified. The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.
-  (default)         view-only link for 1 hour
-  --control         let the viewer click and type
-  --ttl SECONDS     link lifetime, 60 to 86400
-  --screenshot FILE write a PNG of the screen to FILE and print the path
-  --unshare         revoke every display link for the machine`;
+export const USAGE = helpText('display', true);
 
 const fail = (m) => { throw new Error(m); };
 
@@ -46,7 +38,7 @@ export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const out = deps.out ?? ((s) => console.log(s)), err = deps.err ?? ((s) => console.error(s));
   try {
-    if (argv.includes('--help') || argv.includes('-h')) { out(USAGE); return 0; }
+    if (argv.includes('--help') || argv.includes('-h')) { out(helpText('display')); return 0; }
     const a = parseArgs(argv);
     const provider = deps.provider ?? await loadProvider(env);
     const Name = provider.name[0].toUpperCase() + provider.name.slice(1);

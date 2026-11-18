@@ -1,4 +1,5 @@
 // `cloudy-cloud open <agent-id-or-machine> <port> [--share|--unshare]`: reach an app a cloud agent runs on its machine.
+import { helpText } from './cli-help.mjs';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from './config.mjs';
 import { eventsFile, foldAgents, readEvents } from './events.mjs';
@@ -8,15 +9,7 @@ import { loadProvider } from './providers/index.mjs';
 export const ID_RE = /^[A-Za-z0-9._-]+$/;
 export const ID_ERR = 'The id may only use letters, digits, dots, dashes and underscores (characters outside A-Z a-z 0-9 . _ - are not allowed).';
 
-export const USAGE = `Usage: cloudy-cloud open <agent-id-or-machine> <port> [--share]
-       cloudy-cloud open <agent-id-or-machine> <port> --unshare
-Reach an app (for example a dev server) running on a cloud agent's machine.
-  <port>      app port on the machine, or LOCAL:REMOTE to use another port on your computer
-  (default)   private tunnel to http://127.0.0.1:<port> until you press Ctrl-C
-  --share     publish a private link (token in the URL) that anyone holding it can open
-  --unshare   remove that link
-Start the app in the background on the machine (nohup npm run dev > /tmp/dev.log 2>&1 &), because a turn's
-foreground processes end with the turn. The tunnel and link stop when the machine is deleted.`;
+export const USAGE = helpText('open', true);
 
 const fail = (m) => { throw new Error(m); };
 const PORT_ERR = 'The port must be a number from 1 to 65535 (or LOCAL:REMOTE).';
