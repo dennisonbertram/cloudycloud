@@ -138,13 +138,13 @@ test('image reuses a running image machine instead of failing', async () => {
 test('image --save refuses when Claude is not signed in', async () => {
   const f = fixture({ auth: [NOT_YET] });
   IMG(f);
-  await assert.rejects(main(['image', '--save'], f.deps), /Claude is not signed in on img-1\.\nNext: cloudy-cloud coordinator image/);
+  await assert.rejects(main(['image', '--save'], f.deps), /Claude is not signed in on img-1\. Run: cloudy-cloud coordinator image/);
   assert.equal(f.log.snapshots.length, 0);
 });
 
 test('image --save with no image machine explains the 2 hour deletion', async () => {
   const f = fixture();
-  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found\.\nImage machines are deleted 2 hours after[\s\S]*\nNext: cloudy-cloud coordinator image/);
+  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found\. Image machines are deleted 2 hours after[\s\S]*Run: cloudy-cloud coordinator image/);
 });
 
 test('image --save records the snapshot id and deletes the image machine', async () => {
@@ -1031,7 +1031,7 @@ test('image saves the signed-in email with the snapshot id; no valid email drops
 
 test('failures give a reason line and one Next line; not-found is neutral', async () => {
   const f = fixture();
-  await assert.rejects(main(['stop', 'zzz'], f.deps), (e) => e.neutral === true && /^No coordinator named zzz\.\nNext: cloudy-cloud coordinator ls$/.test(e.message));
+  await assert.rejects(main(['stop', 'zzz'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator ls' && e.short === 'No coordinator named zzz.' && /^No coordinator named zzz\. List them with: cloudy-cloud coordinator ls$/.test(e.message));
 });
 
 test('attach on a terminal runs the ssh command and returns its exit code; otherwise it prints it', async () => {
@@ -1042,6 +1042,8 @@ test('attach on a terminal runs the ssh command and returns its exit code; other
   assert.equal(code, 3);
   assert.equal(call.at(-1), 'inherit');
   assert.ok(call.includes('-t'));
+  assert.equal(await main(['attach', 'a'], { ...f.deps, tty: true, spawn: () => ({ status: null, signal: 'SIGTERM' }) }), 143);
+  await assert.rejects(main(['attach', 'a'], { ...f.deps, tty: true, spawn: () => ({ error: new Error('spawn ENOENT') }) }), /Could not start npx \(spawn ENOENT\)/);
 });
 
 test('ls keeps the table with a long waiting SCREEN (truncated with …) and ends with one Next line', async () => {
@@ -1054,4 +1056,44 @@ test('ls keeps the table with a long waiting SCREEN (truncated with …) and end
   assert.match(text, /NAME\s+STATE\s+STARTED/);
   assert.match(text, /…/);
   assert.equal((text.match(/Next: cloudy-cloud coordinator attach averyvery/g) ?? []).length, 1);
+});
+
+test('the account saved with a pending snapshot is used on resume, and an old pending entry keeps the saved account', async () => {
+  const f = fixture({ auth: [withEmail('me@example.com')], snapStatus: (n) => (n < 2 ? 'pending' : 'ready') });
+  f.deps.sleep = async () => {};
+  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).catch(() => {});
+  const g = fixture();
+  writeFileSync(g.configFile, 'CLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_ACCOUNT=kept@example.com\n');
+  await main(['image'], { ...g.deps, tty: true });
+  assert.match(readFileSync(g.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=kept@example\.com$/m);
+  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /PENDING/);
+  const h = fixture();
+  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\n');
+  await main(['image'], { ...h.deps, tty: true });
+  assert.match(readFileSync(h.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example\.com$/m);
+});
+
+test('an email must be one plain address', async () => {
+  for (const bad of ['Display<me@example.org>', 'a\u0000b@example.org', 'a b@example.org', 'me@example.org, you@example.org']) {
+    const f = fixture({ auth: [withEmail(bad)] });
+    await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+    assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/, bad);
+  }
+});
+
+test('ls measures wide characters as two cells and never splits one', async () => {
+  const { cellWidth, fitCells } = await import('../src/ui.mjs');
+  assert.equal(cellWidth('界a'), 3);
+  assert.equal(fitCells('界界界界', 6), '界界…');
+  assert.equal(fitCells('😀😀😀', 4), '😀…');
+  const f = fixture({ pane: `${WAIT_LINE}\n  1. Yes\n  2. No\n` });
+  f.machines.push(f.mk('m1', 'coord-x', { role: 'coordinator', name: '界界界界界界界界界界界界' }));
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  for (const l of plainText(f.log.out.join('\n')).split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('a missing coordinator image stays neutral through the start error wrapper', async () => {
+  const f = fixture({ snapshot: '' });
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator image');
 });
