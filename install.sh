@@ -420,7 +420,7 @@ check_setup() {
     [ -f "$(codex_auth_file)" ] && usable=1
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
       [ -n "$(eff $n)" ] || is_proxied $n || continue
-      if [ -z "$(eff $n)" ] || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
+      if is_proxied $n || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
       break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
