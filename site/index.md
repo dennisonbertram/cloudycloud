@@ -130,7 +130,7 @@ Cloud sandboxes give you machines. Hosted agents give you their own agent in the
 | Claude Code on the web | No, a separate cloud session | No, subagents share the session's machine | A branch and pull request | Claude only | Yes |
 | Cloud sandboxes: Instabox, boat, Maritime, E2B, Daytona | No, you wire it up yourself | You build it | Files on the machine | Whatever you install | Machines and an API, not an agent |
 | Hosted coding agents: Codex cloud, Cursor, Copilot, Devin | No, their own agent and app | One machine per task | A branch or pull request | The vendor's choice | Yes |
-| Capy | No, Capy's own app and agent (web, desktop, Slack, Linear, GitHub) | Yes, an isolated VM per thread | A pull request, with Autofix for CI and review comments | Many: ChatGPT, Copilot or SuperGrok subscriptions, gateways such as OpenRouter, API keys | Yes |
+| Capy | No, Capy's own app and agent (web, desktop, Slack, Linear, GitHub) | Usually. A subagent that writes code gets its own machine; others can share the parent's machine | A pull request, with Autofix for CI and review comments | Many: ChatGPT, Copilot or SuperGrok subscriptions, gateways such as OpenRouter, API keys | Yes |
 
 Based on each product's public docs, November 2026. Products change; check their docs for the latest.
 
