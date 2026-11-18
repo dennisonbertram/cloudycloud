@@ -654,11 +654,11 @@ test('page: Terminal polling needs the list view and an open detail pane, like t
 });
 
 test('page: collapsing a coordinator with one of its workers selected selects the coordinator first', () => {
-  assert.match(PAGE, /S\.kids\[id\]\?\.some\(\(c\) => c\.id === S\.sel\)\) return select\(id, false\)/);
+  assert.match(PAGE, /descOf\(id\)\.some\(\(c\) => c\.id === S\.sel\)\) return select\(id, false\)/);
 });
 
 test('page: the fleet signature includes workers', () => {
-  assert.match(PAGE, /const f = sig\(\['f', roots\.map\(\(b\) => \[[^\]]*, \(S\.kids\[b\.id\] \|\| \[\]\)\.map/);
+  assert.match(PAGE, /const f = sig\(\['f', roots\.map\(\(b\) => \[[^\]]*, descOf\(b\.id\)\.map/);
 });
 
 test('page: pane failures show their reason, and pane data gets the source and age badge', () => {
@@ -718,6 +718,28 @@ test('the Needs-you chip and the list heading share one count: agents at any dep
   assert.match(PAGE, /'Needs you' \? needsYouCount/, 'the Needs-you heading counts agents with the shared function');
   assert.match(PAGE, /'Needs you', need\]/, 'the header chip uses the same shared count');
   assert.doesNotMatch(PAGE, /'Waiting for you', idle/, 'the old per-status chips are gone');
+});
+
+test('agents under nested coordinators still group, count and render — two levels', () => {
+  const src = ['const active', 'const today', 'const needsYou', 'const needsYouCount', 'const descOf', 'const fam', 'const grpCount', 'const groupsOf'].map(pageLine).join('\n');
+  const c0 = { id: 'c0', status: 'running' }, c1 = { id: 'c1', status: 'running', parent: 'c0' }, w1 = { id: 'w1', status: 'idle', parent: 'c1' };
+  const S = { kids: { c0: [c1], c1: [w1] } };
+  const { descOf, fam, grpCount, groupsOf } = new Function('S', `${src}\nreturn { descOf, fam, grpCount, groupsOf };`)(S);
+  assert.deepEqual(descOf('c0').map((b) => b.id), ['c1', 'w1']);
+  assert.ok(fam((b) => b.status === 'idle')(c0));
+  assert.equal(groupsOf([c0])[0][0], 'Needs you', 'a needy worker two levels down pulls the root into Needs you');
+  assert.equal(grpCount('Needs you', [c0]), 1, 'the needy agent counts, not its two coordinator rows');
+  assert.match(PAGE, /flatMap\(\(c\) => rowsOf\(c, lvl \+ 1\)\)/, 'rows render recursively past level 2');
+  assert.equal((PAGE.match(/grpCount\(name, list\)/g) || []).length, 2, 'rail and fleet headings share the count');
+});
+
+test('page: the spend line truncates only on the phone width; on desktop it wraps as before', () => {
+  const media = PAGE.indexOf('@media (max-width: 820px)');
+  const desk = PAGE.slice(0, media).match(/\.summary \.spend \{[^}]*\}/)[0];
+  const phone = PAGE.slice(media).match(/\.summary \.spend \{[^}]*\}/)[0];
+  assert.doesNotMatch(desk, /nowrap|ellipsis/, 'desktop keeps the wrapped full sentence');
+  assert.match(phone, /nowrap/); assert.match(phone, /ellipsis/);
+  assert.match(PAGE, /title: spend/, 'the full sentence stays in the tooltip');
 });
 
 test('a fatal pane state reaches the box as waiting with fatal; the attach name is the label; a stopped coordinator drops the alert (#88)', async () => {
