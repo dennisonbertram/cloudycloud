@@ -418,9 +418,10 @@ check_setup() {
       elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
     done
     [ -f "$(codex_auth_file)" ] && usable=1
-    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker is still allowed when a Claude credential exists
-      if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
-      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
+      [ -n "$(eff $n)" ] || is_proxied $n || continue
+      if [ -z "$(eff $n)" ] || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
+      break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
     elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1

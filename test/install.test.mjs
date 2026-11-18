@@ -1062,6 +1062,14 @@ test('check-only counts a saved Claude credential as a worker credential when cl
   assert.equal(r.status, 0, r.stdout);
 });
 
+test('check-only fails when the Claude credential a worker picks first is a plain value on Instabox', () => {
+  // The runtime picks CLAUDE_CODE_OAUTH_TOKEN (it has a value) and refuses it, so a proxied ANTHROPIC_API_KEY does not help.
+  const sec = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'ANTHROPIC_API_KEY', hosts: ['api.anthropic.com'] }]);
+  const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=opencode\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-plainvalue-for-test-only\nCLOUDY_CLOUD_PROXY_SECRETS=ANTHROPIC_API_KEY\n`, {}, { stub: npxStub({ secrets: sec }) });
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stdout, /CLAUDE_CODE_OAUTH_TOKEN is a plain value/);
+});
+
 test('check-only finds a ChatGPT login at CLOUDY_CLOUD_CODEX_AUTH, as the runtime does', () => {
   const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
   const auth = join(tmp(), 'custom-auth.json');
