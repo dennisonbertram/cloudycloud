@@ -1,5 +1,5 @@
 // Sample data for `cloudy-cloud dashboard --demo`. Nothing here is real.
-import { pushOf } from './events.mjs';
+import { autofixOf, pushOf } from './events.mjs';
 import { isQuiet } from './dashboard.mjs';
 
 const M = 60_000, H = 60 * M;
@@ -27,16 +27,17 @@ const demoUsage = (id, now) => { const s = demoSeries(id, now).at(-1); return { 
 export function demoState(now = Date.now()) {
   const ago = (ms) => now - ms;
   const lastPush = (msgs) => { const r = msgs.findLast((m) => m.kind === 'reply'), p = r && pushOf(r.text); return p ? { push: { ...p, t: r.t } } : {}; };
-  const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33']); // the demo coordinator's workers; the rest were started by this session
+  const lastAutofix = (msgs) => { let f; for (const m of msgs) if (m.kind !== 'out') f = autofixOf(m.text) ?? f; return f ? { autofix: f } : {}; };
+  const kids = new Set(['7c1e90ab', 'b42f0d17', 'e08a5c33', 'aa9f1e02']); // the demo coordinator's workers; the rest were started by this session
   const box = (o) => ({
-    kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
+    kind: 'agent', role: 'worker', machineState: o.status === 'stopped' ? 'deleted' : 'running', ...o, ...lastPush(o.messages), ...lastAutofix(o.messages), branch: `cloudy-cloud/${o.id}`, machine: `m-${o.id}`,
     title: o.description, titleSource: 'log', source: 'log', turns: o.messages.filter((m) => m.kind === 'out').length,
     labels: { purpose: 'cloudy-cloud', ...(o.machineKind && { kind: o.machineKind }), role: 'worker', profile: o.profile ?? 'claude', parent: kids.has(o.id) ? 'fleet-main' : 'demo-session', agent: o.id, description: o.description },
     ...(kids.has(o.id) && { parent: 'fleet-main' }), startedBy: kids.has(o.id) ? 'fleet-main' : 'this session',
   });
   const boxes = [
     box({
-      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'],
+      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, harness: 'claude', model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'], fleet: 'fleet/billing-migrate',
       startedAt: ago(18 * M), lastActivity: ago(9_000), deadline: ago(18 * M) + 8 * H,
       messages: [
         { t: ago(18 * M), kind: 'out', text: 'Add exponential backoff with jitter to src/upload/client.ts. Retry only on 429 and 5xx, at most 5 tries. Add tests next to the existing ones and push to your branch.' },
@@ -49,7 +50,7 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', model: 'z-ai/glm-5.3-flash',
+      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash', fleet: 'fleet/billing-migrate',
       startedAt: ago(52 * M), lastActivity: ago(14 * M), idleSince: ago(14 * M), deadline: ago(14 * M) + H,
       messages: [
         { t: ago(52 * M), kind: 'out', text: 'Read src/billing/webhook.ts and list any way two deliveries of the same event could be applied twice. Do not change code yet.' },
@@ -58,21 +59,29 @@ export function demoState(now = Date.now()) {
         { t: ago(41 * M), kind: 'reply', text: 'Two problems.\n\n1. The idempotency check reads processedEvents, then writes it in a separate query (lines 84-97). Two deliveries arriving together both pass the check.\n2. A failed handler still marks the event as processed, so Stripe\'s retry is ignored.\n\nPushed to origin cloudy-cloud/b42f0d17 at 3fa9c01. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 2 tool uses, 6.8k in / 0.9k out tokens, 41s' },
         { t: ago(30 * M), kind: 'out', text: 'Fix problem 1 only, with a unique constraint and an insert-or-ignore. Keep the change small.' },
         { t: ago(26 * M), kind: 'progress', text: 'Edit src/billing/webhook.ts' },
-        { t: ago(14 * M), kind: 'reply', text: 'Done. The event id is now inserted first; a duplicate insert returns early. Added a migration and one test that sends the same event twice.\n\nPushed to origin cloudy-cloud/b42f0d17 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 5 tool uses, 14.2k in / 1.7k out tokens, 3m 12s' },
+        { t: ago(14 * M), kind: 'reply', text: 'Done. The event id is now inserted first; a duplicate insert returns early. Added a migration and one test that sends the same event twice.\n\nPushed to origin cloudy-cloud/b42f0d17 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/b42f0d17.\nModel: z-ai/glm-5.3-flash\nTotal: 5 tool uses, 14.2k in / 1.7k out tokens, 3m 12s\n\nAutofix: pull request https://github.com/acme/widgets/pull/42 is clean (checks pass, no new review comments, no merge conflicts) after 1 fix round.' },
       ],
     }),
     box({
-      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', model: 'claude-sonnet-5-5',
+      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', profile: 'pi-glm', harness: 'pi', model: 'z-ai/glm-5.3-flash', fleet: 'fleet/billing-migrate',
       startedAt: ago(40_000), lastActivity: ago(5_000), deadline: ago(40_000) + 8 * H,
       messages: [{ t: ago(40_000), kind: 'out', text: 'Replace the hand-written inputs in app/settings/page.tsx with the shared Form, Field and Switch components. Keep the page behaviour the same.' }],
     }),
     box({
-      id: '51d9ee02', description: 'Fix flaky checkout e2e test', status: 'queued', profile: 'deepseek', model: 'deepseek-ai/deepseek-v41-flash-1017',
+      id: 'aa9f1e02', description: 'Audit the invoice PDFs for missing totals', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash',
+      startedAt: ago(80 * M), lastActivity: ago(45 * M), idleSince: ago(45 * M), deadline: ago(80 * M) + 8 * H,
+      messages: [
+        { t: ago(80 * M), kind: 'out', text: 'Check every PDF in invoices/ totals a positive amount. Report the ones that do not, and change nothing.' },
+        { t: ago(45 * M), kind: 'reply', text: 'Three invoices have a zero or missing total: inv-1042, inv-1089 and inv-1103.\n\nNo changes, no branch pushed.\nModel: z-ai/glm-5.3-flash\nTotal: 6 tool uses, 19.4k in / 1.1k out tokens, 4m 2s' },
+      ],
+    }),
+    box({
+      id: '51d9ee02', description: 'Fix flaky checkout e2e test', status: 'queued', profile: 'deepseek', harness: 'claude', model: 'deepseek-ai/deepseek-v41-flash-1017',
       startedAt: ago(12_000), lastActivity: ago(12_000), deadline: ago(12_000) + 8 * H,
       messages: [{ t: ago(12_000), kind: 'out', text: 'The checkout e2e test fails about one run in five. Find out why and fix the cause, not with a longer timeout.' }],
     }),
     box({
-      id: '90aa13fc', description: 'Migrate the date helpers off moment', status: 'failed', model: 'claude-sonnet-5-5',
+      id: '90aa13fc', description: 'Migrate the date helpers off moment', status: 'failed', profile: 'omp-deepseek', harness: 'omp', model: 'deepseek-ai/deepseek-v41-flash-1017',
       startedAt: ago(3 * H), lastActivity: ago(2.6 * H), stoppedAt: ago(2.6 * H),
       messages: [
         { t: ago(3 * H), kind: 'out', text: 'Replace moment with date-fns in src/lib/dates.ts and every caller.' },
@@ -81,34 +90,34 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'a7716be4', description: 'Write the changelog for 2.4', status: 'stopped', model: 'claude-sonnet-5-5',
+      id: 'a7716be4', description: 'Write the changelog for 2.4', status: 'stopped', profile: 'codex', harness: 'codex', model: 'gpt-5.3-codex',
       startedAt: ago(5 * H), lastActivity: ago(4.2 * H), stoppedAt: ago(4.2 * H),
       messages: [
         { t: ago(5 * H), kind: 'out', text: 'Read the commits since v2.3.0 and draft CHANGELOG.md for 2.4 in the existing style.' },
-        { t: ago(4.5 * H), kind: 'reply', text: 'CHANGELOG.md has a new 2.4 section with 14 entries, grouped as Added, Changed and Fixed.\n\nPushed to origin cloudy-cloud/a7716be4 at 1c80e55. Fetch with: git fetch origin cloudy-cloud/a7716be4.\nModel: claude-sonnet-5-5\nTotal: 7 tool uses, 22.5k in / 2.4k out tokens, 4m 50s' },
+        { t: ago(4.5 * H), kind: 'reply', text: 'CHANGELOG.md has a new 2.4 section with 14 entries, grouped as Added, Changed and Fixed.\n\nPushed to origin cloudy-cloud/a7716be4 at 1c80e55. Fetch with: git fetch origin cloudy-cloud/a7716be4.\nModel: claude-sonnet-5-5\nTotal: 7 tool uses, 22.5k in / 2.4k out tokens, 4m 50s\n\nAutofix: pull request https://github.com/acme/widgets/pull/43 is NOT clean after 3 fix rounds (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=3). Still failing:\n- Failed check "lint"' },
       ],
     }),
     box({
-      id: '3e5b7a60', description: 'Add dark mode tokens to the design system', status: 'stopped', profile: 'openrouter', model: 'anthropic/claude-haiku-5',
+      id: '3e5b7a60', description: 'Add dark mode tokens to the design system', status: 'stopped', profile: 'openrouter', harness: 'claude', model: 'anthropic/claude-haiku-5',
       startedAt: ago(7 * H), lastActivity: ago(6.5 * H), stoppedAt: ago(6.5 * H),
       messages: [{ t: ago(7 * H), kind: 'out', text: 'Add a dark palette to tokens.css behind prefers-color-scheme.' }, { t: ago(6.6 * H), kind: 'reply', text: 'Added 24 tokens and a dark block.\n\nPushed to origin cloudy-cloud/3e5b7a60 at e4410aa. Fetch with: git fetch origin cloudy-cloud/3e5b7a60.\nModel: anthropic/claude-haiku-5\nTotal: 3 tool uses, 5.1k in / 1.2k out tokens, 1m 8s' }],
     }),
     box({
-      id: 'c3d4e5f6', description: 'Check the onboarding flow on a phone', status: 'running', model: 'claude-sonnet-5-5', machineKind: 'android',
+      id: 'c3d4e5f6', description: 'Check the onboarding flow on a phone', status: 'running', profile: 'opencode-glm', harness: 'opencode', model: 'z-ai/glm-5.3-flash', machineKind: 'android',
       startedAt: ago(25 * M), lastActivity: ago(40_000), deadline: ago(25 * M) + 8 * H,
       messages: [{ t: ago(25 * M), kind: 'out', text: 'Install the debug APK on the Android machine and walk through onboarding. Report any screen that clips text.' }, { t: ago(40_000), kind: 'progress', text: 'Bash adb install app-debug.apk' }],
     }),
     box({
-      id: 'd4e5f607', description: 'Fine-tune the reranker on the new pairs', status: 'idle', model: 'claude-sonnet-5-5', machineKind: 'gpu:l4',
+      id: 'd4e5f607', description: 'Fine-tune the reranker on the new pairs', status: 'idle', harness: 'claude', model: 'claude-sonnet-5-5', machineKind: 'gpu:l4',
       startedAt: ago(70 * M), lastActivity: ago(20 * M), idleSince: ago(20 * M), deadline: ago(20 * M) + H,
       messages: [{ t: ago(70 * M), kind: 'out', text: 'Train the reranker for one epoch on data/pairs.jsonl and report eval loss.' }, { t: ago(20 * M), kind: 'reply', text: 'One epoch done. Eval loss 0.41, down from 0.58.\nModel: claude-sonnet-5-5\nTotal: 6 tool uses, 18.0k in / 2.0k out tokens, 41m 2s' }],
     }),
-    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
+    { kind: 'coordinator', id: 'fleet-main', machine: 'm-fleet-main', role: 'coordinator', description: 'Cloud coordinator for the migration fleet', title: 'Cloud coordinator for the migration fleet', titleSource: 'label', source: 'machine', fleet: 'fleet/billing-migrate', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'fleet-main', description: 'Cloud coordinator for the migration fleet' }, children: [...kids], startedBy: 'this session', status: 'running', machineState: 'running', startedAt: ago(7.5 * H), lastActivity: ago(2 * M), deadline: ago(7.5 * H) + 8 * H, messages: [] },
   ];
   for (const b of boxes) if (b.machineState === 'running' && ['running', 'idle', 'starting'].includes(b.status)) b.usage = b.status === 'starting' ? { none: 'no_samples_yet', fetchedAt: now } : demoUsage(b.id, now);
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
   boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
-  return { now, demo: true, usage: { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42, ratedUntil: new Date(now - 20 * 60_000).toISOString() }, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
+  return { now, demo: true, usage: { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42, ratedUntil: new Date(now - 20 * 60_000).toISOString() }, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, fleets: [{ trunk: 'fleet/billing-migrate', merged: ['b42f0d17'] }], boxes };
 }
 
 // Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so
@@ -133,5 +142,5 @@ export const demoStream = {
     return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
   },
   metrics: (id) => ({ samples: demoSeries(id), fetchedAt: Date.now(), source: 'live' }),
-  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
+  pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '  aa9f1e02  idle     Audit the invoice PDFs for missing totals', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
 };

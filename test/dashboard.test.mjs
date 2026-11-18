@@ -5,8 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
-import { buildState, createHandler, isQuiet, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
-import { createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
+import { buildState, createHandler, fleetsOf, isQuiet, lazy, listen, liveState, listMachines, makeMergedCheck } from '../src/dashboard.mjs';
+import { autofixOf, createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 import { planSnapshot, planSettled } from '../src/machine.mjs';
@@ -469,6 +469,19 @@ test('a coordinator box is filled from its machine\'s events.jsonl and streams, 
   } finally { s.close(); }
 });
 
+test('a machine-listed worker box takes the coordinator log\'s harness and autofix too, like profile and push', () => {
+  const lab = (o) => ({ purpose: 'cloudy-cloud', ...o });
+  const machines = [
+    { id: 'mc', name: 'coord', role: 'coordinator', state: 'running', status: 'running', startedAt: 1, labels: lab({ role: 'coordinator', name: 'coord' }) },
+    { id: 'mw', name: 'wm', state: 'running', status: 'running', startedAt: 2, labels: lab({ agent: 'aaaa1111', role: 'worker', parent: 'coord' }) },
+  ];
+  const coordLogs = { mc: [{ id: 'aaaa1111', description: 'w', status: 'stopped', messages: [], harness: 'codex', autofix: { state: 'clean', round: 1, pr: 'https://github.com/a/b/pull/1' } }] };
+  const b = buildState({ events: [], machines, alive: () => true, coordLogs }).boxes.find((x) => x.id === 'aaaa1111');
+  assert.equal(b.source, 'coordinator-log');
+  assert.equal(b.harness, 'codex');
+  assert.deepEqual(b.autofix, { state: 'clean', round: 1, pr: 'https://github.com/a/b/pull/1' });
+});
+
 test('demo state has a coordinator with two workers, tool-call streams, and a box with no stream', () => {
   const d = demoState(), by = Object.fromEntries(d.boxes.map((b) => [b.id, b]));
   const coord = d.boxes.find((b) => b.kind === 'coordinator' && b.children?.length >= 2);
@@ -622,8 +635,10 @@ test('page: an event with no timestamp renders without a time element instead of
   assert.equal(timeEl('btime', Date.now()).tag, 'time');
 });
 
-test('page: an inactive agent keeps fetching its stream while the server says it is not complete and next advances, within a bound', () => {
-  assert.match(PAGE, /!st\.complete && st\.next > nextBefore && \+\+st\.hops <= 20/);
+test('page: an inactive agent keeps polling while the server says its stream is incomplete, even when a chunk adds no events', () => {
+  assert.match(PAGE, /!st\.err && !st\.complete && \+\+st\.hops <= 60/);
+  assert.doesNotMatch(PAGE, /st\.next > nextBefore/, 'a chunk with no new events must not stop the polling: bytes may still remain');
+  assert.match(PAGE, /more \? 3000 : 2000/, 'catch-up polls wait the reader interval, they are not back to back');
 });
 
 test('page: a turn\'s messages come from the retained outgoing messages offset by the dropped ones, never the whole history', () => {
@@ -1182,4 +1197,229 @@ test('/api/stream shows a codex answer that follows retry error notices, not a f
     assert.equal(res.text, 'all good');
     assert.notEqual(res.is_error, true);
   } finally { s.close(); }
+});
+
+// ---- harness and profile per worker ----
+test('foldAgents copies the agent event\'s harness (claude|pi|omp|codex|opencode), else undefined', () => {
+  const ev = (harness) => [{ type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker', ...(harness !== undefined && { harness }) }];
+  assert.equal(foldAgents(ev('codex'), { alive: () => true })[0].harness, 'codex');
+  assert.equal(foldAgents(ev('pi'), { alive: () => true })[0].harness, 'pi');
+  assert.equal(foldAgents(ev('omp'), { alive: () => true })[0].harness, 'omp');
+  assert.equal(foldAgents(ev('opencode'), { alive: () => true })[0].harness, 'opencode');
+  assert.equal(foldAgents(ev('weird'), { alive: () => true })[0].harness, undefined);
+  assert.equal(foldAgents(ev(), { alive: () => true })[0].harness, undefined);
+});
+
+test('the agent event carries the harness, the demo shows all five, and the page tags it by the profile', () => {
+  const src = readFileSync(new URL('../src/run-subagent.mjs', import.meta.url), 'utf8');
+  assert.match(src, /harness: harnessOf\(a\)/);
+  const have = new Set(demoState().boxes.map((b) => b.harness).filter(Boolean));
+  for (const harness of ['claude', 'pi', 'omp', 'codex', 'opencode']) assert.ok(have.has(harness), harness);
+  const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
+  assert.ok((html.match(/harnessTag\(b\)/g) || []).length >= 2, 'rail row and panel both use the tag');
+});
+
+// ---- autofix status per agent ----
+test('autofixOf reads the lines the server writes; fields only when known; the last match wins', () => {
+  assert.deepEqual(autofixOf('autofix round 0/3: opening the pull request'), { state: 'running', round: 0, cap: 3 });
+  assert.deepEqual(autofixOf('autofix PR #12 round 2/3: worker is fixing'), { state: 'running', round: 2, cap: 3 });
+  assert.deepEqual(autofixOf('autofix 1/3: a line from before the PR number'), { state: 'running', round: 1, cap: 3 });
+  const clean = 'Autofix: pull request https://github.com/acme/widgets/pull/12 is clean (checks pass, no new review comments, no merge conflicts) after 1 fix round.';
+  assert.deepEqual(autofixOf(clean), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/12' });
+  const dirty = 'Autofix: pull request https://github.com/acme/widgets/pull/9 is NOT clean after 3 fix rounds (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=3). Still failing:\n- Failed check "lint"';
+  assert.deepEqual(autofixOf(dirty), { state: 'not clean', round: 3, cap: 3, pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: checks on https://github.com/acme/widgets/pull/9 were still running after 30 minutes.'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: the fix turn failed. Still failing on https://github.com/acme/widgets/pull/9:'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix stopped: gh could not create a pull request. gh said: nope'), { state: 'stopped' });
+  assert.deepEqual(autofixOf('Autofix: pull request https://github.com/acme/widgets/pull/9 could not be confirmed clean after 2 fix rounds: the inline review comments could not be read.'), { state: 'stopped', round: 2, pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.deepEqual(autofixOf('Autofix: pull request https://github.com/acme/widgets/pull/9 could not be confirmed clean: GitHub shows it at commit abc1234 instead of the pushed def5678.'), { state: 'stopped', pr: 'https://github.com/acme/widgets/pull/9' });
+  assert.equal(autofixOf('nothing about autofix here'), undefined);
+  assert.equal(autofixOf('autofixing 1/3: not the prefix'), undefined);
+  assert.equal(autofixOf('Autofix: pull request https://evil.example/acme/widgets/pull/9 is clean (x) after 0 fix rounds.').pr, undefined);
+  assert.equal(autofixOf('Autofix: pull request https://github.com/acme/widgets/pulls/9 is clean (x) after 0 fix rounds.').pr, undefined);
+  const last = 'autofix PR #2 round 1/3: waiting for checks\nAutofix: pull request https://github.com/acme/widgets/pull/2 is clean (x) after 1 fix round.';
+  assert.deepEqual(autofixOf(last), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/2' });
+});
+
+test('foldAgents sets a.autofix from reply and progress text; demo has a clean and a not-clean agent', () => {
+  const ev = [
+    { type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker' },
+    { type: 'progress', id: 'a1', t: 2, text: 'autofix PR #5 round 0/3: waiting for checks' },
+    { type: 'reply', id: 'a1', t: 3, text: 'Autofix: pull request https://github.com/acme/widgets/pull/5 is clean (checks pass, no new review comments, no merge conflicts) after 0 fix rounds.' },
+  ];
+  const [a] = foldAgents(ev, { alive: () => true });
+  assert.deepEqual(a.autofix, { state: 'clean', round: 0, pr: 'https://github.com/acme/widgets/pull/5' });
+  const d = demoState();
+  assert.equal(d.boxes.find((b) => b.id === 'b42f0d17').autofix.state, 'clean');
+  assert.match(d.boxes.find((b) => b.id === 'b42f0d17').autofix.pr, /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/);
+  assert.equal(d.boxes.find((b) => b.id === 'a7716be4').autofix.state, 'not clean');
+});
+
+test('the page shows the autofix tag in the row and the panel, and links only a valid GitHub pull URL', () => {
+  assert.match(PAGE, /'Autofix' \+/);
+  assert.match(PAGE, /target: '_blank'/);
+  assert.match(PAGE, /rel: 'noopener noreferrer'/);
+  assert.match(PAGE, /'PR #'/);
+  assert.ok((PAGE.match(/autofixTag\(b\)/g) || []).length >= 2, 'row and panel both use the tag');
+  assert.match(PAGE, /github\\\.com\\\//); // the page's GitHub pull-URL regex
+});
+
+// ---- fleet trunk grouping ----
+test('buildState puts a fleet trunk on a box from its first out, or its coordinator\'s copy of the brief', () => {
+  const events = [
+    { type: 'agent', id: 'w1', t: 1, description: 'd1', role: 'worker' },
+    { type: 'message', id: 'w1', t: 2, text: 'Migrate the routes onto fleet/auth-rewrite and open the PR into it.' },
+    { type: 'agent', id: 'w2', t: 3, description: 'd2', role: 'worker' },
+    { type: 'message', id: 'w2', t: 4, text: 'nothing about a trunk' },
+    { type: 'agent', id: 'w3', t: 5, description: 'd3', role: 'worker' }, // no own out: the coordinator's copy has the brief
+  ];
+  const machines = [
+    { id: 'mc', name: 'coord', role: 'coordinator', state: 'running', status: 'running', startedAt: 1, labels: { role: 'coordinator', name: 'coord', purpose: 'cloudy-cloud' } },
+    { id: 'm3', name: 'w3m', state: 'running', status: 'running', startedAt: 5, labels: { agent: 'w3', role: 'worker', parent: 'coord', description: 'd3' } },
+  ];
+  const coordLogs = { mc: [{ id: 'w3', description: 'd3', status: 'running', messages: [{ t: 6, kind: 'out', text: 'Do fleet/db-cleanup part 3.' }] }] };
+  const s = buildState({ events, machines, alive: () => true, coordLogs });
+  const by = Object.fromEntries(s.boxes.map((b) => [b.id, b]));
+  assert.equal(by.w1.fleet, 'fleet/auth-rewrite');
+  assert.equal(by.w2.fleet, undefined);
+  assert.equal(by.w3.fleet, 'fleet/db-cleanup');
+});
+
+test('fleetsOf lists each valid trunk with the agent ids whose branch merged into it, or null when unknown', () => {
+  const boxes = [
+    { id: 'a', fleet: 'fleet/x', branch: 'cloudy-cloud/a' },
+    { id: 'b', fleet: 'fleet/x', branch: 'cloudy-cloud/b' },
+    { id: 'c', fleet: 'fleet/x', branch: 'cloudy-cloud/c' },
+    { id: 'd' },
+    { id: 'e', fleet: 'fleet/no way', branch: 'cloudy-cloud/e' }, // not a valid trunk name
+  ];
+  const merged = new Map([['fleet/x', new Set(['cloudy-cloud/a', 'cloudy-cloud/other'])]]);
+  assert.deepEqual(fleetsOf(boxes, merged), [{ trunk: 'fleet/x', merged: ['a'] }]);
+  assert.deepEqual(fleetsOf(boxes, new Map()), [{ trunk: 'fleet/x', merged: null }]);
+});
+
+test('the merged check fetches the trunk first, then runs git branch -r via execFile, and caches about 30 s', async () => {
+  const clock = { t: 1_000_000 }, calls = [];
+  const run = async (args, opts) => { calls.push([args, opts]); return { stdout: '  origin/cloudy-cloud/a\n  origin/cloudy-cloud/b\n' }; };
+  const check = makeMergedCheck({ run, now: () => clock.t });
+  assert.deepEqual([...(await check('fleet/x'))].sort(), ['cloudy-cloud/a', 'cloudy-cloud/b']);
+  assert.deepEqual(calls[0], [['fetch', '--quiet', 'origin', 'fleet/x'], { timeout: 15_000 }]);
+  assert.deepEqual(calls[1], [['branch', '-r', '--merged', 'origin/fleet/x', '--list', 'origin/cloudy-cloud/*'], undefined]);
+  await check('fleet/x');
+  assert.equal(calls.length, 2, 'within the cache period no second fetch runs');
+  clock.t += 31_000;
+  await check('fleet/x');
+  assert.equal(calls.length, 4);
+  const fail = makeMergedCheck({ run: async () => { throw new Error('not a git repository'); }, now: () => clock.t });
+  assert.equal(await fail('fleet/x'), null);
+});
+
+test('a failed trunk fetch makes the merge status unknown, not the stale local answer', async () => {
+  const check = makeMergedCheck({ run: async (args) => { if (args[0] === 'fetch') throw new Error('offline'); return { stdout: 'origin/cloudy-cloud/a\n' }; } });
+  assert.equal(await check('fleet/x'), null);
+});
+
+test('liveState exposes fleets from the merged check, and null when git cannot answer', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
+  writeFileSync(file, JSON.stringify({ type: 'agent', id: 'w1', t: 1, description: 'd', role: 'worker', branch: 'cloudy-cloud/w1' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'w1', t: 2, text: 'work on fleet/x' }) + '\n'
+    + JSON.stringify({ type: 'agent', id: 'w2', t: 3, description: 'e', role: 'worker', branch: 'cloudy-cloud/w2' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'w2', t: 4, text: 'also fleet/x' }) + '\n');
+  const opts = { list: async () => [], provider: createFakeProvider(), file, cacheMs: 0, now: () => 1_000_000 };
+  const s = await liveState({}, { ...opts, mergedCheck: async () => new Set(['cloudy-cloud/w1']) })();
+  assert.deepEqual(s.fleets, [{ trunk: 'fleet/x', merged: ['w1'] }]);
+  const s2 = await liveState({}, { ...opts, mergedCheck: async () => null })();
+  assert.deepEqual(s2.fleets, [{ trunk: 'fleet/x', merged: null }]);
+});
+
+test('the demo shows one fleet: a trunked coordinator, three trunked workers, exactly one merged', () => {
+  const d = demoState();
+  assert.equal(d.fleets.length, 1);
+  const agents = d.boxes.filter((b) => b.fleet === d.fleets[0].trunk);
+  assert.equal(agents.length, 4); // the coordinator plus its three workers on the trunk
+  assert.equal(agents.filter((b) => b.kind === 'coordinator').length, 1);
+  assert.equal(d.fleets[0].merged.length, 1);
+  assert.ok(agents.some((a) => a.id === d.fleets[0].merged[0]));
+  // a worker of the trunked coordinator that has no trunk of its own: it must still render in the fleet view
+  const co = agents.find((b) => b.kind === 'coordinator');
+  assert.ok(d.boxes.some((b) => b.parent === co.id && !b.fleet));
+});
+
+test('the fleet view adds a trunk section per fleet with a merged count and per-agent tags', () => {
+  assert.match(PAGE, /S\.data\.fleets/);
+  assert.match(PAGE, /'not merged'/);
+  assert.match(PAGE, /'merged'/);
+  assert.match(PAGE, /merge status unknown/);
+  assert.match(PAGE, / of /);
+});
+
+test('page: a trunked coordinator keeps its workers without a trunk, each box rendered once', () => {
+  assert.match(PAGE, /for \(const c of agents\) workersOf\(c\)/, 'trunk sections render the coordinator\'s unassigned workers');
+  assert.match(PAGE, /filter\(\(b\) => !b\.fleet\)/, 'worker grids skip workers that have their own trunk');
+});
+
+// ---- issue #83: a stopped box is not complete while its stream still has unread data ----
+test('a stopped box with more stream on its machine is not complete until the tail is read (#83)', async () => {
+  const clock = { t: 10_000 };
+  const big = 'a'.repeat(600); // two 300-byte chunks, no events in them
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'stopped', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reads = [];
+  const reader = {
+    readTail: async (m, name, from) => { reads.push(from); const data = big.slice(from, from + 300); return { data, from, next: from + data.length, size: big.length, fetchedAt: clock.t }; },
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r1 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r1.complete, false);
+    const r2 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body); // back to back, as the page polls
+    assert.equal(r2.complete, true);
+    assert.deepEqual(reads, [0, 300]);
+  } finally { s.close(); }
+});
+
+test('a stopped box stays complete on the first response when the whole stream was read (#83)', async () => {
+  const clock = { t: 10_000 };
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'stopped', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reader = {
+    readTail: async (m, name, from) => ({ data: 'x', from, next: from + 1, size: from + 1, fetchedAt: clock.t }),
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r.complete, true);
+  } finally { s.close(); }
+});
+
+test('a retried turn: a result event in a remote chunk is not complete while more bytes remain', async () => {
+  const clock = { t: 10_000 };
+  const sid = '11111111-2222-3333-4444-555555555555';
+  const failed = JSON.stringify({ type: 'result', subtype: 'error', is_error: true, result: '503 overloaded', session_id: sid });
+  const work = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(300) }] } });
+  const ok = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done after retry', session_id: sid });
+  const raw = `${failed}\n${work}\n${ok}\n`, split = failed.length + 1; // chunk 1 ends after the failed attempt's result
+  const box = { id: 'aa11bb22', kind: 'agent', status: 'idle', machine: 'm1', machineState: 'running', turns: 1, messages: [], branch: 'cloudy-cloud/aa11bb22' };
+  const reads = [];
+  const reader = {
+    readTail: async (m, name, from) => { reads.push(from); const data = from === 0 ? raw.slice(0, split) : raw.slice(from); return { data, from, next: from + data.length, size: raw.length, fetchedAt: clock.t }; },
+    readCached: async () => null,
+  };
+  const s = await listen(createHandler({ token: TOKEN, html: 'x', getState: async () => ({ boxes: [box] }), getReader: async () => reader, now: () => clock.t }), 0);
+  const port = s.address().port;
+  try {
+    const r1 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r1.events.some((e) => e.kind === 'result'), true, 'the failed attempt\'s result is in this chunk');
+    assert.equal(r1.complete, false, 'unread bytes remain, so the stream is not complete');
+    const r2 = JSON.parse((await get(port, `/api/stream?t=${TOKEN}&box=aa11bb22&turn=1`)).body);
+    assert.equal(r2.complete, true);
+    assert.deepEqual(reads, [0, split]);
+  } finally { s.close(); }
+});
+
+test('page: a finished box keeps pulling stream chunks while they arrive, with a bound of at most 60 hops', () => {
+  const m = /\+\+st\.hops <= (\d+)/.exec(PAGE);
+  assert.ok(m && Number(m[1]) > 20 && Number(m[1]) <= 60);
 });

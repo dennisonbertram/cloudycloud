@@ -214,6 +214,7 @@ async function world(envOver = {}, provOpts = { hasProxySecrets: false, hasConse
   const secretHook = {}; // a test sets secretHook.fn to give every sandbox a writeSecret (the upload-only call of a provider that has one)
   const env = { GH_TOKEN: 'ghp_secret', OPENAI_API_KEY: KEY, OPENROUTER_API_KEY: 'or-secret-1', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json', CLOUDY_CLOUD_CODEX_AUTH: authFile(), ...envOver };
   const deps = {
+    fetchFn: async () => ({ status: 200, text: async () => "{}" }), // preflight must never reach the network
     env, cwd: repo, open: new Map(), provider: createFakeProvider({ FAKE_API_KEY: 'k' }, provOpts),
     createSandbox: async (envs, opts) => {
       const sbx = await fakeSandbox(getGithub());

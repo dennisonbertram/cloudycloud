@@ -44,6 +44,12 @@ if [ "${1:-}" = protect ]; then
   exec node "$root/src/protect.mjs" "$@"
 fi
 
+# `cloudy-cloud branches prune [--yes]` deletes empty or merged cloudy-cloud/* branches on origin (dry run by default).
+if [ "${1:-}" = branches ]; then
+  shift
+  exec node "$root/src/branches.mjs" "$@"
+fi
+
 # update_notice: one line when a newer version is on npm. Interactive terminals only; no node starts when opted out.
 update_notice() {
   if [ -t 1 ] && [ -t 2 ] && [ -z "${CI:-}" ] && [ "${CLOUDY_CLOUD_NO_UPDATE_CHECK:-}" != 1 ]; then node "$root/src/update-check.mjs" || true; fi
@@ -102,6 +108,7 @@ Usage: cloudy-cloud [command]
   opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
   pi [args]              start pi as the main session with the cloud_agent tools
   free-pi [args]         start free-pi as the main session with the cloud_agent tools
+  branches prune         delete empty or merged cloudy-cloud/* branches on origin (--yes to delete)
   coordinator            manage cloud coordinators (coordinator --help for details)
   mcp add|ls|rm          choose which MCP servers cloud subagents get
   --version              print the version

@@ -95,6 +95,7 @@
 <li><strong>List</strong> has the boxes in a left column and the selected box in a detail pane. Workers started by a cloud coordinator are nested under it; use the arrow next to the coordinator, or the Left and Right arrow keys, to close or open them.</li>
 <li><strong>Fleet</strong> shows one tile per box, with its status, description, id and time since last activity, and a <em>Workers of</em> heading under each coordinator. Select a tile to open it in the List view.</li>
 </ul>
+<p>In the Fleet view, boxes whose brief names a trunk branch (<code>fleet/&lt;topic&gt;</code>) get their own section above the groups. The section heading says how many of the workers' branches are merged into that trunk, and each tile says <em>merged</em> or <em>not merged</em>. The check runs <code>git branch -r --merged origin/&lt;trunk&gt;</code> in the folder where the dashboard runs, and is cached for about 30 seconds. If git cannot answer, the heading says <em>merge status unknown</em>. Other boxes are grouped as below.</p>
 <p>Boxes are grouped as <strong>Needs you</strong>, <strong>Active</strong> and <strong>Finished</strong>.</p>
 <ul>
 <li><strong>Needs you:</strong> agents that are idle, and agents that failed today.</li>
@@ -107,6 +108,8 @@
 <p>Select a box to see:</p>
 <ul>
 <li><strong>Status</strong>, <strong>Model</strong> (or profile), <strong>Started</strong>, <strong>Role</strong>, <strong>Started by</strong> (this session, or the coordinator that started it) and the <strong>Machine</strong>.</li>
+<li><strong>Harness</strong>: the agent that runs the worker (<code>claude</code>, <code>pi</code>, <code>omp</code>, <code>codex</code> or <code>opencode</code>). It also shows as a tag on the box.</li>
+<li><strong>Autofix</strong>: for an agent started with <code>autofix</code>, the state (for example running, with the round and the most rounds) and a link to the pull request, taken from the progress and result lines. It is shown only when the agent's text has them.</li>
 <li><strong>MCP</strong>: the names of the MCP servers the subagent has, when it has any.</li>
 <li><strong>Branch</strong>: the <code>cloudy-cloud/&lt;id&gt;</code> branch, with the result of the last push (the commit hash, or "push failed"), and copy buttons.</li>
 <li><strong>Deletes</strong>: when the machine is expected to be deleted, for an agent that is still active or idle. For an idle agent this is 60 minutes after it went idle. For an active agent the dashboard shows 8 hours after it started. That is only an upper estimate: the server deletes a worker machine at its own deadline, 6 hours after it starts by default (<code>CLOUDY_CLOUD_WORKER_HOURS</code>, at most 24), which can be earlier.</li>
