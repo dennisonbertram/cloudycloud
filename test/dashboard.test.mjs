@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
-import { buildState, createHandler, isQuiet, lazy, listen, liveState, listMachines } from '../src/dashboard.mjs';
+import { buildState, createHandler, fleetsOf, isQuiet, lazy, listen, liveState, listMachines, makeMergedCheck } from '../src/dashboard.mjs';
 import { autofixOf, createEventLog, foldAgents, pushOf, readEvents, redact } from '../src/events.mjs';
 import { demoState, demoStream } from '../src/dashboard-demo.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
@@ -1246,4 +1246,83 @@ test('the page shows the autofix tag in the row and the panel, and links only a 
   assert.match(PAGE, /'PR #'/);
   assert.ok((PAGE.match(/autofixTag\(b\)/g) || []).length >= 2, 'row and panel both use the tag');
   assert.match(PAGE, /github\\\.com\\\//); // the page's GitHub pull-URL regex
+});
+
+// ---- fleet trunk grouping ----
+test('buildState puts a fleet trunk on a box from its first out, or its coordinator\'s copy of the brief', () => {
+  const events = [
+    { type: 'agent', id: 'w1', t: 1, description: 'd1', role: 'worker' },
+    { type: 'message', id: 'w1', t: 2, text: 'Migrate the routes onto fleet/auth-rewrite and open the PR into it.' },
+    { type: 'agent', id: 'w2', t: 3, description: 'd2', role: 'worker' },
+    { type: 'message', id: 'w2', t: 4, text: 'nothing about a trunk' },
+    { type: 'agent', id: 'w3', t: 5, description: 'd3', role: 'worker' }, // no own out: the coordinator's copy has the brief
+  ];
+  const machines = [
+    { id: 'mc', name: 'coord', role: 'coordinator', state: 'running', status: 'running', startedAt: 1, labels: { role: 'coordinator', name: 'coord', purpose: 'cloudy-cloud' } },
+    { id: 'm3', name: 'w3m', state: 'running', status: 'running', startedAt: 5, labels: { agent: 'w3', role: 'worker', parent: 'coord', description: 'd3' } },
+  ];
+  const coordLogs = { mc: [{ id: 'w3', description: 'd3', status: 'running', messages: [{ t: 6, kind: 'out', text: 'Do fleet/db-cleanup part 3.' }] }] };
+  const s = buildState({ events, machines, alive: () => true, coordLogs });
+  const by = Object.fromEntries(s.boxes.map((b) => [b.id, b]));
+  assert.equal(by.w1.fleet, 'fleet/auth-rewrite');
+  assert.equal(by.w2.fleet, undefined);
+  assert.equal(by.w3.fleet, 'fleet/db-cleanup');
+});
+
+test('fleetsOf lists each valid trunk with the agent ids whose branch merged into it, or null when unknown', () => {
+  const boxes = [
+    { id: 'a', fleet: 'fleet/x', branch: 'cloudy-cloud/a' },
+    { id: 'b', fleet: 'fleet/x', branch: 'cloudy-cloud/b' },
+    { id: 'c', fleet: 'fleet/x', branch: 'cloudy-cloud/c' },
+    { id: 'd' },
+    { id: 'e', fleet: 'fleet/no way', branch: 'cloudy-cloud/e' }, // not a valid trunk name
+  ];
+  const merged = new Map([['fleet/x', new Set(['cloudy-cloud/a', 'cloudy-cloud/other'])]]);
+  assert.deepEqual(fleetsOf(boxes, merged), [{ trunk: 'fleet/x', merged: ['a'] }]);
+  assert.deepEqual(fleetsOf(boxes, new Map()), [{ trunk: 'fleet/x', merged: null }]);
+});
+
+test('the merged check runs git branch -r via execFile on the validated trunk and caches about 30 s', async () => {
+  const clock = { t: 1_000_000 }, calls = [];
+  const run = async (args) => { calls.push(args); return { stdout: '  origin/cloudy-cloud/a\n  origin/cloudy-cloud/b\n' }; };
+  const check = makeMergedCheck({ run, now: () => clock.t });
+  assert.deepEqual([...(await check('fleet/x'))].sort(), ['cloudy-cloud/a', 'cloudy-cloud/b']);
+  assert.deepEqual(calls[0], ['branch', '-r', '--merged', 'origin/fleet/x', '--list', 'origin/cloudy-cloud/*']);
+  await check('fleet/x');
+  assert.equal(calls.length, 1);
+  clock.t += 31_000;
+  await check('fleet/x');
+  assert.equal(calls.length, 2);
+  const fail = makeMergedCheck({ run: async () => { throw new Error('not a git repository'); }, now: () => clock.t });
+  assert.equal(await fail('fleet/x'), null);
+});
+
+test('liveState exposes fleets from the merged check, and null when git cannot answer', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
+  writeFileSync(file, JSON.stringify({ type: 'agent', id: 'w1', t: 1, description: 'd', role: 'worker', branch: 'cloudy-cloud/w1' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'w1', t: 2, text: 'work on fleet/x' }) + '\n'
+    + JSON.stringify({ type: 'agent', id: 'w2', t: 3, description: 'e', role: 'worker', branch: 'cloudy-cloud/w2' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'w2', t: 4, text: 'also fleet/x' }) + '\n');
+  const opts = { list: async () => [], provider: createFakeProvider(), file, cacheMs: 0, now: () => 1_000_000 };
+  const s = await liveState({}, { ...opts, mergedCheck: async () => new Set(['cloudy-cloud/w1']) })();
+  assert.deepEqual(s.fleets, [{ trunk: 'fleet/x', merged: ['w1'] }]);
+  const s2 = await liveState({}, { ...opts, mergedCheck: async () => null })();
+  assert.deepEqual(s2.fleets, [{ trunk: 'fleet/x', merged: null }]);
+});
+
+test('the demo shows one fleet of three agents, exactly one merged', () => {
+  const d = demoState();
+  assert.equal(d.fleets.length, 1);
+  const agents = d.boxes.filter((b) => b.fleet === d.fleets[0].trunk);
+  assert.equal(agents.length, 3);
+  assert.equal(d.fleets[0].merged.length, 1);
+  assert.ok(agents.some((a) => a.id === d.fleets[0].merged[0]));
+});
+
+test('the fleet view adds a trunk section per fleet with a merged count and per-agent tags', () => {
+  assert.match(PAGE, /S\.data\.fleets/);
+  assert.match(PAGE, /'not merged'/);
+  assert.match(PAGE, /'merged'/);
+  assert.match(PAGE, /merge status unknown/);
+  assert.match(PAGE, / of /);
 });

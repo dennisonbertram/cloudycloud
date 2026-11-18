@@ -37,7 +37,7 @@ export function demoState(now = Date.now()) {
   });
   const boxes = [
     box({
-      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, harness: 'claude', model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'],
+      id: '7c1e90ab', description: 'Add retry with backoff to the upload client', status: 'running', profile: undefined, harness: 'claude', model: 'claude-sonnet-5-5', mcp: ['notion', 'context7'], fleet: 'fleet/billing-migrate',
       startedAt: ago(18 * M), lastActivity: ago(9_000), deadline: ago(18 * M) + 8 * H,
       messages: [
         { t: ago(18 * M), kind: 'out', text: 'Add exponential backoff with jitter to src/upload/client.ts. Retry only on 429 and 5xx, at most 5 tries. Add tests next to the existing ones and push to your branch.' },
@@ -50,7 +50,7 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash',
+      id: 'b42f0d17', description: 'Review the billing webhook for race conditions', status: 'idle', profile: 'glm', harness: 'claude', model: 'z-ai/glm-5.3-flash', fleet: 'fleet/billing-migrate',
       startedAt: ago(52 * M), lastActivity: ago(14 * M), idleSince: ago(14 * M), deadline: ago(14 * M) + H,
       messages: [
         { t: ago(52 * M), kind: 'out', text: 'Read src/billing/webhook.ts and list any way two deliveries of the same event could be applied twice. Do not change code yet.' },
@@ -63,7 +63,7 @@ export function demoState(now = Date.now()) {
       ],
     }),
     box({
-      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', profile: 'pi-glm', harness: 'pi', model: 'z-ai/glm-5.3-flash',
+      id: 'e08a5c33', description: 'Port the settings page to the new form components', status: 'starting', profile: 'pi-glm', harness: 'pi', model: 'z-ai/glm-5.3-flash', fleet: 'fleet/billing-migrate',
       startedAt: ago(40_000), lastActivity: ago(5_000), deadline: ago(40_000) + 8 * H,
       messages: [{ t: ago(40_000), kind: 'out', text: 'Replace the hand-written inputs in app/settings/page.tsx with the shared Form, Field and Switch components. Keep the page behaviour the same.' }],
     }),
@@ -109,7 +109,7 @@ export function demoState(now = Date.now()) {
   for (const b of boxes) if (b.machineState === 'running' && ['running', 'idle', 'starting'].includes(b.status)) b.usage = b.status === 'starting' ? { none: 'no_samples_yet', fetchedAt: now } : demoUsage(b.id, now);
   // As the server does: the coordinator's activity holds the messages it exchanged with its workers, each tagged with the worker.
   boxes.find((b) => b.id === 'fleet-main').messages = boxes.filter((b) => kids.has(b.id)).flatMap((b) => b.messages.filter((m) => m.kind !== 'progress').map((m) => ({ ...m, agent: b.id }))).sort((x, y) => x.t - y.t);
-  return { now, demo: true, usage: { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42, ratedUntil: new Date(now - 20 * 60_000).toISOString() }, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, boxes };
+  return { now, demo: true, usage: { costUSD: 66.03, allowanceUSD: 16.61, overageUSD: 49.42, ratedUntil: new Date(now - 20 * 60_000).toISOString() }, caps: { hasShell: true, hasDisplay: true }, hasLog: true, machines: { ok: true }, fleets: [{ trunk: 'fleet/billing-migrate', merged: ['b42f0d17'] }], boxes };
 }
 
 // Demo stream (raw Claude Code stream-json lines) and coordinator pane for `--demo`: built from each demo box's messages, so

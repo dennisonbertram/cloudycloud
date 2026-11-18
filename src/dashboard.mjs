@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { loadEnv, ownerFile } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { eventsFile, foldAgents, readEvents, redact, redactText } from './events.mjs';
@@ -43,6 +44,9 @@ export async function listMachines(env, provider) {
 
 const NO_TITLE = 'no title: started before labels (#48)';
 const ACTIVE = ['queued', 'starting', 'running', 'idle'];
+// A fleet trunk name; the strict form is also the validation gate for the git merge check below.
+const TRUNK = /\bfleet\/[A-Za-z0-9._-]{1,60}/;
+const FLEET_TRUNK = /^fleet\/[A-Za-z0-9._-]{1,60}$/;
 
 // One list of boxes: every agent from the event log, with its live machine, plus live machines no agent explains
 // (coordinators, and agents from sessions that never wrote an event log). `owner` is this server's owner id.
@@ -96,8 +100,46 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
     b.startedBy = o && o === owner ? 'this session' : c ? (c.labels?.name || c.id) : o;
   }
   for (const b of boxes) delete b.startedByOwner;
+  // A fleet trunk (fleet/<topic>) is named in the worker's brief — its first `out` message — or, when it has none of
+  // its own, in the coordinator's copy of that brief (merged messages carry `agent`) or the coordinator's own brief.
+  const trunkIn = (msgs, pred) => { const m = msgs?.find((x) => x.kind === 'out' && (!pred || pred(x))); return m && TRUNK.exec(m.text)?.[0]; };
+  for (const b of boxes) {
+    const c = b.parent && boxes.find((x) => x.id === b.parent);
+    const f = trunkIn(b.messages) ?? (c && (trunkIn(c.messages, (m) => m.agent === b.id) ?? trunkIn(c.messages, (m) => !m.agent || m.agent === c.id)));
+    if (f) b.fleet = f;
+  }
   const error = machineError && { code: machineError.code ?? 'api', message: redact(machineError.message), fix: (machineError.code === 'no_key' ? provider?.text.noKeyFix : provider?.text.apiFix) ?? GENERIC_FIX };
   return { now, hasLog: events.length > 0, ...(provider?.caps && { caps: { hasShell: !!provider.caps.hasShell, hasDisplay: !!provider.caps.hasDisplay } }), machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
+}
+
+// state.fleets: one row per valid trunk on any box. `merged` is the trunk's agents whose own branch git lists as
+// merged into it, or null when the check could not answer — the page then says the merge status is unknown.
+export function fleetsOf(boxes, merged) {
+  return [...new Set(boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))].map((trunk) => {
+    const l = merged?.get(trunk) ?? null;
+    return { trunk, merged: l === null ? null : boxes.filter((b) => b.fleet === trunk && l.has(b.branch)).map((b) => b.id) };
+  });
+}
+
+const FLEET_MERGED_MS = 30_000;
+const execP = promisify(execFile);
+// The origin/cloudy-cloud/* remote branches merged into origin/<trunk>, as a Set of short branch names, or null when
+// git cannot answer (not a repo, no remote). Runs `git branch -r` via execFile — never a shell — in the dashboard's
+// cwd and caches each trunk's answer about 30 s so a poll loop does not spawn git every time.
+export function makeMergedCheck({ now = Date.now, run = (args) => execP('git', args) } = {}) {
+  const cache = new Map();
+  return async (trunk) => {
+    let c = cache.get(trunk);
+    if (!c || now() - c.at >= FLEET_MERGED_MS) {
+      let list = null;
+      try {
+        const { stdout } = await run(['branch', '-r', '--merged', 'origin/' + trunk, '--list', 'origin/cloudy-cloud/*']);
+        list = new Set(stdout.split('\n').map((l) => l.trim().replace(/^origin\//, '')).filter(Boolean));
+      } catch { /* no answer: merged stays null */ }
+      cache.set(trunk, c = { at: now(), list });
+    }
+    return c.list;
+  };
 }
 
 // Pattern redaction plus the exact secret values (`secrets`), on every string and every key.
@@ -289,12 +331,13 @@ const MAX_LOG = 16 * 1024 * 1024; // like readEvents: a coordinator log over 16 
 // Live state with a short cache so several open tabs do not each call the provider API. With `getReader`, each live
 // coordinator's own events.jsonl is also read from its machine (one chunk at a time, at most every 10 s, only while
 // something polls this function) and folded into the workers it started.
-export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider, getReader, now = Date.now } = {}) {
+export function liveState(env, { list = listMachines, file = eventsFile(env), cacheMs = 2500, provider, getReader, now = Date.now, mergedCheck } = {}) {
   let cached, at = 0;
   const usage = new Map(); // running machine id -> { samples, fetchedAt, at, error } (#117)
   let limiter; // made on first use: metrics reads leave at least one provider slot free for the state's own reads
   const lastRead = new Map(); // machine id -> when its last read started; kept after the machine stops so a quick restart is not read again within METRICS_MS
   let listSeq = 0, appliedSeq = 0; // a list answer older than the one already applied is ignored
+  mergedCheck ??= makeMergedCheck({ now });
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
     let st = logs.get(m.id);
@@ -385,6 +428,8 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(b.machine).samples, now()), now())) u.quiet = true; } }
     const u = planSnapshot(provider, now())?.usage;
     if (typeof u?.costUSD === 'number') cached.usage = Object.fromEntries(['costUSD', 'allowanceUSD', 'overageUSD', 'ratedUntil'].filter((k) => u[k] != null).map((k) => [k, u[k]]));
+    const trunks = [...new Set(cached.boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))];
+    if (trunks.length) cached.fleets = fleetsOf(cached.boxes, new Map(await Promise.all(trunks.map(async (t) => [t, await mergedCheck(t)]))));
     at = now();
     return cached;
   };
