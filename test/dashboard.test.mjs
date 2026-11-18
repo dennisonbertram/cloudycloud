@@ -1206,8 +1206,9 @@ test('the agent event carries the harness, the demo shows all five, and the page
 
 // ---- autofix status per agent ----
 test('autofixOf reads the lines the server writes; fields only when known; the last match wins', () => {
-  assert.deepEqual(autofixOf('autofix 0/3: opening the pull request'), { state: 'running', round: 0, cap: 3 });
-  assert.deepEqual(autofixOf('autofix 2/3: worker is fixing'), { state: 'running', round: 2, cap: 3 });
+  assert.deepEqual(autofixOf('autofix round 0/3: opening the pull request'), { state: 'running', round: 0, cap: 3 });
+  assert.deepEqual(autofixOf('autofix PR #12 round 2/3: worker is fixing'), { state: 'running', round: 2, cap: 3 });
+  assert.deepEqual(autofixOf('autofix 1/3: a line from before the PR number'), { state: 'running', round: 1, cap: 3 });
   const clean = 'Autofix: pull request https://github.com/acme/widgets/pull/12 is clean (checks pass, no new review comments, no merge conflicts) after 1 fix round.';
   assert.deepEqual(autofixOf(clean), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/12' });
   const dirty = 'Autofix: pull request https://github.com/acme/widgets/pull/9 is NOT clean after 3 fix rounds (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=3). Still failing:\n- Failed check "lint"';
@@ -1221,14 +1222,14 @@ test('autofixOf reads the lines the server writes; fields only when known; the l
   assert.equal(autofixOf('autofixing 1/3: not the prefix'), undefined);
   assert.equal(autofixOf('Autofix: pull request https://evil.example/acme/widgets/pull/9 is clean (x) after 0 fix rounds.').pr, undefined);
   assert.equal(autofixOf('Autofix: pull request https://github.com/acme/widgets/pulls/9 is clean (x) after 0 fix rounds.').pr, undefined);
-  const last = 'autofix 1/3: waiting for checks\nAutofix: pull request https://github.com/acme/widgets/pull/2 is clean (x) after 1 fix round.';
+  const last = 'autofix PR #2 round 1/3: waiting for checks\nAutofix: pull request https://github.com/acme/widgets/pull/2 is clean (x) after 1 fix round.';
   assert.deepEqual(autofixOf(last), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/2' });
 });
 
 test('foldAgents sets a.autofix from reply and progress text; demo has a clean and a not-clean agent', () => {
   const ev = [
     { type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker' },
-    { type: 'progress', id: 'a1', t: 2, text: 'autofix 0/3: waiting for checks' },
+    { type: 'progress', id: 'a1', t: 2, text: 'autofix PR #5 round 0/3: waiting for checks' },
     { type: 'reply', id: 'a1', t: 3, text: 'Autofix: pull request https://github.com/acme/widgets/pull/5 is clean (checks pass, no new review comments, no merge conflicts) after 0 fix rounds.' },
   ];
   const [a] = foldAgents(ev, { alive: () => true });

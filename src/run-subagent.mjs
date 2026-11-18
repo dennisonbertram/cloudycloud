@@ -638,8 +638,8 @@ function autofix(a, ctx, t) {
   const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
   const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
   const seen = (a.autofixSeen ??= new Set());
-  let fixes = 0, lastPush = '', ignored = 0;
-  const say = (note) => { t.prefix = `autofix ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
+  let fixes = 0, lastPush = '', ignored = 0, n;
+  const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
   const hand = `open or fix the pull request by hand (git fetch origin ${branch}), or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
   const done = (text) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
   const stop = (why) => done(`Autofix stopped: ${why}\nNext step: ${hand}`);
@@ -682,7 +682,7 @@ function autofix(a, ctx, t) {
     if (!v.pr) return stop(`gh could not read the pull request for ${branch}. gh said: ${v.err}`);
     let pr = v.pr;
     a.prUrl = pr.url;
-    const n = pr.number;
+    n = pr.number;
     if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
     const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
     if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
@@ -734,13 +734,16 @@ function autofix(a, ctx, t) {
         if (!c.ok || inline.bad) incomplete.push('the inline review comments could not be read');
         else for (const x of inline.sort((p, q) => String(q.created_at).localeCompare(String(p.created_at)))) take(`c${x.id}`, x.login, `Comment by ${safe(x.login).slice(0, 40)} on ${safe(x.path).slice(0, 100)}${x.line ? `:${Number(x.line) || 0}` : ''}: ${safe(x.body).slice(0, 500)}`);
         // Write access is asked of GitHub for each author (an owner, member or collaborator can still be read-only).
-        const perm = (a.autofixPerm ??= new Map());
+        // The map is per check, so a permission revoked since the last round stops being trusted. Every candidate is
+        // walked — one already seen as untrusted needs no lookup — but at most 30 distinct logins are asked per round.
+        const perm = new Map();
         const trusted = [];
-        for (const [id, login, text] of cand.slice(0, 30)) {
+        for (const [id, login, text] of cand) {
           if (!LOGIN.test(login ?? '')) { ignored++; continue; }
           if (!perm.has(login)) {
+            if (perm.size >= 30) { ignored++; continue; }
             const q = await gh(`api 'repos/{owner}/{repo}/collaborators/${login}/permission' --jq .permission`);
-            if (q.ok && /^(admin|maintain|write|triage|read|none)$/.test(q.out.trim())) perm.set(login, WRITE.has(q.out.trim())); // a failed lookup is not cached: it counts as untrusted and is asked again
+            perm.set(login, q.ok && /^(admin|maintain|write|triage|read|none)$/.test(q.out.trim()) && WRITE.has(q.out.trim())); // a failed lookup is untrusted for this check and asked again at the next
           }
           if (perm.get(login)) trusted.push([id, text]); else ignored++;
         }

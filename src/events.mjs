@@ -75,15 +75,16 @@ export function pushOf(text) {
 
 // A GitHub pull request URL, the only PR link the autofix lines may carry.
 const GH_PULL = /https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}(?![\d/])/;
-// The autofix progress and result lines run-subagent.mjs writes (progress "autofix N/CAP: <note>" and the reply's
-// "Autofix: ..." / "Autofix stopped: ..." lines); the last matching line wins.
+// The autofix progress and result lines run-subagent.mjs writes (progress "autofix [PR #n ]round N/CAP: <note>" —
+// and the older "autofix N/CAP: <note>" — plus the reply's "Autofix: ..." / "Autofix stopped: ..." lines);
+// the last matching line wins.
 // Returns { state: 'running'|'clean'|'not clean'|'stopped', round?, cap?, pr? } — fields only when known — or undefined.
 export function autofixOf(text) {
   let out;
   for (const line of String(text).split('\n')) {
     const pr = GH_PULL.exec(line)?.[0];
     let m;
-    if ((m = /^autofix (\d+)\/(\d+): /.exec(line))) out = { state: 'running', round: Number(m[1]), cap: Number(m[2]) };
+    if ((m = /^autofix (?:(?:PR #\d+ )?round )?(\d+)\/(\d+): /.exec(line))) out = { state: 'running', round: Number(m[1]), cap: Number(m[2]) };
     else if ((m = /^Autofix: pull request \S+ is clean .+ after (\d+) fix rounds?\./.exec(line))) out = { state: 'clean', round: Number(m[1]), ...(pr && { pr }) };
     else if ((m = /^Autofix: pull request \S+ is NOT clean after (\d+) fix rounds? \(the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=(\d+)\)/.exec(line))) out = { state: 'not clean', round: Number(m[1]), cap: Number(m[2]), ...(pr && { pr }) };
     else if ((m = /^Autofix: pull request \S+ could not be confirmed clean(?: after (\d+) fix rounds?)?/.exec(line))) out = { state: 'stopped', ...(m[1] !== undefined && { round: Number(m[1]) }), ...(pr && { pr }) };
