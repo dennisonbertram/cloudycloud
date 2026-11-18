@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
+import { helpText } from './cli-help.mjs';
 import { redact } from './events.mjs';
 import { checkServer, cleanEntry, HOST_RE, isLiteralSecret, mcpConfigText, mcpFile, secretArgs } from './mcpsync.mjs';
 
@@ -164,7 +165,7 @@ export async function main(argv, ctx = {}) {
     if (cmd === 'ls') return ls(ctx);
     if (cmd === 'rm') return rm(name, ctx);
   } catch (e) { ctx.err(e.message); return 1; }
-  ctx.err('Usage: cloudy-cloud mcp add <name> [--allow-literal] | ls | rm <name>');
+  ctx.err(helpText('mcp', true));
   return 1;
 }
 

@@ -1,15 +1,12 @@
 // `cloudy-cloud protect [owner/repo] [--yes]`: create a GitHub ruleset on the default branch that nobody can bypass.
 // Cloud agents push with your GitHub token, so they act as you: a ruleset that admins may bypass lets the agents bypass it too.
 // It uses your own gh sign-in (you must be an admin of the repo) and never changes anything without a yes.
+import { helpText } from './cli-help.mjs';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-export const USAGE = `Usage: cloudy-cloud protect [owner/repo] [--yes]
-Create a GitHub ruleset on the repo's default branch: changes need a pull request, no force pushes, no deletion,
-and nobody can bypass it (including you and the cloud agents). Uses your own gh sign-in; you must be a repo admin.
-  owner/repo   the repo (default: the repo of the current folder)
-  --yes        do not ask first (you are saying yes to the change shown)`;
+export const USAGE = helpText('protect', true);
 
 const NAME = 'cloudy-cloud: protect the default branch';
 export const rulesetBody = () => ({

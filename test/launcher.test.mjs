@@ -307,3 +307,30 @@ test('host with no Claude token and no other worker key says to run setup', () =
   assert.match(r.stderr, /No Claude token is saved/);
   assert.match(r.stderr, /cloudy-cloud setup/);
 });
+
+// `<command> --help` and `help <command>` print that command's help (80 columns at most), exit 0 and never start anything.
+const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard'];
+test('every help screen fits 80 columns and --help / help <command> never run the command', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
+  const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };
+  const screens = [['--help']];
+  for (const c of helpCommands) { screens.push([...c.split(' '), '--help'], ['help', ...c.split(' ')]); }
+  for (const args of screens) {
+    const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: dir, encoding: 'utf8', env, input: '', timeout: 10000 });
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+    assert.equal(r.stderr, '', args.join(' '));
+    assert.match(r.stdout, /Usage: cloudy-cloud/, args.join(' '));
+    for (const line of r.stdout.split('\n')) assert.ok(line.length <= 80, `${args.join(' ')}: ${line.length} columns: ${line}`);
+  }
+  const c = spawnSync('/bin/sh', [launcher, 'coordinator', '--help'], { encoding: 'utf8', env });
+  assert.match(c.stdout, /^ {2}status NAME/m);
+  const s = spawnSync('/bin/sh', [launcher, 'setup', '--help'], { encoding: 'utf8', env });
+  assert.doesNotMatch(s.stdout + s.stderr, /\[1\/4\]|not set up/);
+});
+
+test('one bare word that is not a command is refused with the way to send it as a prompt', () => {
+  const r = spawnSync('/bin/sh', [launcher, 'ls'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir() } });
+  assert.equal(r.status, 2);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'cloudy-cloud: "ls" is not a command. See: cloudy-cloud --help\nTo send it to Claude as a prompt: cloudy-cloud -p "ls"\n');
+});

@@ -8,6 +8,16 @@ while [ -h "$self" ]; do
 done
 root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder too
 
+# `cloudy-cloud help <command>` and `cloudy-cloud <command> --help|-h` print that command's help. They never run it
+# or ask for setup. Arguments after `--` belong to the command (for example `shell ID -- ls --help`).
+case ${1:-} in
+  help) if [ $# -gt 1 ]; then shift; exec node "$root/src/cli-help.mjs" "$@"; fi ;;
+  setup|coordinator|shell|display|open|mcp|protect|doctor|dashboard)
+    for a in "$@"; do
+      case $a in --) break ;; --help|-h) exec node "$root/src/cli-help.mjs" "$@" ;; esac
+    done ;;
+esac
+
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
 if [ "${1:-}" = dashboard ]; then
   shift
@@ -88,24 +98,25 @@ if [ $# -eq 1 ]; then
       cat <<'EOF'
 Cloudy Cloud: give every subagent of your coding agent its own cloud machine.
 
-Usage: cloudy-cloud [command]
+Usage: cloudy-cloud [command] [options]
 
-  (no command)           start a Claude Code session
-  setup [--check-only]   check your tools and save your keys (--provider instabox|self-hosted)
-  doctor                 check your own machine when subagents run there
-  dashboard              open a read-only web page about your cloud machines
-  open <agent> <port>    reach an app running on a cloud machine
-  shell <agent> [-- cmd] open a shell on a cloud machine, or run one command there
-  display <agent>        print a link to a cloud machine's desktop (or --screenshot FILE)
-  protect [owner/repo]   block direct pushes to the default branch with a no-bypass ruleset (asks first)
-  codex [args]           start the Codex CLI with the cloud_agent tools instead of Claude Code
-  opencode [args]        start opencode (not Claude Code) with the cloud_agent tools
-  pi [args]              start pi as the main session with the cloud_agent tools
-  free-pi [args]         start free-pi as the main session with the cloud_agent tools
-  coordinator            manage cloud coordinators (coordinator --help for details)
-  mcp add|ls|rm          choose which MCP servers cloud subagents get
-  --version              print the version
+  (no command)            Start a Claude Code session
+  codex [args]            Start the Codex CLI with the cloud_agent tools
+  opencode [args]         Start opencode with the cloud_agent tools
+  pi [args]               Start pi as the main session (with cloud_agent)
+  free-pi [args]          Start free-pi as the main session (with cloud_agent)
+  setup [--check-only]    Check your tools and save your keys
+  coordinator             Manage always-on cloud coordinators
+  shell <agent> [-- cmd]  Open a shell on a cloud machine, or run one command
+  display <agent>         Print a link to a cloud machine's desktop
+  open <agent> <port>     Reach an app running on a cloud machine
+  mcp add|ls|rm           Choose which MCP servers cloud subagents get
+  dashboard               Open a read-only web page about your cloud machines
+  protect [owner/repo]    Block direct pushes to the default branch (asks first)
+  doctor                  Check your own machine (self-hosted provider)
+  --version               Print the version
 
+More on one command: cloudy-cloud <command> --help
 Any other arguments go to claude, for example: cloudy-cloud -p "<prompt>"
 
 Docs: https://cloudycloud.tech/docs/
@@ -114,6 +125,20 @@ EOF
       exit 0 ;;
   esac
 fi
+
+# One bare word that is not a command (for example `cloudy-cloud ls`) is most likely a typo, not a prompt for Claude.
+# A prompt with spaces, any option and -p keep working.
+case ${1:-} in
+  ''|-*|*[[:space:]]*|codex|mcp) ;;
+  *)
+    bare=1
+    for a in "$@"; do case $a in -p|--print) bare= ;; esac; done
+    if [ -n "$bare" ]; then
+      printf 'cloudy-cloud: "%s" is not a command. See: cloudy-cloud --help\n' "$1" >&2
+      printf 'To send it to Claude as a prompt: cloudy-cloud -p "%s"\n' "$1" >&2
+      exit 2
+    fi ;;
+esac
 
 # `cloudy-cloud codex [codex args]` starts the Codex CLI (instead of Claude Code) with the same cloud_agent tools. It is a subcommand
 # rather than --agent codex because claude already has its own --agent flag, which every other argument is passed to.
