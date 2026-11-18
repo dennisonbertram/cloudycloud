@@ -20,6 +20,7 @@ export const onPath = (name, env = process.env) => String(env.PATH ?? '').split(
 // '' when the saved settings are enough to start cloud agents. No Claude token is needed: profile workers use their own key.
 export function missingSetup(env) {
   if (env.CLOUDY_CLOUD_PROVIDER === 'self-hosted') return env.CLOUDY_CLOUD_SELF_HOSTED_LOCAL === '1' || env.CLOUDY_CLOUD_SSH_HOST ? '' : 'self-hosted machine (CLOUDY_CLOUD_SSH_HOST)';
+  if (env.CLOUDY_CLOUD_PROVIDER === 'microsandbox') return env.CLOUDY_CLOUD_MSB_BIN ? '' : 'microsandbox CLI (CLOUDY_CLOUD_MSB_BIN)';
   return env.INSTABOX_API_KEY ? '' : 'Instabox API key';
 }
 

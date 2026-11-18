@@ -337,11 +337,12 @@ export function createProvider(env, deps = {}) {
       startsPerMin: Number(env.CLOUDY_CLOUD_STARTS_PER_MIN) || 25,
       maxConcurrentCalls: Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) > 0 ? Number(env.CLOUDY_CLOUD_MAX_INSTABOX_CALLS) : 24,
       uploadMaxBytes: 10 * 1024 * 1024,
-      machineKinds: KINDS, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true,
+      machineKinds: KINDS, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true, hasEgressPolicy: false,
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
-    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size } = {}) {
+    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size, egress } = {}) {
+      if (egress) throw Object.assign(new Error('Instabox cannot limit where a machine connects.'), { code: 'egress_unsupported' });
       const key = apiKey();
       const kindName = kind?.name ?? 'linux';
       if (!KINDS.includes(kindName)) throw Object.assign(new Error(`Instabox has no ${kindName} machines`), { code: 'machine_kind_unsupported' });
@@ -488,6 +489,6 @@ export function createProvider(env, deps = {}) {
 // instance id the reaper deletes by. Kept until the core uses createProvider.
 export function createInstaboxSandbox(env, sdk, fetchFn = fetch, timing, owner, rt = {}) {
   const provider = createProvider(env, { sdk, fetchFn, timing, ...rt });
-  return (envs, { deleteAfterSeconds = workerSeconds(env), secrets = [] } = {}) =>
-    provider.create({ envs, labels: { purpose: 'cloudy-cloud', owner }, ttlSeconds: deleteAfterSeconds, secrets });
+  return (envs, { deleteAfterSeconds = workerSeconds(env), secrets = [], egress } = {}) =>
+    provider.create({ envs, labels: { purpose: 'cloudy-cloud', owner }, ttlSeconds: deleteAfterSeconds, secrets, ...(egress && { egress }) });
 }

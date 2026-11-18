@@ -76,6 +76,14 @@ test('create passes key, metadata, archiveMs and home', async () => {
   assert.ok(!Object.values(sbx).some((v) => typeof v === 'string' && v.includes(KEY)));
 });
 
+test('createInstaboxSandbox forwards egress so the adapter refuses before any call', async () => {
+  const { sdk, calls } = fakeSdk();
+  await assert.rejects(
+    createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({ A: '1' }, { egress: { allow: ['example.com'] } }),
+    (e) => e.code === 'egress_unsupported' && /cannot limit where a machine connects/.test(e.message));
+  assert.equal(calls.create, null);
+});
+
 test('timeout above 10 minutes runs in background, at or below runs in foreground', async () => {
   const { sdk, calls } = fakeSdk();
   const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({}, 1);

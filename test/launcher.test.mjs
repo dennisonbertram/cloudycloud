@@ -124,7 +124,7 @@ test('cloudy-cloud setup and --setup run install.sh from any folder', () => {
     // --check-only is passed through to install.sh, which runs every check; with no keys saved it ends in a failed verdict
     const r = spawnSync('/bin/sh', [launcher, flag, '--check-only'], { cwd: dir, env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir }, encoding: 'utf8' });
     assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /\[1\/4\] Tools/);
+    assert.match(r.stdout, /\[2\/4\] Provider/); // the Tools step may be skipped when all is well
     assert.match(r.stdout, /Check failed/);
   }
 });
