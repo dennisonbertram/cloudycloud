@@ -33,7 +33,7 @@ export function render({ desc, usages, rows = [], note }) {
 const ID = '<agent-id-or-machine>';
 const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
 const cmds = {
-  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--check-only]', '[--provider instabox|self-hosted]']], rows: [
+  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--check-only]'], ['setup', '--provider instabox|self-hosted']], rows: [
     ['--check-only', 'Check everything and change nothing'],
     ['--provider NAME', 'instabox (default) or self-hosted'],
   ], note: 'Run it in a terminal: it asks for your keys.' },
@@ -47,25 +47,25 @@ const cmds = {
     ['--ttl SECONDS', 'Link lifetime, 60 to 86400'],
     ['--screenshot FILE', 'Write a PNG of the screen to FILE and print the path'],
     ['--unshare', 'Revoke every display link for the machine'],
-  ], note: `linux, android and gpu machines have a desktop (the first gpu start is slow); omarchy has none and macos is not verified. ${WHERE}` },
+  ], note: `linux, android and gpu machines have a desktop (the first gpu start is slow); omarchy has none and macos is not verified. Display links need the Instabox provider. ${WHERE}` },
   open: { desc: "Reach an app (for example a dev server) running on a cloud agent's machine.", usages: [['open', ID, '<port>', '[--share]'], ['open', ID, '<port>', '--unshare']], rows: [
     ['<port>', 'App port on the machine, or LOCAL:REMOTE to use another port on your computer'],
     ['(default)', 'Private tunnel to http://127.0.0.1:<port> until you press Ctrl-C'],
-    ['--share', 'Publish a private link (token in the URL) that anyone holding it can open'],
+    ['--share', 'Publish a private link (token in the URL) that anyone holding it can open (Instabox only)'],
     ['--unshare', 'Remove that link'],
   ], note: "Start the app in the background on the machine (nohup npm run dev > /tmp/dev.log 2>&1 &), because a turn's foreground processes end with the turn. The tunnel and link stop when the machine is deleted." },
   mcp: { desc: 'Choose which MCP servers cloud subagents get.', usages: [['mcp', 'add', '<name>', '[--allow-literal]'], ['mcp', 'ls'], ['mcp', 'rm', '<name>']], rows: [
     ['add <name>', 'Give subagents the MCP server <name> from your Claude Code settings'],
     ['ls', 'List the servers subagents get'],
     ['rm <name>', 'Stop giving subagents that server'],
-    ['--allow-literal', 'Allow a key written directly in the server settings'],
+    ['--allow-literal', 'Copy the actual credential value onto subagent machines'],
   ], note: "Claude Code's own `mcp list` and `mcp add <name> -- <command>` still go to claude." },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],
   ], note: 'Changes need a pull request, no force pushes, no deletion, and nobody can bypass it (including you and the cloud agents). Uses your own gh sign-in; you must be a repo admin.' },
   doctor: { desc: 'Check your own machine when subagents run there (self-hosted provider only).', usages: [['doctor']], note: 'Changes nothing. Run `cloudy-cloud setup --provider self-hosted` to choose that provider.' },
-  dashboard: { desc: 'Open a read-only web page about your cloud machines.', usages: [['dashboard', '[--demo]', '[--port N]', '[--no-open]', '[--prune]']], rows: [
+  dashboard: { desc: 'Open a read-only web page about your cloud machines.', usages: [['dashboard', '[--demo]', '[--port N]', '[--no-open]'], ['dashboard', '--prune']], rows: [
     ['--demo', 'Show made-up machines instead of yours'],
     ['--port N', 'Listen on port N (default: 4477)'],
     ['--no-open', 'Print the link but do not open a browser'],
@@ -129,10 +129,19 @@ export function coordinatorHelp(command) {
   });
 }
 
+const hosts = {
+  codex: 'starts the Codex CLI with the cloud_agent tools. Its own help: cloudy-cloud codex --help',
+  opencode: 'starts opencode with the cloud_agent tools. Its own help: cloudy-cloud opencode --help',
+  pi: 'starts pi as the main session with the cloud_agent tools. Its own help: cloudy-cloud pi --help',
+  'free-pi': 'starts free-pi as the main session with the cloud_agent tools. Its own help: cloudy-cloud free-pi --help',
+};
+
 // `node cli-help.mjs <command> [subcommand]` (from bin/cloudy-cloud for `help <command>` and `<command> --help`).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const [name, sub] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
-  if (name === 'coordinator') console.log(coordinatorHelp(sub));
-  else if (Object.hasOwn(cmds, name)) console.log(helpText(name));
-  else { console.error(`cloudy-cloud: no help for "${name ?? ''}". See: cloudy-cloud --help`); process.exitCode = 2; }
+  const [name, sub, ...extra] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
+  const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && !extra.length)
+    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || (name === 'mcp' && ['add', 'ls', 'rm'].includes(sub))) && !extra.length);
+  if (!ok) { console.error(`cloudy-cloud: no help for "${[name, sub].filter(Boolean).join(' ')}". See: cloudy-cloud --help`); process.exitCode = 2; }
+  else if (name === 'coordinator') console.log(coordinatorHelp(sub));
+  else console.log(Object.hasOwn(hosts, name) ? `cloudy-cloud ${name} ${hosts[name]}` : helpText(name));
 }

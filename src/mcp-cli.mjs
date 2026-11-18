@@ -45,7 +45,7 @@ function findSource(name, env, cwd) {
 
 async function add(name, ctx, allowLiteral = false) {
   const { env, out, err } = ctx;
-  if (!name) { err('Usage: cloudy-cloud mcp add <name>'); return 1; }
+  if (!name) { err(helpText('mcp', true)); return 1; }
   const src = findSource(name, env, ctx.cwd);
   if (!src) { err(`No MCP server named ${name} in your Claude Code config. See: claude mcp list`); return 1; }
   const e = JSON.parse(JSON.stringify(src.entry));

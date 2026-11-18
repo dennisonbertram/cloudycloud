@@ -345,3 +345,45 @@ test("Claude Code's own subcommands still reach claude; any other bare word is r
   assert.equal(r.status, 2);
   assert.equal(r.started, false);
 });
+
+// Review fixes: help routing must not capture arguments that belong to claude or to a command.
+const repoOrigin = 'https://github.com/test/repo.git';
+const reachesClaude = (...args) => { const r = run({ config: full, cwd: repo(repoOrigin), args }); return r.started && args.every((a) => r.argv.split('\n').includes(a)); };
+const helpRun = (...args) => spawnSync('/bin/sh', [launcher, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir(), CLOUDY_CLOUD_CONFIG: '/nonexistent' }, input: '' });
+
+test('arguments that belong to claude are not taken as typos or help requests', () => {
+  assert.ok(reachesClaude('summarize', '--model', 'sonnet'));
+  assert.ok(reachesClaude('project', 'purge', '--help'));
+  assert.ok(reachesClaude('help', '-p'));
+  assert.ok(reachesClaude('help', '--print'));
+  assert.ok(reachesClaude('mcp', 'list', '-h'));
+  assert.ok(reachesClaude('mcp', 'get', '--help'));
+});
+
+test('--help counts only as the last argument before any --; mcp help only for add|ls|rm or no subcommand', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-help2-'));
+  const r = spawnSync('/bin/sh', [launcher, 'coordinator', 'start', 'x', '--repo', 'U', '--task', '--help', '--json'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') }, input: '' });
+  assert.doesNotMatch(r.stdout, /^Usage: /m);
+  assert.equal(helpRun('mcp', 'add', '--help').status, 0);
+  assert.match(helpRun('mcp', '--help').stdout, /Usage: cloudy-cloud mcp/);
+  assert.match(helpRun('--setup', '--help').stdout, /Usage: cloudy-cloud setup/);
+});
+
+test('help for an unknown topic is a short error with exit 2; host commands get a one-line entry', () => {
+  for (const args of [['help', 'nope'], ['help', 'coordinator', 'typo'], ['help', 'coordinator', 'constructor'], ['help', 'constructor']]) {
+    const r = helpRun(...args);
+    assert.equal(r.status, 2, args.join(' '));
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, /no help for .* See: cloudy-cloud --help/);
+  }
+  const c = helpRun('help', 'codex');
+  assert.equal(c.status, 0);
+  assert.match(c.stdout, /^cloudy-cloud codex starts the Codex CLI.*cloudy-cloud codex --help\n$/);
+});
+
+test('the typo hint omits the -p suggestion for words that are unsafe to paste', () => {
+  const r = helpRun('a"b$c');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /is not a command/);
+  assert.doesNotMatch(r.stderr, /To send it to Claude/);
+});
