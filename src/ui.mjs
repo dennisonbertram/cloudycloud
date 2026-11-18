@@ -38,5 +38,7 @@ export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = p
 
   return { on, utf, col, mark, width, paint, rel, table, block, dim: (s) => paint(col.dim, s), bold: (s) => paint(col.bold, s),
     ok: (m, d) => line('ok', m, d), err: (m, d) => line('err', m, d), warn: (m, d) => line('warn', m, d),
-    hint: (m) => `  ${paint(col.dim, `${mark.hint} ${m}`)}` };
+    hint: (m) => `  ${paint(col.dim, `${mark.hint} ${m}`)}`,
+    // The one command to run next. Plain "Next: ..." when colour is off.
+    next: (cmd) => (on ? `  ${paint(col.acc, `${utf ? '→' : '->'} Next: ${cmd}`)}` : `Next: ${cmd}`) };
 }
