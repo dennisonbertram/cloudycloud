@@ -1134,3 +1134,34 @@ test('#139 page: #summary appends the same sentence as the server formatter when
   const { demoState } = await import('../src/dashboard-demo.mjs');
   assert.ok(usageLine({ usage: demoState().usage }));
 });
+
+
+// ---- Astra review fixes ----
+test('/api/stream parses codex and opencode worker streams with the existing progress parsers', async () => {
+  for (const [file, tool, text] of [['codex-json-sample.jsonl', /^Bash/, 'done'], ['opencode-json-sample.jsonl', /^bash/, 'Done.']]) {
+    const { dir, opts } = streamEnv([{ id: 'a1', kind: 'agent', status: 'running', turns: 1 }], fakeReader());
+    putLocal(dir, 'a1', 1, readFileSync(new URL(`./fixtures/${file}`, import.meta.url), 'utf8'));
+    const s = await serve(opts);
+    try {
+      const r = JSON.parse((await get(s.address().port, `/api/stream?box=a1&turn=1&t=${TOKEN}`)).body);
+      assert.deepEqual(r.events.filter((e) => e.kind === 'tool_use').map((e) => tool.test(e.name)), [true], file);
+      const res = r.events.find((e) => e.kind === 'result');
+      assert.equal(res.text, text, file);
+      assert.ok(res.usage.input > 0 && res.usage.output > 0, file);
+      assert.equal(r.totals.tools, 1, file);
+      assert.equal(r.complete, true, file);
+    } finally { s.close(); }
+  }
+});
+
+test('/api/stream redacts a refreshed Codex token that came from a machine and is in no list of known secrets', async () => {
+  const raw = readFileSync(new URL('./fixtures/codex-json-sample.jsonl', import.meta.url), 'utf8').replace('"text":"done"', '"text":"new token rt_RefreshedTokenValue1234567890abcdef"');
+  const reader = fakeReader({ readTail: async (m, name, from) => ({ data: raw.slice(from), from, next: raw.length, size: raw.length, fetchedAt: 5000 }) });
+  const { opts } = streamEnv([{ id: 'b1', kind: 'agent', status: 'running', machine: 'mb', machineState: 'running' }], reader);
+  const s = await serve(opts);
+  try {
+    const body = (await get(s.address().port, `/api/stream?box=b1&turn=1&t=${TOKEN}`)).body;
+    assert.match(body, /new token \[redacted\]/);
+    assert.ok(!body.includes('RefreshedTokenValue'));
+  } finally { s.close(); }
+});

@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { resolveProfile } from './profiles.mjs';
 
 // Provider keys for model profiles, such as PARTICLE_API_KEY or OPENROUTER_API_KEY.
 // The key of the default provider (Instabox), which a coordinator's machine loads: it is sent no CLOUDY_CLOUD_PROVIDER.
@@ -19,8 +20,8 @@ export function aptPackages(env = process.env) {
   return bad ? { error: `CLOUDY_CLOUD_APT_PACKAGES has an invalid package name "${bad.slice(0, 40)}". Names must match ${APT_NAME}, separated by spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list };
 }
 
-// Environment values win over the saved file. Empty values count as unset; a missing file is fine.
-export function loadEnv(env = process.env) {
+// What the env file holds (only the names cloudy-cloud knows); a missing file is fine.
+export function savedEnv(env = process.env) {
   const file = env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env');
   const saved = {};
   try {
@@ -31,8 +32,11 @@ export function loadEnv(env = process.env) {
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
   }
-  return { ...saved, ...Object.fromEntries(Object.entries(env).filter(([, v]) => v)) };
+  return saved;
 }
+
+// Environment values win over the saved file. Empty values count as unset; a missing file is fine.
+export const loadEnv = (env = process.env) => ({ ...savedEnv(env), ...Object.fromEntries(Object.entries(env).filter(([, v]) => v)) });
 
 // Returns a function that re-reads the env file into `env` (the object the server shares) when the file's mtime changed,
 // so a key added after startup applies to the next agent. Keys deleted from the file are removed; real environment values stay.
@@ -56,13 +60,14 @@ export const ownerFile = (env = process.env) => join(dirname(env.CLOUDY_CLOUD_CO
 
 // Workers run the Claude harness unless cloud_agent gets a profile. A host session for another agent (codex, opencode, pi) starts
 // without a Claude token, so this says what to pass instead. '' when a Claude credential exists. env is the result of loadEnv().
+// It names only a profile that resolveProfile accepts under the provider's rules: on Instabox a key must be a proxy secret.
 export function defaultWorkerNote(env) {
   const proxied = proxySecrets(env);
   const has = (k) => env[k] || proxied.has(k);
   if (has('CLAUDE_CODE_OAUTH_TOKEN') || has('ANTHROPIC_API_KEY')) return '';
-  const login = existsSync(env.CLOUDY_CLOUD_CODEX_AUTH || join(homedir(), '.config/cloudy-cloud/codex-auth.json'));
-  const profile = has('OPENAI_API_KEY') ? 'codex' : login ? 'codex-chatgpt' : has('PARTICLE_API_KEY') ? 'pi-glm' : has('OPENROUTER_API_KEY') ? 'openrouter (also pass model, an OpenRouter model id)' : '';
+  const proxyOnly = (env.CLOUDY_CLOUD_PROVIDER || 'instabox') !== 'self-hosted';
+  const profile = [['codex'], ['codex-chatgpt'], ['pi-glm'], ['openrouter', ' (also pass model, an OpenRouter model id)']].find(([n]) => resolveProfile(n, 'x', env, { proxyOnly }).ok);
   const head = 'No Claude token is saved, so a cloud_agent call without a profile is refused.';
-  return profile ? `${head}\nNext step: pass profile: ${profile} on every cloud_agent call.`
-    : `${head}\nNext step: run: cloudy-cloud setup (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or a Claude token).`;
+  return profile ? `${head}\nNext step: pass profile: ${profile[0]}${profile[1] ?? ''} on every cloud_agent call.`
+    : `${head}\nNext step: run: cloudy-cloud setup (save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY as a proxy secret, or a Claude token).`;
 }

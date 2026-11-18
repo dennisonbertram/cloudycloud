@@ -267,7 +267,7 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud codex [args]` | Starts the Codex CLI as the main session with the cloud tools (`npm install -g @openai/codex` first). |
 | `cloudy-cloud opencode [args]` | Starts opencode as the main session with the cloud tools (`npm install -g opencode-ai` first). Tools are named `cloud_cloud_agent` and so on. |
 | `cloudy-cloud pi [args]` | Starts pi as the main session with the cloud tools. Runs a pinned copy through `npx` if `pi` is not installed. |
-| `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloud` entry into `~/.free-pi/agent/mcp.json` on each start. |
+| `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start and refuses to replace a `cloudy-cloud` entry it did not write. Your own `cloud` entry is not touched. |
 | `cloudy-cloud setup [--check-only] [--provider instabox\|self-hosted]` | Checks your tools and saves your keys. `--check-only` checks tools, keys and your Instabox usage alert emails, and changes nothing. Setup offers to turn the alert emails on (typed `y`). `--provider` picks where subagents run without asking. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |

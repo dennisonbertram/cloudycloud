@@ -1376,7 +1376,7 @@ test('CLOUDY_CLOUD_APT_PACKAGES installs the packages with one apt command; with
   for (const [pkgs, expected] of [['ffmpeg postgresql-client', 1], [undefined, 0]]) {
     const cmds = [];
     const { deps, start, wait } = await setup({ createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; }, provider: proxyProvider() });
-    deps.env = { GH_TOKEN: 'ghp_secret', ...(pkgs && { CLOUDY_CLOUD_APT_PACKAGES: pkgs }) };
+    deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY', ...(pkgs && { CLOUDY_CLOUD_APT_PACKAGES: pkgs }) };
     await wait([await start()]);
     const apt = cmds.filter((c) => /apt-get/.test(c));
     assert.equal(apt.length, expected);
@@ -1692,7 +1692,7 @@ test('a machine with all four tools passes the preflight', async () => {
 });
 
 test('task mode shows the price of an expensive machine at start and in the completion result', async () => {
-  const { deps, wait, provider } = await kindSetup({ asTask: true, env: { CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'gpu' } });
+  const { deps, wait, provider } = await kindSetup({ asTask: true, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: 'gpu' } });
   const t = await runSubagent({ description: 'd', prompt: 'hi', machine: 'gpu:l4' }, deps);
   assert.match(t.statusMessage, /\$0\.765 per GPU-hour.*cloud_agent_stop/);
   await wait([t.taskId.split('-')[1]]);

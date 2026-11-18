@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, savedEnv } from './config.mjs';
 import { guide } from './errors.mjs';
 import { codexAuth } from './harness-codex.mjs';
 
@@ -63,11 +63,15 @@ export const COORDINATOR_KEY_SECRET = 'CLOUDY_CLOUD_INSTABOX_API_KEY';
 // What a coordinator's machine gets: { secrets: names attached as proxy secrets, lines: env-file lines (settings and, on a
 // provider without proxy secrets, key values), legacy: REQUIRED keys (the Instabox key; the Claude credential when no Claude secret
 // exists) that would go as real values on a provider with proxy secrets, skipped: OPTIONAL keys held only as plain values, not sent }. `single`: only one Claude credential (a nested coordinator), else both are kept (coordinator start).
+// Keys that older versions never forwarded. A shell-only value (neither in the env file nor a proxy secret) was not chosen, so it stays home.
+const OPT_IN_KEYS = ['OPENAI_API_KEY'];
 export function coordinatorKeys(env, provider, { single = false } = {}) {
   const own = provider.coordinatorEnv?.(env);
   const proxied = provider.caps.hasProxySecrets ? proxySecrets(env) : new Set();
   const claude = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].filter((k) => env[k] || proxied.has(k));
-  const keys = [...new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(single ? claude.slice(0, 1) : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']), ...profileKeyNames(env).filter((k) => !single || k !== 'ANTHROPIC_API_KEY')])];
+  let saved;
+  const chosen = (k) => !OPT_IN_KEYS.includes(k) || proxied.has(k) || (saved ??= savedEnv(env))[k];
+  const keys = [...new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(single ? claude.slice(0, 1) : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']), ...profileKeyNames(env).filter((k) => (!single || k !== 'ANTHROPIC_API_KEY') && chosen(k))])];
   const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [], skipped = [];
   const required = new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(claude.some((k) => proxied.has(k)) ? [] : claude)]);
   if (!own && proxied.has(COORDINATOR_KEY_SECRET)) secrets.push(COORDINATOR_KEY_SECRET);

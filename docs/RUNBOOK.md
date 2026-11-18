@@ -102,7 +102,7 @@ cloudy-cloud pi
 cloudy-cloud free-pi
 ```
 
-Checked live: Codex (codex-cli 0.166.0 listed the six cloud tools) and opencode. pi: the MCP connection only, no model turn. free-pi: `mcp list` only; it writes the `cloud` entry into `~/.free-pi/agent/mcp.json` on each start. free-pi cannot be a worker, because free-pi-cli has no headless mode and its terms forbid scripted use. In opencode the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on.
+Checked live: Codex (codex-cli 0.166.0 listed the six cloud tools) and opencode. pi: the MCP connection only, no model turn. free-pi: `mcp list` only; it writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start (a stdio server running `node src/server.mjs`, with a 1,800 s timeout) and refuses to replace a `cloudy-cloud` entry it did not write; remove such an entry with `free-pi-cli mcp remove cloudy-cloud`. Your own `cloud` entry is not touched. free-pi cannot be a worker, because free-pi-cli has no headless mode and its terms forbid scripted use. In opencode the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on.
 
 **Worker profiles.** Pass `profile` to `cloud_agent` (or ask "use a codex subagent"). Coordinators refuse pi, omp, Codex and opencode profiles.
 

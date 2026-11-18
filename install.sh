@@ -406,7 +406,18 @@ check_setup() {
   fi
   step 3 "Claude token"
   local n name="" lit=""
-  if ! agents_has claude; then ok "No Claude token is needed" "agents: $AGENTS"
+  if ! agents_has claude; then
+    ok "No Claude token is needed" "agents: $AGENTS"
+    # Without a Claude token every worker needs a profile, and a profile needs one of these credentials.
+    local usable="" plain=""
+    for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
+      if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
+      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+    done
+    [ -f "$(dirname "$(cfg)")/codex-auth.json" ] && usable=1
+    if [ -n "$usable" ]; then ok "A worker credential is saved"
+    elif [ -n "$plain" ]; then bad "$plain is a plain value, and Instabox refuses to copy a real key to a machine" "run $(rerun_cmd) to store it as a proxy secret"; fails=1
+    else bad "No worker credential is saved, so cloud_agent has no profile it can use" "run $(rerun_cmd) and save OPENAI_API_KEY, PARTICLE_API_KEY or OPENROUTER_API_KEY, or the Codex login file"; fails=1; fi
   else
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
     if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi

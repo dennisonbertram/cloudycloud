@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { envRefresher, loadEnv } from '../src/config.mjs';
+import { envRefresher, loadEnv, defaultWorkerNote } from '../src/config.mjs';
 
 test('saved keys load, environment wins, empty means unset, other names ignored', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
@@ -39,4 +39,17 @@ test('CLOUDY_CLOUD_ALLOW_MACHINE_KINDS is read from the env file', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
   writeFileSync(file, 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu\n');
   assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file }).CLOUDY_CLOUD_ALLOW_MACHINE_KINDS, 'gpu');
+});
+
+
+test('defaultWorkerNote recommends only a profile that resolveProfile accepts under the provider\'s rules', () => {
+  const base = { CLOUDY_CLOUD_PROFILES: '/nonexistent', CLOUDY_CLOUD_CODEX_AUTH: '/nonexistent/auth.json' };
+  // Instabox (the default): a real OPENAI_API_KEY value is refused, so codex is not offered; a proxy secret is.
+  assert.doesNotMatch(defaultWorkerNote({ ...base, OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
+  assert.match(defaultWorkerNote({ ...base, OPENAI_API_KEY: 'sk-real-value-123456', PARTICLE_API_KEY: 'pk-real-value-12345', CLOUDY_CLOUD_PROXY_SECRETS: 'PARTICLE_API_KEY' }), /profile: pi-glm/);
+  assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROXY_SECRETS: 'OPENAI_API_KEY' }), /profile: codex\b/);
+  assert.match(defaultWorkerNote({ ...base, OPENAI_API_KEY: 'sk-real-value-123456' }), /cloudy-cloud setup/, 'nothing usable: the exact next step is setup');
+  // self-hosted keeps real values on the machine, so the plain key is usable there
+  assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROVIDER: 'self-hosted', OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
+  assert.equal(defaultWorkerNote({ ...base, CLAUDE_CODE_OAUTH_TOKEN: 'x' }), '');
 });

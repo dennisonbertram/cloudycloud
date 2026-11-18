@@ -1,11 +1,11 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { hostPlan, missingSetup, onPath, HOST_PROMPT } from '../src/host-pi.mjs';
+import { hostPlan, registerFreePi, missingSetup, onPath, HOST_PROMPT } from '../src/host-pi.mjs';
 import piExtension from '../src/host-pi-extension.mjs';
 import { PI_VERSION } from '../src/profiles.mjs';
 
@@ -27,14 +27,32 @@ test('pi host: without pi on PATH it runs the pinned npm package', () => {
   assert.deepEqual(p.run.args.slice(0, 2), ['--yes', `@earendil-works/pi-coding-agent@${PI_VERSION}`]);
 });
 
-test('free-pi host: registers the MCP server with free-pi-cli (direct tools, no secret), then runs it', () => {
-  const p = hostPlan('free-pi', { root, env: { CLOUDY_CLOUD_CONFIG: cfg, INSTABOX_API_KEY: 'ibk_SECRET' }, args: ['--continue'], onPath: () => true });
-  assert.equal(p.setup.cmd, 'free-pi-cli');
-  assert.deepEqual(p.setup.args.slice(0, 3), ['mcp', 'add', 'cloud']);
-  assert.ok(p.setup.args.includes('--exposure') && p.setup.args.includes('direct'));
-  assert.deepEqual(p.setup.args.slice(-3), ['--', 'node', `${root}/src/server.mjs`]);
+test('free-pi host: registers a cloudy-cloud entry (not cloud) with direct tools, a long timeout and no secret, then runs it', () => {
+  const p = hostPlan('free-pi', { root, env: { CLOUDY_CLOUD_CONFIG: cfg, INSTABOX_API_KEY: 'ibk_SECRET' }, args: ['--continue'], onPath: () => true, note: 'No Claude token is saved.\nNext step: pass profile: codex.' });
+  assert.equal(p.register.name, 'cloudy-cloud');
+  assert.deepEqual([p.register.entry.command, p.register.entry.args, p.register.entry.exposure], ['node', [`${root}/src/server.mjs`], 'direct']);
+  assert.ok(p.register.entry.timeout >= 1560, 'cloud_agent_wait can block for 1,560 s');
+  assert.deepEqual(p.register.entry.env, { CLOUDY_CLOUD_CONFIG: cfg });
+  assert.match(p.register.entry.description, /Next step: pass profile: codex/, 'the same profile hint the other hosts carry');
   assert.ok(!JSON.stringify(p).includes('ibk_SECRET'));
   assert.deepEqual(p.run, { cmd: 'free-pi-cli', args: ['--continue'] });
+});
+
+test('registerFreePi keeps the user\'s other servers (including their own "cloud"), updates our entry, and refuses a different cloudy-cloud entry', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fp-')), 'agent', 'mcp.json');
+  const entry = { command: 'node', args: [`${root}/src/server.mjs`], env: { CLOUDY_CLOUD_CONFIG: cfg }, exposure: 'direct', timeout: 1800, description: 'one' };
+  assert.deepEqual(registerFreePi(file, 'cloudy-cloud', entry), {});
+  const mine = { command: 'other', args: [] };
+  const j = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ mcpServers: { ...j.mcpServers, cloud: mine } }));
+  assert.deepEqual(registerFreePi(file, 'cloudy-cloud', { ...entry, description: 'two' }), {}, 'same entry, new description: updated');
+  const after = JSON.parse(readFileSync(file, 'utf8')).mcpServers;
+  assert.deepEqual(after.cloud, mine, 'the user\'s own cloud server is untouched');
+  assert.equal(after['cloudy-cloud'].description, 'two');
+  writeFileSync(file, JSON.stringify({ mcpServers: { 'cloudy-cloud': { command: 'node', args: ['/somewhere/else.mjs'] } } }));
+  const r = registerFreePi(file, 'cloudy-cloud', entry);
+  assert.match(r.error, /free-pi-cli mcp remove cloudy-cloud/);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).mcpServers['cloudy-cloud'].args[0], '/somewhere/else.mjs', 'not replaced');
 });
 
 test('missingSetup: Instabox key or self-hosted machine is needed, a Claude token is not', () => {

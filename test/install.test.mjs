@@ -1029,3 +1029,29 @@ test('check-only does not ask for a Claude token when the saved agents do not in
   const r = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
   assert.doesNotMatch(r.stdout, /Claude Code is missing|No Claude token is saved/);
 });
+
+
+test('check-only fails with a next step when no chosen agent has a usable worker credential, and passes with one', () => {
+  const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
+  const withOpenai = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'OPENAI_API_KEY', hosts: ['api.openai.com'] }]);
+  const base = `INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=codex\n`;
+  const none = checkOnly(base, {}, { stub: npxStub({ secrets: gh }) });
+  assert.equal(none.status, 1, none.stdout);
+  assert.match(none.stdout, /No worker credential is saved/);
+  assert.match(none.stdout, /cloudy-cloud setup/);
+  const plain = checkOnly(`${base}OPENAI_API_KEY=sk-plain-value-1234567890\n`, {}, { stub: npxStub({ secrets: gh }) });
+  assert.equal(plain.status, 1, 'on Instabox a plain key value is not usable: it must be a proxy secret');
+  assert.match(plain.stdout, /proxy secret/);
+  assert.doesNotMatch(plain.stdout, /sk-plain-value/);
+  const ok = checkOnly(`${base}CLOUDY_CLOUD_PROXY_SECRETS=OPENAI_API_KEY\n`, {}, { stub: npxStub({ secrets: withOpenai }) });
+  assert.equal(ok.status, 0, ok.stdout);
+  const cfgDir = tmp();
+  writeFileSync(join(cfgDir, 'codex-auth.json'), '{}', { mode: 0o600 });
+  const cfg = join(cfgDir, 'env');
+  writeFileSync(cfg, base, { mode: 0o600 });
+  const st = npxStub({ secrets: gh });
+  const login = spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: st.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg } });
+  assert.equal(login.status, 0, login.stdout);
+  const claude = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=x\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, {}, { stub: npxStub({ secrets: JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }, { name: 'CLAUDE_CODE_OAUTH_TOKEN', hosts: ['api.anthropic.com'] }]) }) });
+  assert.equal(claude.status, 0, 'a Claude-only user is unchanged');
+});

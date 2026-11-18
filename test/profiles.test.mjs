@@ -138,3 +138,26 @@ test('a custom profile key set as a real value is refused with the exact steps f
   assert.match(r.error, /CLOUDY_CLOUD_PROXY_SECRETS/);
   assert.ok(!r.error.includes('plainvalue'));
 });
+
+
+// ---- Astra review fixes ----
+test('coordinatorKeys does not forward an ambient OPENAI_API_KEY; it needs the env file or a proxy secret. Claude-only users see no change', async () => {
+  const { coordinatorKeys } = await import('../src/profiles.mjs');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-amb-')), 'env');
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\n');
+  const self = { keyName: 'X_API_KEY', caps: { hasProxySecrets: false } };
+  const base = { CLOUDY_CLOUD_CONFIG: file, CLAUDE_CODE_OAUTH_TOKEN: 'oat', PARTICLE_API_KEY: 'pk-saved', CLOUDY_CLOUD_PROFILES: '/nonexistent' };
+  const without = coordinatorKeys(base, self);
+  const ambient = coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-ambient-shell-key' }, self);
+  assert.deepEqual(ambient, without, 'a shell-only OPENAI_API_KEY changes nothing');
+  assert.ok(!JSON.stringify(ambient).includes('sk-ambient'));
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\nOPENAI_API_KEY=sk-saved-key\n');
+  assert.ok(coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-saved-key' }, self).lines.includes('OPENAI_API_KEY=sk-saved-key'), 'saved in the env file: chosen');
+  const inst = { keyName: 'INSTABOX_API_KEY', caps: { hasProxySecrets: true } };
+  assert.ok(coordinatorKeys({ ...base, OPENAI_API_KEY: 'x', CLOUDY_CLOUD_PROXY_SECRETS: 'OPENAI_API_KEY' }, inst).secrets.includes('OPENAI_API_KEY'), 'a proxy secret: chosen');
+  writeFileSync(file, 'PARTICLE_API_KEY=pk-saved\\n');
+  assert.ok(!coordinatorKeys({ ...base, OPENAI_API_KEY: 'sk-ambient-shell-key' }, inst).skipped.includes('OPENAI_API_KEY'), 'not even reported as skipped');
+});

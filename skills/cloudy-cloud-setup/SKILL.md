@@ -10,7 +10,7 @@ Setup asks for secret keys, so the user runs the installer. You only check the p
 1. Check the prerequisites with Bash and report anything missing, with where to get it:
    - `node -v` is 20 or later (https://nodejs.org)
    - `git --version`, `npm -v` and `curl --version` work
-   - `claude --version` works (https://code.claude.com). Setup itself needs the `claude` command, even if the user will use another agent.
+   - `claude --version` works (https://code.claude.com), but only if the user will run Claude Code or Claude workers. A user who runs only Codex, opencode, pi or free-pi does not need Claude installed.
    - The repo the user will work in has a github.com remote: `git remote get-url origin`
    - `gh auth status` shows a login. This is useful but not required, because setup asks for its own GitHub token.
 2. Ask the user to run this in the prompt themselves. The leading `!` runs it in this session:

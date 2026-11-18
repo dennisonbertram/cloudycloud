@@ -396,3 +396,14 @@ test('a Bearer reference in a header other than Authorization is skipped with a 
   assert.deepEqual(Object.keys(r.servers), []);
   assert.match(r.skipped[0].reason, /Authorization/);
 });
+
+test('a cloud_agent call with no profile and no Claude credential is refused before any machine is created, with the exact next step', async () => {
+  const { deps, sandboxes } = await world({ CLOUDY_CLOUD_PROXY_SECRETS: 'OPENAI_API_KEY' }, {});
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /No Claude token/);
+  assert.match(r.content[0].text, /Next step: pass profile: codex/);
+  assert.equal(sandboxes.length, 0, 'no machine was created');
+  const ok = await world({ CLAUDE_CODE_OAUTH_TOKEN: 'oat', CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN' }, {});
+  assert.match(ok.text(await runSubagent({ description: 'd', prompt: 'hi' }, ok.deps)), /agent_id: /);
+});
