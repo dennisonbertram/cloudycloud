@@ -20,6 +20,7 @@ function fixture() {
   mk('cloudy-cloud/00000002', true); // merged below
   sh(work, `git fetch -q origin cloudy-cloud/00000002 && git merge -q --ff-only FETCH_HEAD && git push -q origin main`);
   mk('cloudy-cloud/00000003', true); // unmerged
+  mk('cloudy-cloud/issue-12-00000004', false); // ours (started from an issue), empty
   mk('feature/x', false); // not ours, empty
   mk('cloudy-cloud/notahex1', false); // not ours, empty
   return { work, bare, branches: () => sh(bare, "git for-each-ref '--format=%(refname:short)' refs/heads").split('\n') };
@@ -34,6 +35,7 @@ test('without --yes nothing is deleted and the list says what would be', async (
   assert.match(r.out, /cloudy-cloud\/00000001 .* prune/);
   assert.match(r.out, /cloudy-cloud\/00000002 .* prune/);
   assert.match(r.out, /cloudy-cloud\/00000003 .* keep/);
+  assert.match(r.out, /cloudy-cloud\/issue-12-00000004 .* prune/);
   assert.match(r.out, /Dry run: nothing deleted/);
   assert.deepEqual(f.branches(), before);
   await run(['prune', '--yes', '--dry-run'], f.work);
