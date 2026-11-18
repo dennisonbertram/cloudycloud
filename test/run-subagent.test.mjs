@@ -11,9 +11,10 @@ import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm, stat } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
+import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
-import { startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
+import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -37,7 +38,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -2172,4 +2173,130 @@ test('#50 the cloud_agent tool descriptions state the turn limit and the resume 
     assert.match(d, /29 minutes/);
     assert.match(d, /CLOUDY_CLOUD_TURN_MINUTES/);
   }
+});
+
+// ---- provider resilience (#51, #55) ----
+const ERR_FIXTURE = (msg) => readFile(new URL('./fixtures/pi-json-error.jsonl', import.meta.url), 'utf8').then((s) => s.replaceAll('401 invalid api key', msg.replaceAll('"', '\\"')));
+// A pi worker whose first `fails` pi runs print a provider error with `msg`; sleeps are recorded, not waited.
+async function retrySetup(fails, msg, extra = {}) {
+  const errOut = await ERR_FIXTURE(msg), sleeps = [], events = [];
+  let piRuns = 0;
+  const s = await setup({
+    env: { ...pEnv, ...extra.env }, sleep: async (ms) => { sleeps.push(ms); }, events: (e) => events.push(e),
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => (cmd.includes('pi --mode json') && ++piRuns <= fails ? { stdout: errOut, stderr: '', exitCode: 0 } : real(cmd, o));
+      return sbx;
+    },
+    ...extra.deps,
+  });
+  return { ...s, sleeps, events, piRuns: () => piRuns };
+}
+const NOT_FOUND = '404: {"code":"model_not_found","message":"no capacity"}';
+
+test('a pi turn that fails twice with model_not_found is rerun and succeeds, waiting 30s then 60s', async () => {
+  answeredProfiles.add('pi-glm');
+  const { start, wait, sleeps, events, piRuns } = await retrySetup(2, NOT_FOUND);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /status: idle[\s\S]*hello from pi/);
+  assert.ok(!/ERROR/.test(r));
+  assert.equal(piRuns(), 3);
+  assert.deepEqual(sleeps, [30_000, 60_000]);
+  assert.ok(events.some((e) => e.type === 'progress' && /retrying .*attempt 2 of 4/.test(e.text)));
+  assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
+});
+
+test('a 401 from the provider fails at once, without waiting', async () => {
+  const { start, wait, sleeps, piRuns } = await retrySetup(9, '401 invalid api key');
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /ERROR/);
+  assert.equal(piRuns(), 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test('model_not_found for a profile that never answered fails at once with a model-not-available message', async () => {
+  answeredProfiles.clear();
+  const { start, wait, sleeps, piRuns } = await retrySetup(9, NOT_FOUND);
+  const r = await wait([await start({ profile: 'pi-deepseek' })]);
+  assert.match(r, /ERROR[\s\S]*not available to this key[\s\S]*Next step:/);
+  assert.equal(piRuns(), 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test('when the retries run out the result names the provider status and a next step, and holds no key', async () => {
+  answeredProfiles.add('pi-glm');
+  const { start, wait, sleeps, piRuns } = await retrySetup(99, `502 bad gateway ${PKEY}`);
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(piRuns(), 4);
+  assert.deepEqual(sleeps, [30_000, 60_000, 120_000]);
+  assert.match(r, /Provider status: 502 server_error[\s\S]*Gave up after 4 attempts[\s\S]*Next step:/);
+  assert.ok(!r.includes(PKEY));
+});
+
+// ---- preflight, fallback ----
+const fetchWith = (status, body = '{"error":{"code":"model_not_found"}}', log = []) => async (url, o) => { log.push({ url, o }); return { status, text: async () => body }; };
+
+test('a preflight 404 fails before any machine is created, with the provider text, no key, and a next step', async () => {
+  resetPreflightCache();
+  const log = [];
+  let created = 0;
+  const { text, deps } = await setup({ env: pEnv, fetchFn: fetchWith(404, `{"error":"model_not_found ${PKEY}"}`, log), createSandbox: async () => { created++; return fakeSandbox(); } });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /answered 404[\s\S]*Next step:/);
+  assert.ok(!text(r).includes(PKEY));
+  assert.equal(created, 0);
+  assert.equal(log.length, 1);
+  assert.match(log[0].url, /^https:\/\/api\.particle\.ai\/v1\/chat\/completions$/);
+  const r2 = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', preflight: false }, deps);
+  assert.ok(!r2.isError);
+  assert.equal(log.length, 1);
+});
+
+test('a profile whose preflight fails falls back to the next profile and says so on the first line', async () => {
+  resetPreflightCache();
+  const fetchFn = async (url, o) => (JSON.parse(o.body).model === 'z-ai/glm-5.3-flash' ? { status: 404, text: async () => 'model_not_found' } : { status: 200, text: async () => '{}' });
+  const { start, wait } = await setup({ env: pEnv, fetchFn });
+  const r = await wait([await start({ profile: 'pi-glm', fallback: ['pi-particle'] })]);
+  assert.match(r, /status: idle\s*\nran on pi-particle \(pi-glm unavailable: Profile pi-glm: api\.particle\.ai answered 404/);
+  assert.match(r, /hello from pi/);
+});
+
+test('a profile with no key falls back to the profiles.json fallback list', async () => {
+  resetPreflightCache();
+  const dir = await mkdtemp(join(tmpdir(), 'cc-prof-'));
+  const file = join(dir, 'profiles.json');
+  await writeFile(file, JSON.stringify({ 'pi-nokey': { harness: 'pi', format: 'openai', baseUrl: 'https://example.com/v1', model: 'm1', keyName: 'NOKEY_API_KEY', fallback: ['pi-glm'] } }));
+  const { start, wait } = await setup({ env: { ...pEnv, CLOUDY_CLOUD_PROFILES: file }, fetchFn: fetchWith(200) });
+  const r = await wait([await start({ profile: 'pi-nokey' })]);
+  assert.match(r, /ran on pi-glm \(pi-nokey unavailable: Profile pi-nokey needs NOKEY_API_KEY/);
+});
+
+test('when every profile fails the error lists each one', async () => {
+  resetPreflightCache();
+  const { text, deps } = await setup({ env: pEnv, fetchFn: fetchWith(401, 'bad key') });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm', fallback: ['pi-particle'] }, deps);
+  assert.equal(r.isError, true);
+  assert.match(text(r), /No profile could start[\s\S]*pi-glm:[\s\S]*pi-particle:[\s\S]*Next step:/);
+});
+
+// ---- per-profile cap ----
+test('a profile at its maxConcurrent cap queues the next start with a status line, and starts it when a slot frees', async () => {
+  const open = new Map([['a', { id: 'a', status: 'running', profile: { name: 'pi-x' } }], ['b', { id: 'b', status: 'idle', profile: { name: 'pi-x' } }]]);
+  let release;
+  const q = startQueue({}, undefined, () => open.values(), { sleep: () => new Promise((r) => { release = r; }) });
+  const me = { id: 'c', status: 'starting', profile: { name: 'pi-x', maxConcurrent: 2 }, emit() {} };
+  let started = false;
+  const p = q.create(me, async () => { started = true; });
+  await tick(5);
+  assert.equal(started, false);
+  assert.match(q.reason(me), /waiting for a free pi-x slot \(2 of 2 running/);
+  open.get('b').status = 'stopped';
+  release();
+  await p;
+  assert.ok(started);
+  const other = { id: 'd', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
+  await q.create(other, async () => {}); // no cap on another profile
 });

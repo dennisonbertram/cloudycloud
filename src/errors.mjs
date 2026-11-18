@@ -24,6 +24,7 @@ const lim = (n, unit) => (n > 0 ? `${n} ${unit}` : '');
 // [what, cause, next, tell]. Cause text contains "likely" when it is not certain.
 const T = {
   model_not_found: (d) => ['The model is not available on this provider.', 'Likely a typo in the model name, or the key has no access to this model.', `Retry once after a wait, or call cloud_agent with another profile (known profiles: ${d.profiles ?? 'see cloud_agent'}).`, 'The key has no access to this model; pick another model or check the provider plan.'],
+  provider_unavailable: (d) => [`The model provider kept returning errors${d.profile ? ` for profile ${d.profile}` : ''}.`, 'Likely a rate or concurrency limit on that model, or the provider is down.', `Wait a few minutes and call cloud_agent_message with agent_id ${d.id ?? '<id>'} and the message "continue", or start the task with another profile (cloud_agent with profile or fallback).`],
   rate_limited: (d) => {
     const t = tier(d), n = lim(d.plan?.startsPerMinute, 'starts a minute');
     return ['The provider is limiting how fast machines or requests start.', t && n ? `Likely too many agents started at once; the ${t} allows ${n}.` : 'Likely too many agents started at once.', `${d.waited ? `Cloudy Cloud already retried for about ${d.waited} minutes. Do not retry at once. ` : ''}First stop agents you no longer need (cloud_agent_list, then cloud_agent_stop) or lower CLOUDY_CLOUD_STARTS_PER_MIN, then wait ${d.waited ?? 10} minutes before calling cloud_agent again.${t ? ` If it keeps happening, tell the user: ${upgrade(d.plan.tier)}` : ''}`];

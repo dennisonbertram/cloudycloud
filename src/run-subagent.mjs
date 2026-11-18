@@ -6,12 +6,12 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS } from './limits.mjs';
+import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { resolveProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
+import { resolveProfile, preflightProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
 import { guide, classify } from './errors.mjs';
 import { createProgress, mcpLine, parseStream, statusLine, totalLine, modelLine, STATUS_MAX } from './progress.mjs';
 import { createPiProgress, parsePiStream } from './progress-pi.mjs';
@@ -95,7 +95,22 @@ export const startQueue = (env, provider, open, opts) => {
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
   // This server's other agents holding or creating a machine. Admission counts a start whose create is still in flight; the count shown to people (shown) counts only agents that own a machine.
   const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && !(shown && !a.sandbox)))).length;
-  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, ...opts });
+  // Per-profile cap (#55): profiles.json maxConcurrent, else CLOUDY_CLOUD_PROFILE_MAX, else none. The count is this server's own agents plus,
+  // best effort, the machines the provider lists for the profile (other sessions); the list is eventually consistent, so it is approximate.
+  const listed = new Map(); // profile name -> { n, at }
+  const profileBusy = (a) => {
+    const name = a.profile?.name, max = a.profile?.maxConcurrent ?? (Number(env?.CLOUDY_CLOUD_PROFILE_MAX) > 0 ? Math.floor(Number(env.CLOUDY_CLOUD_PROFILE_MAX)) : 0);
+    if (!name || !max) return;
+    const l = listed.get(name);
+    if (provider?.list && (!l || Date.now() - l.at > 5000)) {
+      listed.set(name, { n: l?.n ?? 0, at: Date.now() });
+      Promise.resolve(provider.list({ purpose: 'cloudy-cloud', profile: name })).then((m) => listed.set(name, { n: Array.isArray(m) ? m.length : 0, at: Date.now() })).catch(() => {});
+    }
+    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && ['running', 'idle', 'starting'].includes(x.status)).length;
+    const n = Math.max(local, listed.get(name)?.n ?? 0);
+    return n >= max ? `waiting for a free ${name} slot (${n} of ${max} running; cap set by maxConcurrent or CLOUDY_CLOUD_PROFILE_MAX)` : undefined;
+  };
+  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
   q.plan = () => plan;
   q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
     if (!p) return;
@@ -267,7 +282,32 @@ async function writeMeta(a, ctx) {
 
 const validSession = (a, id) => typeof id === 'string' && (harnessOf(a) === 'opencode' ? OPENCODE_SESSION : SESSION).test(id);
 
+// Profiles that answered in this server process: only then is a model_not_found treated as a passing provider hiccup.
+const answered = new Set();
+export const answeredProfiles = answered; // exported so tests can seed and clear it
+const RETRY_WAIT_MS = [30_000, 60_000, 120_000];
+// A worker turn on a provider harness is rerun in the same sandbox and session after a transient provider error (#51).
 async function turn(a, message, ctx, t) {
+  const max = a.profile && harnessOf(a) !== 'claude' ? (ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES !== undefined && Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) >= 0 ? Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) : 3) : 0;
+  for (let n = 0; ; n++) {
+    const r = await turnOnce(a, message, ctx, t);
+    if (!max) return r;
+    if (!r.error) { if (t.progress.answered) answered.add(a.profile.name); return r; }
+    if (r.cancelled || r.gone) return r;
+    const c = classifyProviderError(r.text);
+    if (!c) return r;
+    const ok = c.retryable && (c.kind !== 'model_not_found' || answered.has(a.profile.name));
+    if (!ok || n >= max || t.cancelled || a.status === 'stopped') {
+      const why = !c.retryable ? '' : c.kind === 'model_not_found' && !answered.has(a.profile.name) ? `\nThe model is not available to this key (profile ${a.profile.name} has not answered in this session).\n${guide('model_not_found', { profiles: a.profile.name })}` : `\nGave up after ${n + 1} attempt${n ? 's' : ''}.\n${guide('provider_unavailable', { id: a.id, profile: a.profile.name })}`;
+      return { ...r, text: ctx.scrub(`${r.text}\n${providerDetail(r.text)}${why}`) };
+    }
+    t.progress = PROGRESS[harnessOf(a)]();
+    a.emit?.({ type: 'progress', text: `provider error (${providerDetail(r.text).replace('Provider status: ', '')}), retrying in ${RETRY_WAIT_MS[Math.min(n, 2)] / 1000}s (attempt ${n + 2} of ${max + 1})` });
+    await (ctx.sleep ?? sleep)(RETRY_WAIT_MS[Math.min(n, 2)]);
+  }
+}
+
+async function turnOnce(a, message, ctx, t) {
   const { scrub } = ctx;
   const pat = (x) => (harnessOf(a) === 'codex' ? redactText(x) : x); // the machine may refresh the ChatGPT login, so exact values are not enough there
   try {
@@ -744,6 +784,7 @@ async function work(a, message, first, ctx, t) {
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
+    if (first && a.fallbackNote) r = { ...r, text: `${a.fallbackNote}\n${r.text}` };
     if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
     if (a.autofix && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
@@ -875,11 +916,20 @@ export async function runSubagent(args, deps) {
     const re = name === 'model' && profileName !== undefined ? MODEL : SAFE; // profile models may contain "/"
     if (!(typeof v === 'string' && re.test(v))) return fail(`invalid ${name}: must match ${re}`);
   }
-  let profile;
+  let profile, fallbackNote;
   if (profileName !== undefined) {
-    const r = resolveProfile(profileName, model, ctx.env, { proxyOnly: hasProxySecrets });
-    if (r.error) return fail(r.error);
-    profile = r.ok;
+    // Try the profile, then each fallback in order. A start-time failure (no key, or a refused one-token check) moves on; the result says which one ran.
+    if (args.fallback !== undefined && !(Array.isArray(args.fallback) && args.fallback.every((n) => typeof n === 'string'))) return fail('invalid fallback: must be a list of profile names');
+    let names = [profileName], tried = [];
+    for (let i = 0; i < names.length; i++) {
+      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets });
+      let err = r.error;
+      if (!err && args.preflight !== false) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+      if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
+      if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
+      tried.push({ name: names[i], why: ctx.scrub(err) });
+      if (i === names.length - 1) return fail(tried.length === 1 ? err : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
+    }
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
@@ -939,7 +989,7 @@ export async function runSubagent(args, deps) {
   if (noClaude) return fail(noClaude, true);
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, waiters: [], result: null, idleSince: Date.now(),
+  const a = { role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   try { a.mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); a.mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { a.mcpError = e.message; }
