@@ -1023,7 +1023,7 @@ async function mcpSetup(servers, over = {}) {
 }
 const X = { x: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ${MCP_X_TOKEN}' } } };
 import { MERGE_MCP_SCRIPT } from '../src/worker-mcp.mjs';
-const MERGE = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json /home/user/.config/cloudy-cloud/mcp.json || echo '{"mcpServers":{}}' > $D/mcp.json;`;
+const MERGE = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json /home/user/.config/cloudy-cloud/mcp.json || (umask 077; rm -f $D/mcp.json; echo '{"mcpServers":{}}' > $D/mcp.json);`;
 const claudeCmd = (sbx) => sbx.cmds.find((c) => /claude -p|cloudy-cloud\/bin\/cloudy-cloud -p/.test(c));
 
 test('a plain worker without mcp.json runs the same claude command (now inside the stream tee) and writes no mcp file', async () => {
