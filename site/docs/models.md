@@ -16,9 +16,9 @@ You pay your providers directly. Cloudy Cloud does not resell model access, and 
 
 ## Claude credentials
 
-Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it at run time, but the setup command still asks for it and stops without one. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials) for the workaround.
+Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it only if you choose claude or want Claude workers. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 
-Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it. Two kinds work:
+Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it when you choose claude (or want Claude workers); it does not ask if you run only Codex, opencode or pi. Two kinds work:
 
 - **A token from `claude setup-token`** (starts with `sk-ant-oat01-`). This uses your Claude subscription. At the Claude step, press Enter and setup runs `claude setup-token` for you, or paste a token you made yourself. Setup checks the token with one small Claude request. It is saved as `CLAUDE_CODE_OAUTH_TOKEN`.
 - **An Anthropic API key** (`ANTHROPIC_API_KEY`). Setup does not ask for it. Add the line `ANTHROPIC_API_KEY=...` to the env file yourself (see below). Usage is billed per use.
@@ -98,7 +98,7 @@ The `codex`, `codex-chatgpt` and `codex-openrouter` profiles run the [Codex CLI]
 
 Codex only speaks the Responses API, and Particle.ai does not offer it, so there is no `codex-glm`. Set up the credential for the profile you use:
 
-**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup` does not ask for it. On Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
+**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup` asks for it when you choose codex, and stores it as an Instabox secret. To do it by hand on Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
 
 ```
 printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com
@@ -156,7 +156,7 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 
 ## Adding or changing keys later
 
-- Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup does not ask for `OPENAI_API_KEY` or the Codex login file: see The codex profiles.
+- Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for `OPENAI_API_KEY` when you choose codex, and does not set up the Codex login file: see The codex profiles.
 - Or edit `~/.config/cloudy-cloud/env` directly. Keep the file private. To remove all saved keys, delete it.
 - Restart `cloudy-cloud` afterwards. It reads keys once at start, so a running session keeps the old ones.
 

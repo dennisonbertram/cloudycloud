@@ -48,10 +48,16 @@ The default `linux` machine is right for almost everything. Pass `machine` only 
 
 Start the main session from inside the repo: `cloudy-cloud` (Claude Code), `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. Codex needs `npm install -g @openai/codex` and opencode needs `npm install -g opencode-ai`; pi and free-pi run through `npx` if they are not installed. Sign in to the agent itself first (`codex login`); Cloudy Cloud does not do that.
 
-Setup asks for the Instabox key, a Claude token and the GitHub token, plus optional Particle.ai and OpenRouter keys. It does not ask for the keys that Codex workers need. If a worker uses a Codex profile, tell the user to set it up once:
-- `codex`: create an OpenAI key, then on Instabox run `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com` and add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`.
+Setup asks which agents the user runs locally (claude, codex, opencode, pi, free-pi) and then asks only for what those need: the Instabox key and the GitHub token always, a Claude token only if claude is chosen (as the main session or for Claude workers), an OpenAI key if codex is chosen, and optional Particle.ai and OpenRouter keys. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so with no Claude token saved always pass one, and when a tool refuses a call, follow its Next step. Credentials per agent, to set up once (the user does this, not you):
+- Claude Code workers (no profile): `claude setup-token`, then `cloudy-cloud setup` and answer claude.
+- `codex`: setup asks for the OpenAI key when codex is chosen and stores it as the Instabox secret `OPENAI_API_KEY` (host `api.openai.com`). By hand: `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`.
 - `codex-chatgpt`: run `codex login` with "Sign in with ChatGPT", then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`.
-- opencode, pi and omp profiles use `PARTICLE_API_KEY` (or `OPENROUTER_API_KEY`), which setup does ask for as an optional step.
+- opencode, pi and omp profiles use `PARTICLE_API_KEY` (or `OPENROUTER_API_KEY`), which setup asks for as an optional step.
+
+### Custom profiles (`profiles.json`)
+
+`~/.config/cloudy-cloud/profiles.json` (or `CLOUDY_CLOUD_PROFILES`) adds profiles or overrides built-in ones. Each entry may set `harness`, the agent that runs the worker: `claude` (the default), `pi`, `omp`, `codex` or `opencode`. It also needs `format` (`openai` or `anthropic`), `baseUrl` and `keyName` (like `NAME_API_KEY`); `model` can be passed per call. `codex`, `omp` and `opencode` need `"format": "openai"`. `codex` also accepts `"auth": "chatgpt"` instead of `keyName`. Example: `{ "my-codex": { "harness": "codex", "format": "openai", "baseUrl": "https://api.openai.com/v1", "model": "default", "keyName": "OPENAI_API_KEY" } }`.
+
 Never ask for these keys in chat.
 
 ## Before using a repo

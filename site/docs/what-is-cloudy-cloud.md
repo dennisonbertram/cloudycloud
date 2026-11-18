@@ -25,14 +25,14 @@ Subagents that run on your laptop share its CPU, memory and battery with you, so
 
 ## Who is it for?
 
-It is for people who use Claude Code and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.
+It is for people who use a coding agent (Claude Code, Codex, opencode, pi or free-pi) and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.
 
 For a long job that must keep going with your laptop closed, use a [cloud coordinator](https://cloudycloud.tech/docs/fleets.html), which runs on its own machine.
 
 ## What do I need?
 
 - An account with a cloud sandbox provider. Instabox is supported today.
-- A Claude subscription or API key for Claude Code workers and coordinators. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup itself still asks for a Claude token; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
+- A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup asks for a Claude token only if you use Claude; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 - A GitHub repo you can push to.
 - Node.js 20 or later.
 
@@ -44,7 +44,7 @@ Cloudy Cloud is open source under the MIT license, and the tool itself has no pr
 
 ## How do I start it?
 
-In a terminal, inside a git repo with a GitHub remote, run `cloudy-cloud` where you would run `claude`. It opens a normal Claude Code session; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
+In a terminal, inside a git repo with a GitHub remote, run the command for your agent where you would run that agent: `cloudy-cloud` for Claude Code, `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. It opens a normal session of that agent; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
 
 ## How do I install it?
 

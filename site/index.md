@@ -47,7 +47,7 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Add your keys
 
-2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. The Claude token is only used by Claude Code workers and coordinators, but setup currently requires it (see Getting started for the workaround). The setup skill is for Claude Code. Setup does not ask for Codex, OpenAI or ChatGPT credentials; set those separately if you use Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
+2. Setup asks which agents you run (Claude Code, Codex, opencode, pi or free-pi), then asks for your cloud and GitHub keys and for the credentials those agents need, and tells you where to get each. A Claude token is asked for only if you use Claude Code. The setup skill is for Claude Code. Setup does not set up the ChatGPT login file for Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
 
 ### Start a session
 
@@ -60,7 +60,7 @@ $ npx cloudycloud setup
   Checks your tools, links the command and saves your keys.
 
   ●━━○━━○━━○  Tools  1 of 4
-  ✔ git, node, npm, curl and claude are installed
+  ✔ git, node, npm and curl are installed
   ✔ Dependencies installed
   ✔ cloudy-cloud already runs from this folder
   ✔ Fleet skill available in every project

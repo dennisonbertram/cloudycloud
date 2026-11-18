@@ -177,7 +177,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <h3 id="mcp-problems">MCP server problems</h3>
 <ul>
 <li><code>The Instabox secret MCP_..._TOKEN could not be attached</code>: the secret does not exist. Create it with <code>printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NAME_TOKEN --host HOST</code>. Creating a secret needs your <code>instabox login</code> session, not the API key.</li>
-<li><code>MCP servers skipped: NAME (REASON)</code> at the end of a reply: the entry in <code>mcp.json</code> did not pass the checks. Fix it in Claude Code and run <code>cloudy-cloud mcp add NAME</code> again.</li>
+<li><code>MCP servers skipped: NAME (REASON)</code> at the end of a reply: the entry in <code>mcp.json</code> did not pass the checks for that worker's agent. Fix the entry (in Claude Code's settings, then <code>cloudy-cloud mcp add NAME</code> again) and see <a href="mcp.html#files">MCP servers</a> for each agent's rules: Codex skips <code>sse</code> servers and entries that put a secret reference inside a longer value; opencode skips entries that contain <code>{env:...}</code> or <code>{file:...}</code>; pi skips <code>sse</code> servers; omp skips values that start with <code>!</code> or are a bare variable name.</li>
 <li><code>MCP servers: ... (failed: NAME)</code>: the server was sent but did not connect on the machine. Check the token, the host in <code>--host</code> and the server's address.</li>
 <li><code>Could not read FILE: ...</code>: <code>mcp.json</code> is not valid JSON. Fix or delete the file.</li>
 </ul>

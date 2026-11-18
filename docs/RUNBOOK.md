@@ -10,8 +10,8 @@ This runbook applies to every main session (Claude Code, Codex, opencode, pi, fr
 | --- | --- |
 | macOS or Linux | Tested on macOS. |
 | `git` and Node.js 20 or later | Check with `git --version` and `node --version`. |
-| [Claude Code](https://code.claude.com) | For the default main session. Check with `claude --version`. You must be signed in. |
-| Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. They need no Claude token at run time, but setup itself still asks for one (see section 2). |
+| At least one coding agent | Claude Code, Codex, opencode, pi or free-pi, as your main session. [Claude Code](https://code.claude.com) is needed only if you choose it (as your main session or for Claude workers); check with `claude --version`. You must be signed in. |
+| Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. They need no Claude token, at run time or in setup. |
 | A credential for each worker agent you use | Claude Code workers (the default): a long-lived token from `claude setup-token`, or an Anthropic API key billed separately. pi, oh-my-pi and opencode workers: `PARTICLE_API_KEY`. OpenRouter profiles: `OPENROUTER_API_KEY`. Codex workers: `OPENAI_API_KEY` or a ChatGPT login file (section 2.5). |
 | An [Instabox](https://instabox.sh) account | **Free plan:** too small for more than a few subagents at once. **Paid plan:** needed for swarms. |
 | A GitHub repository you can push to | Subagents push their branches there. |
@@ -26,15 +26,16 @@ cd cloudycloud
 ./install.sh
 ```
 
-Run it in a terminal; it asks for keys, so it will not run from a pipe. It checks `git`, Node.js 20 or later, `npm`, `curl` and Claude Code, runs `npm install`, and links `cloudy-cloud` onto your PATH. If `cloudy-cloud` already points at another folder, it asks before changing that, and the default is to keep the current link. Then it asks for three keys. Nothing shows as you paste, and nothing is printed back except the last four characters.
+Run it in a terminal; it asks for keys, so it will not run from a pipe. It checks `git`, Node.js 20 or later, `npm` and `curl`, runs `npm install`, and links `cloudy-cloud` onto your PATH. If `cloudy-cloud` already points at another folder, it asks before changing that, and the default is to keep the current link. Then it asks which agents you run locally (claude, codex, opencode, pi, free-pi; press Enter to accept the ones it found on your PATH) and saves the answer as `CLOUDY_CLOUD_AGENTS`. It asks only for what those agents need. Nothing shows as you paste, and nothing is printed back except the last four characters. 
 
 | Key | Where to get it |
 | --- | --- |
 | **Instabox API key** (`ibk_…`) | Create it at https://dashboard.instabox.sh/dashboard/api-keys. The script checks it with Instabox before saving. |
-| **Claude token** (`sk-ant-oat01-…`) | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
+| **Claude token** (`sk-ant-oat01-…`), only if you chose claude, or answered `y` to "Also run Claude Code workers" | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
+| **OpenAI key** (`OPENAI_API_KEY`), only if you chose codex; optional | https://platform.openai.com/api-keys. Or use your ChatGPT login file instead (section 2.5). |
 | **GitHub token** | Create a fine-grained token (section 2.3). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
-Setup asks for a Claude credential even if you will not run Claude. It checks that the `claude` command is installed, and its Claude step cannot be skipped: an empty answer with nothing saved stops setup with exit status 1. A Codex, opencode or pi user must either give setup a Claude token, or save an `ANTHROPIC_API_KEY=...` line in the env file first (setup then accepts it when you answer `n` to "Replace it?"). Codex, opencode, pi and oh-my-pi workers do not use either. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
+The Claude step runs only when claude is one of your agents, or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Such a user needs at least one worker credential, though: setup warns at the end if none is saved (an OpenAI, Particle.ai or OpenRouter key, or the Codex login file). Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass, and `cloudy-cloud codex|opencode|pi|free-pi` prints the same next step on start. `cloudy-cloud setup --check-only` reads the saved `CLOUDY_CLOUD_AGENTS` (default: claude).
 
 The Instabox key is saved to `~/.config/cloudy-cloud/env`, which only your user account can read; it never leaves your laptop. The Claude token, the optional Particle.ai and OpenRouter keys, and the GitHub token are stored in Instabox as proxy secrets (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` for `api.anthropic.com`, `PARTICLE_API_KEY` for `api.particle.ai`, `OPENROUTER_API_KEY` for `openrouter.ai`, `GH_TOKEN` for GitHub), so a worker machine sees only a placeholder. Setup lists the stored names in `CLOUDY_CLOUD_PROXY_SECRETS` (comma-separated). Storing a secret, and turning on the usage alert emails (the last question of the Instabox key step), needs your `instabox login` session; setup runs the login if needed and sends each key on stdin, never on a command line. If a secret cannot be stored, setup says so and keeps that key in the env file instead. After the first install, run `cloudy-cloud setup` at any time (it runs `install.sh` from the folder `cloudy-cloud` was linked from, whatever folder you are in); it shows each saved key as masked and asks before replacing it.
 
@@ -113,10 +114,20 @@ Checked live: Codex (codex-cli 0.166.0 listed the six cloud tools) and opencode.
 | Codex | `codex`, `codex-chatgpt`, `codex-openrouter` (pass `model`) | `OPENAI_API_KEY`, the ChatGPT login file, `OPENROUTER_API_KEY` |
 | opencode | `opencode-glm`, `opencode-deepseek`, `opencode-particle`, `opencode-openrouter` (pass `model`) | `PARTICLE_API_KEY` or `OPENROUTER_API_KEY` |
 
-Setup asks for `PARTICLE_API_KEY` and `OPENROUTER_API_KEY`. It does not ask for the Codex credentials. Set them by hand:
+Setup asks for `PARTICLE_API_KEY` and `OPENROUTER_API_KEY`, and for `OPENAI_API_KEY` when you chose codex (it is stored as an Instabox proxy secret for `api.openai.com`). It does not set up the ChatGPT login file. To set the Codex credentials by hand:
 
 - `codex`: on Instabox run `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`. On a self-hosted machine add the line `OPENAI_API_KEY=...` to that file.
 - `codex-chatgpt`: run `codex login` and choose "Sign in with ChatGPT", then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. The file must have mode 600. It is copied to the worker machine as a file, even on Instabox. If a worker reports a 401, repeat both commands.
+
+**Custom profiles (`profiles.json`).** `~/.config/cloudy-cloud/profiles.json` (or `CLOUDY_CLOUD_PROFILES`) adds profiles or overrides built-in ones. Each entry may set `harness`, the agent that runs the worker: `claude` (the default when the key is absent), `pi`, `omp`, `codex` or `opencode`. Every entry also needs `format` (`openai` or `anthropic`), `baseUrl` and `keyName`; `model` can be given per call instead. Rules:
+
+- `codex`, `omp` and `opencode` need `"format": "openai"`. The `claude` and `pi` harnesses accept either value.
+- `codex` also accepts `"auth": "chatgpt"` (the login file) in place of `keyName`.
+- `keyName` must look like `NAME_API_KEY`.
+
+```json
+{ "my-codex": { "harness": "codex", "format": "openai", "baseUrl": "https://api.openai.com/v1", "model": "default", "keyName": "OPENAI_API_KEY" } }
+```
 
 Verification status of every agent: see the table in [STATUS.md](STATUS.md#supported-agents-and-what-is-proven). Codex and opencode workers are not verified on a real machine.
 
@@ -346,7 +357,7 @@ Keep about 20 GB of disk free. Setup and doctor warn below that.
 cloudy-cloud setup --provider self-hosted
 ```
 
-Without `--provider`, `install.sh` asks "Where should subagents run?"; type 2. Setup asks for:
+Without `--provider`, `install.sh` asks "Where should subagents run?"; type 2. Then it asks which agents you run (section 2.1). Setup asks for:
 
 1. The SSH address, `user@host`.
 2. The path to your SSH key (optional; Enter uses your default keys or Tailscale SSH).

@@ -47,7 +47,7 @@ Start as many subagents as the task needs. Cloudy Cloud queues them and starts m
 
 ### Add your keys
 
-2. Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. The Claude token is only used by Claude Code workers and coordinators, but setup currently requires it (see Getting started for the workaround). The setup skill is for Claude Code. Setup does not ask for Codex, OpenAI or ChatGPT credentials; set those separately if you use Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
+2. Setup asks which agents you run (Claude Code, Codex, opencode, pi or free-pi), then asks for your cloud and GitHub keys and for the credentials those agents need, and tells you where to get each. A Claude token is asked for only if you use Claude Code. The setup skill is for Claude Code. Setup does not set up the ChatGPT login file for Codex workers. Or run `npx skills add dennisonbertram/cloudycloud` and ask Claude to "set up Cloudy Cloud".
 
 ### Start a session
 
@@ -60,7 +60,7 @@ $ npx cloudycloud setup
   Checks your tools, links the command and saves your keys.
 
   ●━━○━━○━━○  Tools  1 of 4
-  ✔ git, node, npm, curl and claude are installed
+  ✔ git, node, npm and curl are installed
   ✔ Dependencies installed
   ✔ cloudy-cloud already runs from this folder
   ✔ Fleet skill available in every project
@@ -224,15 +224,16 @@ cd cloudycloud
 ./install.sh
 ```
 
-Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source). If an older `cloudy-cloud` command is already installed, setup says so and offers to replace it; if npm still fails, setup prints the fix commands and carries on, and you can use `npx cloudycloud` instead, copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks for three keys. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.
+Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source). If an older `cloudy-cloud` command is already installed, setup says so and offers to replace it; if npm still fails, setup prints the fix commands and carries on, and you can use `npx cloudycloud` instead, copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH). It asks only for the keys those agents need. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.
 
 | Key | Where to get it |
 |---|---|
 | Instabox API key (`ibk_…`) | Create it at [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). The installer checks it with Instabox before saving. |
-| Claude token (`sk-ant-oat01-…`) | Run `claude setup-token` in another terminal, or press Enter at the Claude step and let the installer get it. Your own `claude` login is not changed. |
+| Claude token (`sk-ant-oat01-…`), only if you chose claude or want Claude workers | Run `claude setup-token` in another terminal, or press Enter at the Claude step and let the installer get it. Your own `claude` login is not changed. |
+| OpenAI key (`OPENAI_API_KEY`), only if you chose codex; optional | Create it at [platform.openai.com](https://platform.openai.com/api-keys), or use your ChatGPT login file instead (see below). It is stored in Instabox as a proxy secret. |
 | GitHub token | Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write, and Actions set to read. The Instabox command-line tool asks for it. |
 
-> Warning: **Setup asks for a Claude credential even if you will not run Claude.** Setup checks that the `claude` command is installed, and its Claude step cannot be skipped: an empty answer with nothing saved stops setup with exit status 1. So a Codex, opencode or pi user must either give setup a Claude token, or save an `ANTHROPIC_API_KEY=...` line in the env file first (setup then accepts it when you answer `n` to "Replace it?"). Neither is used by Codex, opencode, pi or oh-my-pi workers. The other route is to skip setup and save the keys by hand: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
+> Note: **No Claude token is needed unless you use Claude.** If you choose only Codex, opencode, pi or free-pi, setup does not ask for a Claude token and does not need the `claude` command. You do need one credential for the workers you will run (an OpenAI, Particle.ai or OpenRouter key, or the Codex login file); setup warns at the end if none is saved. Workers run Claude Code unless `cloud_agent` gets a `profile`, so with no Claude token the host command prints the profile to pass, such as `codex`. You can also skip setup and save the keys by hand: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
 
 ### Credentials for each worker agent
 
@@ -470,9 +471,9 @@ You pay your providers directly. Cloudy Cloud does not resell model access, and 
 
 ## Claude credentials
 
-Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it at run time, but the setup command still asks for it and stops without one. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials) for the workaround.
+Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it only if you choose claude or want Claude workers. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 
-Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it. Two kinds work:
+Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it when you choose claude (or want Claude workers); it does not ask if you run only Codex, opencode or pi. Two kinds work:
 
 - **A token from `claude setup-token`** (starts with `sk-ant-oat01-`). This uses your Claude subscription. At the Claude step, press Enter and setup runs `claude setup-token` for you, or paste a token you made yourself. Setup checks the token with one small Claude request. It is saved as `CLAUDE_CODE_OAUTH_TOKEN`.
 - **An Anthropic API key** (`ANTHROPIC_API_KEY`). Setup does not ask for it. Add the line `ANTHROPIC_API_KEY=...` to the env file yourself (see below). Usage is billed per use.
@@ -552,7 +553,7 @@ The `codex`, `codex-chatgpt` and `codex-openrouter` profiles run the [Codex CLI]
 
 Codex only speaks the Responses API, and Particle.ai does not offer it, so there is no `codex-glm`. Set up the credential for the profile you use:
 
-**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup` does not ask for it. On Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
+**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup` asks for it when you choose codex, and stores it as an Instabox secret. To do it by hand on Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
 
 ```
 printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com
@@ -610,7 +611,7 @@ Create `~/.config/cloudy-cloud/profiles.json` (or point `CLOUDY_CLOUD_PROFILES` 
 
 ## Adding or changing keys later
 
-- Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup does not ask for `OPENAI_API_KEY` or the Codex login file: see The codex profiles.
+- Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for `OPENAI_API_KEY` when you choose codex, and does not set up the Codex login file: see The codex profiles.
 - Or edit `~/.config/cloudy-cloud/env` directly. Keep the file private. To remove all saved keys, delete it.
 - Restart `cloudy-cloud` afterwards. It reads keys once at start, so a running session keeps the old ones.
 
@@ -668,14 +669,14 @@ cloudy-cloud pi [pi arguments]
 cloudy-cloud free-pi [free-pi-cli arguments]
 ```
 
-Each command starts another coding agent as your main session, with the same cloud tools. Every argument after the subcommand goes to that agent. They are subcommands, not a flag, because Claude Code already has its own `--agent` option. None of them needs a Claude token to start. (`cloudy-cloud setup` still asks for one; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).) They check only that the Instabox key (or the self-hosted settings) is saved, and run from inside a git repository with a `github.com` origin like `cloudy-cloud`.
+Each command starts another coding agent as your main session, with the same cloud tools. Every argument after the subcommand goes to that agent. They are subcommands, not a flag, because Claude Code already has its own `--agent` option. None of them needs a Claude token to start, and setup does not ask for one unless you choose claude. They check only that the Instabox key (or the self-hosted settings) is saved, and run from inside a git repository with a `github.com` origin like `cloudy-cloud`. Workers run Claude Code unless `cloud_agent` gets a `profile`, so when no Claude token is saved, the command prints the profile to pass (for example `codex`) and tells the agent to pass it. To install an agent first, use the command in the third column.
 
 | Command | How the tools are added | If the agent is missing | Checked live |
 |---|---|---|---|
-| `cloudy-cloud codex` | Codex `-c mcp_servers.cloud.*` overrides and `developer_instructions`. `~/.codex/config.toml` is not edited. The tools keep their names. | Prints `npm install -g @openai/codex` | Yes. With codex-cli 0.166.0, `cloudy-cloud codex exec` listed the six cloud tools. |
-| `cloudy-cloud opencode` | One `OPENCODE_CONFIG_CONTENT` value for this session. Your `opencode.json` is not edited. opencode's own `task` tool is denied. The tools are named `cloud_cloud_agent` and so on. | Prints `npm install -g opencode-ai` | Yes, by the opencode build. |
-| `cloudy-cloud pi` | A per-session pi extension and an appended system prompt. | Runs the pinned `@earendil-works/pi-coding-agent@1.5.0` with `npx` | The MCP connection only. No model turn was run. |
-| `cloudy-cloud free-pi` | Writes a `cloud` entry into `~/.free-pi/agent/mcp.json` with `free-pi-cli mcp add` on every start. | Runs the pinned `free-pi-cli@0.6.23` with `npx` | `mcp list` only. |
+| `cloudy-cloud codex` | Codex `-c mcp_servers.cloud.*` overrides and `developer_instructions`. `~/.codex/config.toml` is not edited. The tools keep their names. | Prints `npm install -g @openai/codex`. Then sign in with `codex login`. | Yes. With codex-cli 0.166.0, `cloudy-cloud codex exec` listed the six cloud tools. |
+| `cloudy-cloud opencode` | One `OPENCODE_CONFIG_CONTENT` value for this session. Your `opencode.json` is not edited. opencode's own `task` tool is denied. The tools are named `cloud_cloud_agent` and so on. | Prints `npm install -g opencode-ai`. Then sign in the way you normally do. | Yes, by the opencode build. |
+| `cloudy-cloud pi` | A per-session pi extension and an appended system prompt. | Runs the pinned `@earendil-works/pi-coding-agent@1.5.0` with `npx`. To install it yourself: `npm install -g @earendil-works/pi-coding-agent`. | The MCP connection only. No model turn was run. |
+| `cloudy-cloud free-pi` | Writes a `cloud` entry into `~/.free-pi/agent/mcp.json` with `free-pi-cli mcp add` on every start. | Runs the pinned `free-pi-cli@0.6.23` with `npx`. To install it yourself: `npm install -g free-pi-cli`. | `mcp list` only. |
 
 The Codex, opencode and pi hosts cannot receive MCP task results, so the session starts agents and then calls `cloud_agent_wait`. free-pi is a main session only. It cannot be a worker.
 
@@ -694,7 +695,7 @@ cloudy-cloud --version
 cloudy-cloud setup [--check-only] [--provider instabox|self-hosted]
 ```
 
-Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx -y cloudycloud setup` runs it without installing anything first (`-y` skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, and asks for your Instabox key, your Claude token and your GitHub token, then offers optional steps for model provider keys and cloud coordinators. If an older `cloudy-cloud` global command blocks the install, setup offers to replace it (`npm rm -g cloudy-cloud`, then `npm install -g cloudycloud`). Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
+Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx -y cloudycloud setup` runs it without installing anything first (`-y` skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH), and asks for your Instabox key and your GitHub token, plus a Claude token only if you chose claude or want Claude workers and an OpenAI key if you chose codex. Then it offers optional steps for model provider keys and cloud coordinators. If an older `cloudy-cloud` global command blocks the install, setup offers to replace it (`npm rm -g cloudy-cloud`, then `npm install -g cloudycloud`). Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
 
 | Flag | Meaning |
 |---|---|
@@ -908,7 +909,7 @@ Starts a subagent in a remote sandbox on the committed and tracked files of the 
 | `prompt` | string | yes | none | The full task for the subagent. |
 | `description` | string | yes | none | A short label for the task. |
 | `model` | string | no | the Claude default | A Claude model name, such as `haiku`. For a non-Claude model, use `profile` instead. It is needed with a profile only for `openrouter`, `codex-openrouter` and `opencode-openrouter`, which have no built-in model. It may contain only letters, digits and `. _ : -`. When `profile` is also set, `/` is allowed too. |
-| `profile` | string | no | Claude | Runs the worker on another agent or model. Built in: `glm`, `deepseek`, `particle` and `openrouter` (Claude Code on another model); `pi-glm`, `pi-deepseek` and `pi-particle` (pi); `omp-glm`, `omp-deepseek` and `omp-particle` (oh-my-pi); `codex`, `codex-chatgpt` and `codex-openrouter` (Codex); `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (opencode). You can add names in `profiles.json`. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `profile` | string | no | Claude | Runs the worker on another agent or model. Built in: `glm`, `deepseek`, `particle` and `openrouter` (Claude Code on another model); `pi-glm`, `pi-deepseek` and `pi-particle` (pi); `omp-glm`, `omp-deepseek` and `omp-particle` (oh-my-pi); `codex`, `codex-chatgpt` and `codex-openrouter` (Codex); `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (opencode). You can add names in `profiles.json`, where each entry's `harness` (`claude`, `pi`, `omp`, `codex` or `opencode`) says which agent runs the worker. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
 | `role` | string, `worker` or `coordinator` | no | `worker` | A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3). A coordinator always runs Claude Code, so it cannot use a pi, omp, Codex or opencode profile. |
 | `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 8), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
 | `size` | string | no | `4x8` | Machine size as VCPUSxGIB, for example `2x4`, `4x8` or `8x16`. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused. |
@@ -991,7 +992,7 @@ Environment variables win over values in the config file. An empty value counts 
 | `GH_TOKEN` | none | Your GitHub token. On a self-hosted machine it is read from the config file and placed in each worker container if you allowed that. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html#github-token). |
 | `ANTHROPIC_API_KEY` | none | An Anthropic API key, used by cloud agents when there is no Claude token. It is billed separately. |
 | `PARTICLE_API_KEY`, `OPENROUTER_API_KEY`, and any other name ending in `_API_KEY` | none | Provider keys for model profiles. A profile's `keyName` must name one of these. A worker that uses a profile receives that profile's key. |
-| `OPENAI_API_KEY` | none | Your OpenAI API key, for the `codex` profile. Setup does not ask for it. See [The codex profiles](https://cloudycloud.tech/docs/models.html#codex-profiles). |
+| `OPENAI_API_KEY` | none | Your OpenAI API key, for the `codex` profile. Setup asks for it when you choose codex. See [The codex profiles](https://cloudycloud.tech/docs/models.html#codex-profiles). |
 
 > Note: The launcher only checks the config file for the Claude token, not the environment, so save it there with `cloudy-cloud setup`. The Instabox key can come from either place.
 
@@ -1011,7 +1012,7 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_SELF_HOSTED_CPUS` | 2 if unset | Self-hosted: CPU limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_MEMORY` | 4g if unset | Self-hosted: memory limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX` | unset | Self-hosted: `yes` means you allowed the GitHub token inside worker containers on your machine. Without it, workers do not start. |
-| `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. |
+| `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. Each entry can set `harness` to choose the agent (`claude`, `pi`, `omp`, `codex` or `opencode`). |
 | `CLOUDY_CLOUD_MCP` | `~/.config/cloudy-cloud/mcp.json` | Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent. |
 | `CLOUDY_CLOUD_EVENTS` | `~/.config/cloudy-cloud/events.jsonl` | Path of the event log that the dashboard reads. Set it in the environment before you start `cloudy-cloud` and the dashboard. |
 | `CLOUDY_CLOUD_WORKER_HOURS` | 6 | Hours until the server deletes a worker or nested coordinator machine. At most 24. A value that is not a positive number uses 6. |
@@ -1022,6 +1023,7 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` | 200 | How many agents one cloudy-cloud session may start. Passed down to child coordinators. |
 | `CLOUDY_CLOUD_PROXY_SECRETS` | empty | Comma-separated names of Instabox secrets that hold your Claude token and provider keys, for example `CLAUDE_CODE_OAUTH_TOKEN,PARTICLE_API_KEY,OPENROUTER_API_KEY`. A worker that needs a listed key gets the secret by name, so no key value reaches its environment. A key not listed is still copied to the machine, and the agent reply says so. Has no effect on providers without proxy secrets. |
 | `CLOUDY_CLOUD_APT_PACKAGES` | empty | Space-separated Debian package names (for example `ffmpeg postgresql-client`) that each worker installs with `sudo -n apt-get install` after its repo is set up. A name with other characters is refused when the agent starts. |
+| `CLOUDY_CLOUD_AGENTS` | none | The agents you chose in setup, comma-separated (`claude`, `codex`, `opencode`, `pi`, `free-pi`). `setup --check-only` reads it; when it is not set, claude is assumed. |
 | `CLOUDY_CLOUD_CHECK_SECONDS` | 60 | Setup only: how long to wait for the test request that checks your Claude token. |
 | `CLOUDY_CLOUD_NO_ANIMATION` | unset | Setup only: set to `1` to skip the animated banner. The banner is also skipped when `CI` is set or there is no terminal. |
 | `MCP_TOOL_TIMEOUT` | 1800000 | Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not. |
@@ -1035,7 +1037,7 @@ Environment variables win over values in the config file. An empty value counts 
 |---|---|
 | `~/.config/cloudy-cloud/env` | The config file. One `NAME=value` per line, mode 600. `cloudy-cloud setup` writes it. Only the settings and keys listed above are read from it, plus `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT`, which `coordinator image --save` writes. Change the location with `CLOUDY_CLOUD_CONFIG`. |
 | `~/.config/cloudy-cloud/codex-auth.json` | Optional. A copy of `~/.codex/auth.json` (mode 600) for the `codex-chatgpt` profile. Create it with `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. Set `CLOUDY_CLOUD_CODEX_AUTH` to use another path. |
-| `~/.config/cloudy-cloud/profiles.json` | Optional. Adds or overrides model profiles. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `~/.config/cloudy-cloud/profiles.json` | Optional. Adds or overrides model profiles, including each profile's `harness`. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
 | `~/.config/cloudy-cloud/mcp.json` | Optional. The MCP servers that cloud subagents get, in Claude Code's `mcpServers` format, mode 600. `cloudy-cloud mcp add` writes it. Secret values are stored as `${MCP_<NAME>_TOKEN}` references unless you used `--allow-literal`. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html). |
 | `~/.config/cloudy-cloud/events.jsonl` | The event log. The MCP server appends one JSON line per agent event (agent, message, machine, status, progress, reply). The file has mode 600 inside a folder with mode 700. It holds your prompts and replies, so it stays on your computer. Key-shaped text is redacted before writing, and each text is cut at 20,000 characters. It is never rotated: delete it to clear the history. The dashboard reads the newest 16 MB. |
 | `~/.config/cloudy-cloud/owner` | An id the MCP server writes next to the config file, so `coordinator finish` can tell which running machines are its workers. You do not need to edit it. |
@@ -1338,7 +1340,7 @@ Cloud subagents have no MCP servers unless you choose some. `cloudy-cloud mcp ad
 
 ## Add a server
 
-Three steps. Replace `notion` with the name Claude Code shows in `claude mcp list`.
+Three steps. Replace `notion` with the name of the server in your Claude Code settings (`claude mcp list` shows it). `mcp add` reads only Claude Code's settings, whichever agent is your main session, so a server that is set up only in Codex, opencode or pi must be added to Claude Code first, or written into `mcp.json` by hand.
 
 1. Copy the server: `cloudy-cloud mcp add notion`. It finds the server in your Claude Code settings, shows what it found, and saves it.
 2. If the server needs a token, run the `secrets set` command that step 1 printed. You run it once per token.
@@ -1352,7 +1354,7 @@ Found notion in ~/.claude.json (user scope):
   type     http
   url      https://mcp.notion.com/mcp
   headers  Authorization: Bearer ntn_…9f3a
-This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.
+This server sends a secret. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so the value is not copied.
 It is written as ${MCP_NOTION_TOKEN}; Instabox adds the real value to requests to mcp.notion.com only.
   Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com
 Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start from now on gets it.
@@ -1437,7 +1439,7 @@ Two server names that map to the same secret name (`my-srv` and `my_srv`) cannot
 
 Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to the machine of each subagent you start. A coordinator's own session gets it, but the workers a coordinator starts do not: consent is not passed down, so those workers skip the server. It only applies to values in `env` and `headers`. It is off unless you pass the flag.
 
-> Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run Claude with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
+> Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
 
 The command prints this warning, then asks `Copy the real NAME token onto cloud machines? [y/N]`. Anything other than `y` or `yes` cancels it with `Not added. Run without --allow-literal to keep the token in Instabox.` It also needs a terminal, so you can confirm. Without one it prints `Not added: --allow-literal needs a terminal so you can confirm.` No Instabox secret is created for a server added this way. The entry in `mcp.json` gets `"cloudyCloudAllowLiteral": true`, which is removed before the file is sent to the machine. Remove the server with `cloudy-cloud mcp rm NAME`.
 
@@ -1568,7 +1570,7 @@ Doctor prints these with your real values. What happens to containers when the m
 - **Docker and rootless Podman.** Docker is the supported route. Podman is accepted but its limits may not apply when rootless.
 - **Other agents in the worker image.** The worker image `cloudy-cloud-worker` contains Claude Code only (see `docker/worker.Dockerfile`). A worker on pi, omp, Codex or opencode installs its agent when it starts, from a pinned version with npm (omp with its own installer), so the container needs network access to the npm registry. No such worker has been run on a self-hosted machine. Main sessions (Codex, opencode, pi, free-pi) run on your computer and reach a self-hosted provider through the same `cloudy-cloud codex`, `opencode`, `pi` and `free-pi` commands; only the provider settings in the env file differ. free-pi cannot be a worker.
 - **Keys for other agents.** A self-hosted machine has no proxy secrets, so a provider key such as `PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is a plain `NAME=value` line in `~/.config/cloudy-cloud/env`, and a worker that uses it holds the real value. The `codex-chatgpt` profile reads `~/.config/cloudy-cloud/codex-auth.json` as on Instabox.
-- **Setup asks for no Instabox key.** It still asks for your Claude token and optional model provider keys. The Claude token is used only by Claude Code workers and coordinators, but setup requires it (see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials)).
+- **Setup asks for no Instabox key.** It still asks which agents you run, then for the keys they need: a Claude token only if you chose claude, an OpenAI key if you chose codex, and optional model provider keys. The Claude token is used only by Claude Code workers and coordinators (see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials)).
 - **The agent can reach your network.** A container on your machine can reach the other devices that machine can reach.
 
 ## Docker Desktop: image build fails over SSH
@@ -1728,7 +1730,7 @@ See [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.html) f
 ### MCP server problems
 
 - `The Instabox secret MCP_..._TOKEN could not be attached`: the secret does not exist. Create it with `printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NAME_TOKEN --host HOST`. Creating a secret needs your `instabox login` session, not the API key.
-- `MCP servers skipped: NAME (REASON)` at the end of a reply: the entry in `mcp.json` did not pass the checks. Fix it in Claude Code and run `cloudy-cloud mcp add NAME` again.
+- `MCP servers skipped: NAME (REASON)` at the end of a reply: the entry in `mcp.json` did not pass the checks for that worker's agent. Fix the entry (in Claude Code's settings, then `cloudy-cloud mcp add NAME` again) and see [MCP servers](https://cloudycloud.tech/docs/mcp.html#files) for each agent's rules: Codex skips `sse` servers and entries that put a secret reference inside a longer value; opencode skips entries that contain `{env:...}` or `{file:...}`; pi skips `sse` servers; omp skips values that start with `!` or are a bare variable name.
 - `MCP servers: ... (failed: NAME)`: the server was sent but did not connect on the machine. Check the token, the host in `--host` and the server's address.
 - `Could not read FILE: ...`: `mcp.json` is not valid JSON. Fix or delete the file.
 
@@ -1854,14 +1856,14 @@ Subagents that run on your laptop share its CPU, memory and battery with you, so
 
 ## Who is it for?
 
-It is for people who use Claude Code and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.
+It is for people who use a coding agent (Claude Code, Codex, opencode, pi or free-pi) and want subagents to run on cloud machines instead of on their own computer. You need a GitHub repo you can push to, because each subagent pushes its work there.
 
 For a long job that must keep going with your laptop closed, use a [cloud coordinator](https://cloudycloud.tech/docs/fleets.html), which runs on its own machine.
 
 ## What do I need?
 
 - An account with a cloud sandbox provider. Instabox is supported today.
-- A Claude subscription or API key for Claude Code workers and coordinators. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup itself still asks for a Claude token; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
+- A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup asks for a Claude token only if you use Claude; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 - A GitHub repo you can push to.
 - Node.js 20 or later.
 
@@ -1873,7 +1875,7 @@ Cloudy Cloud is open source under the MIT license, and the tool itself has no pr
 
 ## How do I start it?
 
-In a terminal, inside a git repo with a GitHub remote, run `cloudy-cloud` where you would run `claude`. It opens a normal Claude Code session; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
+In a terminal, inside a git repo with a GitHub remote, run the command for your agent where you would run that agent: `cloudy-cloud` for Claude Code, `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. It opens a normal session of that agent; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
 
 ## How do I install it?
 

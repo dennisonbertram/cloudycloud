@@ -532,7 +532,7 @@
         <h2>Install once, then use subagents as usual.</h2>
         <ol class="steps">
           <li><span class="n">1</span><div><h3>Run the installer</h3><p>Run <code>npx -y cloudycloud setup</code> in a terminal. It checks your tools and installs the <code>cloudy-cloud</code> command and the Cloudy Cloud skills.</p></div></li>
-          <li><span class="n">2</span><div><h3>Add your keys</h3><p>Setup asks for your cloud, Claude and GitHub keys and tells you where to get each. The Claude token is only used by Claude Code workers and coordinators, but setup currently requires it (see Getting started for the workaround). The setup skill is for Claude Code. Setup does not ask for Codex, OpenAI or ChatGPT credentials; set those separately if you use Codex workers. Or run <code>npx skills add dennisonbertram/cloudycloud</code> and ask Claude to "set up Cloudy Cloud".</p></div></li>
+          <li><span class="n">2</span><div><h3>Add your keys</h3><p>Setup asks which agents you run (Claude Code, Codex, opencode, pi or free-pi), then asks for your cloud and GitHub keys and for the credentials those agents need, and tells you where to get each. A Claude token is asked for only if you use Claude Code. The setup skill is for Claude Code. Setup does not set up the ChatGPT login file for Codex workers. Or run <code>npx skills add dennisonbertram/cloudycloud</code> and ask Claude to "set up Cloudy Cloud".</p></div></li>
           <li><span class="n">3</span><div><h3>Start a session</h3><p>Run <code>cloudy-cloud</code> instead of <code>claude</code>, or <code>cloudy-cloud codex</code>, <code>opencode</code>, <code>pi</code> or <code>free-pi</code> for another agent. Then <code>git fetch origin cloudy-cloud/&lt;id&gt;</code> to pull a subagent's work. Plain <code>claude</code> is unchanged.</p></div></li>
         </ol>
       </div>
@@ -546,7 +546,7 @@
   <span class="d">Checks your tools, links the command and saves your keys.</span>
 
   <span class="b">●━━○━━○━━○</span>  <span class="w">Tools</span>  <span class="d">1 of 4</span>
-  <span class="g">✔</span> git, node, npm, curl and claude are installed
+  <span class="g">✔</span> git, node, npm and curl are installed
   <span class="g">✔</span> Dependencies installed
   <span class="g">✔</span> cloudy-cloud already runs from this folder
   <span class="g">✔</span> Fleet skill available in every project

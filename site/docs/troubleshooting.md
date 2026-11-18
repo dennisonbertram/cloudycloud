@@ -143,7 +143,7 @@ See [Dashboard and app previews](https://cloudycloud.tech/docs/dashboard.html) f
 ### MCP server problems
 
 - `The Instabox secret MCP_..._TOKEN could not be attached`: the secret does not exist. Create it with `printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NAME_TOKEN --host HOST`. Creating a secret needs your `instabox login` session, not the API key.
-- `MCP servers skipped: NAME (REASON)` at the end of a reply: the entry in `mcp.json` did not pass the checks. Fix it in Claude Code and run `cloudy-cloud mcp add NAME` again.
+- `MCP servers skipped: NAME (REASON)` at the end of a reply: the entry in `mcp.json` did not pass the checks for that worker's agent. Fix the entry (in Claude Code's settings, then `cloudy-cloud mcp add NAME` again) and see [MCP servers](https://cloudycloud.tech/docs/mcp.html#files) for each agent's rules: Codex skips `sse` servers and entries that put a secret reference inside a longer value; opencode skips entries that contain `{env:...}` or `{file:...}`; pi skips `sse` servers; omp skips values that start with `!` or are a bare variable name.
 - `MCP servers: ... (failed: NAME)`: the server was sent but did not connect on the machine. Check the token, the host in `--host` and the server's address.
 - `Could not read FILE: ...`: `mcp.json` is not valid JSON. Fix or delete the file.
 

@@ -31,7 +31,7 @@ test('add: user-scope http server with a Bearer header is stored as a reference'
     '  type     http',
     '  url      https://mcp.notion.com/…',
     '  headers  Authorization: Bearer ntn_…9f3a',
-    'This server sends a secret. Cloud machines run Claude with permission checks off, so the value is not copied.',
+    'This server sends a secret. Cloud machines run agents with permission checks off, so the value is not copied.',
     'It is written as ${MCP_NOTION_TOKEN}; Instabox adds the real value to requests to mcp.notion.com only.',
     '  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set MCP_NOTION_TOKEN --host mcp.notion.com',
     'Added notion to ~/.config/cloudy-cloud/mcp.json. Every cloud subagent you start from now on gets it.',
