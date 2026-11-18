@@ -194,7 +194,8 @@ async function image(c, args) {
   const [bin, ...rest] = c.provider.shellArgv(sbx.id, ['claude', 'auth', 'login'], { tty: true });
   for (let n = 1; ; n++) {
     const r = c.spawn(bin, rest, { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() } });
-    if (r?.status === 0 && !r.error && await signedIn(sbx)) return saveNew(c, sbx);
+    // Trust `claude auth status`, not the ssh exit code (unverified for `claude auth login` over instabox ssh); the machine was not signed in before this login.
+    if (!r?.error && await signedIn(sbx)) return saveNew(c, sbx);
     const answer = n >= 3 ? 'n' : (await c.ask('Sign-in did not finish. Try again? [Y/n] '))?.trim() ?? 'n'; // closed stdin (Ctrl-D) declines
     if (/^n/i.test(answer)) fail(`Sign-in did not finish.\n\n${fallback}`);
   }

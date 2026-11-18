@@ -988,10 +988,17 @@ test('interactive image skips the login when Claude is already signed in on the 
   assert.equal(f.log.snapshots.length, 1);
 });
 
-test('a failed ssh child counts as an unfinished sign-in even if status reads signed in', async () => {
+test('a non-zero ssh exit still saves when Claude reads signed in afterwards (the status is the truth)', async () => {
   const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
   IMG(f); // first status check (before ssh) reads NOT_YET
-  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 1 }), ask: async () => 'n' }), /Sign-in did not finish/);
+  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 1 }), ask: async () => 'n' });
+  assert.equal(f.log.snapshots.length, 1);
+});
+
+test('an ssh child that could not start counts as an unfinished sign-in', async () => {
+  const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
+  IMG(f);
+  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: null, error: new Error('ENOENT') }), ask: async () => 'n' }), /Sign-in did not finish/);
   assert.equal(f.log.snapshots.length, 0);
 });
 
