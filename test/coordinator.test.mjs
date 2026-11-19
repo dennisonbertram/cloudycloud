@@ -2035,3 +2035,8 @@ test('a multi-line storeSecret failure cannot smuggle labels into the store erro
   assert.match(j.whatHappened, /placed on a machine/);
   assert.doesNotMatch(j.whatHappened, /hacked/);
 });
+
+test('audit: the coordinator config writer refuses a value with a newline', async () => {
+  const { envLine } = await import('../src/config.mjs');
+  assert.throws(() => envLine('CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'sn_x\nINJECT=1'), /may not contain/);
+});

@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, egressAllow, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider } from './providers/index.mjs';
@@ -104,7 +104,7 @@ function updateConfig(file, set = {}, drop = []) {
   lines = lines.filter((l) => !names.has(l.slice(0, l.indexOf('='))));
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
-  writeFileSync(tmp, `${[...lines, ...Object.entries(set).map(([k, v]) => `${k}=${v}`)].join('\n')}\n`, { mode: 0o600 });
+  writeFileSync(tmp, `${[...lines, ...Object.entries(set).map(([k, v]) => envLine(k, v))].join('\n')}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, file);
 }
