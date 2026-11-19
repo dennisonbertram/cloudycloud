@@ -1,12 +1,12 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { watch, reaperSpawn, startReaper } from '../src/reaper.mjs';
+import { join, dirname } from 'node:path';
+import { watch, reaperSpawn, startReaper, providerKey } from '../src/reaper.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const KEY = 'sk-secret-key';
@@ -131,6 +131,38 @@ test('the reaper deletes the machines of page 1 when page 2 of the list fails, a
   assert.match(logs.join('\n'), /list failed.*HTTP 500/);
 });
 
+// server.mjs may start without the provider key (cloudy-cloud mcp-server before setup). A key saved later
+// still gets crash cleanup: the first env refresh that sees it (the top of cloud_agent) starts the reaper.
+test('a server started without the key starts the reaper on the first env refresh that finds one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-late-'));
+  const cfg = join(dir, 'env');
+  writeFileSync(cfg, '');
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))], {
+    cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg },
+  });
+  const reapers = () => { try { return execFileSync('pgrep', ['-f', `reaper.mjs ${child.pid} `], { encoding: 'utf8' }).trim(); } catch { return ''; } };
+  try {
+    let buf = '', stderr = '';
+    child.stdout.on('data', (d) => { buf += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } } });
+    for (const end = Date.now() + 10000; !buf.includes('\n') && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(buf.includes('"id":1'), `no initialize response; stderr: ${stderr}`);
+    assert.equal(reapers(), '', 'a reaper started without a key');
+    writeFileSync(cfg, 'INSTABOX_API_KEY=ibk_FAKEKEY0123456789\n'); // what `cloudy-cloud setup` writes
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'cloud_agent', arguments: { prompt: 'x', description: 'd' } } });
+    for (const end = Date.now() + 15000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+      const pids = reapers();
+      if (pids) return; // the refresh inside cloud_agent started it; the call itself may still fail
+    }
+    assert.fail(`no reaper after the key arrived; stderr: ${stderr}`);
+  } finally {
+    child.kill('SIGKILL');
+    try { execFileSync('pkill', ['-f', `reaper.mjs ${child.pid} `]); } catch { /* none left */ }
+  }
+});
+
 test('the reaper reads the saved settings file, so a self-hosted reaper uses the saved docker path and ssh key', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-'));
   try {
@@ -147,4 +179,139 @@ test('the reaper reads the saved settings file, so a self-hosted reaper uses the
     const cmd = Buffer.from(log.match(/printf %s (\S+) \| base64 -d/)[1], 'base64').toString();
     assert.match(cmd, /^'\/saved\/bin\/docker' 'ps'/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The reaper's key check must match the adapter's: a coordinator's machine holds the Instabox key only as the
+// proxy secret CLOUDY_CLOUD_INSTABOX_API_KEY, and `cloudy-cloud mcp-server` execs before the launcher maps it.
+test('providerKey resolves like the adapter: canonical name, coordinator secret, or the msb binary', () => {
+  const provider = createFakeProvider();
+  assert.equal(providerKey({ FAKE_API_KEY: KEY }, provider), KEY);
+  const instabox = { name: 'instabox', keyName: 'INSTABOX_API_KEY' };
+  assert.equal(providerKey({ CLOUDY_CLOUD_INSTABOX_API_KEY: 'proxy' }, instabox), 'proxy');
+  assert.equal(providerKey({ INSTABOX_API_KEY: KEY, CLOUDY_CLOUD_INSTABOX_API_KEY: 'proxy' }, instabox), KEY);
+  assert.equal(providerKey({}, instabox), '');
+  const home = mkdtempSync(join(tmpdir(), 'cc-key-'));
+  const msb = { name: 'microsandbox', keyName: 'CLOUDY_CLOUD_MSB_BIN' };
+  assert.equal(providerKey({ HOME: home, PATH: '' }, msb), '');
+  const bin = join(home, '.local/bin/msb');
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 });
+  assert.equal(providerKey({ HOME: home, PATH: '' }, msb), bin);
+});
+
+test('startReaper passes the adapter-resolved key under the canonical name', () => {
+  const seen = [];
+  const child = { on() { return this; }, unref() { seen.push('unref'); } };
+  const instabox = { name: 'instabox', keyName: 'INSTABOX_API_KEY' };
+  startReaper(42, OWNER, { CLOUDY_CLOUD_INSTABOX_API_KEY: 'proxy-placeholder' }, instabox, (cmd, args, options) => { seen.push(options); return child; });
+  assert.equal(seen[0].env.INSTABOX_API_KEY, 'proxy-placeholder');
+  assert.equal(seen[1], 'unref');
+});
+
+const serverPath = fileURLToPath(new URL('../src/server.mjs', import.meta.url));
+const reaperPids = (pid) => { try { return execFileSync('pgrep', ['-f', `reaper.mjs ${pid} `], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); } catch { return []; } };
+const killReapers = (pid) => { try { execFileSync('pkill', ['-f', `reaper.mjs ${pid} `]); } catch { /* none left */ } };
+const until = async (fn, ms = 15000) => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) { const v = fn(); if (v) return v; }
+  return fn();
+};
+
+// A coordinator credential without INSTABOX_API_KEY: the adapter launches workers, so cleanup must start too.
+test('the server starts the reaper from CLOUDY_CLOUD_INSTABOX_API_KEY alone', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-coordkey-'));
+  writeFileSync(join(dir, 'env'), '');
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_INSTABOX_API_KEY: 'coordinator-placeholder' },
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+  try {
+    assert.equal((await until(() => reaperPids(child.pid).length === 1 && reaperPids(child.pid))).length, 1, `no reaper for the coordinator credential; stderr: ${stderr}`);
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// The reaper gives up after MAX_LIFETIME_MS or can fail to spawn; the next refresh must start a new one.
+test('a reaper that exited is replaced on the next refresh, never two at once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-respawn-'));
+  writeFileSync(join(dir, 'env'), 'INSTABOX_API_KEY=ibk_FAKEKEY0123456789\n');
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env') },
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+  const call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'cloud_agent', arguments: { prompt: 'x', description: 'd' } } };
+  try {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } } })}\n`);
+    const first = await until(() => reaperPids(child.pid)[0]);
+    assert.ok(first, `no reaper at boot; stderr: ${stderr}`);
+    process.kill(Number(first), 'SIGKILL');
+    const next = await (async () => { // resend until a call lands after the server saw the child die
+      for (const end = Date.now() + 15000; Date.now() < end;) {
+        child.stdin.write(`${JSON.stringify(call)}\n`);
+        for (const stop = Date.now() + 1000; Date.now() < stop; await new Promise((r) => setTimeout(r, 100))) {
+          const p = reaperPids(child.pid).find((x) => x !== first);
+          if (p) return p;
+        }
+      }
+    })();
+    assert.ok(next, `no replacement reaper after ${first} died; stderr: ${stderr}`);
+    assert.deepEqual(await until(() => reaperPids(child.pid).length === 1 && reaperPids(child.pid)), [next], 'two reapers ran at once');
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// ~/.config/cloudy-cloud holds credentials; the server's owner-file write must not leave it group-writable.
+test('the server creates the config directory with mode 0700, even under a permissive umask', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-perm-'));
+  const dir = join(home, 'priv');
+  const child = spawn('/bin/sh', ['-c', 'umask 0; exec "$0" "$@"', process.execPath, serverPath], {
+    env: { PATH: process.env.PATH, HOME: home, CLOUDY_CLOUD_CONFIG: join(dir, 'env') },
+  });
+  try {
+    assert.ok(await until(() => existsSync(join(dir, 'owner'))), 'the server never wrote its owner file');
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// The whole route: `cloudy-cloud mcp-server` migrates a legacy config first (notice on stderr — stdout is the
+// JSON-RPC channel), answers initialize, and runs exactly one reaper however often the env is refreshed.
+test('bin/cloudy-cloud mcp-server: migration first, clean stdout, one reaper across refreshes', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-msrv-'));
+  mkdirSync(join(home, '.config/claude-cloud'), { recursive: true });
+  writeFileSync(join(home, '.config/claude-cloud/env'), 'INSTABOX_API_KEY=ibk_FAKEKEY0123456789\n');
+  const bin = fileURLToPath(new URL('../bin/cloudy-cloud', import.meta.url));
+  const child = spawn('/bin/sh', [bin, 'mcp-server'], { env: { PATH: process.env.PATH, HOME: home } });
+  const io = { out: '', err: '' };
+  child.stdout.on('data', (d) => { io.out += d; });
+  child.stderr.on('data', (d) => { io.err += d; });
+  const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+  const call = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'cloud_agent', arguments: { prompt: 'x', description: 'd' } } };
+  try {
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } } });
+    assert.ok(await until(() => io.out.includes('\n')), `no initialize reply; stderr: ${io.err}`);
+    const reply = JSON.parse(io.out.split('\n')[0]);
+    assert.equal(reply.jsonrpc, '2.0');
+    assert.equal(reply.id, 1);
+    assert.ok(reply.result, `initialize failed: ${io.out}`);
+    const cfg = join(home, '.config/cloudy-cloud/env');
+    assert.ok(existsSync(cfg), 'the legacy config was not migrated before the server started');
+    assert.match(readFileSync(cfg, 'utf8'), /^INSTABOX_API_KEY=ibk_FAKEKEY0123456789$/m);
+    assert.match(io.err, /Moved your saved keys/, 'the migration notice is missing from stderr');
+    assert.equal((await until(() => reaperPids(child.pid).length === 1 && reaperPids(child.pid))).length, 1, `no reaper; stderr: ${io.err}`);
+    let pings = 0;
+    const sync = async () => { // a ping replies after the earlier calls were handled (stdio is in order)
+      const want = io.out.split('\n').filter(Boolean).length + 1;
+      send({ jsonrpc: '2.0', id: `p${++pings}`, method: 'ping' });
+      assert.ok(await until(() => io.out.split('\n').filter(Boolean).length >= want, 15000), `no ping reply; stderr: ${io.err}`);
+    };
+    for (const line of ['CLOUDY_CLOUD_WORKER_HOURS=1', 'CLOUDY_CLOUD_STARTS_PER_MIN=1']) {
+      writeFileSync(cfg, `${readFileSync(cfg, 'utf8')}${line}\n`);
+      send(call);
+      await sync();
+      assert.equal(reaperPids(child.pid).length, 1, 'a refresh started a second reaper');
+    }
+    for (const line of io.out.split('\n').filter(Boolean)) {
+      const j = JSON.parse(line);
+      assert.equal(j.jsonrpc, '2.0', `stdout carried a non-RPC line: ${line}`);
+    }
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
 });

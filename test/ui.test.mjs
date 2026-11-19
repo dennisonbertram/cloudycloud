@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeUi } from '../src/ui.mjs';
+import { makeUi, wrapText } from '../src/ui.mjs';
 
 const ANSI = /\x1b\[/;
 const plain = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -76,4 +76,9 @@ test('marks still say what colour used to: ok/warn/err/hint differ by glyph', ()
   assert.match(u.warn('x'), /▲/);
   assert.match(u.err('x'), /✖/);
   assert.match(u.hint('x'), /›/);
+});
+
+test('wrapText still terminates and keeps every character at a nonpositive room', () => {
+  const u = tty();
+  for (const room of [0, -3]) assert.equal(wrapText(u, 'aaaa b', room).join(''), 'aaaab');
 });

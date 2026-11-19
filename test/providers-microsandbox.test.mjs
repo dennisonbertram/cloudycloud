@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream';
 import { spawn as realSpawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createServer, connect } from 'node:net';
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider, resolveMsbBin } from '../src/providers/microsandbox.mjs';
@@ -422,8 +422,15 @@ test('loadProvider picks microsandbox; the unknown-provider message lists all th
 });
 
 test('missingSetup: the msb binary counts, from env or unset', () => {
-  assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox' }), /CLOUDY_CLOUD_MSB_BIN/);
-  assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_MSB_BIN: BIN }), '');
+  // An empty HOME and PATH keep a real msb on this machine out of the lookup.
+  const home = mkdtempSync(join(tmpdir(), 'cc-nomsb-'));
+  const bare = { CLOUDY_CLOUD_PROVIDER: 'microsandbox', HOME: home, PATH: '' };
+  assert.match(missingSetup(bare), /CLOUDY_CLOUD_MSB_BIN/);
+  assert.equal(missingSetup({ ...bare, CLOUDY_CLOUD_MSB_BIN: BIN }), '');
+  const bin = join(home, '.local/bin/msb');
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 });
+  assert.equal(missingSetup(bare), ''); // found at the installer's default path
 });
 
 test('child env: only the allowlist plus MSB_BACKEND=local reaches msb children; secrets only the create call', async () => {

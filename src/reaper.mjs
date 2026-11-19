@@ -11,6 +11,17 @@ const MAX_LIFETIME_MS = 24 * 60 * 60_000;
 
 const REAPER = fileURLToPath(import.meta.url);
 
+// The credential the adapter itself would use, so the reaper's start decision and the key the child
+// receives match what launches workers. A coordinator's machine holds the Instabox key only as the proxy
+// secret CLOUDY_CLOUD_INSTABOX_API_KEY (COORDINATOR_KEY_SECRET in profiles.mjs: the INSTABOX_ prefix is
+// reserved there), and `cloudy-cloud mcp-server` execs before the launcher maps it. The microsandbox
+// "key" is its binary, also found at ~/.local/bin/msb or on PATH, not only via the variable.
+export const providerKey = (env, provider) =>
+  env[provider.keyName]
+  || (provider.name === 'instabox' && env.CLOUDY_CLOUD_INSTABOX_API_KEY)
+  || (provider.name === 'microsandbox' && resolveMsbBin(env))
+  || '';
+
 // The key goes only in the child's environment, never in argv (argv is visible in `ps`).
 export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env) => ({
   command: process.execPath,
@@ -18,10 +29,14 @@ export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env)
   options: { detached: true, stdio: 'ignore', env: { ...baseEnv, [provider.keyName]: apiKey, CLOUDY_CLOUD_PROVIDER: provider.name } },
 });
 
-// Starts the detached reaper for the server. The server calls this with its provider and the key from its own env.
+// Starts the detached reaper for the server and returns the child (null when the spawn itself threw),
+// so the server can start a new one once this child is gone. The key comes from providerKey.
 export function startReaper(pid, owner, env, provider, spawnFn = nodeSpawn) {
-  const { command, args, options } = reaperSpawn(pid, owner, env[provider.keyName], provider);
-  spawnFn(command, args, options).on('error', () => {}).unref();
+  const { command, args, options } = reaperSpawn(pid, owner, providerKey(env, provider), provider);
+  let child;
+  try { child = spawnFn(command, args, options); } catch { return null; }
+  child.on('error', () => {}).unref();
+  return child;
 }
 
 export const isAlive = (pid) => {
@@ -54,8 +69,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // The saved settings file too: self-hosted needs CLOUDY_CLOUD_CONTAINER_BIN, _SSH_KEY and _SSH_PORT from it.
   const env = loadEnv(process.env);
   const provider = await loadProvider(env).catch(() => null);
-  // The msb "key" is its binary, found by the same ladder as the provider (~/.local/bin/msb, PATH).
-  const ready = provider && (env[provider.keyName] || (provider.name === 'microsandbox' && resolveMsbBin(env)));
+  // The same resolution the server used (a coordinator's proxy-secret name counts, msb is found by the ladder).
+  const ready = provider && providerKey(env, provider);
   if (!provider || !ready || !(Number(pid) > 0) || !owner) process.exit(1);
   watch({ pid: Number(pid), owner, provider }).finally(() => process.exit(0));
 }
