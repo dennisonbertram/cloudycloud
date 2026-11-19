@@ -65,6 +65,8 @@ const cmds = {
     ['rm <name>', 'Stop giving subagents that server'],
     ['--allow-literal', 'Copy the actual credential value onto subagent machines'],
   ], note: "Claude Code's own `mcp list` and `mcp add <name> -- <command>` still go to claude." },
+  'mcp-server': { desc: 'Run the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts.', usages: [['mcp-server']],
+    note: 'The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],
