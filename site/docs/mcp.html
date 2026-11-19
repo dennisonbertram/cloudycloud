@@ -76,6 +76,7 @@
 <p class="lede">Cloud subagents have no MCP servers unless you choose some. <code>cloudy-cloud mcp add</code> copies a server from your Claude Code settings to the list that every cloud subagent gets. It is off until you add one.</p>
 
 <h2 id="setup">Add a server</h2>
+<p>This page describes the Instabox provider, where the real token is stored as an Instabox secret. On other providers the token step differs and the command prints its own instruction: on self-hosted the value is delivered only under the <code>--allow-literal</code> consent path below, and on microsandbox the command warns that tokens do not reach workers yet.</p>
 <p>Three steps. Replace <code>notion</code> with the name of the server in your Claude Code settings (<code>claude mcp list</code> shows it). <code>mcp add</code> reads only Claude Code's settings, whichever agent is your main session, so a server that is set up only in Codex, opencode or pi must be added to Claude Code first, or written into <code>mcp.json</code> by hand.</p>
 <ol>
 <li>Copy the server: <code>cloudy-cloud mcp add notion</code>. It finds the server in your Claude Code settings, shows what it found, and saves it.</li>

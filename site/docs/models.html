@@ -168,7 +168,7 @@ Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have
 <div class="note"><p>Not verified on a real machine (see <a href="#verified">the status table</a>). Resume and the ChatGPT-login error message were also recorded locally with <code>codex exec</code>.</p></div>
 
 <h3 id="opencode-profiles">The opencode profiles</h3>
-<p>The <code>opencode-*</code> profiles run <a href="https://opencode.ai">opencode</a> in the worker. Cloudy Cloud installs the pinned <code>opencode-ai@1.18.31</code> with npm under <code>~/.local</code> and runs <code>opencode run --format json --model worker/MODEL</code>. A follow-up passes <code>--session ses_...</code>. The configuration is <code>~/opencode-agent/opencode.json</code> (mode 600). It holds key names such as <code>{env:PARTICLE_API_KEY}</code>, never key values, and the servers from <code>cloudy-cloud mcp add</code>. Keys: <code>opencode-glm</code>, <code>opencode-deepseek</code> and <code>opencode-particle</code> use <code>PARTICLE_API_KEY</code>, and <code>opencode-openrouter</code> uses <code>OPENROUTER_API_KEY</code> and needs <code>model</code>. Both are set up with <code>cloudy-cloud setup</code> (see <a href="#openrouter">OpenRouter</a> for the second).</p>
+<p>The <code>opencode-*</code> profiles run <a href="https://opencode.ai">opencode</a> in the worker. Cloudy Cloud installs the pinned <code>opencode-ai@1.18.31</code> with npm under <code>~/.local</code> and runs <code>opencode run --format json --model worker/MODEL</code>. A follow-up passes <code>--session ses_...</code>. The configuration is <code>~/opencode-agent/opencode.json</code> (mode 600). It holds key names such as <code>{env:PARTICLE_API_KEY}</code>, never key values, and the servers from <code>cloudy-cloud mcp add</code>. Keys: <code>opencode-glm</code>, <code>opencode-deepseek</code> and <code>opencode-particle</code> use <code>PARTICLE_API_KEY</code>, and <code>opencode-openrouter</code> uses <code>OPENROUTER_API_KEY</code> and needs <code>model</code>. Both are set up with <code>cloudy-cloud setup --more</code> (see <a href="#openrouter">OpenRouter</a> for the second).</p>
 <p>No profile uses opencode's own login, because that would copy a login to the machine.</p>
 <div class="note"><p>Not verified on a real machine (see <a href="#verified">the status table</a>).</p></div>
 
@@ -176,7 +176,7 @@ Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have
 <p>To use OpenRouter:</p>
 <ol>
 <li>Create a key at <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li>
-<li>Run <code>cloudy-cloud setup</code> and paste it at the OpenRouter step. It is saved as <code>OPENROUTER_API_KEY</code>.</li>
+<li>Run <code>cloudy-cloud setup --more</code> and paste it at the OpenRouter step. It is saved as <code>OPENROUTER_API_KEY</code>.</li>
 <li>Start a subagent with <code>profile: "openrouter"</code> (Claude Code), <code>"codex-openrouter"</code> (Codex) or <code>"opencode-openrouter"</code> (opencode), and pass the OpenRouter model id in <code>model</code>. These are the cases where <code>model</code> goes with a non-Claude model, because the profiles have no built-in model.</li>
 </ol>
 <p>If you pass no model, the call fails with "needs a model". To avoid passing it every time, set a <code>model</code> for <code>openrouter</code> in <code>profiles.json</code> (below).</p>
@@ -203,7 +203,7 @@ Set <code>CLOUDY_CLOUD_CODEX_AUTH</code> to use another path. The file must have
 
 <h2 id="change-keys">Adding or changing keys later</h2>
 <ul>
-<li>Run <code>cloudy-cloud setup</code> again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for <code>OPENAI_API_KEY</code> when you choose codex, and does not set up the Codex login file: see <a href="#codex-profiles">The codex profiles</a>.</li>
+<li>Run <code>cloudy-cloud setup</code> again (<code>--more</code> for the Particle.ai and OpenRouter steps). It shows each saved key masked and asks before replacing it. The optional steps can be skipped with Enter. Setup asks for <code>OPENAI_API_KEY</code> when you choose codex, and does not set up the Codex login file: see <a href="#codex-profiles">The codex profiles</a>.</li>
 <li>Or edit <code>~/.config/cloudy-cloud/env</code> directly. Keep the file private. To remove all saved keys, delete it.</li>
 <li>Restart <code>cloudy-cloud</code> afterwards. It reads keys once at start, so a running session keeps the old ones.</li>
 </ul>

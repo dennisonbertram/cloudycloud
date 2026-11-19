@@ -78,7 +78,7 @@
 <p>These commands and tools apply to every main session: Claude Code (<code>cloudy-cloud</code>), Codex (<code>cloudy-cloud codex</code>), opencode (<code>cloudy-cloud opencode</code>), pi (<code>cloudy-cloud pi</code>) and free-pi (<code>cloudy-cloud free-pi</code>). The <code>cloud_agent</code> <code>profile</code> argument picks the worker agent: Claude Code, pi, oh-my-pi, Codex or opencode. An opencode main session names the tools <code>cloud_cloud_agent</code>, <code>cloud_cloud_agent_wait</code> and so on.</p>
 
 <h2 id="cli">Command line</h2>
-<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>codex</code>, <code>opencode</code>, <code>pi</code>, <code>free-pi</code>, <code>dashboard</code>, <code>open</code>, <code>shell</code>, <code>display</code>, <code>coordinator</code>, <code>setup</code> or <code>--setup</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session.</p>
+<p>These commands run on your computer. <code>cloudy-cloud</code> checks the first argument. If it is <code>codex</code>, <code>opencode</code>, <code>pi</code>, <code>free-pi</code>, <code>dashboard</code>, <code>open</code>, <code>shell</code>, <code>display</code>, <code>coordinator</code>, <code>setup</code>, <code>--setup</code>, <code>doctor</code>, <code>protect</code>, <code>machines</code> or <code>branches</code>, it runs that command. <code>mcp ls</code>, <code>mcp add NAME</code>, <code>mcp add NAME --allow-literal</code> and <code>mcp rm NAME</code> run <a href="#cli-mcp">cloudy-cloud mcp</a>; any other <code>mcp</code> arguments go to Claude Code. Any other arguments start a Claude Code session. One bare word that is not a command and not a Claude Code subcommand (for example <code>cloudy-cloud ls</code>) is treated as a typo and fails with "is not a command", exit status 2.</p>
 
 <h3 id="cli-session">cloudy-cloud (Claude Code as the main session)</h3>
 <pre><code>cloudy-cloud [claude arguments]</code></pre>
@@ -115,16 +115,17 @@ cloudy-cloud free-pi [free-pi-cli arguments]</code></pre>
 <h3 id="cli-help">cloudy-cloud --help and --version</h3>
 <pre><code>cloudy-cloud --help
 cloudy-cloud --version</code></pre>
-<p><code>--help</code> (also <code>-h</code> or <code>help</code>, when it is the only argument) prints Cloudy Cloud's own commands, then points to <code>claude --help</code> for Claude Code's options. <code>--version</code> prints the Cloudy Cloud version. With any other arguments, everything goes to Claude Code, for example <code>cloudy-cloud -p "&lt;prompt&gt;" --allowedTools "Bash(git fetch *)"</code>; see <a href="./#no-interactive-ui">Run without the interactive UI</a>.</p>
+<p><code>--help</code> (also <code>-h</code> or <code>help</code>, when it is the only argument) prints Cloudy Cloud's own commands, then points to <code>claude --help</code> for Claude Code's options. <code>cloudy-cloud help &lt;command&gt;</code> and <code>cloudy-cloud &lt;command&gt; --help</code> print one command's help without running it. <code>--version</code> prints the Cloudy Cloud version. With any other arguments, everything goes to Claude Code, for example <code>cloudy-cloud -p "&lt;prompt&gt;" --allowedTools "Bash(git fetch *)"</code>; see <a href="./#no-interactive-ui">Run without the interactive UI</a>.</p>
 
 <h3 id="cli-setup">cloudy-cloud setup</h3>
-<pre><code>cloudy-cloud setup [--check-only] [--provider instabox|self-hosted]</code></pre>
-<p>Runs the bundled <code>install.sh</code>, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same, and <code>npx -y cloudycloud setup</code> runs it without installing anything first (<code>-y</code> skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the <code>cloudy-cloud</code> command (<code>npm install -g cloudycloud</code>, or a link when you run it from a git clone), copies the Cloudy Cloud skills into <code>~/.claude/skills</code>, asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH), and asks for your Instabox key and your GitHub token, plus a Claude token only if you chose claude or want Claude workers and an OpenAI key if you chose codex. Then it offers optional steps for model provider keys and cloud coordinators. If an older <code>cloudy-cloud</code> global command blocks the install, setup offers to replace it (<code>npm rm -g cloudy-cloud</code>, then <code>npm install -g cloudycloud</code>). Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
+<pre><code>cloudy-cloud setup [--more] [--check-only] [--provider instabox|self-hosted|microsandbox]</code></pre>
+<p>Runs the bundled <code>install.sh</code>, whatever folder you are in. <code>cloudy-cloud --setup</code> does the same, and <code>npx -y cloudycloud setup</code> runs it without installing anything first (<code>-y</code> skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the <code>cloudy-cloud</code> command (<code>npm install -g cloudycloud</code>, or a link when you run it from a git clone), copies the Cloudy Cloud skills into <code>~/.claude/skills</code>, asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH), and asks for your Instabox key and your GitHub token, plus a Claude token only if you chose claude or want Claude workers and an OpenAI key if you chose codex. Plain setup asks for the other model keys only when no saved credential could start a first worker; <code>--more</code> adds those steps and the cloud coordinators. If an older <code>cloudy-cloud</code> global command blocks the install, setup offers to replace it (<code>npm rm -g cloudy-cloud</code>, then <code>npm install -g cloudycloud</code>). Run it again to change a key. It needs a terminal because it asks for keys. See <a href="./">Getting started</a>.</p>
 <table>
 <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
 <tbody>
-<tr><td><code>--provider instabox|self-hosted</code></td><td>Choose where subagents run without being asked. <code>self-hosted</code> asks for your machine instead of an Instabox key. See <a href="self-hosted.html">Run on your own machine</a>.</td></tr>
-<tr><td><code>--check-only</code></td><td>Check that <code>git</code>, Node.js, <code>npm</code>, <code>curl</code> and <code>claude</code> are installed, then exit. Does not need a terminal and changes nothing.</td></tr>
+<tr><td><code>--more</code></td><td>Add the optional steps: cloud coordinators, Instabox usage alert emails and the other model keys (<code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>OPENAI_API_KEY</code>).</td></tr>
+<tr><td><code>--provider instabox|self-hosted|microsandbox</code></td><td>Choose where subagents run without being asked. <code>self-hosted</code> asks for your machine instead of an Instabox key. <code>microsandbox</code> is not configured by setup: it prints a pointer to the manual steps and exits. Any other value is refused. See <a href="self-hosted.html">Run on your own machine</a>.</td></tr>
+<tr><td><code>--check-only</code></td><td>Check the tools, the saved keys and the Instabox usage alert emails (on microsandbox: the <code>msb</code> binary, the worker image, the local keys and <code>CLOUDY_CLOUD_EGRESS_ALLOW</code>), then exit. Does not need a terminal and changes nothing.</td></tr>
 </tbody>
 </table>
 <p>Example:</p>
@@ -135,7 +136,8 @@ cloudy-cloud --version</code></pre>
 <p>Checks the machine that subagents run on when <code>CLOUDY_CLOUD_PROVIDER</code> is <code>self-hosted</code>: SSH, sleep settings on a Mac, the container runtime, disk, the worker image, slots, leftover containers and saved settings. Prints <code>ok</code>, <code>warn</code> or <code>fail</code> per check with a fix, and exits 1 if any check fails. With another provider it prints a one-line note. See <a href="self-hosted.html#doctor">Run on your own machine</a>.</p>
 
 <h3 id="cli-dashboard">cloudy-cloud dashboard</h3>
-<pre><code>cloudy-cloud dashboard [--demo] [--port N] [--no-open]</code></pre>
+<pre><code>cloudy-cloud dashboard [--demo] [--port N] [--no-open]
+cloudy-cloud dashboard --prune</code></pre>
 <p>Starts a read-only web page on <code>127.0.0.1</code> that shows your cloud agents, coordinators and the messages between your session and them. It prints a link that contains a random token for this run, and opens it in your browser. Press Ctrl+C to stop it. There is no <code>--help</code> option. See <a href="dashboard.html">Dashboard and app previews</a>.</p>
 <table>
 <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
@@ -143,6 +145,7 @@ cloudy-cloud --version</code></pre>
 <tr><td><code>--demo</code></td><td>Show sample data instead of your machines. Nothing in it is real.</td></tr>
 <tr><td><code>--port N</code></td><td>Listen on port N, from 0 to 65535. The default is 4477. If that port is in use, the dashboard uses a free port instead. Port 0 always picks a free port.</td></tr>
 <tr><td><code>--no-open</code></td><td>Only print the link. Do not open a browser.</td></tr>
+<tr><td><code>--prune</code></td><td>Delete stored agent streams older than 30 days, then the oldest until the folder is under 1 GB, and exit.</td></tr>
 </tbody>
 </table>
 <p>Example:</p>
@@ -180,7 +183,7 @@ cloudy-cloud open &lt;agent-id-or-machine&gt; &lt;port&gt; --unshare</code></pre
 <pre><code>cloudy-cloud display &lt;agent-id-or-machine&gt; [--control] [--ttl SECONDS]
 cloudy-cloud display &lt;agent-id-or-machine&gt; --screenshot FILE
 cloudy-cloud display &lt;agent-id-or-machine&gt; --unshare</code></pre>
-<p>Prints a link to the desktop of an <code>android</code>, <code>gpu</code> or <code>macos</code> machine. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An <code>omarchy</code> machine has no display. The first desktop start on a <code>gpu</code> machine takes about 2 minutes.</p>
+<p>Prints a link to the desktop of a <code>linux</code>, <code>android</code>, <code>gpu</code> or <code>macos</code> machine (<code>macos</code> is not verified). Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An <code>omarchy</code> machine has no display. The first desktop start on a <code>gpu</code> machine takes about 2 minutes.</p>
 <table>
 <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
 <tbody>
@@ -189,6 +192,32 @@ cloudy-cloud display &lt;agent-id-or-machine&gt; --unshare</code></pre>
 <tr><td><code>--ttl SECONDS</code></td><td>Link lifetime, 60 to 86400. Not combined with <code>--screenshot</code> or <code>--unshare</code>.</td></tr>
 <tr><td><code>--screenshot FILE</code></td><td>Write a PNG of the screen to a new file (an existing file or symlink is refused) and print the path.</td></tr>
 <tr><td><code>--unshare</code></td><td>Revoke every display link for the machine, including viewers already connected.</td></tr>
+</tbody>
+</table>
+
+<h3 id="cli-machines">cloudy-cloud machines</h3>
+<pre><code>cloudy-cloud machines [ls]
+cloudy-cloud machines stop &lt;id-or-name&gt;
+cloudy-cloud machines stop --all [--yes]</code></pre>
+<p>Lists the machines of the active provider that Cloudy Cloud made — only machines labelled <code>purpose=cloudy-cloud</code> are listed or touched — or deletes them. In a terminal it prints a table with NAME, ROLE, STATE, AGE and DELETES; when piped it prints tab-separated NAME, ROLE, STATE, STARTED, DELETES and ID. It prints <code>No Cloudy Cloud machines running.</code> when there are none.</p>
+<table>
+<thead><tr><th>Argument or flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>ls</code></td><td>List the machines (the default).</td></tr>
+<tr><td><code>stop &lt;id-or-name&gt;</code></td><td>Delete one machine. The token can be a machine id, an agent id, or a machine name; a name that matches more than one machine is refused.</td></tr>
+<tr><td><code>stop --all</code></td><td>Delete every machine in the list. It asks once on a terminal.</td></tr>
+<tr><td><code>--yes</code></td><td>Say yes to that question; needed to delete without a terminal.</td></tr>
+</tbody>
+</table>
+
+<h3 id="cli-protect">cloudy-cloud protect</h3>
+<pre><code>cloudy-cloud protect [owner/repo] [--yes]</code></pre>
+<p>Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" that blocks direct pushes to the default branch: changes need a pull request, force pushes and deletion are refused, and nobody can bypass the ruleset — including you and the cloud agents, which push as you. It uses your own <code>gh</code> sign-in and you must be a repo admin. Without <code>owner/repo</code> it uses the repo of the current folder. It asks for confirmation first and changes nothing without a yes. On a private repo whose GitHub plan has no rulesets it explains the options (upgrade, make the repo public, or classic branch protection).</p>
+<table>
+<thead><tr><th>Argument or flag</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>owner/repo</code></td><td>The repo to protect. Default: the repo of the current folder.</td></tr>
+<tr><td><code>--yes</code></td><td>Do not ask first; you are saying yes to the change shown.</td></tr>
 </tbody>
 </table>
 
@@ -231,7 +260,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <pre><code>cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO --task-file task.md --max-hours 8</code></pre>
 
 <h4 id="coordinator-attach">coordinator attach</h4>
-<p>Prints the command that opens the coordinator's <code>tmux</code> session over SSH. It does not run the command. Copy it into your terminal. It has the form <code>npx --yes instabox@latest ssh &lt;machine&gt; -- tmux attach -t claude</code>.</p>
+<p>Opens the coordinator's <code>tmux</code> session over SSH. On a terminal it opens the session itself. When the output is piped it prints the SSH command instead, and you run that to connect. The command has the form <code>npx --yes instabox@latest ssh &lt;machine&gt; -- tmux attach -t claude</code>.</p>
 <pre><code>cloudy-cloud coordinator attach docs-fleet</code></pre>
 
 <h4 id="coordinator-ls">coordinator ls</h4>
@@ -280,7 +309,7 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tr><td><code>model</code></td><td>string</td><td>no</td><td>the Claude default</td><td>A Claude model name, such as <code>haiku</code>. For a non-Claude model, use <code>profile</code> instead. It is needed with a profile only for <code>openrouter</code>, <code>codex-openrouter</code> and <code>opencode-openrouter</code>, which have no built-in model. It may contain only letters, digits and <code>. _ : -</code>. When <code>profile</code> is also set, <code>/</code> is allowed too.</td></tr>
 <tr><td><code>profile</code></td><td>string</td><td>no</td><td>Claude</td><td>Runs the worker on another agent or model. Built in: <code>glm</code>, <code>deepseek</code>, <code>particle</code> and <code>openrouter</code> (Claude Code on another model); <code>pi-glm</code>, <code>pi-deepseek</code> and <code>pi-particle</code> (pi); <code>omp-glm</code>, <code>omp-deepseek</code> and <code>omp-particle</code> (oh-my-pi); <code>codex</code>, <code>codex-chatgpt</code> and <code>codex-openrouter</code> (Codex); <code>opencode-glm</code>, <code>opencode-deepseek</code>, <code>opencode-particle</code> and <code>opencode-openrouter</code> (opencode). You can add names in <code>profiles.json</code>, where each entry's <code>harness</code> (<code>claude</code>, <code>pi</code>, <code>omp</code>, <code>codex</code> or <code>opencode</code>) says which agent runs the worker. An unknown name, or a profile whose key is missing, makes the call fail at once. See <a href="models.html">Models and keys</a>.</td></tr>
 <tr><td><code>role</code></td><td>string, <code>worker</code> or <code>coordinator</code></td><td>no</td><td><code>worker</code></td><td>A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by <code>CLOUDY_CLOUD_MAX_DEPTH</code> (default 3). A coordinator always runs Claude Code, so it cannot use a pi, omp, Codex or opencode profile.</td></tr>
-<tr><td><code>machine</code></td><td>string</td><td>no</td><td><code>linux</code></td><td>The kind of machine: <code>linux</code>, <code>android</code>, <code>omarchy</code>, <code>gpu</code>, <code>gpu:TYPE</code>, <code>gpu:TYPE:COUNT</code> (COUNT 1 to 8), <code>macos</code> or <code>macos:MODEL</code>. <code>gpu</code> and <code>macos</code> cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until <code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code> in <code>~/.config/cloudy-cloud/env</code> names them (for example <code>gpu,macos</code>). Only on Instabox.</td></tr>
+<tr><td><code>machine</code></td><td>string</td><td>no</td><td><code>linux</code></td><td>The kind of machine: <code>linux</code>, <code>android</code>, <code>omarchy</code>, <code>gpu</code>, <code>gpu:TYPE</code>, <code>gpu:TYPE:COUNT</code> (COUNT 1 to 4 for an L4), <code>macos</code> or <code>macos:MODEL</code>. <code>gpu</code> and <code>macos</code> cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until <code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code> in <code>~/.config/cloudy-cloud/env</code> names them (for example <code>gpu,macos</code>). Only on Instabox.</td></tr>
 <tr><td><code>size</code></td><td>string</td><td>no</td><td><code>4x8</code></td><td>Machine size as VCPUSxGIB, for example <code>2x4</code>, <code>4x8</code> or <code>8x16</code>. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused.</td></tr>
 <tr><td><code>autofix</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>After the worker pushes, the server opens a pull request for its branch and keeps the worker fixing failed checks, review comments and merge conflicts, for at most <code>CLOUDY_CLOUD_AUTOFIX_ROUNDS</code> rounds, before the task ends. The result says whether the pull request is clean. Not for coordinators.</td></tr>
 <tr><td><code>base</code></td><td>string</td><td>no</td><td>the local <code>HEAD</code></td><td>A branch name or a commit hash of 7 to 40 hex characters. The worker starts from it instead of your local <code>HEAD</code>; the server fetches it from origin if needed. Uncommitted edits are ignored when <code>base</code> is set.</td></tr>
@@ -348,11 +377,11 @@ cloudy-cloud mcp rm NAME</code></pre>
 <table>
 <thead><tr><th>machine</th><th>What it is</th><th>Price</th><th>Consent</th><th>Display</th></tr></thead>
 <tbody>
-<tr><td><code>linux</code></td><td>The standard machine (default).</td><td>Your plan</td><td>no</td><td>no</td></tr>
+<tr><td><code>linux</code></td><td>The standard machine (default).</td><td>Your plan</td><td>no</td><td>yes</td></tr>
 <tr><td><code>android</code></td><td>Android emulator with <code>adb</code>. Its desktop starts in about 1 second.</td><td>Not checked</td><td>no</td><td>yes</td></tr>
 <tr><td><code>gpu</code></td><td>NVIDIA GPU (one L4 by default). The first desktop start takes about 2 minutes.</td><td>$0.765 per GPU-hour (NVIDIA L4)</td><td>yes</td><td>yes</td></tr>
 <tr><td><code>omarchy</code></td><td>Omarchy Linux with a Hyprland desktop. <code>display</code> and <code>--screenshot</code> are refused; <code>shell</code> works.</td><td>Not checked</td><td>no</td><td>no</td></tr>
-<tr><td><code>macos</code></td><td>A Mac, for Xcode builds. Experimental, not yet run live.</td><td>$0.45 to $1.25 per hour, 24-hour minimum lease</td><td>yes</td><td>yes</td></tr>
+<tr><td><code>macos</code></td><td>A Mac, for Xcode builds. Experimental, not yet run live.</td><td>$0.45 to $1.25 per hour, 24-hour minimum lease</td><td>yes</td><td>not verified</td></tr>
 </tbody>
 </table>
 <p>See <a href="#cli-shell">cloudy-cloud shell</a> and <a href="#cli-display">cloudy-cloud display</a> to look at a machine.</p>
@@ -380,7 +409,22 @@ cloudy-cloud mcp rm NAME</code></pre>
 <tbody>
 <tr><td><code>CLOUDY_CLOUD_CONFIG</code></td><td><code>~/.config/cloudy-cloud/env</code></td><td>Path of the config file.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_ALLOW_MACHINE_KINDS</code></td><td>none</td><td>Comma-separated machine kinds you allow although they cost much more: <code>gpu</code>, <code>macos</code>. Without it, <code>cloud_agent</code> refuses those kinds and starts nothing.</td></tr>
-<tr><td><code>CLOUDY_CLOUD_PROVIDER</code></td><td><code>instabox</code></td><td>Sandbox provider: <code>instabox</code> or <code>self-hosted</code>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_PROVIDER</code></td><td><code>instabox</code></td><td>Sandbox provider: <code>instabox</code>, <code>self-hosted</code> or <code>microsandbox</code>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MSB_BIN</code></td><td><code>~/.local/bin/msb</code>, then <code>msb</code> on PATH</td><td>Microsandbox: path of the <code>msb</code> program.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_MSB_SLOTS</code></td><td>2</td><td>Microsandbox: how many microVMs run at once.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_EGRESS_ALLOW</code></td><td>unset</td><td>Hosts a worker machine may connect to, separated by commas or spaces; <code>*.example.com</code> covers the domain and its subdomains. <code>off</code> (or <code>none</code>) sets no policy on purpose. Only the <code>microsandbox</code> provider enforces the list; on another provider <code>cloud_agent</code> refuses to start while it is set, and a set-but-empty value is an error. Workers only, and only Claude Code workers that reach their model host directly. See <a href="troubleshooting.html">Troubleshooting</a>.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_NO_UPDATE_CHECK</code></td><td>unset</td><td>Set to <code>1</code> to turn off the once-a-day update notice.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS</code></td><td>unset</td><td>Self-hosted, written by setup: <code>yes</code> means coordinators on your machine may start containers through Docker.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_LOCAL</code></td><td>unset</td><td>Self-hosted, set on a coordinator container: workers start as sibling containers on the same machine instead of over SSH.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST</code></td><td>unset</td><td>Self-hosted, written by setup: the machine the GitHub-token and Docker consents apply to.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_DOCKER_SOCKET</code></td><td>the runtime default</td><td>Self-hosted local mode: path of the Docker socket on the machine.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_CLAUDE_JSON</code></td><td><code>~/.claude.json</code></td><td>The Claude Code settings file <code>cloudy-cloud mcp add</code> reads servers from.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_STREAMS</code></td><td><code>~/.config/cloudy-cloud/streams</code></td><td>Folder of the redacted per-agent stream copies the dashboard reads.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_STREAM_THINKING</code></td><td>unset</td><td>Set to <code>1</code> to include thinking blocks in the stored streams.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_OPENCODE_BIN</code></td><td><code>opencode</code></td><td>Program <code>cloudy-cloud opencode</code> runs.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_CODEX_AUTH</code></td><td><code>~/.config/cloudy-cloud/codex-auth.json</code></td><td>Path of the ChatGPT login file the <code>codex-chatgpt</code> profile copies to a machine.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_DOCTOR_SLOW_MS</code></td><td>5000</td><td>Milliseconds before a <code>doctor</code> check is reported as slow.</td></tr>
+<tr><td><code>CLOUDY_CLOUD_INSTABOX_API_KEY</code></td><td>unset</td><td>Set on a coordinator machine: a placeholder for the Instabox key, which the launcher reads when <code>INSTABOX_API_KEY</code> is not set. You do not set it.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SSH_HOST</code></td><td>none</td><td>Self-hosted: the SSH address of your machine, <code>user@host</code>.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SSH_KEY</code></td><td>none</td><td>Self-hosted: path to the SSH key. Optional.</td></tr>
 <tr><td><code>CLOUDY_CLOUD_SSH_PORT</code></td><td>the SSH default</td><td>Self-hosted: the SSH port, when it is not the default.</td></tr>

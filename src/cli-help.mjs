@@ -37,10 +37,10 @@ export function render({ desc, usages, rows = [], note }) {
 const ID = '<agent-id-or-machine>';
 const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
 const cmds = {
-  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted']], rows: [
+  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
-    ['--provider NAME', 'instabox (default) or self-hosted'],
+    ['--provider NAME', 'instabox (default), self-hosted or microsandbox (prints the manual steps)'],
   ], note: 'Run it in a terminal: it asks for your keys.' },
   shell: { desc: 'Open a shell on a cloud machine, or run one command there.', usages: [['shell', ID, '[-- command [args...]]']], rows: [
     ['(no command)', 'Interactive login shell on the machine'],
