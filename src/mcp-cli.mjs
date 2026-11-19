@@ -127,10 +127,13 @@ async function add(name, ctx, allowLiteral = false) {
     out('This server sends a secret. Cloud machines run agents with permission checks off, so the value is not copied.');
     if (provider === 'microsandbox') {
       out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}, but MCP server tokens do not reach workers on the microsandbox provider yet, so a cloud_agent call that uses ${name} is refused until then.`);
-      out(`  To run it anyway, keep the real token on each machine: cloudy-cloud mcp add ${shq(name)} --allow-literal`);
+      // --allow-literal only rewrites a literal value found in the entry; when it already holds ${...} references the hint must say where the value goes first.
+      if (literals) out(`  To run it anyway, keep the real token on each machine: cloudy-cloud mcp add ${shq(name)} --allow-literal`);
+      else out(`  To run it anyway, put the real token in the ${name} entry in your Claude Code config, then rerun: cloudy-cloud mcp add ${shq(name)} --allow-literal`);
     } else if (provider === 'self-hosted') {
       out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}; the self-hosted provider has no secret store, so a worker gets the real value only if you allow the copy onto the machine.`);
-      out(`  To allow it:  cloudy-cloud mcp add ${shq(name)} --allow-literal`);
+      if (literals) out(`  To allow it:  cloudy-cloud mcp add ${shq(name)} --allow-literal`);
+      else out(`  To allow it, put the real token in the ${name} entry in your Claude Code config, then rerun: cloudy-cloud mcp add ${shq(name)} --allow-literal`);
     } else {
       out(`It is written as ${uniq.map((r) => `\${${r}}`).join(', ')}; Instabox adds the real value to requests to ${redact(hosts.join(', '))} only.`);
       for (const r of uniq) out(`  Store it once:  printf %s "$TOKEN" | npx --yes instabox@latest secrets set ${shq(r)} ${h}`);

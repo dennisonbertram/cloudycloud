@@ -499,7 +499,11 @@ async function setup(a, ctx) {
     // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
     const named = proxySecrets(env);
     const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    const keyName = a.profile ? a.profile.keyName : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || named.has(n));
+    // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
+    // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
+    const keyName = a.profile ? a.profile.keyName
+      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && named.has(n)))
+        ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
     const keySecrets = [];
     if (keyName && provider.caps.localSecrets) {
       // The provider substitutes the local value into matching requests itself (microsandbox --secret), so a
@@ -998,7 +1002,9 @@ export async function runSubagent(args, deps) {
       const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !ctx.provider.caps.localSecrets });
       if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`);
       let err = r.error;
-      if (!err && args.preflight !== false) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+      // caps.localSecrets: the provider swaps the local value into matching requests itself (like proxied),
+      // so a preflight from this computer would send the real key off-machine — skip it there too.
+      if (!err && args.preflight !== false && !ctx.provider.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
       if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
       if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
       tried.push({ name: names[i], why: ctx.scrub(err) });

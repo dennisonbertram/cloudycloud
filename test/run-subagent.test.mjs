@@ -1438,6 +1438,32 @@ test('localSecrets: a credential named only in CLOUDY_CLOUD_PROXY_SECRETS gets t
   assert.equal(deps.provider.log.create.length, 0);
 });
 
+test('localSecrets: a credential with a local value beats a name only listed in CLOUDY_CLOUD_PROXY_SECRETS', async () => {
+  const { deps, start, wait } = await setup({ provider: proxyProvider() });
+  delete deps.createSandbox;
+  deps.provider.caps.localSecrets = true;
+  deps.env = { GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN', ANTHROPIC_API_KEY: 'ak-local-value' };
+  const id = await start();
+  assert.ok(id, 'the valued credential must win over the stale name');
+  await wait([id]);
+  const c = deps.provider.log.create[0];
+  assert.ok(c.secrets.includes('ANTHROPIC_API_KEY'), `secrets ${c.secrets}`);
+  assert.ok(!c.secrets.includes('CLAUDE_CODE_OAUTH_TOKEN'), `secrets ${c.secrets}`);
+});
+
+test('localSecrets: preflight never fetches the local key from this computer', async () => {
+  resetPreflightCache();
+  const log = [];
+  const { deps, start, wait } = await setup({ provider: proxyProvider(), fetchFn: fetchWith(200, '{}', log) });
+  delete deps.createSandbox;
+  deps.provider.caps.localSecrets = true;
+  deps.env = { GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-local-value', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' };
+  const id = await start({ profile: 'pi-glm' });
+  assert.ok(id);
+  await wait([id]);
+  assert.equal(log.length, 0, `preflight calls: ${JSON.stringify(log.map((l) => l.url))}`);
+});
+
 // ---- #48: labels and the agent tree ----
 test('a worker is labelled with role, profile, parent and agent', async () => {
   const { deps, start, wait } = await setup({ provider: proxyProvider() });

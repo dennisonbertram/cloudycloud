@@ -220,6 +220,19 @@ test('listMachines maps the provider list, status included, and needs the key', 
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
 });
 
+test('listMachines honours an auto-discovered msb (no CLOUDY_CLOUD_MSB_BIN)', async () => {
+  // The msb "key" is the binary itself: a PATH install counts, like the provider's own resolveMsbBin.
+  const dir = mkdtempSync(join(tmpdir(), 'cc-dshmsb-'));
+  writeFileSync(join(dir, 'msb'), '#!/bin/sh\nexit 0\n');
+  const { chmodSync } = await import('node:fs');
+  chmodSync(join(dir, 'msb'), 0o755);
+  const provider = { name: 'microsandbox', keyName: 'CLOUDY_CLOUD_MSB_BIN', async list() { return [{ id: 'm1', name: 'n1', labels: {}, state: 'running', status: 'running', startedAt: 1 }]; } };
+  const env = { PATH: dir, HOME: mkdtempSync(join(tmpdir(), 'cc-dshhome-')) };
+  const rows = await listMachines(env, provider);
+  assert.equal(rows[0].id, 'm1');
+  await assert.rejects(listMachines({ PATH: '', HOME: env.HOME }, provider), { code: 'no_key' });
+});
+
 test('/api/state for fixed events and machines is unchanged', () => {
   const events = [
     { type: 'agent', id: 'a1', t: 1, pid: 1, branch: 'cloudy-cloud/a1' }, { type: 'machine', id: 'a1', t: 2, machine: 'm1' }, { type: 'status', id: 'a1', t: 3, status: 'running' },

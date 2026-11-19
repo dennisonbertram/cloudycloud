@@ -45,8 +45,9 @@ export function egressAllow(env = process.env) {
   if (/^(off|none)$/i.test(value)) return { list: [] };
   const parts = value.split(/[\s,]+/).filter(Boolean);
   if (!parts.length) return { error: `CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env or remove it.` };
-  const bad = parts.find((n) => !EGRESS_HOST.test(n));
-  return bad ? { error: `CLOUDY_CLOUD_EGRESS_ALLOW has an invalid host "${bad.slice(0, 60)}". Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` } : { list: parts.map((h) => h.toLowerCase()) };
+  // Name the position, never the content: a pasted entry can carry a token (a URL with credentials).
+  const bad = parts.findIndex((n) => !EGRESS_HOST.test(n));
+  return bad === -1 ? { list: parts.map((h) => h.toLowerCase()) } : { error: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` };
 }
 
 // What the env file holds (only the names cloudy-cloud knows); a missing file is fine.

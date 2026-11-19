@@ -66,6 +66,18 @@ test('add: on self-hosted the secret instruction names the consent path, not Ins
   assert.match(readFileSync(env.CLOUDY_CLOUD_MCP, 'utf8'), /Bearer \$\{MCP_NOTION_TOKEN\}/);
 });
 
+test('add: when the source already holds a reference, the --allow-literal hint says to put the real value in first', async () => {
+  const refOnly = { type: 'http', url: 'https://mcp.notion.com/mcp', headers: { Authorization: 'Bearer ${MCP_NOTION_TOKEN}' } };
+  for (const provider of ['microsandbox', 'self-hosted']) {
+    const { home, env } = setup({ mcpServers: { notion: refOnly } }, { provider });
+    const r = await run(['add', 'notion'], env, home);
+    assert.equal(r.code, 0, `${provider}: ${r.err}`);
+    assert.match(r.out, /put the real token in the notion entry/i, `${provider}: ${r.out}`);
+    assert.match(r.out, /--allow-literal/, `${provider}: ${r.out}`);
+    assert.doesNotMatch(r.out, /keep the real token on each machine:|To allow it:\s+cloudy-cloud/, `${provider}: ${r.out}`);
+  }
+});
+
 test('add: a secret-free server prints no secret block whatever the provider', async () => {
   for (const provider of [undefined, 'microsandbox', 'self-hosted']) {
     const { home, env } = setup({ mcpServers: { c7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] } } }, { provider });

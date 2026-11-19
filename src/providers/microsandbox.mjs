@@ -33,7 +33,8 @@ const ALIVE = new Set(['Running', 'Starting', 'Created', 'Paused', 'Draining']);
 // hostname authority check, so literals and malformed DNS labels are rejected here.
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const DNS_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/; // 1-63 chars, no leading/trailing hyphen
-const egressOk = (h) => {
+// Exported: install.sh --check-only validates CLOUDY_CLOUD_EGRESS_ALLOW against the same rules (no echoing entries).
+export const egressOk = (h) => {
   const bare = h.startsWith('*.') ? h.slice(2) : h;
   const parts = bare.split('.');
   return !IPV4.test(bare) && !bare.includes(':') && bare.length <= 253 && parts.length > 1 && parts.every((l) => DNS_LABEL.test(l));

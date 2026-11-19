@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { watch, reaperSpawn, startReaper } from '../src/reaper.mjs';
@@ -65,6 +65,18 @@ test('the reaper process exits 1 with no key, without touching the network', () 
   const env = { PATH: process.env.PATH, CLOUDY_CLOUD_CONFIG: '/nonexistent/cloudy-cloud-env' };
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), '1', OWNER], { env, timeout: 5000 });
   assert.equal(r.status, 1);
+});
+
+test('the reaper runs on microsandbox when msb is found on PATH, with no CLOUDY_CLOUD_MSB_BIN', () => {
+  // A dead pid makes watch reap at once; the stub msb logs the list call it proves the gate passed.
+  const dir = mkdtempSync(join(tmpdir(), 'cc-rpmsb-'));
+  const log = join(dir, 'msb-calls');
+  writeFileSync(join(dir, 'msb'), `#!/bin/sh\necho "msb $*" >> "${log}"\ncase "$1" in ls) echo '[]' ;; *) exit 0 ;; esac\n`);
+  chmodSync(join(dir, 'msb'), 0o755);
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: mkdtempSync(join(tmpdir(), 'cc-rphome-')), CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_CONFIG: '/nonexistent/cloudy-cloud-env' };
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), '99999999', OWNER], { env, timeout: 10000 });
+  assert.equal(r.status, 0, String(r.stderr));
+  assert.match(readFileSync(log, 'utf8'), /msb ls /);
 });
 
 test('the reaper logs each failed delete attempt (3 attempts) through the adapter', async () => {

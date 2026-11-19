@@ -398,7 +398,7 @@ check_proxy_secrets() { # optional $1: the Instabox key
 # check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
 # Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
 check_setup() {
-  local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov="" root msb v egerr l rc=0
+  local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov="" root msb v egerr egv l rc=0
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
   provider=$(eff CLOUDY_CLOUD_PROVIDER)
@@ -410,14 +410,14 @@ check_setup() {
       bad "The microsandbox CLI (msb) was not found"; fails=1
       hint "Install it: curl -fsSL https://install.microsandbox.dev | sh"
       hint "or add CLOUDY_CLOUD_MSB_BIN=<its full path> to $(cfg)."
-    elif ! "$msb" --version >/dev/null 2>&1; then
+    elif ! MSB_BACKEND=local "$msb" --version >/dev/null 2>&1; then
       bad "The microsandbox CLI does not run" "$msb"; fails=1
-    elif ! "$msb" ls >/dev/null 2>&1; then
+    elif ! MSB_BACKEND=local "$msb" ls >/dev/null 2>&1; then
       bad "The microsandbox backend does not answer" "see why: $msb ls"; fails=1
     else
       ok "The microsandbox CLI works" "$msb"
       v=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$root/package.json")
-      if [ -n "$v" ] && "$msb" image inspect "cloudy-cloud-worker:$v" >/dev/null 2>&1; then
+      if [ -n "$v" ] && MSB_BACKEND=local "$msb" image inspect "cloudy-cloud-worker:$v" >/dev/null 2>&1; then
         ok "The worker image cloudy-cloud-worker:$v is loaded"
       else
         bad "The worker image cloudy-cloud-worker:${v:-?} is not loaded"; fails=1
@@ -459,7 +459,8 @@ check_setup() {
         hint "Add CLAUDE_CODE_OAUTH_TOKEN=<your Claude token> to $(cfg);"
         hint "microsandbox puts it only into requests to api.anthropic.com."
       fi
-    elif [ -n "$cname" ] || [ -n "$any" ] || [ -f "$(codex_auth_file)" ]; then ok "A worker credential is saved" "the value stays on this computer"
+    elif [ -n "$cname" ] || [ -n "$any" ]; then ok "A worker credential is saved" "the value stays on this computer"
+    elif [ -f "$(codex_auth_file)" ]; then ok "A Codex sign-in is saved" "it is copied onto each machine"
     else bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1
       hint "Add a key to $(cfg): OPENAI_API_KEY, PARTICLE_API_KEY or"
       hint "OPENROUTER_API_KEY (or a Claude token)."
@@ -519,18 +520,31 @@ check_setup() {
       hint "microsandbox puts it only into requests to github.com."
     else ok "GH_TOKEN is saved" "the value stays on this computer"; fi
     if [ -n "$(eff CLOUDY_CLOUD_EGRESS_ALLOW)" ] || grep -q '^CLOUDY_CLOUD_EGRESS_ALLOW=' "$(cfg)" 2>/dev/null; then
-      if ! command -v node >/dev/null 2>&1; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node is missing"
-      else
-        egerr=$(CLOUDY_CLOUD_EGRESS_CHECK=$(eff CLOUDY_CLOUD_EGRESS_ALLOW) node --input-type=module -e '
-          const { egressAllow } = await import(process.argv[1]);
-          const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: process.env.CLOUDY_CLOUD_EGRESS_CHECK });
-          if (r.error) { console.log(r.error); process.exit(3); }' "file://$root/src/config.mjs") && rc=0 || rc=$?
-        if [ -n "$egerr" ]; then
-          bad "CLOUDY_CLOUD_EGRESS_ALLOW does not parse"; fails=1
-          while IFS= read -r l; do hint "$l"; done <<<"$egerr"
-        elif [ "$rc" != 0 ]; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node failed"
-        else ok "The egress allow list parses" "microsandbox enforces it"; fi
-      fi
+      # off|none (any case, optionally quoted) means no policy on purpose — the same opt-out the parser has.
+      egv=$(eff CLOUDY_CLOUD_EGRESS_ALLOW | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      case $egv in \"*\") egv=${egv#\"}; egv=${egv%\"} ;; \'*\') egv=${egv#\'}; egv=${egv%\'} ;; esac
+      case $(printf '%s' "$egv" | tr 'A-Z' 'a-z') in
+      off|none) ok "No egress allow list (turned off)" ;;
+      *)
+        if ! command -v node >/dev/null 2>&1; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node is missing"
+        else
+          # Parse with src/config.mjs, then check each host with the provider's own rule (egressOk): a bare
+          # IP literal parses as a host but upstream treats it as a bypass rule, so it is refused here too.
+          egerr=$(CLOUDY_CLOUD_EGRESS_CHECK=$(eff CLOUDY_CLOUD_EGRESS_ALLOW) node --input-type=module -e '
+            const { egressAllow } = await import(process.argv[1]);
+            const { egressOk } = await import(process.argv[2]);
+            const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: process.env.CLOUDY_CLOUD_EGRESS_CHECK });
+            if (r.error) { console.log(r.error); process.exit(3); }
+            const i = r.list.findIndex((h) => !egressOk(h));
+            if (i !== -1) { console.log(`entry ${i + 1} is not a host microsandbox accepts (host names only — no IP literals or ports)`); process.exit(4); }' "file://$root/src/config.mjs" "file://$root/src/providers/microsandbox.mjs") && rc=0 || rc=$?
+          if [ -n "$egerr" ]; then
+            if [ "$rc" = 4 ]; then bad "CLOUDY_CLOUD_EGRESS_ALLOW names a host microsandbox cannot enforce"; else bad "CLOUDY_CLOUD_EGRESS_ALLOW does not parse"; fi
+            fails=1
+            while IFS= read -r l; do hint "$l"; done <<<"$egerr"
+          elif [ "$rc" != 0 ]; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node failed"
+          else ok "The egress allow list parses" "microsandbox enforces it"; fi
+        fi ;;
+      esac
     else ok "No egress allow list is set" "workers get microsandbox's default network policy"; fi
   elif [ "$provider" = self-hosted ]; then
     if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
@@ -1329,7 +1343,7 @@ ask_worker_keys() {
 usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox] [--check-only]" >&2; }
 
 main() {
-  local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out
+  local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
   while [ $# -gt 0 ]; do
     case $1 in
       --provider) [ $# -ge 2 ] || { usage; exit 2; }; provider_arg=$2; shift 2 ;;
@@ -1341,9 +1355,13 @@ main() {
   case $provider_arg in ""|instabox|self-hosted|microsandbox) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted or microsandbox" >&2; exit 2 ;; esac
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
+  root=$(cd "$(dirname "$0")" && pwd)
+  # The saved provider is read only after the legacy-name migration (which --check-only skips: it changes nothing).
+  [ "$check_only" = 1 ] || { . "$root/bin/migrate-config.sh"; migrate_config; }
   saved_provider=$(get_saved CLOUDY_CLOUD_PROVIDER)
   # microsandbox keeps every credential on this computer in the env file, so setup has nothing to ask or save.
-  if [ "$check_only" = 0 ] && [ "${provider_arg:-$saved_provider}" = microsandbox ]; then
+  # --provider beats an exported CLOUDY_CLOUD_PROVIDER, which beats the saved line.
+  if [ "$check_only" = 0 ] && [ "${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-$saved_provider}}" = microsandbox ]; then
     ok "The provider is microsandbox" "setup does not configure it"
     hint "Keys stay on this computer in the env file:"
     hint "$(cfg)"
@@ -1368,9 +1386,7 @@ main() {
   check_prereqs || exit 1
   ok "git, node, npm and curl are installed"
 
-  local root branch sha log
-  root=$(cd "$(dirname "$0")" && pwd)
-  . "$root/bin/migrate-config.sh"; migrate_config
+  local branch sha log
   log=$(mktemp)
   if from_npm "$root"; then
     ok "Dependencies came with the npm package"
@@ -1401,7 +1417,8 @@ main() {
     step 2 "Instabox key"
     setup_instabox
     [ -n "$(get_saved INSTABOX_API_KEY)" ] || { bad "No Instabox key is saved, so setup cannot continue. Run $(rerun_cmd) again."; exit 1; }
-    [ "$saved_provider" != self-hosted ] || write_env CLOUDY_CLOUD_PROVIDER instabox # only now that the switch has a working key
+    # save the switch only when setup moved off a provider that was saved (a fresh install leaves the line out)
+    [ -z "$saved_provider" ] || [ "$saved_provider" = instabox ] || write_env CLOUDY_CLOUD_PROVIDER instabox
   fi
   if agents_has claude; then
     step 3 "Claude token"; setup_claude

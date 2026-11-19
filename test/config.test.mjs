@@ -60,15 +60,19 @@ test('egressAllow parses a comma- or space-separated host list; unset is no poli
   }
 });
 
-test('egressAllow rejects entries that are not plain host names', () => {
+test('egressAllow rejects entries that are not plain host names, naming the position not the content', () => {
   for (const bad of ['*.com', 'http://x', 'a.com:443', 'a/b', 'localhost', '-bad.example.com', 'bad-.example.com', '-.example.com']) {
     const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `ok.example.com ${bad}` });
-    assert.ok(r.error && r.error.includes(`invalid host "${bad}"`), `${bad}: ${r.error ?? r.list}`);
+    assert.ok(r.error && r.error.includes('entry 2 is not a host name') && !r.error.includes(bad), `${bad}: ${r.error ?? r.list}`);
     assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
   }
-  const overlong = `a${'b'.repeat(63)}.example.com`; // 64-char label; the error truncates the entry to 60 chars
+  // A pasted URL can carry a token; the error must not echo the entry.
+  const leak = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'ok.example.com https://u:SECRET-PASSWORD-123@h.example.com/p' });
+  assert.ok(leak.error && !leak.error.includes('SECRET-PASSWORD-123') && !leak.error.includes('https://'), leak.error);
+  assert.match(leak.error, /entry 2 is not a host name/);
+  const overlong = `a${'b'.repeat(63)}.example.com`; // a 64-char label
   const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: overlong });
-  assert.ok(r.error && r.error.includes(`invalid host "${overlong.slice(0, 60)}"`), r.error ?? 'accepted');
+  assert.ok(r.error && r.error.includes('entry 1 is not a host name') && !r.error.includes('bbb'), r.error ?? 'accepted');
   assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `a${'b'.repeat(62)}.example.com` }), { list: [`a${'b'.repeat(62)}.example.com`] }, 'a 63-character label is fine');
 });
 
@@ -78,8 +82,8 @@ test('egressAllow lowercases the list so case folds into the built-in hosts', ()
 
 test('egressAllow: off and none are an explicit opt-out with no policy; blank still errors', () => {
   for (const off of ['off', 'none', 'OFF', 'None']) assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: off }), { list: [] }, off);
-  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'offs' }).error ?? '', /invalid host/, 'offs');
-  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'off api.example.com' }).error ?? '', /invalid host/, 'off is not a host when mixed into a list');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'offs' }).error ?? '', /entry 1 is not a host name/, 'offs');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'off api.example.com' }).error ?? '', /entry 1 is not a host name/, 'off is not a host when mixed into a list');
   assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: ' ' }).error ?? '', /lists no hosts/);
 });
 

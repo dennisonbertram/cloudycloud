@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -242,4 +242,24 @@ test("the shared start queue uses the provider's startsPerMin when CLOUDY_CLOUD_
   assert.equal(b.status, 'queued', 'the second create in one minute waits when the provider allows 1 per minute');
   deps.queue.cancel(b);
   await assert.rejects(second, /cancelled/);
+});
+
+test('server starts the reaper on microsandbox when msb is only on PATH, not CLOUDY_CLOUD_MSB_BIN', async () => {
+  // The real src/server.mjs spawns a detached reaper; a stub msb on PATH logs the reaper's list call.
+  const dir = await mkdtemp(join(tmpdir(), 'cc-srvmsb-'));
+  const log = join(dir, 'msb-calls');
+  await writeFile(join(dir, 'msb'), `#!/bin/sh\necho "msb $*" >> "${log}"\ncase "$1" in ls) echo '[]' ;; *) exit 0 ;; esac\n`);
+  await chmod(join(dir, 'msb'), 0o755);
+  const home = await mkdtemp(join(tmpdir(), 'cc-srvhome-'));
+  const child = spawn('node', [new URL('../src/server.mjs', import.meta.url).pathname], {
+    stdio: ['pipe', 'ignore', 'ignore'],
+    env: { PATH: `${dir}:${process.env.PATH}`, HOME: home, CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_CONFIG: join(home, 'env') },
+  });
+  children.push(child);
+  await tick(800); // let the server boot and spawn the reaper
+  child.stdin.end(); // the server exits; the reaper sees the dead pid and lists machines
+  const { existsSync, readFileSync } = await import('node:fs');
+  for (let i = 0; i < 60 && !existsSync(log); i++) await tick(250);
+  assert.ok(existsSync(log), 'the reaper never called msb');
+  assert.match(readFileSync(log, 'utf8'), /msb ls /);
 });
