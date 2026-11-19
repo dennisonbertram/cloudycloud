@@ -65,8 +65,9 @@ test('microsandbox end to end on this computer', { skip: !ON && 'set CLOUDY_CLOU
       assert.equal(viaCurl, want, `host did not see the swapped value: ${viaCurl.slice(0, 300)}`);
       const viaNode = (await s.commands.run(`node -e "fetch('https://${ECHO_HOST}/headers',{headers:{authorization:'Bearer '+process.env.CC_IT_TOKEN}}).then(r=>r.json()).then(j=>{const h=Object.entries(j.headers).find(([k])=>k.toLowerCase()==='authorization')?.[1]??'';console.log(require('crypto').createHash('sha256').update(h).digest('hex'))})"`, { timeoutMs: 30_000 })).stdout.trim();
       assert.equal(viaNode, want, `node fetch did not see the swapped value: ${viaNode.slice(0, 300)}`);
-      const grep = spawnSync('grep', ['-rF', IT_TOKEN, join(homedir(), '.microsandbox')], { encoding: 'utf8' });
-      assert.equal(grep.status, 1, `expected grep's no-match exit 1, got ${grep.status}: ${grep.stderr}`);
+      const grep = spawnSync('grep', ['-rlF', '-D', 'skip', IT_TOKEN, join(homedir(), '.microsandbox')], { encoding: 'utf8' });
+      // -D skip: msb keeps agent/control sockets under run/, which grep cannot read (exit 2)
+      assert.equal(grep.status, 1, `expected grep's no-match exit 1, got ${grep.status}: files ${grep.stdout} ${grep.stderr}`);
     } finally { await provider.delete(s.id); }
   });
 
@@ -93,11 +94,14 @@ test('microsandbox end to end on this computer', { skip: !ON && 'set CLOUDY_CLOU
     const s = await mk({ egress: { allow: ['example.com'] } });
     try {
       assert.equal((await s.commands.run('curl -s -o /dev/null -w %{http_code} https://example.com --max-time 15', { timeoutMs: 30_000 })).stdout.trim(), '200');
-      await assert.rejects(s.commands.run('curl -sS https://github.com --max-time 10', { timeoutMs: 30_000 }));
+      // msb's TLS-intercepting proxy answers a denied host with HTTP 403 instead of dropping the connection
+      const denied = await s.commands.run('curl -s -o /dev/null -w %{http_code} https://github.com --max-time 10', { timeoutMs: 30_000 }).then((r) => r.stdout.trim(), () => 'refused');
+      assert.ok(denied === 'refused' || denied === '403' || denied === '000', `denied host reachable: HTTP ${denied}`);
     } finally { await provider.delete(s.id); }
     const d = await mk();
     try {
-      await assert.rejects(d.commands.run('curl -sS http://169.254.169.254 --max-time 5', { timeoutMs: 20_000 }), 'metadata address reachable');
+      const meta = await d.commands.run('curl -s -o /dev/null -w %{http_code} http://169.254.169.254 --max-time 5', { timeoutMs: 20_000 }).then((r) => r.stdout.trim(), () => 'refused');
+      assert.ok(meta === 'refused' || meta === '403' || meta === '000', `metadata address reachable: HTTP ${meta}`);
       assert.equal((await d.commands.run('curl -s -o /dev/null -w %{http_code} https://example.com --max-time 15', { timeoutMs: 30_000 })).stdout.trim(), '200');
     } finally { await provider.delete(d.id); }
   });
