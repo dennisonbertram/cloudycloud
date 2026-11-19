@@ -324,14 +324,26 @@ msb_bin() {
 
 is_proxied() { case ",$(get_saved CLOUDY_CLOUD_PROXY_SECRETS)," in *",$1,"*) return 0 ;; esac; return 1; }
 
+# ibx_npx ARGS: the instabox CLI through npx, run from a trusted directory with only PATH, HOME, the proxy/CA
+# variables and INSTABOX_API_KEY. npm reads the checkout's .npmrc (registry, scripts) and every npm_config_* the
+# caller exported, so run from the temp directory, not the repository, and pass nothing else of the environment.
+ibx_npx() {
+  local e=(PATH="$PATH" HOME="$HOME") v
+  for v in TERM LANG LC_ALL USER TMPDIR HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy NODE_EXTRA_CA_CERTS INSTABOX_API_KEY; do
+    [ -n "${!v:-}" ] && e+=("$v=${!v}")
+  done
+  ( cd "${TMPDIR:-/tmp}" 2>/dev/null || cd /tmp || return
+    env -i "${e[@]}" npx --yes instabox@latest "$@" )
+}
+
 # store_secret NAME VALUE: stores VALUE as an Instabox secret limited to NAME's hosts (the value goes on stdin, never argv),
 # records NAME in CLOUDY_CLOUD_PROXY_SECRETS and removes any NAME= line from the config. Needs your instabox login session.
 store_secret() {
   local name=$1 h cur args=()
   for h in $(secret_hosts "$name") ; do args+=(--host "$h"); done
   [ "${#args[@]}" -gt 0 ] || return 1
-  npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty || return 1
-  printf '%s' "$2" | npx --yes instabox@latest secrets set "$name" "${args[@]}" >/dev/null || return 1
+  ibx_npx whoami >/dev/null 2>&1 || ibx_npx login </dev/tty || return 1
+  printf '%s' "$2" | ibx_npx secrets set "$name" "${args[@]}" >/dev/null || return 1
   # The runtime reads secrets in the org of INSTABOX_API_KEY; your login may point at another org or workspace
   # (instabox secrets set uses --org, else your default workspace). Keep the env line unless the API-key org shows the secret.
   secret_visible "$name" || { warn "$name is not visible to your Instabox API key (your login may use another org or workspace), so it is not treated as stored" "check with: npx --yes instabox@latest whoami" >&2; return 1; }
@@ -1166,8 +1178,8 @@ setup_alerts() {
   yn_strict "Turn them on now?" || { hint "Left as they are. Change them any time: $fix"; return 0; }
   [ "$pset" = yes ] || flags+=(--usage 80)
   [ "$ov" = on ] || flags+=(--overage on)
-  if npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty; then
-    npx --yes instabox@latest workspace alerts "$org" "${flags[@]}" </dev/tty || true
+  if ibx_npx whoami >/dev/null 2>&1 || ibx_npx login </dev/tty; then
+    ibx_npx workspace alerts "$org" "${flags[@]}" </dev/tty || true
   fi
   spin_start "Confirming"
   read -r st org pct pset ov cap <<<"$(alerts_state "$(get_saved INSTABOX_API_KEY)")"
@@ -1196,8 +1208,8 @@ setup_github() {
     "(Workflows lets a subagent push .github/workflows; Actions lets it see CI.)" \
     "Next, the Instabox CLI signs you in (if needed) and asks for the token." "Nothing shows as you paste."
   # The token goes from the terminal straight to the Instabox CLI; this script never sees it.
-  npx --yes instabox@latest whoami >/dev/null 2>&1 || npx --yes instabox@latest login </dev/tty
-  npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com </dev/tty
+  ibx_npx whoami >/dev/null 2>&1 || ibx_npx login </dev/tty
+  ibx_npx secrets set GH_TOKEN --host github.com --host api.github.com </dev/tty
   spin_start "Confirming GH_TOKEN"
   state=$(gh_secret_state)
   spin_stop

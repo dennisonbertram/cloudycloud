@@ -15,6 +15,7 @@ import { golden } from './golden-util.mjs';
 import { createProvider } from '../src/providers/self-hosted.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
 import { main as coordinatorMain } from '../src/coordinator.mjs';
+import { consentHostId } from '../src/config.mjs';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const BIN = '/opt/homebrew/bin/docker';
@@ -131,6 +132,8 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
 }
 
 const ENV = { CLOUDY_CLOUD_SSH_HOST: 'me@box', CLOUDY_CLOUD_CONTAINER_BIN: BIN, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '5' };
+// The consent id setup would have saved for the test box (host 'me@box', default port 22).
+const CONSENT = { CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST: consentHostId('me@box:22') };
 function make(extraEnv = {}, boxOpts) {
   const box = fakeBox(boxOpts);
   const provider = createProvider({ ...ENV, ...extraEnv }, { spawn: box.spawn });
@@ -192,7 +195,7 @@ test('#92 shellArgv: every argument is quoted for each shell layer; nothing is i
 const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 600, ...extra });
 
 test('golden: exact docker commands for create, run, write, list and delete; no secret in any argv or label', async () => {
-  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' });
+  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', ...CONSENT });
   assert.equal(provider.caps.hasConsentedSecrets, true);
   const s = await mk(provider, { envs: { FOO: 'env-value-123' }, name: 'w1' }); // the core never names GH_TOKEN; the adapter adds it
   await s.commands.run("echo hi; echo \"$FOO\" $GH_TOKEN | wc -c", { cwd: '/home/worker/app', timeoutMs: 5000 });
@@ -278,7 +281,7 @@ test('GH_TOKEN goes in the env file only with consent; consent without a saved t
   const { box, provider } = make({ GH_TOKEN: 'ghp_NOCONSENT' });
   await mk(provider);
   assert.ok(!readFileSync(join(box.root, 'run/secrets/env'), 'utf8').includes('ghp_NOCONSENT'));
-  const { box: b2, provider: p2 } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' });
+  const { box: b2, provider: p2 } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', ...CONSENT });
   await assert.rejects(mk(p2), (e) => e.code === 'no_key' && e.message.includes('GH_TOKEN') && e.message.includes('cloudy-cloud setup'));
   assert.equal(b2.table.size, 0);
 });
@@ -294,6 +297,21 @@ test('secrets without consent throw no_key naming the secret; nothing is started
   assert.equal(provider.caps.hasConsentedSecrets, false);
   await assert.rejects(mk(provider, { secrets: ['GH_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('GH_TOKEN'));
   assert.equal(box.table.size, 0);
+});
+
+// An exported CLOUDY_CLOUD_SSH_HOST/PORT must not reuse consent saved for another destination (#consent binding).
+test('a consent saved for another SSH destination behaves as not consented: no token on the box, no coordinators', async () => {
+  for (const consentHost of [consentHostId('me@other-box:22'), consentHostId('me@box:2222'), 'not-a-hash']) {
+    const { box, provider } = make({ GH_TOKEN: 'ghp_FOREIGN', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes',
+      CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST: consentHost });
+    assert.equal(provider.caps.hasConsentedSecrets, false, `consent host ${consentHost}`);
+    assert.match(provider.text.coordinatorRefusal, /cloudy-cloud setup --provider self-hosted/);
+    await mk(provider);
+    assert.ok(!readFileSync(join(box.root, 'run/secrets/env'), 'utf8').includes('ghp_FOREIGN'), `consent host ${consentHost}`);
+  }
+  // and the same consent for the saved destination still works
+  const { provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', ...CONSENT });
+  assert.equal(provider.caps.hasConsentedSecrets, true);
 });
 
 test('list maps fields; publish is refused', async () => {
@@ -346,11 +364,12 @@ test('loadProvider finds self-hosted; text names the fix', async () => {
   assert.equal(p.name, 'self-hosted');
   assert.match(p.text.noKeyFix, /cloudy-cloud setup/);
   assert.match(p.text.apiFix, /cloudy-cloud doctor/);
-  assert.equal(p.text.ssh('cc-1', ''), 'ssh -t u@h docker exec -it cc-1 bash');
+  // every interpolated value in a suggested command is single-quoted
+  assert.deepEqual(words(p.text.ssh('cc-1', '')), ['ssh', '-t', 'u@h', 'docker', 'exec', '-it', 'cc-1', 'bash']);
 });
 
 test('coordinator snapshots: commit, inspect, create from the image without the worker label check, list, delete', async () => {
-  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes' }, { imageVersion: '0.0.1' }); // worker image is stale
+  const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', ...CONSENT }, { imageVersion: '0.0.1' }); // worker image is stale
   assert.equal(provider.caps.hasSnapshots, true);
   box.table.set('cc-src', { Id: 'a'.repeat(64), Name: '/cc-src', Config: { Labels: {} }, State: { Status: 'running' } });
   const src = await provider.connect('cc-src');
@@ -379,7 +398,7 @@ test('coordinator snapshots: commit, inspect, create from the image without the 
 });
 
 test('GitHub token consent covers GH_TOKEN only: unrequested env secrets are never copied, requested MCP secrets are', async () => {
-  const { box, provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', GH_TOKEN: 'ghp_X', MCP_A_TOKEN: 'mcp-a-value', MCP_B_TOKEN: 'mcp-b-value' });
+  const { box, provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', GH_TOKEN: 'ghp_X', MCP_A_TOKEN: 'mcp-a-value', MCP_B_TOKEN: 'mcp-b-value', ...CONSENT });
   await mk(provider, { secrets: ['MCP_A_TOKEN'] });
   const file = readFileSync(join(box.root, 'run/secrets/env'), 'utf8');
   assert.match(file, /GH_TOKEN='ghp_X'/);
@@ -396,7 +415,7 @@ test('two concurrent creates with one free slot: one starts, the other gets quot
 });
 
 const SOCK = '/run/user/1000/docker.sock';
-const coordEnv = { CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_DOCKER_SOCKET: SOCK };
+const coordEnv = { CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_DOCKER_SOCKET: SOCK, ...CONSENT };
 const mkCoord = (p) => mk(p, { image: 'x', labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'coordinator' }, neverSuspend: true });
 
 test('coordinators stay refused without the consent, with a next step; consent lifts the refusal (#41)', async () => {
@@ -422,11 +441,11 @@ test('only a coordinator container gets the Docker socket, with the socket owner
 });
 
 test('coordinatorEnv: the names a coordinator gets from this provider; no SSH host, key or port; token only with consent', () => {
-  const base = { ...ENV, ...coordEnv, CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2222', CLOUDY_CLOUD_SELF_HOSTED_CPUS: '2', CLOUDY_CLOUD_SELF_HOSTED_MEMORY: '4g',
+  const base = { ...ENV, ...coordEnv, CLOUDY_CLOUD_SSH_KEY: '/k', CLOUDY_CLOUD_SSH_PORT: '2222', CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST: consentHostId('me@box:2222'), CLOUDY_CLOUD_SELF_HOSTED_CPUS: '2', CLOUDY_CLOUD_SELF_HOSTED_MEMORY: '4g',
     CLOUDY_CLOUD_CONTAINER_RUNTIME: 'docker', GH_TOKEN: 'ghp_x' };
   const own = (e) => createProvider(e, { spawn: fakeBox().spawn }).coordinatorEnv();
   const o = own(base);
-  assert.deepEqual(o.fixed.map((l) => l.split('=')[0]), ['CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'CLOUDY_CLOUD_CONTAINER_BIN']);
+  assert.deepEqual(o.fixed.map((l) => l.split('=')[0]), ['CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST']);
   assert.ok(o.fixed.includes('CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1') && o.fixed.includes('CLOUDY_CLOUD_PROVIDER=self-hosted') && o.fixed.includes(`CLOUDY_CLOUD_DOCKER_SOCKET=${SOCK}`));
   assert.deepEqual(o.names, ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY']);
   assert.deepEqual(own({ ...base, CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes' }).names.slice(-2), ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN']);
@@ -445,7 +464,7 @@ test('local mode runs the same command strings through sh, never ssh; slots coun
     return box.spawn('ssh', [`sh -c "$(printf %s ${Buffer.from(args[1]).toString('base64')} | base64 -d)"`]);
   };
   const env = { CLOUDY_CLOUD_SELF_HOSTED_LOCAL: '1', CLOUDY_CLOUD_DOCKER_SOCKET: '/var/run/docker.sock', CLOUDY_CLOUD_CONTAINER_BIN: BIN, CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '2',
-    CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', GH_TOKEN: 'ghp_L' };
+    CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS: 'yes', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST: consentHostId('me@box:22'), GH_TOKEN: 'ghp_L' };
   const p = createProvider(env, { spawn });
   assert.equal(p.keyName, 'CLOUDY_CLOUD_DOCKER_SOCKET'); // not the SSH host; the core's missing-key check and scrub use it
   box.table.set('cc-laptop', { Id: 'a'.repeat(64), Name: '/cc-laptop', Config: { Labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' } }, State: { Status: 'running' } });
@@ -456,7 +475,7 @@ test('local mode runs the same command strings through sh, never ssh; slots coun
   await p.delete(s.id);
   assert.ok(calls.length > 5 && calls.every((c) => c.bin === 'sh'));
   assert.ok(!JSON.stringify(calls).includes('ssh '), 'no ssh in any command');
-  assert.match(p.text.ssh('cc-1', 'bash'), /^docker exec -it cc-1 bash$|exec -it cc-1 bash/);
+  assert.deepEqual(words(p.text.ssh('cc-1', 'bash')), [BIN, 'exec', '-it', 'cc-1', 'bash']);
   await assert.rejects(p.forwardPort('cc-x', '3000'), /not available/);
   assert.equal(p.text.coordinatorRefusal, undefined);
 });
@@ -489,7 +508,7 @@ test('the coordinator keeps its logical name: ls, attach, stop and finish all fi
   const out = [];
   const deps = { provider, env: {}, out: (s) => out.push(s) };
   await coordinatorMain(['attach', 'boss'], deps);
-  assert.match(out.join('\n'), new RegExp(`exec -it ${c.id} tmux attach -t claude`));
+  assert.ok(out.join('\n').includes(`'exec' '-it' '${c.id}' 'tmux attach -t claude'`), out.join('\n'));
   await coordinatorMain(['finish', '--force'], { ...deps, hostname: c.id });
   assert.equal(box.table.size, 0, 'finish deleted this machine');
   const c2 = await provider.create({ image: 'x', name: 'coord-boss', envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 600 });

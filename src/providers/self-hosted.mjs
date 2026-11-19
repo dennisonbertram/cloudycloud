@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createSsh } from './ssh.mjs';
 import { createLocal } from './local.mjs';
+import { consentHostId } from '../config.mjs';
 
 const PREFIX = 'cloudy-cloud.';
 const HOME = '/home/worker';
@@ -28,13 +29,21 @@ export function createProvider(env = process.env, deps = {}) {
   const host = env.CLOUDY_CLOUD_SSH_HOST;
   // Inside a coordinator container (setup consent, #41): docker runs locally against the mounted socket, with no ssh and no key.
   const local = env.CLOUDY_CLOUD_SELF_HOSTED_LOCAL === '1';
-  const coordsOk = env.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
   const sock = env.CLOUDY_CLOUD_DOCKER_SOCKET || SOCK_IN; // the path on the box (inside the container VM on a Mac)
   const slots = Number(env.CLOUDY_CLOUD_SELF_HOSTED_SLOTS) || 2;
   const cpus = env.CLOUDY_CLOUD_SELF_HOSTED_CPUS || '2';
   const memory = env.CLOUDY_CLOUD_SELF_HOSTED_MEMORY || '4g';
   const image = `cloudy-cloud-worker:${VERSION}`;
-  const consented = env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes';
+  // The saved consents belong to one SSH destination, whose id setup records in CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST
+  // (the sha256 of host:port — opaque, so it can reach a coordinator container). An exported CLOUDY_CLOUD_SSH_HOST/PORT
+  // pointing at another machine must not reuse them, so a flag counts only when the consent id equals the effective
+  // destination's. Inside a coordinator container there is no SSH destination (the socket is local), so the forwarded
+  // id stands in as the destination; a flag saved before the id existed counts as unverified and so does an absent one.
+  const consentHost = env.CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST;
+  const dest = local ? consentHost : consentHostId(`${host ?? ''}:${env.CLOUDY_CLOUD_SSH_PORT || '22'}`);
+  const consentOk = !!consentHost && consentHost === dest;
+  const coordsOk = consentOk && env.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
+  const consented = consentOk && env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes';
   const maxTtlSeconds = 86400;
 
   let ssh;
@@ -255,7 +264,7 @@ export function createProvider(env = process.env, deps = {}) {
     coordinatorEnv() {
       return {
         fixed: ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes',
-          `CLOUDY_CLOUD_DOCKER_SOCKET=${sock}`, `CLOUDY_CLOUD_CONTAINER_BIN=${runtime}`], // the CLI inside the container is on PATH, not at the box's path
+          `CLOUDY_CLOUD_DOCKER_SOCKET=${sock}`, `CLOUDY_CLOUD_CONTAINER_BIN=${runtime}`, ...(consentHost ? [`CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST=${consentHost}`] : [])], // the CLI inside the container is on PATH, not at the box's path
         names: ['CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY',
           ...(consented ? ['CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN'] : [])],
       };
@@ -277,10 +286,15 @@ export function createProvider(env = process.env, deps = {}) {
     async metrics() { throw fail('metrics_unsupported', 'self-hosted machines have no usage numbers.', { provider: 'self-hosted' }); },
 
     text: {
-      ssh: (machine, cmd) => (local ? `${bin} exec -it ${machine} ${cmd || 'bash'}`
-        : `ssh${sshOpts().map((o) => ` ${o}`).join('')} -t ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} exec -it ${machine} ${cmd || 'bash'}`),
-      listMachines: local ? `${bin} ps --filter label=${PREFIX}purpose`
-        : `ssh${sshOpts().map((o) => ` ${o}`).join('')} ${host ?? '<CLOUDY_CLOUD_SSH_HOST>'} ${bin} ps --filter label=${PREFIX}purpose`,
+      // Everything interpolated into a suggested command is shell-quoted: these are commands the user may copy and run.
+      ssh: (machine, cmd) => {
+        const inner = [bin, 'exec', '-it', machine, cmd || 'bash'].map(q).join(' ');
+        return local ? inner : `ssh${sshOpts().map((o) => ` ${q(o)}`).join('')} -t ${q(host ?? '<CLOUDY_CLOUD_SSH_HOST>')} ${inner}`;
+      },
+      listMachines: (() => {
+        const inner = [bin, 'ps', '--filter', `label=${PREFIX}purpose`].map(q).join(' ');
+        return local ? inner : `ssh${sshOpts().map((o) => ` ${q(o)}`).join('')} ${q(host ?? '<CLOUDY_CLOUD_SSH_HOST>')} ${inner}`;
+      })(),
       noKeyFix: 'Set CLOUDY_CLOUD_SSH_HOST=user@host in ~/.config/cloudy-cloud/env or run: cloudy-cloud setup',
       apiFix: `Check that ${host ?? 'the host'} is reachable: cloudy-cloud doctor`,
       hostLabel: local ? 'the Docker host' : String(host ?? '').split('@').pop(), // the full user@host is the key value, which the core scrubs

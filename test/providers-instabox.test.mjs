@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createProvider } from '../src/providers/instabox.mjs';
+import { createProvider, cliSpawnOpts } from '../src/providers/instabox.mjs';
 import { createLimiter } from '../src/limits.mjs';
 import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
@@ -50,6 +50,34 @@ test('provider.create sends the same SDK call and secrets PATCH as createInstabo
   assert.deepEqual(fa.calls.map((c) => [c.method, c.url, c.body]), fb.calls.map((c) => [c.method, c.url, c.body]));
   assert.equal(fa.calls[0].body, '{"secrets":["GH_TOKEN","MCP_X_TOKEN"]}');
   assert.ok(!JSON.stringify(fa.calls).includes('ghp_'));
+});
+
+// Audit: errors the adapter itself writes must be marked local — they carry our guidance (run cloudy-cloud setup...),
+// which --json lifts into nextStep only when the error is ours. Raw server text stays foreign.
+test('adapter-authored errors are local: the failed secrets PATCH, a secret never applied, and a bad store', async () => {
+  const { sdk } = fakeSdk();
+  const failPatch = fakeFetch((u, init) => init.method === 'PATCH' && /secrets$/.test(u)
+    ? new Response('{"error":{"code":"forbidden","message":"no","hint":"ask admin"}}', { status: 403 })
+    : new Response('{}'));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: failPatch.f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', secrets: ['MCP_X_TOKEN'] }),
+    (e) => e.local === true && /instabox/i.test(e.message));
+  // no fakeFetch here: its built-in GET handler answers appliedRevision === revision, which would skip the wait
+  const stall = { f: async (u, init = {}) => (init.method === 'GET' && /secrets$/.test(String(u))
+    ? Response.json({ proxy: { revision: 3, appliedRevision: 1 }, guest: { revision: 2, appliedRevision: 2 } })
+    : new Response('{}')) };
+  const p2 = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: stall.f, timing });
+  await assert.rejects(p2.create({ image: 'agent-browser', secrets: [] }), (e) => e.local === true && /not applied/.test(e.message));
+  const p3 = createProvider({ INSTABOX_API_KEY: KEY }, { spawn: async () => ({ code: 1, stdout: '', stderr: 'denied' }) });
+  await assert.rejects(p3.storeSecret('ANTHROPIC_API_KEY', 'sk_x'), (e) => e.local === true);
+  await assert.rejects(p3.listSecrets(), (e) => e.local === true);
+  await assert.rejects(p3.storeSecret('NOT_A_SECRET', 'x'), (e) => e.local === true && e.code === 'unknown_secret');
+  // but a raw API error keeps foreign status (the list message is ours, so it is local too), and server text
+  // from the CLI — publishPort echoes stderr verbatim — stays foreign: it is not our guidance
+  const bad = fakeFetch(() => new Response('{"error":{"code":"quota_exceeded","message":"plan cap"}}', { status: 402 }));
+  await assert.rejects(createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: bad.f }).list({}), (e) => e.status === 402 && e.local === true);
+  const p4 = createProvider({ INSTABOX_API_KEY: KEY }, { spawn: async () => ({ code: 1, stdout: '', stderr: 'server says no' }) });
+  await assert.rejects(p4.publishPort('m1', '3000'), (e) => e.local !== true && /server says no/.test(e.message));
 });
 
 test('coordinator-style create: name, neverSuspend (no archiveMs), name from getInfo only when loadName is called', async () => {
@@ -179,12 +207,57 @@ test('delete retries and log: reaper style 3 attempts with a log line each, fini
   assert.equal(bad.calls.length, 4);
 });
 
-test('the injected spawn gets the whole env object', async () => {
+test('the npx fallback runs from a trusted cwd with an allowlisted env: the key plus basic login vars only', async () => {
   const seen = [];
-  const env = { INSTABOX_API_KEY: KEY, OTHER: '1' };
-  const p = createProvider(env, { spawn: async (argv, o) => { seen.push(o.env); return { code: 0, stdout: '', stderr: '' }; } });
+  const p = createProvider({ INSTABOX_API_KEY: KEY, OTHER: '1', PATH: '' }, { spawn: async (argv, o) => { seen.push([argv, o]); return { code: 0, stdout: '', stderr: '' }; } });
   await p.unpublishPort('m', '3000');
-  assert.equal(seen[0], env);
+  assert.equal(seen[0][0][0], 'npx');
+  const ALLOWED = new Set(['PATH', 'HOME', 'TERM', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'SSH_AUTH_SOCK',
+    'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'NODE_EXTRA_CA_CERTS']);
+  assert.equal(seen[0][1].cwd, tmpdir(), 'npx must not run inside the caller checkout, where its .npmrc can run code');
+  assert.equal(seen[0][1].env.INSTABOX_API_KEY, KEY);
+  assert.equal(seen[0][1].env.PATH, process.env.PATH);
+  assert.equal(seen[0][1].env.HOME, process.env.HOME);
+  assert.ok(!('OTHER' in seen[0][1].env), 'unrelated provider env names stay out');
+  for (const k of Object.keys(seen[0][1].env)) assert.ok(ALLOWED.has(k) || k.startsWith('LC_') || k === 'INSTABOX_API_KEY', k);
+});
+
+test('cliSpawnOpts: npx drops npm_config_* and caller exports; a found binary keeps the caller env and cwd', () => {
+  const base = { PATH: '/p', HOME: '/h', TERM: 'x', LC_ALL: 'en_US.UTF-8', npm_config_registry: 'https://evil.example', npm_config_script_shell: '/evil', NODE_OPTIONS: '--require /e', EDITOR: 'e' };
+  const npx = cliSpawnOpts(['npx', '--yes', 'instabox@latest', 'ls'], { INSTABOX_API_KEY: KEY }, base);
+  assert.equal(npx.cwd, tmpdir());
+  assert.deepEqual(npx.env, { PATH: '/p', HOME: '/h', TERM: 'x', LC_ALL: 'en_US.UTF-8', INSTABOX_API_KEY: KEY });
+  const bin = cliSpawnOpts(['/usr/local/bin/instabox', 'ls'], { INSTABOX_API_KEY: KEY }, base);
+  assert.equal(bin.cwd, undefined);
+  assert.deepEqual(bin.env, { ...base, INSTABOX_API_KEY: KEY });
+});
+
+test('cliSpawnOpts: a corporate proxy or a custom CA reaches the npx child; the coordinator key maps onto INSTABOX_API_KEY', () => {
+  const base = { PATH: '/p', HOME: '/h', HTTPS_PROXY: 'https://proxy.local:3128', http_proxy: 'http://p:1', NO_PROXY: 'localhost', NODE_EXTRA_CA_CERTS: '/etc/ca.pem', npm_config_registry: 'https://evil.example' };
+  const npx = cliSpawnOpts(['npx', '--yes', 'instabox@latest', 'ls'], { INSTABOX_API_KEY: KEY }, base);
+  assert.equal(npx.env.HTTPS_PROXY, 'https://proxy.local:3128');
+  assert.equal(npx.env.http_proxy, 'http://p:1');
+  assert.equal(npx.env.NO_PROXY, 'localhost');
+  assert.equal(npx.env.NODE_EXTRA_CA_CERTS, '/etc/ca.pem');
+  assert.ok(!('npm_config_registry' in npx.env));
+  const coord = cliSpawnOpts(['npx', '--yes', 'instabox@latest', 'ssh', 'm1'], { CLOUDY_CLOUD_INSTABOX_API_KEY: KEY }, base);
+  assert.equal(coord.env.INSTABOX_API_KEY, KEY, 'the coordinator copy feeds the CLI as INSTABOX_API_KEY');
+  assert.ok(!('CLOUDY_CLOUD_INSTABOX_API_KEY' in coord.env));
+});
+
+test('shellSpawnOpts gives an interactive shellArgv spawn the same policy: npx gets a restricted env and trusted cwd, a found binary the caller env', () => {
+  const p = createProvider({ INSTABOX_API_KEY: KEY, PATH: '' }, {});
+  const npxArgv = p.shellArgv('m1', ['tmux', 'attach', '-t', 'claude'], { tty: true });
+  assert.equal(npxArgv[0], 'npx');
+  const o = p.shellSpawnOpts(npxArgv);
+  assert.equal(o.cwd, tmpdir());
+  assert.equal(o.env.INSTABOX_API_KEY, KEY);
+  assert.ok(!('ANTHROPIC_API_KEY' in o.env) && !('GH_TOKEN' in o.env) && !('AWS_SECRET_ACCESS_KEY' in o.env));
+  const binArgv = ['/usr/local/bin/instabox', 'ssh', 'm1'];
+  const b = p.shellSpawnOpts(binArgv);
+  assert.equal(b.cwd, undefined);
+  assert.equal(b.env.INSTABOX_API_KEY, KEY);
+  assert.equal(b.env.PATH, process.env.PATH);
 });
 
 // Wire assertions moved from test/reaper.test.mjs and test/open.test.mjs (reaper and `open` now go through the provider).

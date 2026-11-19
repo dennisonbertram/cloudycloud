@@ -21,7 +21,7 @@ import { setupCodex, codexCommand, codexNextStep } from './harness-codex.mjs';
 import { createOpencodeProgress, parseOpencodeStream } from './progress-opencode.mjs';
 import { OPENCODE_VERSION, OPENCODE_SESSION, opencodeDir, opencodeInstructions, opencodeConfig, opencodeCommand } from './harness-opencode.mjs';
 import { createLocalStream, pruneStreams, streamsDir } from './stream.mjs';
-import { redact, redactText } from './events.mjs';
+import { redact, redactText, GH_PULL_URL } from './events.mjs';
 import { writeSecretFile } from './providers/index.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
@@ -680,10 +680,10 @@ function autofix(a, ctx, t) {
   const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
   const seen = (a.autofixSeen ??= new Set());
   let fixes = 0, lastPush = '', ignored = 0, n;
-  const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}` }); };
+  const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}`, af: { state: 'running', round: fixes, cap } }); };
   const fixByHand = `open or fix the pull request by hand (git fetch origin ${branch})`;
   const hand = `${fixByHand}, or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
-  const done = (text) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`) });
+  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
   const stop = (why) => /Resource not accessible by (personal access token|integration)/i.test(why)
     ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions and Commit statuses to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
     : done(`Autofix stopped: ${why}\nNext step: ${hand}`);
@@ -726,7 +726,8 @@ function autofix(a, ctx, t) {
     v = await sync(sha);
     if (!v.pr) return stop(`gh could not read the pull request for ${branch}. gh said: ${v.err}`);
     let pr = v.pr;
-    a.prUrl = pr.url;
+    // gh output is worker-side data: the URL is stored and emitted only when it is a real GitHub PR link.
+    a.prUrl = GH_PULL_URL.test(String(pr.url)) ? pr.url : undefined;
     n = pr.number;
     if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
     const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
@@ -799,12 +800,12 @@ function autofix(a, ctx, t) {
       }
       const why = incomplete.length ? `\nNot confirmed: ${incomplete.join('; ')}.` : '';
       if (!problems.length) {
-        if (incomplete.length) return done(`Autofix: pull request ${pr.url} could not be confirmed clean after ${fixes} fix round${fixes === 1 ? '' : 's'}: ${incomplete.join('; ')}.\nNext step: look at ${pr.url}, or ${hand}`);
-        return done(`Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.`);
+        if (incomplete.length) return done(`Autofix: pull request ${pr.url} could not be confirmed clean after ${fixes} fix round${fixes === 1 ? '' : 's'}: ${incomplete.join('; ')}.\nNext step: look at ${pr.url}, or ${hand}`, { round: fixes });
+        return done(`Autofix: pull request ${pr.url} is clean (checks pass, no new review comments, no merge conflicts) after ${fixes} fix round${fixes === 1 ? '' : 's'}.`, { state: 'clean', round: fixes });
       }
       const list = problems.map((p) => `- ${p}`).join('\n');
       const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
-      if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`);
+      if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`, { state: 'not clean', round: fixes, cap });
       if (left() <= (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
       fixes++;
       say('worker is fixing');
@@ -854,7 +855,10 @@ async function work(a, message, first, ctx, t) {
       if (a.previewUrl) r = { ...r, text: `${r.text}\n\nPreview: ${a.previewUrl}\nAnyone with this link can open the app until the machine is deleted.` };
     }
     if (a.autofix && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
-      const f = await autofix(a, ctx, t).catch((e) => ({ text: `Autofix stopped on an unexpected error: ${ctx.scrub(e?.message)}` }));
+      const f = await autofix(a, ctx, t).catch((e) => ({ text: `Autofix stopped on an unexpected error: ${ctx.scrub(e?.message)}`, af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }) } }));
+      // The dashboard trusts only this typed field, never the reply text. A run that ends cancelled or lost carries
+      // no af of its own, so emit the terminal "stopped" here — it must never stay displayed as "running".
+      a.emit?.({ type: 'autofix', af: f.af ?? { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }) } });
       t.prefix = t.note = '';
       r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
     }
@@ -868,7 +872,8 @@ async function work(a, message, first, ctx, t) {
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
-  a.emit?.({ type: 'reply', text: a.result.text, error: r.error });
+  // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
+  a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
   a.emit?.({ type: 'status', status: a.status });
   endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
   if (dead) await a.sandbox?.kill().catch(() => {});
@@ -1135,7 +1140,12 @@ export async function runSubagent(args, deps) {
   if (mcp) a.mcp = mcp;
   if (mcpError) a.mcpError = mcpError;
   if (allowList) a.egressAllow = allowList;
-  a.emit = (e) => ctx.events?.({ id, ...e, ...(e.text && { text: ctx.scrub(e.text) }), ...(e.description && { description: ctx.scrub(e.description) }) });
+  // The private preview link is a secret: once the agent knows it, it is stripped from every logged event text
+  // (a follow-up cloud_agent_message could otherwise echo it into the persisted log). The functional text keeps it.
+  a.emit = (e) => {
+    const clean = (s) => { const t = ctx.scrub(s); return a.previewUrl ? t.split(a.previewUrl).join('a private preview link was returned to the caller') : t; };
+    return ctx.events?.({ id, ...e, ...(e.text && { text: clean(e.text) }), ...(e.description && { description: clean(e.description) }) });
+  };
   a.emit({ type: 'agent', description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: a.branch, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   const msg = `${prompt}${issueBlock ?? ''}`;
   a.emit({ type: 'message', text: msg });

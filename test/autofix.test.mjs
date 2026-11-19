@@ -206,6 +206,51 @@ test('autofix: pending and failing checks work when the provider drops stdout of
   assert.match(r, /is clean/);
 });
 
+test('autofix: a cancelled autofix run emits a terminal stopped event and never stays running', async () => {
+  const evts = [];
+  const { g, deps } = await setup({ checks: [[{ name: 'test', bucket: 'pending', link: RUN_LINK }]], deps: { autofixPollMs: 60_000, autofixChecksMs: 600_000, asTask: true, events: (e) => evts.push(e) } });
+  const out = await runSubagent({ description: 'd', prompt: 'hi', autofix: true }, deps);
+  const t0 = Date.now();
+  while (!g.calls.some((c) => c.startsWith('gh pr checks')) && Date.now() - t0 < 20_000) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(evts.some((e) => e.af?.state === 'running'), 'a running autofix event was emitted');
+  await cancelTask(out.taskId, deps); // first-turn cancel resolves t.done before the emit microtasks run, so poll
+  for (let i = 0; i < 200 && !evts.some((e) => e.af?.state === 'stopped'); i++) await new Promise((r) => setTimeout(r, 10));
+  const af = evts.filter((e) => e.af);
+  assert.equal(af.at(-1).af.state, 'stopped', `last autofix event: ${JSON.stringify(af.at(-1))}`);
+});
+
+test('autofix: a lost sandbox during autofix also emits a terminal stopped event', async () => {
+  const evts = [];
+  const { g, deps, start, wait } = await setup({ checks: [[{ name: 'test', bucket: 'pending', link: RUN_LINK }]], deps: { autofixPollMs: 60_000, autofixChecksMs: 600_000, events: (e) => evts.push(e) } });
+  const id = await start({ autofix: true });
+  const t0 = Date.now();
+  while (!g.calls.some((c) => c.startsWith('gh pr checks')) && Date.now() - t0 < 20_000) await new Promise((r) => setTimeout(r, 20));
+  g.dead = true;
+  const r = await wait([id]);
+  assert.match(r, /status: failed/);
+  const af = evts.filter((e) => e.af);
+  assert.ok(af.some((e) => e.af.state === 'running'), 'a running autofix event was emitted');
+  assert.equal(af.at(-1).af.state, 'stopped');
+});
+
+test('autofix: a pull request URL that is not a github.com pull link is dropped, never stored or emitted', async () => {
+  const evts = [];
+  const { g, deps, start, wait, open } = await setup({ deps: { events: (e) => evts.push(e) } });
+  g.view = () => g.prView({ url: 'https://github.com.evil.example/test/repo/pull/7' });
+  const id = await start({ autofix: true });
+  await wait([id]);
+  assert.equal(open.get(id).prUrl, undefined, 'the forged URL was not persisted');
+  const af = evts.filter((e) => e.af);
+  assert.ok(af.length && af.every((e) => e.af.pr === undefined), 'no autofix event carried the forged URL');
+  const evts2 = [];
+  const good = await setup({ deps: { events: (e) => evts2.push(e) } });
+  good.g.view = () => good.g.prView({ url: 'javascript:alert(1)' });
+  const id2 = await good.start({ autofix: true });
+  await good.wait([id2]);
+  assert.equal(good.open.get(id2).prUrl, undefined);
+  assert.ok(evts2.filter((e) => e.af).every((e) => e.af.pr === undefined), 'no autofix event carried the forged URL');
+});
+
 test('autofix: a follow-up turn cancelled mid-wait ends within 2 s even with the default poll', async () => {
   const { g, deps, start, wait } = await setup({ checks: [[{ name: 'test', bucket: 'pass', link: RUN_LINK }]], deps: { autofixPollMs: 20_000, autofixGraceMs: 0 } });
   g.checks = [[{ name: 'test', bucket: 'pass', link: RUN_LINK }]];

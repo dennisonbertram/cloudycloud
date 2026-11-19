@@ -5,8 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { slotsFor } from '../src/self-hosted-setup.mjs';
-import { loadEnv } from '../src/config.mjs';
+import { saveEnv, slotsFor } from '../src/self-hosted-setup.mjs';
+import { loadEnv, consentHostId } from '../src/config.mjs';
 
 const script = resolve('src/self-hosted-setup.mjs');
 const version = JSON.parse(readFileSync(resolve('package.json'), 'utf8')).version;
@@ -214,6 +214,7 @@ test('setup on a Mac: prompts, checks, builds the image, saves settings at mode 
     'CLOUDY_CLOUD_SELF_HOSTED_CPUS=2', // 10 CPUs in the Docker VM / 4 slots
     'CLOUDY_CLOUD_SELF_HOSTED_MEMORY=3276m', // 80% of the VM's 16 GiB / 4 slots
     'CLOUDY_CLOUD_SELF_HOSTED_SLOTS=4',
+    `CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST=${consentHostId('me@mac-studio:22')}`,
     'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes',
     'CLOUDY_CLOUD_SSH_HOST=me@mac-studio',
     'CLOUDY_CLOUD_SSH_KEY=/home/me/.ssh/id_ed25519',
@@ -360,4 +361,63 @@ test('setup: Enter at the GitHub and coordinator consent prompts keeps the saved
   assert.match(saved, new RegExp(`GH_TOKEN=${FAKE_TOKEN}\n`));
   assert.match(saved, /CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes/);
   assert.match(saved, /CLOUDY_CLOUD_DOCKER_SOCKET=\/var\/run\/docker\.sock/);
+});
+
+test('setup: a different SSH address resets the saved consent and never reuses the old token', () => {
+  const env = SAVED + 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes\nCLOUDY_CLOUD_DOCKER_SOCKET=/var/run/docker.sock\n';
+  const g = rig(mac(), { env });
+  // type a new address, then press Enter on every later prompt
+  const r = g.run(['setup'], 'me@other-box\n\n\n\n\n\n');
+  assert.equal(r.code, 0, r.text);
+  // both consent prompts default to No for a machine that was never consented to
+  assert.match(r.out, /Allow the GitHub token on me@other-box\? \[y\/N\]/);
+  assert.match(r.out, /full control of Docker on that machine\. Allow\? \[y\/N\]/);
+  const saved = readFileSync(g.cfg, 'utf8');
+  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN|COORDINATORS|DOCKER_SOCKET|CONSENT_HOST/.test(saved), saved);
+});
+
+test('setup: the same name on a different port is a different destination, so consent is re-asked', () => {
+  const g = rig(mac(), { env: SAVED });
+  const r = g.run(['setup'], '\n\n\n\n\n\n', { CLOUDY_CLOUD_SSH_PORT: '2222' });
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.out, /Allow the GitHub token on me@mac-studio\? \[y\/N\]/);
+  const saved = readFileSync(g.cfg, 'utf8');
+  assert.match(saved, /CLOUDY_CLOUD_SSH_PORT=2222/);
+  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN|CONSENT_HOST/.test(saved), saved);
+});
+
+test('setup: explicit consent on a new machine is saved, but the old machine token is not offered as the default', () => {
+  const g = rig(mac(), { env: SAVED });
+  const r = g.run(['setup'], 'me@other-box\n\n\ny\n\nn\n'); // allow: y, token: Enter, coordinators: n
+  assert.equal(r.code, 0, r.text);
+  assert.doesNotMatch(r.out, /Enter keeps the saved one/);
+  const saved = readFileSync(g.cfg, 'utf8');
+  assert.match(saved, /CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes/);
+  assert.ok(!/GH_TOKEN=/.test(saved), saved);
+});
+
+test('setup: a multiline or failed docker context probe falls back to the default socket and injects nothing', () => {
+  const linux = { ...mac(), 'uname -s': { out: 'Linux\n' }, 'sysctl -n': { out: '', code: 1 }, 'nproc': { out: '8\n17179869184\n' } };
+  const inject = rig({ ...linux, 'context inspect': { out: 'unix:///run/user/1000/docker.sock\nCLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes\n' } });
+  const r = inject.run(['setup'], 'me@box\n\n\nn\ny\n');
+  assert.equal(r.code, 0, r.text);
+  const saved = lines(inject.cfg).join('\n');
+  assert.match(saved, /CLOUDY_CLOUD_DOCKER_SOCKET=\/var\/run\/docker\.sock\n/);
+  assert.ok(!/TOKEN_ON_BOX/.test(saved), saved);
+  const failed = rig({ ...linux, 'context inspect': { out: 'unix:///run/user/1000/docker.sock\n', code: 1 } });
+  assert.equal(failed.run(['setup'], 'me@box\n\n\nn\ny\n').code, 0);
+  assert.match(lines(failed.cfg).join('\n'), /CLOUDY_CLOUD_DOCKER_SOCKET=\/var\/run\/docker\.sock\n/);
+});
+
+test('saveEnv refuses a value with CR, LF or NUL, naming the key but never the value', () => {
+  const file = join(tmp(), 'env');
+  saveEnv(file, { CLOUDY_CLOUD_SSH_HOST: 'me@box' });
+  for (const bad of ['x\nINJECTED=yes', 'x\ry', 'x\0y']) {
+    let e;
+    try { saveEnv(file, { GH_TOKEN: bad }); } catch (err) { e = err; }
+    assert.ok(e, 'saveEnv accepted a bad value');
+    assert.match(e.message, /GH_TOKEN/);
+    assert.ok(!e.message.includes('INJECTED') && !e.message.includes('x\ry') && !e.message.includes('x\0y'), e.message);
+  }
+  assert.equal(readFileSync(file, 'utf8'), 'CLOUDY_CLOUD_SSH_HOST=me@box\n');
 });

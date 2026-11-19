@@ -72,7 +72,7 @@ test('coordinator start: default 24 h deadline, --max-hours applied, over 24 ref
 test('ls shows the delete time', async () => {
   const { log, sdk } = fx();
   sdk.Sandbox.list = async () => [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'),
-    metadata: { role: 'coordinator', name: 'boss' }, machine: { deleteAt: '2026-01-03T03:04:05Z' } }];
+    metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, machine: { deleteAt: '2026-01-03T03:04:05Z' } }];
   await main(['ls'], { sdk, env: { INSTABOX_API_KEY: KEY }, out: (s) => log.out.push(s) });
   assert.match(log.out.join('\n'), /2026-01-03T03:04:05/);
 });
@@ -102,7 +102,7 @@ function finishFx({ hostname = 'instabox-coord-boss', workers = [], machines, ..
   const ownerFile = join(dir, 'owner');
   writeFileSync(ownerFile, 'own1\n');
   const log = { calls: [], out: [] };
-  const all = machines ?? [{ id: 'm_me', name: 'coord-boss', metadata: { role: 'coordinator', name: 'boss' } }];
+  const all = machines ?? [{ id: 'm_me', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }];
   const fetchFn = async (url, init = {}) => {
     log.calls.push({ url, ...init });
     if (init.method === 'DELETE') return new Response('{}');
@@ -155,7 +155,7 @@ test('finish refuses while workers it owns are running; names cloud_agent_stop',
 test('finish refuses off a coordinator machine', async () => {
   const laptop = finishFx({ hostname: 'macbook.local' });
   await assert.rejects(main(['finish'], laptop.deps), /coordinator machine/i);
-  const nomatch = finishFx({ machines: [{ id: 'm_o', name: 'coord-other', metadata: { role: 'coordinator' } }] });
+  const nomatch = finishFx({ machines: [{ id: 'm_o', name: 'coord-other', metadata: { purpose: 'cloudy-cloud', role: 'coordinator' } }] });
   await assert.rejects(main(['finish', '--force'], nomatch.deps), /coordinator machine/i);
   assert.equal(deleted(laptop.log).length + deleted(nomatch.log).length, 0);
 });

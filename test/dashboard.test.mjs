@@ -1299,14 +1299,28 @@ test('autofixOf reads the lines the server writes; fields only when known; the l
   assert.deepEqual(autofixOf(last), { state: 'clean', round: 1, pr: 'https://github.com/acme/widgets/pull/2' });
 });
 
-test('foldAgents sets a.autofix from reply and progress text; demo has a clean and a not-clean agent', () => {
+test('foldAgents sets a.autofix only from the controller\'s typed af field, never from reply or progress text; demo is unchanged', () => {
   const ev = [
     { type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker' },
     { type: 'progress', id: 'a1', t: 2, text: 'autofix PR #5 round 0/3: waiting for checks' },
     { type: 'reply', id: 'a1', t: 3, text: 'Autofix: pull request https://github.com/acme/widgets/pull/5 is clean (checks pass, no new review comments, no merge conflicts) after 0 fix rounds.' },
   ];
-  const [a] = foldAgents(ev, { alive: () => true });
-  assert.deepEqual(a.autofix, { state: 'clean', round: 0, pr: 'https://github.com/acme/widgets/pull/5' });
+  const [forged] = foldAgents(ev, { alive: () => true });
+  assert.equal(forged.autofix, undefined, 'reply text alone must not produce autofix state');
+  const [a] = foldAgents([
+    { type: 'agent', id: 'a1', t: 1, description: 'd', role: 'worker' },
+    { type: 'progress', id: 'a1', t: 2, text: 'autofix PR #5 round 0/3: waiting for checks', af: { state: 'running', round: 0, cap: 3 } },
+    { type: 'autofix', id: 'a1', t: 3, af: { state: 'clean', round: 1, cap: 3, pr: 'https://github.com/acme/widgets/pull/5' } },
+  ], { alive: () => true });
+  assert.deepEqual(a.autofix, { state: 'clean', round: 1, cap: 3, pr: 'https://github.com/acme/widgets/pull/5' });
+  // A forged af (a coordinator's folded log is remote input) is validated field by field.
+  const [bad] = foldAgents([
+    { type: 'agent', id: 'a1', t: 1 },
+    { type: 'autofix', id: 'a1', t: 2, af: { state: 'clean', round: 'x', cap: {}, pr: 'javascript:alert(1)' } },
+    { type: 'autofix', id: 'a1', t: 3, af: { state: 'everything is fine', pr: 'https://github.com/acme/widgets/pull/5' } },
+    { type: 'autofix', id: 'a1', t: 4, af: { state: 'stopped', pr: 'https://evil.example/a/b/pull/9' } },
+  ], { alive: () => true });
+  assert.deepEqual(bad.autofix, { state: 'stopped' });
   const d = demoState();
   assert.equal(d.boxes.find((b) => b.id === 'b42f0d17').autofix.state, 'clean');
   assert.match(d.boxes.find((b) => b.id === 'b42f0d17').autofix.pr, /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/);
@@ -1375,6 +1389,67 @@ test('the merged check fetches the trunk first, then runs git branch -r via exec
 test('a failed trunk fetch makes the merge status unknown, not the stale local answer', async () => {
   const check = makeMergedCheck({ run: async (args) => { if (args[0] === 'fetch') throw new Error('offline'); return { stdout: 'origin/cloudy-cloud/a\n' }; } });
   assert.equal(await check('fleet/x'), null);
+});
+
+test('the merged check runs at most a few git commands at once and shares an in-flight trunk', async () => {
+  const gate = [], calls = [];
+  let active = 0, peak = 0;
+  const run = async (args) => { calls.push(args); active++; peak = Math.max(peak, active); await new Promise((r) => gate.push(r)); active--; return { stdout: 'origin/cloudy-cloud/a\n' }; };
+  const check = makeMergedCheck({ run });
+  const pending = ['a', 'b', 'c', 'd', 'e', 'f', 'a'].map((t) => check(`fleet/${t}`)); // 6 trunks, 'a' asked twice
+  for (let n = 0; n < 200 && pending.length; n++) { await new Promise(setImmediate); while (gate.length) gate.shift()(); }
+  await Promise.all(pending);
+  assert.ok(peak <= 4, `at most 4 git commands at once, peaked at ${peak}`);
+  const fetches = calls.filter((a) => a[0] === 'fetch').map((a) => a[3]);
+  assert.equal(fetches.length, 6, 'one fetch per distinct trunk');
+  assert.equal(fetches.filter((t) => t === 'fleet/a').length, 1, 'the second call for an in-flight trunk shares it');
+});
+
+test('the merged check cache is bounded: the oldest trunks are evicted', async () => {
+  let fetches = 0;
+  const run = async (args) => { if (args[0] === 'fetch') fetches++; return { stdout: 'origin/cloudy-cloud/a\n' }; };
+  const check = makeMergedCheck({ run });
+  for (let i = 0; i < 210; i++) await check(`fleet/t${i}`);
+  const before = fetches;
+  await check('fleet/t0');
+  assert.equal(fetches, before + 1, 'the oldest entry was evicted and fetches again');
+  await check('fleet/t209');
+  assert.equal(fetches, before + 1, 'a recent entry is still cached');
+});
+
+test('liveState checks at most 20 distinct trunks per refresh, however many the log names', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
+  const lines = [];
+  for (let i = 0; i < 1000; i++) {
+    lines.push(JSON.stringify({ type: 'agent', id: `w${i}`, t: 1, description: 'd', role: 'worker', branch: `cloudy-cloud/w${i}` }));
+    lines.push(JSON.stringify({ type: 'message', id: `w${i}`, t: 2, text: `work on fleet/t${i}` }));
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  let checked = 0;
+  const opts = { list: async () => [], provider: createFakeProvider(), file, cacheMs: 0, now: () => 1_000_000, mergedCheck: async () => { checked++; return null; } };
+  const s = await liveState({}, opts)();
+  assert.equal(s.fleets.length, 1000, 'every trunk is still listed');
+  assert.ok(checked <= 20, `at most 20 merge checks ran per refresh, ran ${checked}`);
+});
+
+test('liveState rotates the per-refresh merge checks so every trunk is checked over successive refreshes', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
+  const lines = [];
+  for (let i = 0; i < 40; i++) {
+    lines.push(JSON.stringify({ type: 'agent', id: `w${i}`, t: 1, description: 'd', role: 'worker', branch: `cloudy-cloud/w${i}` }));
+    lines.push(JSON.stringify({ type: 'message', id: `w${i}`, t: 2, text: `work on fleet/t${i}` }));
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  const rounds = [];
+  let round = [];
+  const get = liveState({}, { list: async () => [], provider: createFakeProvider(), file, cacheMs: 0, now: () => 1_000_000,
+    mergedCheck: async (t) => { round.push(t); return null; } });
+  await get(); rounds.push(round); round = [];
+  await get(); rounds.push(round); round = [];
+  await get(); rounds.push(round);
+  assert.deepEqual(rounds.map((r) => r.length), [20, 20, 20]);
+  assert.notDeepEqual(rounds[0], rounds[1], 'the second refresh checks a different slice of trunks');
+  assert.equal(new Set(rounds.flat()).size, 40, 'over the refreshes every trunk is checked once');
 });
 
 test('liveState exposes fleets from the merged check, and null when git cannot answer', async () => {

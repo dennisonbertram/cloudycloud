@@ -195,7 +195,7 @@ test('the provider key under its CLOUDY_CLOUD_ name counts as signed in', async 
   const { provider, out, d } = deps();
   d.env = { CLOUDY_CLOUD_FAKE_API_KEY: 'k' };
   assert.equal(await run([], d), 0);
-  assert.equal(provider.log.list.length, 1);
+  assert.equal(provider.log.list.length, 2, 'the cloudy-cloud purpose plus the historical claude-cloud one');
   assert.deepEqual(out, ['No Cloudy Cloud machines running.']);
 });
 
@@ -213,10 +213,19 @@ test('machines without the cloudy-cloud purpose label are never listed or delete
   assert.match(err.join('\n'), /Unknown id "not-ours"/);
 });
 
-test('the provider is asked only for cloudy-cloud machines', async () => {
+test('the provider is asked only for our machines: the cloudy-cloud purpose and the historical claude-cloud one', async () => {
   const { provider, d } = deps();
   await run([], d);
-  assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
+  assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }, { purpose: 'claude-cloud' }]);
+});
+
+test('machines labelled with the historical claude-cloud purpose are listed and stopped like ours', async () => {
+  const { provider, out, d } = deps();
+  await provider.create({ name: 'w-old', labels: { purpose: 'claude-cloud', role: 'worker', name: 'w-old' }, ttlSeconds: 60 });
+  assert.equal(await run(['ls'], d), 0);
+  assert.match(out[1], /^w-old\tworker\t/);
+  assert.equal(await run(['stop', 'w-old'], d), 0);
+  assert.equal(provider.log.delete.length, 1);
 });
 
 test('without the provider key the fix is setup', async () => {

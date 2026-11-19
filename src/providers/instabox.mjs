@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { delimiter, resolve } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
@@ -32,17 +33,18 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
   const call = async (method, body) => {
     const res = await fetchFn(url, {
       method, headers: { 'X-API-Key': apiKey, ...(body && { 'Content-Type': 'application/json' }) }, body,
-    }).catch((e) => { throw new Error(`${SECRET_HELP} (${method}: ${e?.message})`); });
+    }).catch((e) => { throw Object.assign(new Error(`${SECRET_HELP} (${method}: ${String(e?.message ?? '').replaceAll('\n', ' ')})`), { local: true }); });
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       let j = {};
       try { j = JSON.parse(t); } catch { /* not JSON */ }
       const e = j.error && typeof j.error === 'object' ? j.error : j;
-      const detail = e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200);
+      // Server text folds onto one line: a newline inside it could forge a guidance label in our message.
+      const detail = String(e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200)).replaceAll('\n', ' ');
       const missing = names.find((n) => `${t}`.includes(n));
       const help = missing ? guide('secret_missing', { secret: missing, host: KEY_HOSTS[missing] })
         : names.length ? `${SECRET_HELP} Secrets tried: GH_TOKEN, ${names.join(', ')}.` : SECRET_HELP;
-      throw new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`);
+      throw Object.assign(new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`), { local: true });
     }
     return res;
   };
@@ -51,7 +53,7 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
   for (const deadline = Date.now() + timeoutMs; ; await new Promise((r) => setTimeout(r, pollMs))) {
     const d = await (await call('GET')).json().catch(() => ({}));
     if (applied(d.proxy) && applied(d.guest)) return;
-    if (Date.now() >= deadline) throw new Error(`${guide('secret_not_applied', { id })}\n${SECRET_HELP} (not applied within ${timeoutMs / 1000} s)`);
+    if (Date.now() >= deadline) throw Object.assign(new Error(`${guide('secret_not_applied', { id })}\n${SECRET_HELP} (not applied within ${timeoutMs / 1000} s)`), { local: true });
   }
 }
 
@@ -114,8 +116,25 @@ function normalize(e) {
   return e;
 }
 
-const defaultSpawn = (argv, { inherit, env, input } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : [input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'], env: { ...process.env, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } });
+// Environment and cwd for a spawned CLI. The npx fallback runs npm, which reads the checkout's .npmrc (registry,
+// script-shell) and every npm_config_* the caller exported — a repository could then run code while the Instabox
+// key is in the environment. So npx runs from os.tmpdir() (no project config) with this allowlist plus the key.
+// The proxy and CA variables are there so a corporate proxy or a custom CA bundle can still reach the registry.
+// A resolved instabox binary does not read npm config and keeps the caller's environment.
+const CLI_ENV = new Set(['PATH', 'HOME', 'TERM', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'SSH_AUTH_SOCK',
+  'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'NODE_EXTRA_CA_CERTS']);
+export const cliSpawnOpts = (argv, env, base = process.env) => {
+  // A coordinator machine holds the key under its proxy-secret name; the CLI only reads the canonical one.
+  const key = env?.[KEY_NAME] || env?.CLOUDY_CLOUD_INSTABOX_API_KEY;
+  if (argv[0] !== 'npx') return { env: { ...base, ...(key && { [KEY_NAME]: key }) } };
+  const child = {};
+  for (const [k, v] of Object.entries(base)) if (CLI_ENV.has(k) || k.startsWith('LC_')) child[k] = v;
+  if (key) child[KEY_NAME] = key;
+  return { env: child, cwd: tmpdir() };
+};
+
+const defaultSpawn = (argv, { inherit, env, input, cwd } = {}) => new Promise((resolve) => {
+  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : [input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'], env, ...(cwd && { cwd }) });
   let stdout = '', stderr = '';
   p.stdout?.on('data', (d) => (stdout += d));
   p.stderr?.on('data', (d) => (stderr += d));
@@ -144,7 +163,7 @@ export function createProvider(env, deps = {}) {
   const apiKey = () => {
     // A coordinator holds the key as the proxy secret CLOUDY_CLOUD_INSTABOX_API_KEY (Instabox reserves the INSTABOX_ prefix).
     const key = env[KEY_NAME] || env.CLOUDY_CLOUD_INSTABOX_API_KEY;
-    if (!key) throw Object.assign(new Error(`${KEY_NAME} is not set.`), { code: 'no_key' });
+    if (!key) throw Object.assign(new Error(`${KEY_NAME} is not set.`), { code: 'no_key', local: true });
     return key;
   };
   const loadSdk = async () => deps.sdk ?? (await import('@insforge/instabox-sdk'));
@@ -173,7 +192,7 @@ export function createProvider(env, deps = {}) {
         // fine for a config, not for a secret, so this uses the upload route only (the SDK's writeStream) and fails closed.
         writeSecret: (path, data) => call(async () => {
           if ((await sbx.files.writeStream?.(path, typeof data === 'string' ? new TextEncoder().encode(data) : data)) !== true) {
-            throw Object.assign(new Error(`The file upload route of this Instabox machine is not available, so ${path} (it holds a secret) was not written: the only other route sends the file inside a shell command, where it can appear in logs.\nNext step: start the agent again in a minute. If it keeps failing, do not use a login file or an MCP server with a real token (cloudy-cloud mcp rm NAME), and use proxy secrets instead.`), { code: 'secret_write_unsupported' });
+            throw Object.assign(new Error(`The file upload route of this Instabox machine is not available, so ${path} (it holds a secret) was not written: the only other route sends the file inside a shell command, where it can appear in logs.\nNext step: start the agent again in a minute. If it keeps failing, do not use a login file or an MCP server with a real token (cloudy-cloud mcp rm NAME), and use proxy secrets instead.`), { code: 'secret_write_unsupported', local: true });
           }
         }),
       },
@@ -199,7 +218,7 @@ export function createProvider(env, deps = {}) {
               const left = deadline - now();
               if (left <= 0) {
                 await kill();
-                throw Object.assign(new Error(`command timed out after ${ms} ms`), { stderr: `job still running after ${ms} ms` });
+                throw Object.assign(new Error(`command timed out after ${ms} ms`), { local: true, stderr: `job still running after ${ms} ms` });
               }
               let pos = 0;
               const fresh = (chunk) => {
@@ -239,7 +258,7 @@ export function createProvider(env, deps = {}) {
       const url = `${API}${meta || cursor ? '?' : ''}${[meta, cursor && `cursor=${encodeURIComponent(cursor)}`].filter(Boolean).join('&')}`;
       const res = await fetchFn(url, { headers: { 'X-API-Key': apiKey() } });
       if (!res.ok) {
-        const err = normalize(Object.assign(new Error(`Could not list machines: HTTP ${res.status}`), { status: res.status }));
+        const err = normalize(Object.assign(new Error(`Could not list machines: HTTP ${res.status}`), { status: res.status, local: true }));
         if (onError && cursor) { onError(err); return rows; }
         throw err;
       }
@@ -256,10 +275,10 @@ export function createProvider(env, deps = {}) {
         method: 'DELETE', headers: { 'X-API-Key': apiKey(), 'Idempotency-Key': randomUUID(), 'X-Confirm-Delete': id },
       }).catch((e) => { last = e; return null; });
       if (r?.ok || r?.status === 404) return;
-      if (r) last = Object.assign(new Error(`Delete of ${id} failed: HTTP ${r.status}`), { status: r.status });
+      if (r) last = Object.assign(new Error(`Delete of ${id} failed: HTTP ${r.status}`), { status: r.status, local: true });
       log?.(`delete ${id} failed: ${r ? `HTTP ${r.status}` : 'network error'}`);
     }
-    throw normalize(last ?? new Error(`Delete of ${id} failed`));
+    throw normalize(last ?? Object.assign(new Error(`Delete of ${id} failed`), { local: true }));
   }
 
   // Raw GET: SDK 0.6.0 does not type some fields. Goes through the same limiter and 429 retry as SDK calls, with a 15 s deadline.
@@ -269,7 +288,7 @@ export function createProvider(env, deps = {}) {
     const key = apiKey();
     const scrub = (s) => String(s).split(key).join('[redacted]');
     const known = new WeakSet(); // errors built here from fixed text; anything else (a fetch rejection) is replaced
-    const mk = (message, props) => { const e = Object.assign(new Error(scrub(message)), props); known.add(e); return e; };
+    const mk = (message, props) => { const e = Object.assign(new Error(scrub(message)), { local: true, ...props }); known.add(e); return e; };
     const attempt = async (signal) => {
       const res = await fetchFn(url, { headers: { 'X-API-Key': key }, signal });
       if (res.ok) return res.json();
@@ -326,7 +345,7 @@ export function createProvider(env, deps = {}) {
   }
   const apiKeyOrEmpty = () => { try { return apiKey(); } catch { return '\0'; } };
 
-  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
+  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, ...cliSpawnOpts(argv, env) });
 
   return {
     name: 'instabox',
@@ -342,10 +361,10 @@ export function createProvider(env, deps = {}) {
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
     async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size, egress } = {}) {
-      if (egress) throw Object.assign(new Error('Instabox cannot limit where a machine connects.'), { code: 'egress_unsupported' });
+      if (egress) throw Object.assign(new Error('Instabox cannot limit where a machine connects.'), { code: 'egress_unsupported', local: true });
       const key = apiKey();
       const kindName = kind?.name ?? 'linux';
-      if (!KINDS.includes(kindName)) throw Object.assign(new Error(`Instabox has no ${kindName} machines`), { code: 'machine_kind_unsupported' });
+      if (!KINDS.includes(kindName)) throw Object.assign(new Error(`Instabox has no ${kindName} machines`), { code: 'machine_kind_unsupported', local: true });
       if (kindName !== 'linux') image = TEMPLATES[kindName];
       const extra = kindName === 'gpu' ? { gpu: kind.gpu ?? 'l4' }
         : kindName === 'macos' ? { acceptMinimumLease: true, ...(kind.model && { model: kind.model }) } : undefined; // ponytail: macos `model` body field is a guess; unverified live
@@ -402,6 +421,9 @@ export function createProvider(env, deps = {}) {
     // Extra environment for the spawned `instabox ssh`, so it uses the same account as the SDK (the key may live only in the config file).
     shellEnv() { try { return { INSTABOX_API_KEY: apiKey() }; } catch { return {}; } },
     shellArgv: (id, cmd = [], { tty = false } = {}) => [...INSTABOX_CLI, 'ssh', id, ...(cmd.length ? ['--', tty ? '-t' : '-T', cmd.map(shq).join(' ')] : [])],
+    // An interactive spawn of shellArgv (coordinator attach, sign-in, cloudy-cloud shell) gets the same policy as
+    // the provider's own CLI calls: the npx fallback runs from a trusted directory with the allowlisted environment.
+    shellSpawnOpts: (argv) => cliSpawnOpts(argv, env),
 
     async connect(id, { retry = true } = {}) {
       const { Sandbox } = await loadSdk();
@@ -453,11 +475,11 @@ export function createProvider(env, deps = {}) {
     // dropped — the same mechanism `cloudy-cloud setup` uses. Needs the instabox login session, like setup.
     async storeSecret(name, value) {
       const host = SECRET_HOSTS[name];
-      if (!host) throw Object.assign(new Error(`no host is known for the secret ${name}`), { code: 'unknown_secret' });
+      if (!host) throw Object.assign(new Error(`no host is known for the secret ${String(name).replaceAll('\n', ' ')}`), { code: 'unknown_secret', local: true });
       const r = await spawn([...INSTABOX_CLI, 'secrets', 'set', name, '--host', host], { input: String(value) });
       if (r.code !== 0) {
-        const detail = (r.stderr || r.stdout || '').split(String(value)).join('[redacted]').split(apiKeyOrEmpty()).join('[redacted]').trim().slice(0, 200);
-        throw Object.assign(new Error(`Could not store the ${name} secret (exit ${r.code})${detail ? `: ${detail}` : ''}`), { exitCode: r.code });
+        const detail = (r.stderr || r.stdout || '').split(String(value)).join('[redacted]').split(apiKeyOrEmpty()).join('[redacted]').replaceAll('\n', ' ').trim().slice(0, 200);
+        throw Object.assign(new Error(`Could not store the ${String(name).replaceAll('\n', ' ')} secret (exit ${r.code})${detail ? `: ${detail}` : ''}`), { exitCode: r.code, local: true });
       }
     },
 
@@ -465,11 +487,11 @@ export function createProvider(env, deps = {}) {
     // Names only — a secret value never appears here. Used to check CLOUDY_CLOUD_INSTABOX_API_KEY before writing it.
     async listSecrets() {
       const r = await spawn([...INSTABOX_CLI, 'secrets', 'ls', '--json']);
-      if (r.code !== 0) throw Object.assign(new Error(`Could not list the Instabox secrets (exit ${r.code})`), { exitCode: r.code });
+      if (r.code !== 0) throw Object.assign(new Error(`Could not list the Instabox secrets (exit ${r.code})`), { exitCode: r.code, local: true });
       let j;
-      try { j = JSON.parse(r.stdout); } catch { throw new Error('Could not read the Instabox secrets list (not JSON).'); }
+      try { j = JSON.parse(r.stdout); } catch { throw Object.assign(new Error('Could not read the Instabox secrets list (not JSON).'), { local: true }); }
       const a = Array.isArray(j) ? j : (j.items ?? j.data ?? j.secrets);
-      if (!Array.isArray(a)) throw new Error('Could not read the Instabox secrets list (unexpected shape).');
+      if (!Array.isArray(a)) throw Object.assign(new Error('Could not read the Instabox secrets list (unexpected shape).'), { local: true });
       return new Set(a.map((x) => x?.name).filter((n) => typeof n === 'string'));
     },
 

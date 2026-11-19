@@ -133,3 +133,52 @@ test('--yes refuses to delete when origin has several push URLs', async () => {
   assert.match(r.err, /refus/i);
   assert.deepEqual(f.branches(), before);
 });
+
+test('a local tag named origin/main cannot make an unmerged branch look merged', async () => {
+  const f = fixture();
+  // refs/tags/origin/main shadows refs/remotes/origin/main in revision lookups; ancestry must use the remote OID.
+  const unmerged = sh(f.work, 'git ls-remote origin refs/heads/cloudy-cloud/00000003').split(/\s+/)[0];
+  sh(f.work, `git tag origin/main ${unmerged}`);
+  assert.equal(sh(f.work, 'git rev-parse origin/main'), unmerged, 'the shadow tag resolves');
+  const r = await run(['prune'], f.work);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /cloudy-cloud\/00000003 .* keep/);
+  const y = await run(['prune', '--yes'], f.work);
+  assert.equal(y.code, 0);
+  assert.ok(f.branches().includes('cloudy-cloud/00000003'), 'the unmerged branch is kept');
+});
+
+test('a SHA-256 repo (64-char object ids) is listed and pruned like a SHA-1 one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'branches-256-'));
+  const bare = join(dir, 'origin.git'), work = join(dir, 'work');
+  sh(dir, `git init -q --bare -b main --object-format=sha256 ${bare} && git clone -q ${bare} work`);
+  const g = 'git -c user.name=t -c user.email=t@t';
+  sh(work, `${g} commit -q --allow-empty -m base && git push -q origin HEAD:main`);
+  sh(work, 'git checkout -q -b tmp main && git push -q origin tmp:cloudy-cloud/00000001 && git checkout -q main && git branch -q -D tmp');
+  const sha = sh(work, 'git rev-parse main');
+  assert.equal(sha.length, 64);
+  const r = await run(['prune', '--yes'], work);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /cloudy-cloud\/00000001 .* prune/);
+  assert.match(r.out, /Deleted cloudy-cloud\/00000001/);
+  assert.ok(!sh(bare, "git for-each-ref '--format=%(refname:short)' refs/heads").split('\n').includes('cloudy-cloud/00000001'));
+});
+
+test('git stderr is scrubbed of terminal controls before it is printed', async () => {
+  const f = fixture();
+  const real = sh('/', 'command -v git');
+  const bin = mkdtempSync(join(tmpdir(), 'git-shim-'));
+  writeFileSync(join(bin, 'git'), `#!/bin/sh
+case "$1" in
+  ls-remote) printf 'remote \\033[2Jpoisoned\\n' >&2; exit 1;;
+esac
+exec "${real}" "$@"
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let r;
+  try { r = await run(['prune'], f.work); } finally { process.env.PATH = path; }
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.err, /\x1b|\x00/);
+  assert.match(r.err, /remote +poisoned/);
+});
