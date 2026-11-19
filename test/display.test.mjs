@@ -159,15 +159,18 @@ test('an omarchy machine is refused up front whether addressed by agent id, name
   }
 });
 
-test('a generic provider failure names the CLI to install; doctor is a self-hosted answer only', async () => {
+test('a generic provider failure names no CLI — display runs through the SDK, not the provider binary', async () => {
   let s = setup();
+  let argvCalls = 0;
+  s.provider.shellArgv = () => { argvCalls++; return ['npx', 'fake-ssh']; }; // SDK-only failures must not probe the CLI path
   s.provider.displayLink = async () => { throw new Error('socket hangup'); };
   assert.equal(await run(['box-aaa'], s.d), 1);
-  assert.match(s.err.join('\n'), /could not complete the display request.*fake-ssh/s);
-  assert.doesNotMatch(s.err.join('\n'), /doctor/);
+  assert.equal(argvCalls, 0, 'shellArgv was called for an SDK-only failure');
+  assert.match(s.err.join('\n'), /could not complete the display request\. Try again\./);
+  assert.doesNotMatch(s.err.join('\n'), /installed|npx|fake-ssh|doctor/);
   s = setup();
   s.provider.name = 'self-hosted';
   s.provider.displayLink = async () => { throw new Error('socket hangup'); };
   assert.equal(await run(['box-aaa'], s.d), 1);
-  assert.match(s.err.join('\n'), /cloudy-cloud doctor/);
+  assert.match(s.err.join('\n'), /cloudy-cloud doctor/); // doctor checks self-hosted boxes only
 });

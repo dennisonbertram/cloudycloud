@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, resolve } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
-import { guide, SECRET_HOSTS } from '../errors.mjs';
+import { guide, guideObj, SECRET_HOSTS } from '../errors.mjs';
 const ARCHIVE_MS = 8 * 60 * 60_000; // backstop; agents are normally stopped sooner.
 const FOREGROUND_MAX_MS = 600_000; // Instabox caps a foreground command at 10 minutes.
 const WAIT_SLICE_MS = 20_000; // one job.wait() holds a request slot, so wait in short slices.
@@ -30,10 +30,13 @@ const KEY_HOSTS = { CLAUDE_CODE_OAUTH_TOKEN: 'api.anthropic.com', ANTHROPIC_API_
 // replaced, so all names go together), and wait until Instabox has applied them.
 export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 2000, timeoutMs = 60_000 } = {}) {
   const url = `${API}/${encodeURIComponent(id)}/secrets`;
+  // The fields errorScreen renders are our authored words only; transport and HTTP body text is diagnostic
+  // detail — server text can carry a forged label line, so it never goes into short/reason/next (#185).
+  const fields = (d, extra = {}) => ({ local: true, short: 'The GH_TOKEN Instabox secret could not be attached to the sandbox.', next: 'create it as described in https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4', ...extra, details: [d, ...extra.details ?? []] });
   const call = async (method, body) => {
     const res = await fetchFn(url, {
       method, headers: { 'X-API-Key': apiKey, ...(body && { 'Content-Type': 'application/json' }) }, body,
-    }).catch((e) => { throw Object.assign(new Error(`${SECRET_HELP} (${method}: ${String(e?.message ?? '').replaceAll('\n', ' ')})`), { local: true }); });
+    }).catch((e) => { const m = String(e?.message ?? '').replaceAll('\n', ' '); throw Object.assign(new Error(`${SECRET_HELP} (${method}: ${m})`), fields(`${method}: ${m}`)); });
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       let j = {};
@@ -42,9 +45,10 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
       // Server text folds onto one line: a newline inside it could forge a guidance label in our message.
       const detail = String(e.code || e.message ? `code ${e.code ?? '?'}: ${e.message ?? ''}${e.hint ? ` (${e.hint})` : ''}` : t.slice(0, 200)).replaceAll('\n', ' ');
       const missing = names.find((n) => `${t}`.includes(n));
-      const help = missing ? guide('secret_missing', { secret: missing, host: KEY_HOSTS[missing] })
+      const g = missing && guideObj('secret_missing', { secret: missing, host: KEY_HOSTS[missing] });
+      const help = g ? guide('secret_missing', { secret: missing, host: KEY_HOSTS[missing] })
         : names.length ? `${SECRET_HELP} Secrets tried: GH_TOKEN, ${names.join(', ')}.` : SECRET_HELP;
-      throw Object.assign(new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`), { local: true });
+      throw Object.assign(new Error(`${help} (${method} returned HTTP ${res.status}, ${detail})`), fields(`${method} returned HTTP ${res.status}, ${detail}`, g ? { short: g.whatHappened, next: g.nextStep } : { details: names.length ? [`Secrets tried: GH_TOKEN, ${names.join(', ')}`] : [] }));
     }
     return res;
   };
@@ -499,7 +503,8 @@ export function createProvider(env, deps = {}) {
 
     text: {
       ssh: SSH,
-      listMachines: 'cloudy-cloud machines',
+      listMachines: 'npx --yes instabox@latest ls --meta purpose=cloudy-cloud',
+      listMachinesUi: 'cloudy-cloud machines', // the terminal hint names our own command; scripts keep the provider CLI
       noKeyFix: 'Add your Instabox key: run cloudy-cloud setup (or npx cloudycloud setup), or put INSTABOX_API_KEY=... in ~/.config/cloudy-cloud/env.',
       apiFix: 'Check your internet connection and that INSTABOX_API_KEY in ~/.config/cloudy-cloud/env is still valid (create a new one at instabox.sh if not).',
       githubTokenHelp: SECRET_HELP,

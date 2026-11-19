@@ -46,7 +46,7 @@ test('an invalid CLOUDY_CLOUD_EGRESS_ALLOW value is refused before anything is c
   deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'ok.example.com http://x' };
   const r = await start();
   assert.equal(r.isError, true);
-  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW entry 2 is not a host name\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\.\nNext step: fix CLOUDY_CLOUD_EGRESS_ALLOW in ~\/\.config\/cloudy-cloud\/env, or remove it\./);
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW entry 2 is not a host name\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env\.\nWhat happened:/); // the error keeps the origin/main paragraph; the appended guide follows
   assert.ok(!text(r).includes('http://x'), 'the bad entry is not echoed back');
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
@@ -138,7 +138,7 @@ test('a set-but-blank CLOUDY_CLOUD_EGRESS_ALLOW is refused, not treated as no po
   deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: '  , ' };
   const r = await start();
   assert.equal(r.isError, true);
-  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts/);
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env or remove it\.\nWhat happened:/);
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });
@@ -194,7 +194,7 @@ test('an https MCP URL adds only its lowercase hostname, whatever the scheme cas
   await stop([agent]);
 });
 
-test('npx and uvx MCP servers are refused with the package hosts to add', async () => {
+test('npx and uvx MCP servers are refused; the fix removes the download, adding hosts cannot work', async () => {
   const mcp = join(await mkdtemp(join(tmpdir(), 'cc-mcp-')), 'mcp.json');
   await writeFile(mcp, JSON.stringify({ mcpServers: { npm: { command: 'npx', args: ['-y', 'some-mcp'] }, py: { command: 'uvx', args: ['other-mcp'] } } }));
   const { start, text, created, deps } = await setup();
@@ -204,11 +204,13 @@ test('npx and uvx MCP servers are refused with the package hosts to add', async 
   assert.match(text(r), /registry\.npmjs\.org/);
   assert.match(text(r), /pypi\.org/);
   assert.match(text(r), /files\.pythonhosted\.org/);
+  assert.doesNotMatch(text(r), /add .+ to CLOUDY_CLOUD_EGRESS_ALLOW/, 'adding the hosts cannot unblock a startup download');
+  assert.match(text(r), /remove|CLOUDY_CLOUD_EGRESS_ALLOW=off/, 'the named recovery is one the check accepts');
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });
 
-test('CLOUDY_CLOUD_APT_PACKAGES is refused with the apt mirrors to add when egress is active', async () => {
+test('CLOUDY_CLOUD_APT_PACKAGES is refused when egress is active; the fix removes the packages or the policy', async () => {
   const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: true, hasEgressPolicy: true });
   const { start, text, created, deps } = await setup({ provider });
   deps.env = { ...deps.env, CLOUDY_CLOUD_PROXY_SECRETS: 'GH_TOKEN,ANTHROPIC_API_KEY', CLOUDY_CLOUD_APT_PACKAGES: 'jq', CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
@@ -216,6 +218,8 @@ test('CLOUDY_CLOUD_APT_PACKAGES is refused with the apt mirrors to add when egre
   assert.equal(r.isError, true);
   assert.match(text(r), /deb\.debian\.org/);
   assert.match(text(r), /cli\.github\.com/);
+  assert.doesNotMatch(text(r), /add .+ to CLOUDY_CLOUD_EGRESS_ALLOW/);
+  assert.match(text(r), /CLOUDY_CLOUD_APT_PACKAGES|CLOUDY_CLOUD_EGRESS_ALLOW=off/);
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });

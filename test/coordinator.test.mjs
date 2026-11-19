@@ -282,6 +282,8 @@ test('stop deletes only the named coordinator', async () => {
   await main(['stop', 'b'], f.deps);
   assert.deepEqual(f.log.killed, ['m2']);
   assert.match(f.log.out.join('\n'), /cleanup process/);
+  // piped output keeps the provider CLI line scripts saw on origin/main (#185: terminal wording only in fields)
+  assert.match(f.log.out.join('\n'), /Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud/);
   await assert.rejects(main(['stop', 'zzz'], f.deps), /No coordinator named zzz/);
 });
 
@@ -1237,15 +1239,33 @@ test('errorScreen wraps the short and reason lines whole — never a mid-word cu
   assert.match(off, /^cloudy-cloud: full message/);
 });
 
-test('a spend-limit start failure shows the three-line screen and machine-readable error stays the same', async () => {
+test('a spend-limit start failure shows its screen and machine-readable error stays the same', async () => {
   const f = fixture({ pane: "  You've hit your monthly spend limit\n" });
   const e = await main([...START], f.deps).then(() => { throw new Error('start did not fail'); }, (x) => x);
   assert.equal(e.code, 'spend_limit');
   assert.ok(e.short && e.next, 'the error carries its own lines');
+  // our authored words are the cause; the remote pane line is a diagnostic, never a trusted field (#185)
+  assert.equal(e.reason, 'the saved Claude login has hit its spend or usage limit; the machine was deleted');
+  assert.match(e.details.join(' '), /screen: .*spend limit/i);
   const lines = plainText(errorScreen(e, tty())).split('\n');
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, 5); // headline, screen diagnostic, the wrapped cause, one Next
   assert.doesNotMatch(errorScreen(e, tty()), /What happened|Tell the user/);
   for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('a recognised SDK error renders our template fields; its own text is a dim diagnostic, never the headline (#185)', async () => {
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw new Error('rate_limited: too many requests on this account'); };
+  const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e.local, true); // a recognised code still renders our error view
+  assert.equal(e.short, 'The provider is limiting how fast machines or requests start.');
+  assert.equal(e.reason, 'Likely too many agents started at once.');
+  assert.match(e.details.join(' '), /rate_limited: too many requests on this account/);
+  const s = plainText(errorScreen(e, tty()));
+  assert.match(s, /✖ The provider is limiting how fast machines or requests start\./);
+  assert.doesNotMatch(s, /✖ rate_limited/);
+  assert.match(s, /^ {4}rate_limited: too many requests on this account$/m); // the provider line only as a dim diagnostic
+  for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
 });
 
 // ---- r2: start screen order and wrap-proof lines (N2, N3) ----
@@ -1592,8 +1612,8 @@ test('plain stderr keeps the appended guidance; the tmux-exit message keeps its 
   assert.match(plain, /^cloudy-cloud: The coordinator session started but is not working/);
   assert.match(plain, /What happened: /);
   assert.match(plain, /Next step: /); // the guidance fields scripts saw before
-  // the colour screen still shows only the three lines
-  assert.equal(plainText(errorScreen(e, tty())).split('\n').length, 3);
+  // the colour screen shows headline, screen diagnostic, the wrapped cause and Next — still one layer
+  assert.equal(plainText(errorScreen(e, tty())).split('\n').length, 5);
   // tmux-exit: piped callers keep the old wording (noninteractive image needs --save)
   const g = fixture();
   const orig = g.deps.sdk.Sandbox.create;
@@ -1690,6 +1710,8 @@ test('a start provider error renders the appended guidance once: short, cause, o
   assert.match(errorScreen(e, { on: false }), /What happened: |Next step: /); // piped keeps the labels
   for (const u of [tty(), nocolor(), dumb()]) {
     const s = plainText(errorScreen(e, u));
+    assert.match(s, /The Claude spend limit is reached, so no turn can run\./); // our template headline
+    assert.doesNotMatch(s, /✖ You have reached|✖ .*monthly spend limit/); // never the provider's line
     assert.equal((s.match(/^ {2}(?:→ Next|›)/gm) ?? []).length, 1, s);
     assert.doesNotMatch(s, /Tell the user|What happened:|Likely cause:|Next step:/);
     assert.match(s, /spend limit/);
@@ -1705,7 +1727,7 @@ test('coordinator usage errors keep the origin message for scripts and show the 
     [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
     [['ls', '--all'], 'ls takes no arguments.\nRun: cloudy-cloud coordinator ls --help', /Usage: cloudy-cloud coordinator ls/, /Next: cloudy-cloud coordinator ls --help/],
     [['stop'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator stop --help', /Usage: cloudy-cloud coordinator stop NAME/, /Next: cloudy-cloud coordinator stop --help/],
-    [['start'], 'start needs a NAME.\nRun: cloudy-cloud coordinator start --help', /Usage: cloudy-cloud coordinator start NAME --repo URL/, /Next: cloudy-cloud coordinator start --help/],
+    [['start'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help', /start needs a NAME\./, /Next: cloudy-cloud coordinator start --help/],
     [['start', 'boss', '--typo', 'x'], 'Unknown argument: --typo\nRun: cloudy-cloud coordinator start --help', /Usage: cloudy-cloud coordinator start NAME --repo URL/, /Next: cloudy-cloud coordinator start --help/],
     [['attach'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator attach --help', /Usage: cloudy-cloud coordinator attach NAME/, /Next: cloudy-cloud coordinator attach --help/],
   ]) {
@@ -1724,7 +1746,7 @@ test('coordinator usage errors keep the origin message for scripts and show the 
   await main(['start', '--json'], { env: {}, out: (s) => out.push(s) }).then(() => { throw new Error('no fail'); }, () => {});
   const o = JSON.parse(out[0]).error;
   assert.equal(o.code, 'unknown');
-  assert.equal(o.whatHappened, 'Something failed: start needs a NAME.\nRun: cloudy-cloud coordinator start --help');
+  assert.equal(o.whatHappened, 'Something failed: NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help');
 });
 
 // ---- r3: every refusal ships a Next (visual cluster 5 + flow 6) ----
@@ -2102,6 +2124,25 @@ test('the short and reason error lines wrap at word boundaries and are never cut
   for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
 });
 
+test('errorScreen never hangs on a too-narrow terminal: the wrap room cannot go below one cell', () => {
+  // A 7-column terminal used to loop forever inside the wrap; run it in a subprocess so a hang fails the test.
+  const r = spawnSync(process.execPath, ['-e', `Promise.all([import(${JSON.stringify(resolve('src/coordinator.mjs'))}), import(${JSON.stringify(resolve('src/ui.mjs'))})]).then(([c, u]) => {
+    const e = Object.assign(new Error('m'), { local: true, short: 's'.repeat(30), reason: 'r'.repeat(30), next: 'cloudy-cloud coordinator ls' });
+    console.log(c.errorScreen(e, u.makeUi({ tty: true, cols: 7, env: { TERM: 'xterm', LANG: 'C' } }))); })`], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(r.status, 0, `hung or failed: ${r.stderr} ${r.error?.message ?? ''}`);
+  // wrapped content must fit; the literal '  -> Next:' marker and its continuation indent are unwrappable
+  const lines = plainText(r.stdout ?? '').split('\n');
+  const nextAt = lines.findIndex((l) => /Next:|›/.test(l));
+  for (const l of (nextAt === -1 ? lines : lines.slice(0, nextAt))) assert.ok(cellWidth(l) <= 7, l);
+});
+
+test('the rendered [x] prefix is budgeted in the headline wrap: a 76-cell short still fits 80 under LANG=C', () => {
+  const ascii = makeUi({ tty: true, cols: 80, env: { TERM: 'xterm', LANG: 'C' } });
+  const e = Object.assign(new Error('m'), { local: true, short: `A coordinator named ${'n'.repeat(40)} already exists`, next: 'cloudy-cloud coordinator start other' });
+  const s = plainText(errorScreen(e, ascii));
+  for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, `${JSON.stringify(l)} (${cellWidth(l)} cells)`);
+});
+
 test('ls DELETES is only the relative time on a terminal; the ISO date stays in the piped TSV', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(Date.now() - 2 * 3600e3), machine: { deleteAt: new Date(Date.now() + 23 * 3600e3).toISOString() }, metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
   f.deps.ui = tty();
@@ -2163,7 +2204,7 @@ test('a missing msb renders its own headline and the install command, not a gene
   assert.match(e.message, /msb\) was not found/);
   const s = plainText(errorScreen(e, tty()));
   assert.match(s, /✖ The microsandbox CLI \(msb\) was not found\./);
-  assert.match(s, /(→ Next:|›) curl -fsSL https:\/\/install\.microsandbox\.dev \| sh/);
+  assert.match(s, /→ Next: curl -fsSL https:\/\/install\.microsandbox\.dev \| sh/); // explicitly marked runnable, not a prose hint
   assert.doesNotMatch(s, /key is missing|coordinator --help/);
 });
 
@@ -2200,5 +2241,6 @@ test('a key-in-plain-value refusal prints one cause line, not two near-identical
 
 test('coordinator start with no NAME says the NAME is missing', async () => {
   const e = await main(['start'], { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
-  assert.match(e.message, /^start needs a NAME\./);
+  assert.equal(e.short, 'start needs a NAME.'); // the terminal headline
+  assert.match(e.message, /^NAME must use lowercase letters, digits and hyphens \(1 to 40 characters\)\./); // the piped text keeps the origin/main wording
 });

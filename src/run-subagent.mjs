@@ -1123,13 +1123,16 @@ export async function runSubagent(args, deps) {
   let mcp, mcpError, allowList;
   try { mcp = forHarness(agentMcp(ctx.env, hasProxySecrets), profile?.harness); mcp.values.forEach((v) => ctx.literals.add(v)); } catch (e) { mcpError = e.message; }
   if (egress.list.length) {
-    const needs = new Set(), downloads = [];
+    const downloads = [];
     for (const [n, e] of Object.entries(mcp?.servers ?? {})) {
-      if (e.command === 'npx') { downloads.push(`MCP server ${n} is installed with npx (registry.npmjs.org)`); needs.add('registry.npmjs.org'); }
-      else if (e.command === 'uvx') { downloads.push(`MCP server ${n} is installed with uvx (pypi.org and files.pythonhosted.org)`); needs.add('pypi.org'); needs.add('files.pythonhosted.org'); }
+      if (e.command === 'npx') downloads.push(`MCP server ${n} is installed with npx (registry.npmjs.org)`);
+      else if (e.command === 'uvx') downloads.push(`MCP server ${n} is installed with uvx (pypi.org and files.pythonhosted.org)`);
     }
-    if (apt.list.length) { downloads.push('CLOUDY_CLOUD_APT_PACKAGES is installed with apt-get (deb.debian.org, security.debian.org, cli.github.com)'); ['deb.debian.org', 'security.debian.org', 'cli.github.com'].forEach((h) => needs.add(h)); }
-    if (downloads.length) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start: ${downloads.join('; ')}. Next step: add ${[...needs].join(', ')} to CLOUDY_CLOUD_EGRESS_ALLOW in ~/.config/cloudy-cloud/env, or remove those servers and packages, then call cloud_agent again.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start.', next: `add ${[...needs].join(', ')} to CLOUDY_CLOUD_EGRESS_ALLOW in ~/.config/cloudy-cloud/env, or remove those servers and packages, then call cloud_agent again` });
+    if (apt.list.length) downloads.push('CLOUDY_CLOUD_APT_PACKAGES is installed with apt-get (deb.debian.org, security.debian.org, cli.github.com)');
+    // The check refuses every startup download, so allowing its hosts cannot work: the recovery is removing
+    // the download source or unsetting the policy for this call — never adding hosts.
+    const dlFix = 'remove the download source (cloudy-cloud mcp rm <name> for an MCP server, clear CLOUDY_CLOUD_APT_PACKAGES for apt packages), or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env, then call cloud_agent again';
+    if (downloads.length) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start: ${downloads.join('; ')}. Next step: ${dlFix}.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start.', next: dlFix });
     allowList = egressHosts(profile, mcp, ctx.env, egress.list);
   }
   // Awaited calls above (issue fetch, coordinator repo checks) let a parallel call win the slot; check again with no await before the increment.

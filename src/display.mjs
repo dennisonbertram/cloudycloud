@@ -63,9 +63,9 @@ export async function run(argv, deps = {}) {
         // Never print the provider's own text: it can carry the link. Use the guide for its code, or a fixed message.
         if (['desktop_unavailable', 'display_forbidden'].includes(e.code)) fail(guide(e.code, { kind: e.kind }));
         if (CODES.includes(e.code) && e.code !== 'unknown') fail(guide(e.code, { provider: provider.name, id: a.id }));
-        // doctor checks self-hosted boxes only; everywhere else name the provider CLI to install.
-        const bin = (() => { try { return provider.shellArgv?.('x')?.[0]; } catch { return undefined; } })();
-        fail(`${Name} could not complete the display request. Try again${provider.name === 'self-hosted' ? ', or run: cloudy-cloud doctor' : bin ? `, or check that ${bin} is installed` : ''}.`);
+        // A display request runs through the SDK, never the provider CLI — naming one would be wrong
+        // (Instabox's would suggest npx, a whole different install). doctor checks self-hosted boxes only.
+        fail(`${Name} could not complete the display request. Try again${provider.name === 'self-hosted' ? ', or run: cloudy-cloud doctor' : ''}.`);
       }
     };
     if (a.unshare) {

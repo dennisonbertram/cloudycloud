@@ -21,6 +21,7 @@ import { homedir } from 'node:os';
 import { createServer } from 'node:net';
 import { createLimiter } from '../limits.mjs';
 import { SECRET_HOSTS } from '../errors.mjs';
+import { mcpFile } from '../mcpsync.mjs';
 
 const PREFIX = 'cloudy-cloud.';
 const HOME = '/home/worker';
@@ -41,6 +42,7 @@ export const egressOk = (h) => {
 };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, for commands inside the guest
+const dq = (s) => (/^[\w@%+=:,./-]+$/.test(String(s)) ? String(s) : q(s)); // host-shell word, quoted only when it needs it
 
 // Where the msb CLI lives: CLOUDY_CLOUD_MSB_BIN, else the installer's default ~/.local/bin/msb, else msb on
 // PATH (the same ladder install.sh --check-only and the launcher use). '' means nothing was found.
@@ -65,6 +67,14 @@ export function createProvider(env = process.env, deps = {}) {
   const now = deps.now ?? (() => Date.now()); // test seam: a fake clock
   const hosts = { ...SECRET_HOSTS, OPENAI_API_KEY: 'api.openai.com', GH_TOKEN: 'github.com,api.github.com', ...(deps.secretHosts ?? {}) };
   const hostsFor = (n) => (Array.isArray(hosts[n]) ? hosts[n] : String(hosts[n] ?? '').split(',').map((h) => h.trim()).filter(Boolean));
+  // The MCP recovery names the configured server that uses the token (${MCP_X_TOKEN} in its entry), or mcp ls
+  // when no config names it — never the derived MCP_*_TOKEN variable name itself.
+  const mcpRm = (n) => {
+    let servers = {};
+    try { servers = JSON.parse(readFileSync(mcpFile(env), 'utf8'))?.mcpServers ?? {}; } catch { /* no readable config */ }
+    const name = Object.keys(servers).find((k) => /^[A-Za-z0-9_-]+$/.test(k) && JSON.stringify(servers[k]).includes(`\${${n}}`));
+    return name ? `remove that server with cloudy-cloud mcp rm ${name}` : 'remove the MCP server that uses it (cloudy-cloud mcp ls shows the names)';
+  };
 
   // The only environment any msb child sees: names a CLI needs plus any MSB_* config — never process.env
   // wholesale, so an exported token cannot leak into ls/exec/rm. MSB_BACKEND=local pins the local backend.
@@ -158,8 +168,10 @@ export function createProvider(env = process.env, deps = {}) {
 
   // Our own error texts carry trusted guidance fields (local, short, next) so a terminal renders them as
   // guidance rather than as dim diagnostics; values from msb or the API never go into short/next.
-  const noMsb = () => fail('no_key', api.text.noKeyFix, { local: true, short: 'The microsandbox CLI (msb) was not found.', next: 'curl -fsSL https://install.microsandbox.dev | sh' });
-  const missingImage = () => Object.assign(new Error(`The microsandbox worker image ${IMAGE} is missing. Build and load it (needs Docker running):\n  docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE}\n  docker save ${IMAGE} | ${bin} load\nThen call cloud_agent again.`), { local: true, short: `The microsandbox worker image ${IMAGE} is missing.`, next: `docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE} && docker save ${IMAGE} | ${bin} load` });
+  // nextCmd marks a recovery the user can run as-is, so a terminal prints it as the runnable Next command.
+  const noMsb = () => fail('no_key', api.text.noKeyFix, { local: true, short: 'The microsandbox CLI (msb) was not found.', next: 'curl -fsSL https://install.microsandbox.dev | sh', nextCmd: true });
+  const missingImage = () => { const build = `docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${dq(DOCKERFILE)} && docker save ${IMAGE} | ${dq(bin)} load`;
+    return Object.assign(new Error(`The microsandbox worker image ${IMAGE} is missing. Build and load it (needs Docker running):\n  ${build}\nThen call cloud_agent again.`), { local: true, short: `The microsandbox worker image ${IMAGE} is missing.`, next: build, nextCmd: true }); };
   const slotsFull = () => fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use.\nNext step: stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env.`, { local: true, short: `All ${slots} microsandbox slots on this computer are in use.`, next: `stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env` });
 
   function sandbox(id, name = id, deleteAt) {
@@ -242,10 +254,11 @@ export function createProvider(env = process.env, deps = {}) {
       const senv = {}, sargs = [];
       for (const n of want) {
         const hl = hostsFor(n);
-        if (!hl.length) throw fail('no_key', n.startsWith('MCP_')
-          ? `The secret ${n} has no known host, so microsandbox cannot attach it. MCP server tokens are not supported on the microsandbox provider yet. Next step: remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox.`
+        const mcp = n.startsWith('MCP_') ? mcpRm(n) : undefined;
+        if (!hl.length) throw fail('no_key', mcp
+          ? `The secret ${n} has no known host, so microsandbox cannot attach it. MCP server tokens are not supported on the microsandbox provider yet. Next step: ${mcp}, or set CLOUDY_CLOUD_PROVIDER=instabox.`
           : `The secret ${n} has no known host, so microsandbox cannot attach it. Next step: set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows.`,
-          { local: true, short: `The secret ${n} has no known host, so microsandbox cannot attach it.`, next: n.startsWith('MCP_') ? `remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox` : 'set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows' });
+          { local: true, short: `The secret ${n} has no known host, so microsandbox cannot attach it.`, next: mcp ? `${mcp}, or set CLOUDY_CLOUD_PROVIDER=instabox` : 'set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows' });
         if (env[n] === undefined) throw fail('no_key', `The secret ${n} has no value in ~/.config/cloudy-cloud/env. On the microsandbox provider the value stays on this computer and microsandbox puts it only into requests to ${hl.join(',')}. Next step: add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`, { local: true, short: `The secret ${n} has no value in ~/.config/cloudy-cloud/env.`, next: `add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again` });
         senv[n] = env[n]; // secret values go into the create child's environment, nowhere else
         sargs.push('--secret', `${n}:headers=[authorization,x-api-key]@${hl.join(',')}`); // header-option syntax from the docs/source; unverified live

@@ -485,7 +485,7 @@
       }
     ],
     "out": [
-      "Deleted coordinator boss (machine coord-boss). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: cloudy-cloud machines"
+      "Deleted coordinator boss (machine coord-boss). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud"
     ]
   },
   "finish --force": {

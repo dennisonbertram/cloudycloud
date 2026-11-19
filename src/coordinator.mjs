@@ -75,6 +75,7 @@ const takeCells = (s, max) => { let out = '', w = 0; for (const ch of String(s))
 // Whole-word wrap for a line of text: words wrap at the room edge. A single word over the room is split at a '/'
 // boundary or, failing that, at the room edge — every character is kept and no command, URL or flag is cut.
 const wrapText = (u, text, room = u.width - 4) => {
+  room = Math.max(1, room); // a terminal too narrow for a useful room still wraps one cell at a time, never loops
   const lines = []; let cur = '';
   for (const w0 of String(text).split(/\s+/).filter(Boolean)) {
     let w = w0;
@@ -446,7 +447,8 @@ async function start(c, args) {
       const [code, cause, next, nextCmd] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`, `check the plan at claude.ai, then start ${name} again`]
         : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', again, 'cloudy-cloud coordinator image']
         : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', again, 'cloudy-cloud coordinator image'];
-      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { local: true, code, short: 'The coordinator session started but is not working.', reason: `screen: ${fitCells(line, 40)}; the machine was deleted`, next: nextCmd });
+      // Remote pane text is diagnostic data, not a trusted field: the cause and next are our authored words only.
+      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { local: true, code, short: 'The coordinator session started but is not working.', reason: `${cause}; the machine was deleted`, details: [`screen: ${fitCells(line, 40)}`], next: nextCmd });
     }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
@@ -596,9 +598,10 @@ async function stop(c, args) {
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   c.progress('Deleting the coordinator machine...');
   await c.provider.delete(m.id, { sdk: true });
+  // A terminal names our own command (listMachinesUi); piped output keeps the provider CLI line scripts had.
   if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
-    hintFit(c.ui, `List machines: ${c.provider.text.listMachines}`)].join('\n'));
+    hintFit(c.ui, `List machines: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`)].join('\n'));
   c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
 }
 
@@ -651,12 +654,13 @@ async function finish(c, args, deps) {
 // Rejects bad arguments before any key is read or the network is touched.
 const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
 function validateArgs(cmd, args) {
-  const bad = (message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, message);
+  const bad = (message, short = message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, short);
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
   if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
-  if (!NAME_RE.test(args[0] ?? '')) bad(cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
+  // The piped text always says what is wrong with the value; the terminal headline says start needs a NAME.
+  if (!NAME_RE.test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
   if (cmd !== 'start') { if (args.length !== 1) bad(`${cmd} takes exactly one NAME.`); return; }
   const seen = new Set();
   for (let i = 1; i < args.length; i++) {
@@ -691,7 +695,7 @@ async function run(argv, deps) {
     // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
     // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
     // An error our own providers mark local keeps the short/next they carry; a foreign one gets generic words.
-    if (e?.code === 'no_key') guided(`${String(e.message).replaceAll('\n', ' ')} Run: ${(e.local === true && e.next) || 'cloudy-cloud setup'}`, { short: (e.local === true && e.short) || `A required ${c.provider.name} key is missing.`, details: [String(e.message)], next: (e.local === true && e.next) || 'cloudy-cloud setup' });
+    if (e?.code === 'no_key') guided(`${String(e.message).replaceAll('\n', ' ')} Run: ${(e.local === true && e.next) || 'cloudy-cloud setup'}`, { short: (e.local === true && e.short) || `A required ${c.provider.name} key is missing.`, details: [String(e.message)], next: (e.local === true && e.next) || 'cloudy-cloud setup', nextCmd: (e.local === true && e.nextCmd === true) || undefined });
     throw e;
   }
 }
@@ -719,8 +723,12 @@ export async function main(argv, deps = {}) {
     // The terminal view reads e.short/reason/next in errorScreen; plain stderr and --json keep the
     // message plus the appended guidance, as before — so the guide text is appended whenever it was before.
     // The rethrown error keeps `local` when the message ends in our own guidance: it was already ours, or
-    // a known code got our template appended. Foreign text alone never becomes trusted guidance.
-    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, local: e?.local === true || code !== 'unknown', short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral, wrapShort: e?.wrapShort, details: Array.isArray(e?.details) ? e.details.map((d) => clean(d)) : undefined });
+    // a known code got our template appended. Foreign text alone never becomes trusted guidance (#185):
+    // a recognised provider/SDK error is rendered from our template for its code (whatHappened, likelyCause,
+    // nextStep), and its original text prints only as a diagnostic detail — never as a headline.
+    const foreign = e?.local !== true && code !== 'unknown' && !has;
+    const own = (v) => (e?.local === true && v ? clean(v) : undefined);
+    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, local: e?.local === true || code !== 'unknown', short: own(e?.short) ?? (foreign ? g.whatHappened : undefined), reason: own(e?.reason) ?? (foreign ? g.likelyCause : undefined), next: own(e?.next) ?? (foreign ? g.nextStep : undefined), neutral: e?.neutral, wrapShort: e?.wrapShort, nextCmd: (e?.local === true && e?.nextCmd === true) || undefined, details: e?.local === true && Array.isArray(e?.details) ? e.details.map((d) => clean(d)) : foreign ? [message] : undefined });
   }
 }
 
@@ -760,7 +768,8 @@ export function errorScreen(e, u) {
   const next = human(scrub(((ours && e.next) || (structured || !ours ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean))) ?? 'cloudy-cloud coordinator --help')) || 'cloudy-cloud coordinator --help';
   const details = (ours ? (Array.isArray(e.details) ? e.details : structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== '')) : text.split('\n')).map((d) => scrub(String(d)));
   // The short and reason lines wrap at word boundaries; nothing is ever cut mid-word with an ellipsis.
-  const shortLines = wrapText(u, short);
+  // The headline's room is the width minus the prefix it renders with — '  [x] ' under LANG=C is wider than '  ✖ '.
+  const shortLines = wrapText(u, short, u.width - cellWidth(u.err('')));
   const seen = new Set([short.trim(), ...shortLines.map((l) => l.trim())]); // never print the same line twice
   if (reason && seen.has(reason.trim())) reason = undefined;
   const body = details.flatMap((d) => d.split('\n').flatMap((l) => (l.trim() ? wrapText(u, bare(l)) : ['']))).filter((l) => { const t = l.trim(); if (!t) return true; if (seen.has(t)) return false; seen.add(t); return true; });
@@ -768,7 +777,7 @@ export function errorScreen(e, u) {
     ...(ours && e.neutral ? shortLines.map((l, i) => (i ? `    ${l}` : `  ${l}`)) : shortLines.map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l)))),
     ...body.map((l) => (l ? `    ${u.dim(l)}` : '')),
     ...(reason ? wrapText(u, reason, u.width - 8).map((l) => `    ${u.dim(l)}`) : []),
-    runnable(next) ? nextFit(u, next) : hintFit(u, next),
+    (ours && e.nextCmd === true) || runnable(next) ? nextFit(u, next) : hintFit(u, next),
   ].join('\n');
 }
 
