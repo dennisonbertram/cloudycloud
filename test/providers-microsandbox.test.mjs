@@ -405,10 +405,10 @@ test('forwardPort bridges a local connection through msb exec --stream into the 
   await assert.rejects(provider.forwardPort('cc-nope', '1:2'), (e) => e.code === 'not_found');
 });
 
-test('loadProvider picks microsandbox; the unknown-provider message lists all three', async () => {
+test('loadProvider picks microsandbox; the unknown-provider message lists all providers', async () => {
   const p = await loadProvider({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_MSB_BIN: BIN });
   assert.equal(p.name, 'microsandbox');
-  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox, self-hosted, microsandbox.' });
+  await assert.rejects(loadProvider({ CLOUDY_CLOUD_PROVIDER: 'nope' }), { message: 'Unknown CLOUDY_CLOUD_PROVIDER "nope". Known: instabox, self-hosted, microsandbox, zipbox.' });
 });
 
 test('missingSetup: the msb binary counts, from env or unset', () => {
@@ -421,6 +421,8 @@ test('missingSetup: the msb binary counts, from env or unset', () => {
   mkdirSync(dirname(bin), { recursive: true });
   writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 });
   assert.equal(missingSetup(bare), ''); // found at the installer's default path
+  assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'zipbox' }), /Zipbox API key/);
+  assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'zipbox', ZIPBOX_API_KEY: 'zb-x' }), '');
 });
 
 test('child env: only the allowlist plus MSB_BACKEND=local reaches msb children; secrets only the create call', async () => {

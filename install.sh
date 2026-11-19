@@ -437,6 +437,18 @@ check_setup() {
         hint "with microsandbox\" in the README."
       fi
     fi
+  elif [ "$provider" = zipbox ]; then
+    key=$(eff ZIPBOX_API_KEY)
+    if [ -z "$key" ]; then bad "No Zipbox API key is saved"; fails=1
+      hint "Create a key at zipbox.ai (Settings -> API keys), then"
+      hint "add ZIPBOX_API_KEY=<the key> to $(cfg)."
+    else ok "A Zipbox API key is saved"; fi
+    if [ "$(eff CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX)" != yes ]; then
+      bad "Credential values are not allowed on Zipbox boxes"; fails=1
+      hint "Zipbox has no proxy secrets, so tokens are written"
+      hint "onto the box. To allow that, add"
+      hint "CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes to $(cfg)."
+    else ok "Credentials are allowed on Zipbox boxes"; fi
   elif [ "$provider" = self-hosted ]; then
     host=$(eff CLOUDY_CLOUD_SSH_HOST)
     if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine"; fails=1; setupfix=1; fi
@@ -472,6 +484,21 @@ check_setup() {
         hint "microsandbox puts it only into requests to api.anthropic.com."
       fi
     elif [ -n "$cname" ] || [ -n "$any" ]; then ok "A worker credential is saved" "the value stays on this computer"
+    elif [ -f "$(codex_auth_file)" ]; then ok "A Codex sign-in is saved" "it is copied onto each machine"
+    else bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1
+      hint "Add a key to $(cfg): OPENAI_API_KEY, PARTICLE_API_KEY or"
+      hint "OPENROUTER_API_KEY (or a Claude token)."
+    fi
+  elif [ "$provider" = zipbox ]; then
+    # Zipbox has no proxy secrets: with the consent every credential is written onto the box as a value.
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do [ -z "$cname" ] && [ -n "$(eff $n)" ] && cname=$n; done
+    for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do [ -n "$(eff $n)" ] && any=1; done
+    if agents_has claude; then
+      if [ -n "$cname" ]; then ok "A Claude credential is saved" "the value is written onto each box"
+      else bad "No Claude token is saved, so subagents cannot sign in"; fails=1
+        hint "Add CLAUDE_CODE_OAUTH_TOKEN=<your Claude token> to $(cfg)."
+      fi
+    elif [ -n "$cname" ] || [ -n "$any" ]; then ok "A worker credential is saved" "the value is written onto each box"
     elif [ -f "$(codex_auth_file)" ]; then ok "A Codex sign-in is saved" "it is copied onto each machine"
     else bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1
       hint "Add a key to $(cfg): OPENAI_API_KEY, PARTICLE_API_KEY or"
@@ -558,6 +585,13 @@ check_setup() {
         fi ;;
       esac
     else ok "No egress allow list is set" "workers get microsandbox's default network policy"; fi
+  elif [ "$provider" = zipbox ]; then
+    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1
+      hint "Add GH_TOKEN=<a token with write access> to $(cfg)."
+    elif [ "$(eff CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX)" != yes ]; then
+      bad "GH_TOKEN is not allowed on Zipbox boxes, so subagents cannot push"; fails=1
+      hint "Add CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes to $(cfg)."
+    else ok "GH_TOKEN is saved and allowed on Zipbox boxes"; fi
   elif [ "$provider" = self-hosted ]; then
     if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
     elif [ "$(eff CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX)" != yes ]; then
@@ -795,7 +829,7 @@ more_key() { case $1 in PARTICLE_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CLOUD
 # coordinators_offered: false where a local coordinator image cannot run here: self-hosted has its own
 # coordinator flow, microsandbox has no coordinator support, and local coordinators use docker, not podman.
 coordinators_offered() {
-  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox) return 1 ;; esac
+  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox|zipbox) return 1 ;; esac
   [ "$(eff CLOUDY_CLOUD_CONTAINER_RUNTIME)" != podman ] || return 1
   command -v docker >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1
 }
@@ -1352,7 +1386,7 @@ ask_worker_keys() {
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 }
 
-usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox] [--check-only]" >&2; }
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|zipbox] [--check-only]" >&2; }
 
 main() {
   local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
@@ -1364,7 +1398,7 @@ main() {
       *) usage; exit 2 ;;
     esac
   done
-  case $provider_arg in ""|instabox|self-hosted|microsandbox) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted or microsandbox" >&2; exit 2 ;; esac
+  case $provider_arg in ""|instabox|self-hosted|microsandbox|zipbox) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox or zipbox" >&2; exit 2 ;; esac
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
   root=$(cd "$(dirname "$0")" && pwd)
@@ -1378,6 +1412,15 @@ main() {
     hint "Keys stay on this computer in the env file:"
     hint "$(cfg)"
     hint "See \"Run on this computer with microsandbox\" in the README."
+    hint "Check that setup: $(rerun_cmd) --check-only"
+    exit 0
+  fi
+  # zipbox is configured by hand too: a key and an explicit token-on-box consent in the env file.
+  if [ "$check_only" = 0 ] && [ "${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-$saved_provider}}" = zipbox ]; then
+    ok "The provider is zipbox (experimental)" "setup does not configure it"
+    hint "Keys live in the env file:"
+    hint "$(cfg)"
+    hint "See \"Run on Zipbox (experimental)\" in the README."
     hint "Check that setup: $(rerun_cmd) --check-only"
     exit 0
   fi

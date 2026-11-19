@@ -104,6 +104,17 @@ Notes on the table:
   - The announced "introspection API" and "FUSE in every box" are not in the docs, SDK source or llms.txt. Keep-awake (`orble keep-awake`, `PATCH /v1/boxes/{name} {"keep_awake": true}`) and wake, fork and restore hooks (`~/.config/orble/on-resume.d/`, `ORBLE_EVENT`) are documented. The SDK docs list `keep_awake`, but the published 0.1.2 source has no such method. Amp's self-hosted orbs run on Orble through `dispatch.sh` ([docs](https://orble.tech/docs.md)); that is Amp on Orble, not a self-hosted Orble.
   - Verdict: not yet. Compared with Zipbox it has snapshots, a documented GitHub-friendly secret proxy and a per-box allow list, but it shares the missing deadline and labels. Phase 2 or later, after Orble confirms a create-time deadline (or hard auto-delete) and a GitHub `git push` works through its secret proxy. Unknown: rate limits, concurrent box limits, free credit, whether the API keys can be scoped.
 
+## Zipbox (added 2026-11, experimental)
+
+[Zipbox](https://zipbox.ai) (Tribes Inc.) hosts Firecracker microVMs for agents; the REST API is `https://api.tribes.xyz` ([openapi](https://zipbox.ai/openapi.json), account key `zb_…` as `Authorization: Bearer`, ~$0.014/h for tier `s`). It has the pieces the provider contract needs — claim, wait, exec (SSE), files, list, delete, public previews — but four gaps shaped the adapter (`src/providers/zipbox.mjs`):
+
+- **No server-side TTL** ("nothing stops on a clock"): `caps.hasServerTTL=false`; the deadline is encoded in the box name (`cc-<deadline>-<id>`) and enforced by local guards and the list-time sweep, plus a state file for labels (there are no labels either).
+- **No proxy secrets**: credential values go on the box in plaintext, gated by an explicit `CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes` consent (same shape as self-hosted).
+- **No egress allowlist and no private tunnel**: `hasEgressPolicy=false`, `forwardPort` unsupported; previews are public `zbox.sh` URLs.
+- **No images**: each box is provisioned by an idempotent script at create.
+
+Terms to watch: boxes are public-by-default, billing runs until deleted (a crashed client leaves a billing box until the next sweep), names are limited to 250 per account including deleted ones, and the ToS reselling clause matters only if boxes are ever resold rather than BYO-key. A fork API (`POST /sandbox/:id/fork`, pauses the source briefly) could later replace per-create provisioning with a golden image.
+
 ## Recommendation
 
 1. **Phase 0:** extract the `Provider`/`Sandbox` interface, move Instabox to `src/providers/instabox.mjs`, and add a `CLOUDY_CLOUD_PROVIDER` setting. Behavior does not change.
