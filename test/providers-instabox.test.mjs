@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createProvider } from '../src/providers/instabox.mjs';
+import { createProvider, cliSpawnOpts } from '../src/providers/instabox.mjs';
 import { createLimiter } from '../src/limits.mjs';
 import { createInstaboxSandbox } from '../src/providers/instabox.mjs';
 
@@ -179,12 +179,28 @@ test('delete retries and log: reaper style 3 attempts with a log line each, fini
   assert.equal(bad.calls.length, 4);
 });
 
-test('the injected spawn gets the whole env object', async () => {
+test('the npx fallback runs from a trusted cwd with an allowlisted env: the key plus basic login vars only', async () => {
   const seen = [];
-  const env = { INSTABOX_API_KEY: KEY, OTHER: '1' };
-  const p = createProvider(env, { spawn: async (argv, o) => { seen.push(o.env); return { code: 0, stdout: '', stderr: '' }; } });
+  const p = createProvider({ INSTABOX_API_KEY: KEY, OTHER: '1', PATH: '' }, { spawn: async (argv, o) => { seen.push([argv, o]); return { code: 0, stdout: '', stderr: '' }; } });
   await p.unpublishPort('m', '3000');
-  assert.equal(seen[0], env);
+  assert.equal(seen[0][0][0], 'npx');
+  const ALLOWED = new Set(['PATH', 'HOME', 'TERM', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'SSH_AUTH_SOCK']);
+  assert.equal(seen[0][1].cwd, tmpdir(), 'npx must not run inside the caller checkout, where its .npmrc can run code');
+  assert.equal(seen[0][1].env.INSTABOX_API_KEY, KEY);
+  assert.equal(seen[0][1].env.PATH, process.env.PATH);
+  assert.equal(seen[0][1].env.HOME, process.env.HOME);
+  assert.ok(!('OTHER' in seen[0][1].env), 'unrelated provider env names stay out');
+  for (const k of Object.keys(seen[0][1].env)) assert.ok(ALLOWED.has(k) || k.startsWith('LC_') || k === 'INSTABOX_API_KEY', k);
+});
+
+test('cliSpawnOpts: npx drops npm_config_* and caller exports; a found binary keeps the caller env and cwd', () => {
+  const base = { PATH: '/p', HOME: '/h', TERM: 'x', LC_ALL: 'en_US.UTF-8', npm_config_registry: 'https://evil.example', npm_config_script_shell: '/evil', NODE_OPTIONS: '--require /e', EDITOR: 'e' };
+  const npx = cliSpawnOpts(['npx', '--yes', 'instabox@latest', 'ls'], { INSTABOX_API_KEY: KEY }, base);
+  assert.equal(npx.cwd, tmpdir());
+  assert.deepEqual(npx.env, { PATH: '/p', HOME: '/h', TERM: 'x', LC_ALL: 'en_US.UTF-8', INSTABOX_API_KEY: KEY });
+  const bin = cliSpawnOpts(['/usr/local/bin/instabox', 'ls'], { INSTABOX_API_KEY: KEY }, base);
+  assert.equal(bin.cwd, undefined);
+  assert.deepEqual(bin.env, { ...base, INSTABOX_API_KEY: KEY });
 });
 
 // Wire assertions moved from test/reaper.test.mjs and test/open.test.mjs (reaper and `open` now go through the provider).

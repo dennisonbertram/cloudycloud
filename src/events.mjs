@@ -75,6 +75,14 @@ export function pushOf(text) {
 
 // A GitHub pull request URL, the only PR link the autofix lines may carry.
 const GH_PULL = /https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}(?![\d/])/;
+const GH_PULL_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}$/;
+const AF_STATE = new Set(['running', 'clean', 'not clean', 'stopped']);
+// a.autofix comes only from the typed `af` field the controller emits itself (run-subagent.mjs), never from reply
+// or progress text, which a worker — or a hostile repo through the worker — can write. The fields are still
+// validated here: a coordinator's folded event log is remote input, so a forged af must not smuggle a bad link.
+const afOf = (af) => (af && typeof af === 'object' && AF_STATE.has(af.state))
+  ? { state: af.state, ...(Number.isInteger(af.round) && { round: af.round }), ...(Number.isInteger(af.cap) && { cap: af.cap }), ...(typeof af.pr === 'string' && GH_PULL_URL.test(af.pr) && { pr: af.pr }) }
+  : undefined;
 // The autofix progress and result lines run-subagent.mjs writes (progress "autofix [PR #n ]round N/CAP: <note>" —
 // and the older "autofix N/CAP: <note>" — plus the reply's "Autofix: ..." / "Autofix stopped: ..." lines);
 // the last matching line wins.
@@ -115,8 +123,9 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       if (e.status === 'idle') a.idleSince = e.t;
       if (e.status === 'stopped' || e.status === 'failed') a.stoppedAt = e.t;
     } else if (e.type === 'message') { a.turns = (a.turns ?? 0) + 1; a.messages.push({ t: e.t, kind: 'out', text: e.text }); } // `turns` counts every message; `messages` keeps the last 300
-    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; const f = autofixOf(e.text); if (f) a.autofix = f; }
-    else if (e.type === 'progress') { a.messages.push({ t: e.t, kind: 'progress', text: e.text }); const f = autofixOf(e.text); if (f) a.autofix = f; }
+    else if (e.type === 'reply') { a.messages.push({ t: e.t, kind: 'reply', text: e.text, error: !!e.error }); const p = pushOf(e.text); if (p) a.push = { ...p, t: e.t }; }
+    else if (e.type === 'progress') a.messages.push({ t: e.t, kind: 'progress', text: e.text });
+    const af = afOf(e.af); if (af) a.autofix = af;
   }
   for (const a of agents.values()) {
     if (ACTIVE.has(a.status) && a.pid && !alive(a.pid)) { a.status = 'stopped'; a.stoppedAt = a.lastActivity; a.sessionEnded = true; }

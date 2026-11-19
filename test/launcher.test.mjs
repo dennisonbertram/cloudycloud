@@ -5,6 +5,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { egressAllow } from '../src/config.mjs';
 
 const launcher = resolve('bin/cloudy-cloud');
 const IBK = 'ibk_FAKEINSTABOXKEY0123456789';
@@ -70,6 +71,26 @@ test('CLOUDY_CLOUD_PROVIDER is passed through Claude Code env expansion', () => 
   assert.equal(r.status, 0, r.stderr);
   const config = r.argv.slice(r.argv.indexOf('--mcp-config\n') + '--mcp-config\n'.length).split('\n')[0];
   assert.equal(JSON.parse(config).mcpServers.cloud.env.CLOUDY_CLOUD_PROVIDER, '${CLOUDY_CLOUD_PROVIDER:-}');
+});
+
+const mcpEnv = (argv) => JSON.parse(argv.slice(argv.indexOf('--mcp-config\n') + '--mcp-config\n'.length).split('\n')[0]).mcpServers.cloud.env;
+
+test('a shell-set CLOUDY_CLOUD_EGRESS_ALLOW reaches the MCP server env; unset stays absent', () => {
+  const d = repo('https://github.com/test/repo.git');
+  for (const [label, extraEnv] of [['a list', { CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' }], ['empty', { CLOUDY_CLOUD_EGRESS_ALLOW: '' }]]) {
+    const r = run({ config: full, cwd: d, extraEnv });
+    assert.equal(r.status, 0, `${label}: ${r.stderr}`);
+    assert.equal(mcpEnv(r.argv).CLOUDY_CLOUD_EGRESS_ALLOW, '${CLOUDY_CLOUD_EGRESS_ALLOW:- }', label);
+  }
+  const r = run({ config: full, cwd: d });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(mcpEnv(r.argv).CLOUDY_CLOUD_EGRESS_ALLOW, undefined);
+});
+
+test('a set-but-empty CLOUDY_CLOUD_EGRESS_ALLOW expands to a value the server validator refuses', () => {
+  const expanded = spawnSync('/bin/sh', ['-c', 'printf %s "${CLOUDY_CLOUD_EGRESS_ALLOW:- }"'], { env: { CLOUDY_CLOUD_EGRESS_ALLOW: '' }, encoding: 'utf8' }).stdout;
+  assert.equal(expanded, ' '); // still set, never collapses to absent
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: expanded }).error ?? '', /CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts/);
 });
 
 test('not a git repo: warns on stderr and still starts', () => {
