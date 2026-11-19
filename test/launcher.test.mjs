@@ -359,6 +359,18 @@ test('every help screen fits 80 columns and --help / help <command> never run th
   assert.doesNotMatch(s.stdout + s.stderr, /\[1\/4\]|not set up/);
 });
 
+test('options after a known subcommand still show that command\'s help', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
+  const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };
+  for (const args of [['machines', 'stop', '--all', '--help'], ['branches', 'prune', '--dry-run', '--help'], ['help', 'machines', 'stop']]) {
+    const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: dir, encoding: 'utf8', env, input: '', timeout: 10000 });
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stdout, /Usage: cloudy-cloud/, args.join(' '));
+  }
+  const r = spawnSync('/bin/sh', [launcher, 'help', 'machines', 'stop', 'extra'], { cwd: dir, encoding: 'utf8', env, input: '', timeout: 10000 });
+  assert.equal(r.status, 2, 'a non-option extra still has no help');
+});
+
 test('one bare word that is not a command is refused with the way to send it as a prompt', () => {
   const r = spawnSync('/bin/sh', [launcher, 'ls'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir() } });
   assert.equal(r.status, 2);

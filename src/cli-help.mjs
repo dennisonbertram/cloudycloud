@@ -152,8 +152,10 @@ const hosts = {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [name, sub, ...extra] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
   const subs = { mcp: ['add', 'ls', 'rm'], machines: ['ls', 'stop'], branches: ['prune'] };
-  const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && !extra.length)
-    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || subs[name]?.includes(sub)) && !extra.length);
+  // Options after a known command do not change which help is shown (e.g. `machines stop --all --help`).
+  const opts = extra.every((a) => a.startsWith('-'));
+  const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && opts)
+    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || subs[name]?.includes(sub)) && opts);
   if (!ok) { console.error(`cloudy-cloud: no help for "${[name, sub].filter(Boolean).join(' ')}". See: cloudy-cloud --help`); process.exitCode = 2; }
   else if (name === 'coordinator') console.log(coordinatorHelp(sub));
   else console.log(Object.hasOwn(hosts, name) ? `cloudy-cloud ${name} ${hosts[name]}` : helpText(name));

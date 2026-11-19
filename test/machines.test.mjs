@@ -117,6 +117,88 @@ test('stop --all on a terminal asks once; n deletes nothing, y deletes all', asy
   assert.equal(provider.log.delete.length, 1);
 });
 
+test('stop deletes a machine that is not running', async () => {
+  const { provider, d } = deps();
+  d.list = async () => [{ id: 'm1', name: 'stuck', labels: { purpose: 'cloudy-cloud' }, state: 'starting', status: 'starting', startedAt: Date.now() }];
+  assert.equal(await run(['stop', 'stuck'], d), 0);
+  assert.deepEqual(provider.log.delete, ['m1']);
+});
+
+test('stop resolves a machine id before any machine name', async () => {
+  const { provider, d } = deps();
+  await provider.create({ name: 'fake-2', labels: { purpose: 'cloudy-cloud', role: 'worker' }, ttlSeconds: 60 }); // fake-1, named like fake-2
+  const a = await provider.create({ name: 'w-one', labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 60 }); // id fake-2
+  assert.equal(await run(['stop', a.id], d), 0);
+  assert.deepEqual(provider.log.delete, [a.id], 'the id match wins over the earlier row named the same');
+});
+
+test('stop resolves the agent label as well as the event log', async () => {
+  const { provider, d } = deps();
+  const a = await make(provider, { name: 'w-one', labels: { agent: 'ag-9' } });
+  assert.equal(await run(['stop', 'ag-9'], d), 0);
+  assert.deepEqual(provider.log.delete, [a.id]);
+});
+
+test('stop by a name shared by two machines is refused, not guessed', async () => {
+  const { provider, err, d } = deps();
+  await make(provider, { name: 'dup' });
+  await make(provider, { name: 'dup' });
+  assert.equal(await run(['stop', 'dup'], d), 1);
+  assert.match(err.join('\n'), /2 machines.*id instead/s);
+  assert.equal(provider.log.delete.length, 0);
+});
+
+test('stop checks the list again right before deleting one machine', async () => {
+  const { provider, d } = deps();
+  const a = await make(provider, { name: 'w-one' });
+  const row = (m) => ({ id: m.id, name: m.name, labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() });
+  let calls = 0;
+  d.list = async () => (++calls === 1 ? [row(a)] : []);
+  const out = [];
+  assert.equal(await run(['stop', 'w-one'], { ...d, out: (s) => out.push(s) }), 0);
+  assert.equal(provider.log.delete.length, 0, 'a machine gone before the delete is skipped');
+  assert.match(out.join('\n'), /already gone/);
+});
+
+test('stop --all deletes only ids still present after the prompt', async () => {
+  const { provider, d } = deps({ tty: true, ui: ttyUi() });
+  const a = await make(provider, { name: 'w-one' });
+  const b = await make(provider, { name: 'w-two' });
+  const row = (m) => ({ id: m.id, name: m.name, labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() });
+  let calls = 0;
+  d.list = async () => (++calls === 1 ? [row(a), row(b)] : [row(a)]); // w-two disappears while the user reads the prompt
+  const out = [];
+  assert.equal(await run(['stop', '--all'], { ...d, out: (s) => out.push(s), ask: async () => 'y' }), 0);
+  assert.deepEqual(provider.log.delete, [a.id]);
+  assert.match(out.join('\n'), /Deleted 1 machine\./);
+});
+
+test('machine fields with control characters print on one line', async () => {
+  const { d } = deps();
+  d.list = async () => [{ id: 'm\nevil', name: 'bad\nname', labels: { purpose: 'cloudy-cloud', role: 'work\ner' }, state: 'run\x1b[31mning', status: 'running', startedAt: Date.now(), deleteAt: 'x' }];
+  const out = [];
+  assert.equal(await run(['ls'], { ...d, out: (s) => out.push(s) }), 0);
+  for (const line of out) assert.ok(!/[\x1b\n\r]/.test(line), line);
+  assert.match(out[1], /^bad name\twork er\trunning\t.*m evil$/);
+});
+
+test('provider errors print sanitised on one line', async () => {
+  const { d } = deps();
+  d.list = async () => { throw new Error('oops\n\x1b[31mbad'); };
+  const err = [];
+  assert.equal(await run([], { ...d, err: (s) => err.push(s) }), 1);
+  for (const line of err) assert.ok(!/[\x1b\n\r]/.test(line), line);
+  assert.match(err.join('\n'), /oops bad/);
+});
+
+test('the provider key under its CLOUDY_CLOUD_ name counts as signed in', async () => {
+  const { provider, out, d } = deps();
+  d.env = { CLOUDY_CLOUD_FAKE_API_KEY: 'k' };
+  assert.equal(await run([], d), 0);
+  assert.equal(provider.log.list.length, 1);
+  assert.deepEqual(out, ['No Cloudy Cloud machines running.']);
+});
+
 test('machines without the cloudy-cloud purpose label are never listed or deleted', async () => {
   const { provider, d } = deps();
   const ours = await make(provider, { name: 'w-one' });
