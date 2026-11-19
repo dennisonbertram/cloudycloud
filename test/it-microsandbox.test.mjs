@@ -22,6 +22,12 @@ const ECHO_HOST = process.env.CLOUDY_CLOUD_IT_ECHO || 'httpbin.org';
 const freePort = () => new Promise((r) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 // the test's own msb calls pin the local backend too (a user's saved cloud profile must not redirect them)
 const msbRun = (...a) => spawnSync(BIN, a, { encoding: 'utf8', env: { ...process.env, MSB_BACKEND: 'local' } });
+// A denial must come from msb's network policy, not from the remote host or an exec failure.
+const assertDenied = (r, host) => {
+  const body = (() => { try { return JSON.parse(r.stdout); } catch { return {}; } })();
+  assert.equal(body.code, 'network_policy_denied', `${host} was not blocked by the network policy: ${r.stdout.slice(0, 200)}`);
+  assert.equal(body.domain, host);
+};
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
 let provider;
@@ -94,14 +100,13 @@ test('microsandbox end to end on this computer', { skip: !ON && 'set CLOUDY_CLOU
     const s = await mk({ egress: { allow: ['example.com'] } });
     try {
       assert.equal((await s.commands.run('curl -s -o /dev/null -w %{http_code} https://example.com --max-time 15', { timeoutMs: 30_000 })).stdout.trim(), '200');
-      // msb's TLS-intercepting proxy answers a denied host with HTTP 403 instead of dropping the connection
-      const denied = await s.commands.run('curl -s -o /dev/null -w %{http_code} https://github.com --max-time 10', { timeoutMs: 30_000 }).then((r) => r.stdout.trim(), () => 'refused');
-      assert.ok(denied === 'refused' || denied === '403' || denied === '000', `denied host reachable: HTTP ${denied}`);
+      // msb's proxy answers a denied host with HTTP 403 and a network_policy_denied body instead of dropping the connection
+      assertDenied(await s.commands.run('curl -s https://github.com --max-time 10', { timeoutMs: 30_000 }), 'github.com');
     } finally { await provider.delete(s.id); }
     const d = await mk();
     try {
-      const meta = await d.commands.run('curl -s -o /dev/null -w %{http_code} http://169.254.169.254 --max-time 5', { timeoutMs: 20_000 }).then((r) => r.stdout.trim(), () => 'refused');
-      assert.ok(meta === 'refused' || meta === '403' || meta === '000', `metadata address reachable: HTTP ${meta}`);
+      assertDenied(await d.commands.run('curl -s http://169.254.169.254 --max-time 5', { timeoutMs: 20_000 }), '169.254.169.254');
+      assertDenied(await d.commands.run('curl -s http://10.0.0.1 --max-time 5', { timeoutMs: 20_000 }), '10.0.0.1');
       assert.equal((await d.commands.run('curl -s -o /dev/null -w %{http_code} https://example.com --max-time 15', { timeoutMs: 30_000 })).stdout.trim(), '200');
     } finally { await provider.delete(d.id); }
   });
