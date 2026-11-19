@@ -7,13 +7,20 @@ const plain = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 const tty = (env = {}) => makeUi({ tty: true, cols: 80, env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', ...env } });
 const off = (env = {}) => makeUi({ tty: false, cols: 80, env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8', ...env } });
 
-// ui.term means the output is a terminal that takes escapes; ui.on means colour is allowed there.
+// ui.term means the output is a terminal (a TTY, whatever its flavour); ui.on is term plus colour allowed
+// (TERM not dumb, no NO_COLOR, CLICOLOR not 0). Layout keys on term, colour on on.
 test('ui.term is a terminal; ui.on is term plus colour allowed', () => {
   assert.deepEqual([tty().term, tty().on], [true, true]);
-  for (const env of [{ NO_COLOR: '1' }, { CLICOLOR: '0' }]) assert.deepEqual([tty(env).term, tty(env).on], [true, false], JSON.stringify(env));
-  assert.deepEqual([tty({ TERM: 'dumb' }).term, tty({ TERM: 'dumb' }).on], [false, false]);
+  for (const env of [{ NO_COLOR: '1' }, { CLICOLOR: '0' }, { TERM: 'dumb' }]) assert.deepEqual([tty(env).term, tty(env).on], [true, false], JSON.stringify(env));
   assert.deepEqual([off().term, off().on], [false, false]);
   assert.equal(off({ NO_COLOR: '1' }).term, false);
+});
+
+test('the width cap is the real column count, up to 160', () => {
+  assert.equal(makeUi({ tty: true, cols: 80, env: { TERM: 'xterm' } }).width, 80);
+  assert.equal(makeUi({ tty: true, cols: 120, env: { TERM: 'xterm' } }).width, 120);
+  assert.equal(makeUi({ tty: true, cols: 200, env: { TERM: 'xterm' } }).width, 160);
+  assert.equal(makeUi({ tty: true, env: { TERM: 'xterm' } }).width, 80); // unknown columns: the safe default
 });
 
 // The palette uses the terminal's own 16 colours and text attributes: every theme picks shades
@@ -46,7 +53,7 @@ test('colour off on a terminal: same layout as colour on, no escapes', () => {
     ['table', (u) => u.table(['A', 'B'], [['x', 'y']])],
     ['block', (u) => u.block('T', [['label', 'value', 'detail']])],
   ];
-  for (const env of [{ NO_COLOR: '1' }, { CLICOLOR: '0' }]) {
+  for (const env of [{ NO_COLOR: '1' }, { CLICOLOR: '0' }, { TERM: 'dumb' }]) {
     for (const [name, fn] of helpers) {
       assert.doesNotMatch(fn(tty(env)), ANSI, `${name} ${JSON.stringify(env)}`);
       assert.equal(fn(tty(env)), plain(fn(tty())), `${name} ${JSON.stringify(env)}`);
@@ -57,6 +64,7 @@ test('colour off on a terminal: same layout as colour on, no escapes', () => {
 test('ui.next: bold arrow on a colour terminal, bare arrow with colour off, script format when piped', () => {
   assert.equal(plain(tty().next('x')), '  → Next: x');
   assert.equal(tty({ NO_COLOR: '1' }).next('x'), '  → Next: x');
+  assert.equal(tty({ TERM: 'dumb' }).next('x'), '  → Next: x'); // a terminal keeps the layout
   assert.equal(plain(tty({ LANG: 'C' }).next('x')), '  -> Next: x');
   assert.equal(off().next('x'), 'Next: x');
   assert.equal(off({ NO_COLOR: '1' }).next('x'), 'Next: x');

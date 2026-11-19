@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { loadEnv, ownerFile } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
+import { resolveMsbBin } from './providers/microsandbox.mjs';
 import { eventsFile, foldAgents, readEvents, redact, redactText } from './events.mjs';
 import { createMachineReader } from './machine-read.mjs';
 import { paneState } from './pane-state.mjs';
@@ -35,7 +36,8 @@ const cleanLabels = (l) => Object.fromEntries(Object.entries(l ?? {}).filter(([,
 // Live machines the tool labelled (label purpose=cloudy-cloud). Throws with a `code` the page can explain.
 export async function listMachines(env, provider) {
   provider ??= await loadProvider(env);
-  if (!env[provider.keyName]) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  // The msb "key" is its binary, also found at ~/.local/bin/msb or on PATH without the variable.
+  if (!env[provider.keyName] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
   return (await provider.list({ purpose: 'cloudy-cloud' }, { sdk: true })).map((m) => ({
     id: m.id, name: m.name, role: m.labels?.role, owner: m.labels?.owner, labels: cleanLabels(m.labels), state: m.state, status: m.status,
     startedAt: m.startedAt, archiveAt: m.archiveAt,

@@ -14,10 +14,14 @@ function wrap(text, first = '', indent = '') {
   return [...lines, line];
 }
 
+// usages: arrays of pieces that stay together when a line wraps. Returns the wrapped Usage line(s) only.
+function usageLines(usages) {
+  return usages.flatMap((u, i) => wrap(u.map((x) => x.replaceAll(' ', '\u00a0')).join(' '), i ? '       cloudy-cloud' : 'Usage: cloudy-cloud', '         ').map((l) => l.replaceAll('\u00a0', ' ')));
+}
+
 // usages: arrays of pieces that stay together when a line wraps; rows: [option, meaning].
 export function render({ desc, usages, rows = [], note }) {
-  const out = [...wrap(desc), ''];
-  usages.forEach((u, i) => out.push(...wrap(u.map((x) => x.replaceAll(' ', '\u00a0')).join(' '), i ? '       cloudy-cloud' : 'Usage: cloudy-cloud', '         ').map((l) => l.replaceAll('\u00a0', ' '))));
+  const out = [...wrap(desc), '', ...usageLines(usages)];
   if (rows.length) {
     const w = Math.min(Math.max(...rows.map(([a]) => a.length)), 22);
     out.push('');
@@ -72,6 +76,17 @@ const cmds = {
     ['--no-open', 'Print the link but do not open a browser'],
     ['--prune', 'Delete stored agent logs older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
+  machines: { desc: 'List or delete the Cloudy Cloud machines of the active provider.', usages: [['machines', '[ls]'], ['machines', 'stop', ID], ['machines', 'stop', '--all', '[--yes]']], rows: [
+    ['ls', 'One line per machine: name, role, state, age and when it is deleted'],
+    ['stop <id>', 'Delete one machine (an id, a machine name or an agent id)'],
+    ['stop --all', 'Delete every machine in the list (asks once on a terminal)'],
+    ['--yes', 'Say yes to that question, or delete without a terminal'],
+  ], note: `Only machines Cloudy Cloud made are listed or deleted; a machine without the cloudy-cloud purpose label is never touched. ${WHERE}` },
+  branches: { desc: 'List or delete the cloudy-cloud/<id> branches on origin that add nothing to the default branch (empty, or already merged).', usages: [['branches', 'prune', '[--yes]', '[--dry-run]']], rows: [
+    ['(default)', 'Dry run: list what would be deleted'],
+    ['--yes', 'Actually delete the listed branches'],
+    ['--dry-run', 'List only, even together with --yes'],
+  ], note: 'Only branches named cloudy-cloud/<id> are ever listed; every other name is skipped. Run it inside a git repo whose origin you can access.' },
 };
 
 const guides = {
@@ -107,12 +122,19 @@ export function helpText(name, short = false) {
   return short ? text.slice(text.indexOf('Usage:')) : text;
 }
 
+// A guide usage string ('start NAME --repo URL [--branch B]') split into pieces that never break across
+// lines: a bracketed option group, and any word inside it, stays whole on one line.
+const usagePieces = (usage) => { let depth = 0; return usage.split('').map((c) => { if (c === '[') depth++; if (c === ']') depth--; return c === ' ' && !depth ? '\n' : c; }).join('').split('\n'); };
+
+// The wrapped Usage line(s) for one coordinator subcommand (or the general form): for error messages.
+export function coordinatorUsage(command) {
+  return usageLines([['coordinator', ...(command && guides[command] ? usagePieces(guides[command][1]) : ['<command>'])]]).join('\n');
+}
+
 export function coordinatorHelp(command) {
   if (command && guides[command]) {
     const [desc, usage, rows, note] = guides[command];
-    let depth = 0;
-    const pieces = usage.split('').map((c) => { if (c === '[') depth++; if (c === ']') depth--; return c === ' ' && !depth ? '\n' : c; }).join('').split('\n');
-    return render({ desc, usages: [['coordinator', ...pieces]], rows, note: `${note} All coordinator commands: cloudy-cloud coordinator --help` });
+    return render({ desc, usages: [['coordinator', ...usagePieces(usage)]], rows, note: `${note} All coordinator commands: cloudy-cloud coordinator --help` });
   }
   return render({
     desc: 'Cloudy Cloud coordinators: always-on Claude Code sessions on their own cloud machines. A coordinator always runs Claude Code, never pi, omp, Codex or opencode.',
@@ -140,8 +162,11 @@ const hosts = {
 // `node cli-help.mjs <command> [subcommand]` (from bin/cloudy-cloud for `help <command>` and `<command> --help`).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [name, sub, ...extra] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
-  const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && !extra.length)
-    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || (name === 'mcp' && ['add', 'ls', 'rm'].includes(sub))) && !extra.length);
+  const subs = { mcp: ['add', 'ls', 'rm'], machines: ['ls', 'stop'], branches: ['prune'] };
+  // Options after a known command do not change which help is shown (e.g. `machines stop --all --help`).
+  const opts = extra.every((a) => a.startsWith('-'));
+  const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && opts)
+    || ((Object.hasOwn(cmds, name) || Object.hasOwn(hosts, name)) && (sub === undefined || subs[name]?.includes(sub)) && opts);
   if (!ok) { console.error(`cloudy-cloud: no help for "${[name, sub].filter(Boolean).join(' ')}". See: cloudy-cloud --help`); process.exitCode = 2; }
   else if (name === 'coordinator') console.log(coordinatorHelp(sub));
   else console.log(Object.hasOwn(hosts, name) ? `cloudy-cloud ${name} ${hosts[name]}` : helpText(name));

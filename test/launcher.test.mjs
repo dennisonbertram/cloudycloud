@@ -340,7 +340,7 @@ test('host with no Claude token and no other worker key says to run setup', () =
 });
 
 // `<command> --help` and `help <command>` print that command's help (80 columns at most), exit 0 and never start anything.
-const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard'];
+const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard', 'machines', 'branches'];
 test('every help screen fits 80 columns and --help / help <command> never run the command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
   const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };
@@ -357,6 +357,18 @@ test('every help screen fits 80 columns and --help / help <command> never run th
   assert.match(c.stdout, /^ {2}status NAME/m);
   const s = spawnSync('/bin/sh', [launcher, 'setup', '--help'], { encoding: 'utf8', env });
   assert.doesNotMatch(s.stdout + s.stderr, /\[1\/4\]|not set up/);
+});
+
+test('options after a known subcommand still show that command\'s help', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
+  const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };
+  for (const args of [['machines', 'stop', '--all', '--help'], ['branches', 'prune', '--dry-run', '--help'], ['help', 'machines', 'stop']]) {
+    const r = spawnSync('/bin/sh', [launcher, ...args], { cwd: dir, encoding: 'utf8', env, input: '', timeout: 10000 });
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stdout, /Usage: cloudy-cloud/, args.join(' '));
+  }
+  const r = spawnSync('/bin/sh', [launcher, 'help', 'machines', 'stop', 'extra'], { cwd: dir, encoding: 'utf8', env, input: '', timeout: 10000 });
+  assert.equal(r.status, 2, 'a non-option extra still has no help');
 });
 
 test('one bare word that is not a command is refused with the way to send it as a prompt', () => {

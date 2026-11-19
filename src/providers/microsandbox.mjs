@@ -14,9 +14,10 @@
 // `msb exec` exits with the guest's exit code.
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, accessSync, constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { posix } from 'node:path';
+import { posix, join, delimiter } from 'node:path';
+import { homedir } from 'node:os';
 import { createServer } from 'node:net';
 import { createLimiter } from '../limits.mjs';
 import { SECRET_HOSTS } from '../errors.mjs';
@@ -32,7 +33,8 @@ const ALIVE = new Set(['Running', 'Starting', 'Created', 'Paused', 'Draining']);
 // hostname authority check, so literals and malformed DNS labels are rejected here.
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const DNS_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/; // 1-63 chars, no leading/trailing hyphen
-const egressOk = (h) => {
+// Exported: install.sh --check-only validates CLOUDY_CLOUD_EGRESS_ALLOW against the same rules (no echoing entries).
+export const egressOk = (h) => {
   const bare = h.startsWith('*.') ? h.slice(2) : h;
   const parts = bare.split('.');
   return !IPV4.test(bare) && !bare.includes(':') && bare.length <= 253 && parts.length > 1 && parts.every((l) => DNS_LABEL.test(l));
@@ -40,9 +42,23 @@ const egressOk = (h) => {
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, for commands inside the guest
 
+// Where the msb CLI lives: CLOUDY_CLOUD_MSB_BIN, else the installer's default ~/.local/bin/msb, else msb on
+// PATH (the same ladder install.sh --check-only and the launcher use). '' means nothing was found.
+const canExec = (p) => { try { accessSync(p, constants.X_OK); return true; } catch { return false; } };
+export function resolveMsbBin(env = process.env) {
+  if (env.CLOUDY_CLOUD_MSB_BIN) return env.CLOUDY_CLOUD_MSB_BIN;
+  const home = env.HOME || homedir();
+  if (home && canExec(join(home, '.local/bin/msb'))) return join(home, '.local/bin/msb');
+  for (const dir of String(env.PATH ?? process.env.PATH ?? '').split(delimiter)) {
+    const p = dir && join(dir, 'msb');
+    if (p && canExec(p)) return p;
+  }
+  return '';
+}
+
 export function createProvider(env = process.env, deps = {}) {
   const spawn = deps.spawn ?? nodeSpawn;
-  const bin = env.CLOUDY_CLOUD_MSB_BIN; // an absolute path; unset means microsandbox is not installed
+  const bin = resolveMsbBin(env); // '' when microsandbox is not installed anywhere
   const slots = Number(env.CLOUDY_CLOUD_MSB_SLOTS) || 2;
   const maxTtlSeconds = 86400;
   const limiter = createLimiter(8);
@@ -141,6 +157,7 @@ export function createProvider(env = process.env, deps = {}) {
   const expired = (deleteAt) => deleteAt && Date.parse(deleteAt) <= now();
 
   const missingImage = () => new Error(`The microsandbox worker image ${IMAGE} is missing. Build and load it (needs Docker running):\n  docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE}\n  docker save ${IMAGE} | ${bin} load\nThen call cloud_agent again.`);
+  const slotsFull = () => fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use.\nNext step: stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env.`);
 
   function sandbox(id, name = id, deleteAt) {
     const exec = (flags, cmd, opts) => msb(['exec', ...flags, id, '--', ...cmd], opts);
@@ -195,7 +212,9 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       // --max-duration stops the sandbox at the deadline but it stays in `msb ls` (Stopped): removal is ours
       // (deleteAt guards below), not trusted to the server, so hasServerTTL is false.
-      hasServerTTL: false, hasProxySecrets: true, hasEgressPolicy: true, hasSnapshots: false, hasPortForward: true,
+      // localSecrets: a plain credential value in the local env is attached by name automatically — msb
+      // substitutes it into matching requests on this computer, so CLOUDY_CLOUD_PROXY_SECRETS is not needed.
+      hasServerTTL: false, hasProxySecrets: true, localSecrets: true, hasEgressPolicy: true, hasSnapshots: false, hasPortForward: true,
       hasPublish: false, hasSizes: false, hasShell: true, hasDisplay: false, hasMetrics: false,
       maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 60, maxConcurrentCalls: 8, uploadMaxBytes: 200 * 1024 * 1024,
       machineKinds: ['linux'],
@@ -220,8 +239,10 @@ export function createProvider(env = process.env, deps = {}) {
       const senv = {}, sargs = [];
       for (const n of want) {
         const hl = hostsFor(n);
-        if (!hl.length) throw fail('no_key', `The secret ${n} has no known host, so microsandbox cannot attach it. MCP server tokens are not supported on the microsandbox provider yet. Next step: remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox.`);
-        if (env[n] === undefined) throw fail('no_key', `The secret ${n} has no value in ~/.config/cloudy-cloud/env. On the microsandbox provider the value stays on this computer and microsandbox puts it only into requests to ${hl.join(',')}. Next step: add ${n}=... to ~/.config/cloudy-cloud/env, add ${n} to CLOUDY_CLOUD_PROXY_SECRETS, then call cloud_agent again.`);
+        if (!hl.length) throw fail('no_key', n.startsWith('MCP_')
+          ? `The secret ${n} has no known host, so microsandbox cannot attach it. MCP server tokens are not supported on the microsandbox provider yet. Next step: remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox.`
+          : `The secret ${n} has no known host, so microsandbox cannot attach it. Next step: set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows.`);
+        if (env[n] === undefined) throw fail('no_key', `The secret ${n} has no value in ~/.config/cloudy-cloud/env. On the microsandbox provider the value stays on this computer and microsandbox puts it only into requests to ${hl.join(',')}. Next step: add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
         senv[n] = env[n]; // secret values go into the create child's environment, nowhere else
         sargs.push('--secret', `${n}:headers=[authorization,x-api-key]@${hl.join(',')}`); // header-option syntax from the docs/source; unverified live
       }
@@ -239,8 +260,7 @@ export function createProvider(env = process.env, deps = {}) {
         throw GONE.test(`${e.stderr ?? ''}${e.message}`) ? missingImage() : e; // keep the real cause: a backend error is not "missing image"
       });
       // ponytail: the count is read before create, so two creators can both pass; the post-create re-check below removes the loser.
-      if (await aliveCount() >= slots)
-        throw fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use. Stop an agent or raise CLOUDY_CLOUD_MSB_SLOTS.`);
+      if (await aliveCount() >= slots) throw slotsFull();
       const id = `cc-${randomBytes(6).toString('hex')}`;
       // nothing an error echoes may contain a value the create child saw (spawn errors can quote env values)
       const scrub = (e) => {
@@ -252,7 +272,7 @@ export function createProvider(env = process.env, deps = {}) {
         .catch(async (e) => { await api.delete(id).catch(() => {}); throw scrub(e); }); // a half-created VM must not leak
       if (await aliveCount() > slots) { // a parallel create may have won the last slot while ours spawned
         await api.delete(id).catch(() => {});
-        throw fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use. Stop an agent or raise CLOUDY_CLOUD_MSB_SLOTS.`);
+        throw slotsFull();
       }
       return sandbox(id, name ?? id, all.deleteAt);
     },
@@ -341,7 +361,7 @@ export function createProvider(env = process.env, deps = {}) {
     // no command: a login shell on a TTY; a command runs without one unless { tty: true } (a sign-in needs it).
     shellArgv(id, cmd, { tty = false } = {}) {
       const run = !!cmd?.length;
-      return [bin ?? 'msb', 'exec', run ? (tty ? '-t' : '--no-tty') : '-t', id, '--', 'bash', ...(run ? ['-lc', cmd.map(q).join(' ')] : ['-l'])];
+      return [bin || 'msb', 'exec', run ? (tty ? '-t' : '--no-tty') : '-t', id, '--', 'bash', ...(run ? ['-lc', cmd.map(q).join(' ')] : ['-l'])];
     },
     async displayLink() { throw noDisplay(); },
     async revokeDisplayLinks() { throw noDisplay(); },
@@ -350,10 +370,10 @@ export function createProvider(env = process.env, deps = {}) {
     async metrics() { throw fail('metrics_unsupported', 'microsandbox machines have no usage numbers.', { provider: 'microsandbox' }); },
 
     text: {
-      ssh: (machine, cmd) => `${bin ?? 'msb'} exec -t ${machine} -- ${cmd || 'bash -l'}`,
-      listMachines: `${bin ?? 'msb'} ls --label ${PREFIX}purpose=cloudy-cloud`,
-      noKeyFix: 'Install microsandbox (Apple Silicon Mac or Linux with KVM): curl -fsSL https://install.microsandbox.dev | sh. Then add CLOUDY_CLOUD_MSB_BIN=<full path of msb, usually $HOME/.local/bin/msb> to ~/.config/cloudy-cloud/env.',
-      apiFix: `Check that the microsandbox CLI works: ${bin ?? 'msb'} --version`,
+      ssh: (machine, cmd) => `${bin || 'msb'} exec -t ${machine} -- ${cmd || 'bash -l'}`,
+      listMachines: `${bin || 'msb'} ls --label ${PREFIX}purpose=cloudy-cloud`,
+      noKeyFix: 'The microsandbox CLI (msb) was not found.\nInstall it (Apple Silicon Mac or Linux with KVM):\n  curl -fsSL https://install.microsandbox.dev | sh\nIf msb is installed somewhere unusual, add CLOUDY_CLOUD_MSB_BIN=<full path of msb> to ~/.config/cloudy-cloud/env.',
+      apiFix: `Check that the microsandbox CLI works:\n  ${bin || 'msb'} --version`,
       githubTokenHelp: 'Add GH_TOKEN=<a token with write access> to ~/.config/cloudy-cloud/env; microsandbox keeps it on this computer and puts it only into requests to github.com.',
       hostLabel: 'this computer',
       coordinatorRefusal: 'Coordinators are not supported on the microsandbox provider yet. Start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox for coordinators.',

@@ -170,6 +170,7 @@ test('codexHostArgs wires the cloud server through -c flags, forwards key names 
   assert.match(all, /mcp_servers\.cloud\.args=\["\/opt\/cc\/src\/server\.mjs"\]/);
   assert.match(all, /mcp_servers\.cloud\.env=\{ CLOUDY_CLOUD_CONFIG = "\/home\/u\/\.config\/cloudy-cloud\/env" \}/);
   assert.match(all, /mcp_servers\.cloud\.env_vars=\[[^\]]*"INSTABOX_API_KEY"[^\]]*"OPENAI_API_KEY"/);
+  assert.match(all, /"CLOUDY_CLOUD_EGRESS_ALLOW"/, 'a shell-set egress list must reach the server, not just the env file');
   assert.match(all, /mcp_servers\.cloud\.default_tools_approval_mode="approve"/);
   assert.match(all, /mcp_servers\.cloud\.tool_timeout_sec=1800/);
   assert.ok(!all.includes('ibk_secret_value') && !all.includes(KEY));
