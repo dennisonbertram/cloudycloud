@@ -22,7 +22,7 @@ Everything that runs on machines:
 - cleanup;
 - coordinator setup, including marking first-run setup done.
 
-All of it is proven live (see [STATUS.md](STATUS.md)). The hosted service replaces the **laptop-side setup**: the keys file, `install.sh`, `coordinator image` and the local MCP server's role as the place that holds credentials.
+Most of it is proven live (see [STATUS.md](STATUS.md)). The hosted service replaces the **laptop-side setup**: the keys file, `install.sh`, `coordinator image` and the local MCP server's role as the place that holds credentials.
 
 ## Architecture
 
@@ -67,7 +67,7 @@ Browser / Claude app ──► Web app (Next.js) ──► API ──► Instabo
 ## Limits and billing
 
 - **Per tenant:** maximum machines, maximum concurrent workers, maximum depth (already in code), daily machine-hours, and an idle stop for coordinators (a new **TBD** default, for example 12 hours).
-- **Metering:** machine-hours from Instabox usage APIs (`GET /v1/machines/{id}/usage` exists), plus model tokens from the progress streams.
+- **Metering:** machine-hours from Instabox metrics (`GET /v1/machines/{id}/metrics` exists), plus model tokens from the progress streams.
 - **Billing:** **TBD.** Options are free for a small trusted group, or Stripe usage-based billing.
 
 ## Security

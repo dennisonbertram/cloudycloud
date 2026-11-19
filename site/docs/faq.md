@@ -18,7 +18,7 @@ Run `cloudy-cloud` instead of `claude`, from inside a git repo with a GitHub rem
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile (Particle.ai, OpenRouter or OpenAI, or a ChatGPT login for Codex). See [Models and keys](https://cloudycloud.tech/docs/models.html).
+An account with a cloud sandbox provider (Instabox is the default; `self-hosted` and `microsandbox` run on your own machines), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile (Particle.ai, OpenRouter or OpenAI, or a ChatGPT login for Codex). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### What can a subagent see?
 

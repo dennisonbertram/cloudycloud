@@ -254,7 +254,7 @@ You bring your own keys and your own cloud account. Your session runs the agent 
 - **opencode profiles:** they use `PARTICLE_API_KEY` or `OPENROUTER_API_KEY`, never opencode's own login. The worker installs the pinned `opencode-ai` 1.18.31. Status: see [STATUS.md](docs/STATUS.md#supported-agents-and-what-is-proven).
 - **Where a profile worker runs:** `pi-*` run `pi --mode json`, `omp-*` run `omp -p --mode json`, `codex*` run `codex exec --json`, `opencode-*` run `opencode run --format json`. Coordinators refuse pi, omp, Codex and opencode profiles.
 - **omp profiles:** oh-my-pi is a fork of pi rewritten as a coding-first agent (it adds LSP, persistent Python and Bun kernels, subagents and many providers). Each omp worker installs the pinned `omp` v18.18.7 binary (about 243 MB) with the official installer, so an omp worker starts slower than a pi or Claude worker. In one live check the whole omp worker setup (clone, first push, omp install and config) took about 20 seconds from machine creation to running, against 11 seconds for a pi worker started at the same time (one run each). Workers only, not coordinators.
-- **Your own profiles:** put them in `~/.config/cloudy-cloud/profiles.json` (or the path in `CLOUDY_CLOUD_PROFILES`). They add to or override the built-ins. An optional `"harness"` is `"claude"` (the default), `"pi"`, `"omp"`, `"codex"` or `"opencode"`. `codex` and `opencode` need `"format": "openai"`. An optional `"fallback"` is a list of profile names to try, in order, when the profile has no key or the provider refuses a one-token check before the machine starts. An optional `"maxConcurrent"` is the most agents the profile runs at once; extra agents wait in the queue (`CLOUDY_CLOUD_PROFILE_MAX` sets a default cap for all profiles).
+- **Your own profiles:** put them in `~/.config/cloudy-cloud/profiles.json` (or the path in `CLOUDY_CLOUD_PROFILES`). They add to or override the built-ins. An optional `"harness"` is `"claude"` (the default), `"pi"`, `"omp"`, `"codex"` or `"opencode"`. `codex`, `omp` and `opencode` need `"format": "openai"`. An optional `"fallback"` is a list of profile names to try, in order, when the profile has no key or the provider refuses a one-token check before the machine starts. An optional `"maxConcurrent"` is the most agents the profile runs at once; extra agents wait in the queue (`CLOUDY_CLOUD_PROFILE_MAX` sets a default cap for all profiles).
 - **Security:** an ordinary profile subagent gets that profile's provider key on its machine instead of your Claude token. Coordinators are different; see [Security](#security).
 
 Details and the `profiles.json` format: [Models and keys](https://cloudycloud.tech/docs/models.html).
@@ -301,8 +301,9 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start and refuses to replace a `cloudy-cloud` entry it did not write. Your own `cloud` entry is not touched. |
 | `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
-| `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
+| `cloudy-cloud dashboard [--demo] [--port N] [--no-open] [--prune]` | Opens the read-only local dashboard. `--prune` deletes stored agent logs older than 30 days (then the oldest over 1 GB) and exits. |
 | `cloudy-cloud machines` \| `machines stop <id-or-name\|--all>` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |
+| `cloudy-cloud protect [OWNER/REPO] [--yes]` | Adds a branch ruleset that blocks direct pushes to the default branch (asks first). |
 | `cloudy-cloud branches prune [--yes] [--dry-run]` | Deletes empty or merged `cloudy-cloud/<id>` and `cloudy-cloud/issue-<n>-<id>` branches on origin. A dry run unless you pass `--yes`. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
 | `cloudy-cloud shell <agent> [-- command]` | Opens a shell on a cloud machine, or runs one command there. |
@@ -385,7 +386,7 @@ npm install
 npm test
 ```
 
-The code is in `src/` (`run-subagent.mjs` is the subagent lifecycle, `mcp.mjs` the tools, `instabox.mjs` the machines, `dashboard.mjs` the dashboard); the launcher is `bin/cloudy-cloud`. Run `npm test` before you open a pull request.
+The code is in `src/` (`run-subagent.mjs` is the subagent lifecycle, `mcp.mjs` the tools, `providers/instabox.mjs` the machines, `dashboard.mjs` the dashboard); the launcher is `bin/cloudy-cloud`. Run `npm test` before you open a pull request.
 
 ## License
 

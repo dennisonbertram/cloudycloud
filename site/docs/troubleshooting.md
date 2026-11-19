@@ -196,7 +196,7 @@ Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://g
 rm ~/.config/cloudy-cloud/env
 ```
 
-> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.
+> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds secret names and settings only; the real keys are attached Instabox secrets, so the machine environment holds `ibsec_` placeholders that Instabox swaps for the real value only on requests to each key's own host. The exception is the saved Claude sign-in in the coordinator image, which is a real login. Use an account you can revoke.
 
 ## FAQ
 
