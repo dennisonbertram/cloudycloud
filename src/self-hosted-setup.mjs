@@ -9,7 +9,7 @@ import { basename, dirname, join } from 'node:path';
 import { Writable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { loadEnv } from './config.mjs';
+import { envLine, loadEnv, savedEnv } from './config.mjs';
 import { createSsh } from './providers/ssh.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,7 +56,7 @@ export function saveEnv(file, set, del = []) {
   try { old = readFileSync(file, 'utf8').split('\n').filter(Boolean); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const kept = old.filter((l) => !drop.has(l.slice(0, l.indexOf('='))));
   const tmp = `${file}.tmp.${process.pid}`;
-  writeFileSync(tmp, [...kept, ...Object.entries(set).map(([k, v]) => `${k}=${v}`)].join('\n') + '\n', { mode: 0o600 });
+  writeFileSync(tmp, [...kept, ...Object.entries(set).map(([k, v]) => envLine(k, v))].join('\n') + '\n', { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, file);
 }
@@ -260,17 +260,24 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
     ui.text(`    so the token would be stored inside each worker container on ${host} (in memory only, removed with the container).`);
     ui.text('    Say yes only if you own and trust that machine.');
     // Enter keeps what is saved (no consent on a first run), so a rerun never deletes a working consent or token.
+    // Every approval belongs to one SSH destination (user@host:port): the file's own saved address is what consent
+    // was given for, so on a different destination the saved approvals are not offered and the old token is not reused.
     const yes = (a, saved) => (a.trim() === '' ? saved : /^y/i.test(a));
-    const allow = yes(await inp.line(`  > Allow the GitHub token on ${host}? [${env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes' ? 'Y/n' : 'y/N'}]: `), env.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes');
+    const was = savedEnv(env);
+    const sameBox = `${was.CLOUDY_CLOUD_SSH_HOST || ''}:${was.CLOUDY_CLOUD_SSH_PORT || '22'}` === `${host}:${env.CLOUDY_CLOUD_SSH_PORT || '22'}`;
+    const allow = yes(await inp.line(`  > Allow the GitHub token on ${host}? [${sameBox && was.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes' ? 'Y/n' : 'y/N'}]: `), sameBox && was.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes');
     const set = { CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: host, ...containerSettings(f, slots) };
     const del = [];
     if (key) set.CLOUDY_CLOUD_SSH_KEY = key; else del.push('CLOUDY_CLOUD_SSH_KEY');
     if (env.CLOUDY_CLOUD_SSH_PORT) set.CLOUDY_CLOUD_SSH_PORT = env.CLOUDY_CLOUD_SSH_PORT;
     if (allow) {
       set.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX = 'yes';
-      const tok = (await inp.line(`  > Paste a GitHub token limited to the repos subagents may push to (nothing shows as you paste${env.GH_TOKEN ? '; Enter keeps the saved one' : ''}): `, true)).replace(/\s+/g, '');
-      if (tok || env.GH_TOKEN) set.GH_TOKEN = tok || env.GH_TOKEN; // Enter keeps the current one, which may exist only in the shell: save it too
-      if (tok || env.GH_TOKEN) ui.say('ok', `GitHub token: allowed on ${host}; saved in ${file} (mode 600), never shown`);
+      // Enter may keep the saved token, but never one saved for another machine (a token that exists only in the shell is still offered).
+      const kept = env.GH_TOKEN && (sameBox || !was.GH_TOKEN) ? env.GH_TOKEN : '';
+      const tok = (await inp.line(`  > Paste a GitHub token limited to the repos subagents may push to (nothing shows as you paste${kept ? '; Enter keeps the saved one' : ''}): `, true)).replace(/\s+/g, '');
+      if (tok || kept) set.GH_TOKEN = tok || kept; // Enter keeps the current one, which may exist only in the shell: save it too
+      else del.push('GH_TOKEN'); // a token saved for another machine must not carry over
+      if (tok || kept) ui.say('ok', `GitHub token: allowed on ${host}; saved in ${file} (mode 600), never shown`);
       else ui.say('warn', 'GitHub token: allowed, but no token is saved yet', `${SETUP_CMD} (run it again and paste a token)`);
     } else {
       del.push('CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'GH_TOKEN');
@@ -284,13 +291,15 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
       ui.text(`  ? Allow coordinators on ${host}? [y/N]`);
       ui.text('    A coordinator is a Claude session that starts its own subagents. It runs in a container on the machine and starts them through the Docker socket,');
       ui.text('    so no SSH key is copied to it. That socket gives the coordinator full control of Docker on the machine (it can start any container).');
-      const savedCoords = env.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
-      const coords = yes(await inp.line(`  > Coordinators on ${host} can start containers through Docker, which gives them full control of Docker on that machine. Allow? [${savedCoords ? 'Y/n' : 'y/N'}]: `), savedCoords);
+      const coordsOk = sameBox && was.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes';
+      const coords = yes(await inp.line(`  > Coordinators on ${host} can start containers through Docker, which gives them full control of Docker on that machine. Allow? [${coordsOk ? 'Y/n' : 'y/N'}]: `), coordsOk);
       if (coords) {
         // On a Mac the container VM always serves /var/run/docker.sock; on Linux use the active Docker context (rootless Docker differs).
-        const ctx = f.mac ? '' : (await probe(ssh, `${q(f.bin)} context inspect --format '{{.Endpoints.docker.Host}}'`)).stdout.trim();
+        // Only one clean unix:/// path from a successful probe counts: anything else would land in the env file as settings.
+        const ctx = f.mac ? { ok: false } : await probe(ssh, `${q(f.bin)} context inspect --format '{{.Endpoints.docker.Host}}'`);
+        const sock = ctx.ok && /^unix:\/\/\/[A-Za-z0-9._/-]+$/.test(ctx.stdout.trim()) ? ctx.stdout.trim().slice(7) : '/var/run/docker.sock';
         set.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS = 'yes';
-        set.CLOUDY_CLOUD_DOCKER_SOCKET = ctx.startsWith('unix:///') ? ctx.slice(7) : '/var/run/docker.sock';
+        set.CLOUDY_CLOUD_DOCKER_SOCKET = sock;
         ui.say('ok', `Coordinators: allowed on ${host} (Docker socket ${set.CLOUDY_CLOUD_DOCKER_SOCKET})`);
       } else {
         del.push('CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_DOCKER_SOCKET');

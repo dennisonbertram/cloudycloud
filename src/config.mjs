@@ -50,6 +50,14 @@ export function egressAllow(env = process.env) {
   return bad === -1 ? { list: parts.map((h) => h.toLowerCase()) } : { error: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` };
 }
 
+// One env-file line is NAME=value, so a value holding CR, LF or NUL would inject lines or corrupt the file.
+// Every writer builds its lines through this; the error names the key, never the value.
+export function envLine(key, value) {
+  const v = String(value);
+  if (/[\r\n\0]/.test(v)) throw new Error(`${key}: the value may not contain CR, LF or NUL`);
+  return `${key}=${v}`;
+}
+
 // What the env file holds (only the names cloudy-cloud knows); a missing file is fine.
 export function savedEnv(env = process.env) {
   const file = env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env');
