@@ -55,6 +55,31 @@ test('unknown arguments print usage and exit 2', async () => {
   assert.equal((await run([], f.work)).code, 2);
 });
 
+test('usage and --help come through the help wrapper: every line fits 80 cells', async () => {
+  const { cellWidth } = await import('../src/ui.mjs');
+  const OLD_USAGE = 'Usage: cloudy-cloud branches prune [--yes] [--dry-run]\n  Lists cloudy-cloud/<id> branches on origin that are empty or merged into the default branch.\n  Nothing is deleted unless you pass --yes.';
+  for (const argv of [[], ['bogus'], ['prune', '--all']]) {
+    const r = await run(argv, '/'); // an injected err is a piped stream: the script text is unchanged
+    assert.equal(r.code, 2);
+    assert.equal(r.err, OLD_USAGE);
+  }
+  if (process.platform === 'darwin') { // a real terminal gets the wrapped help instead (BSD script(1) for the pty)
+    const { spawnSync } = await import('node:child_process');
+    const { resolve } = await import('node:path');
+    const r = spawnSync('script', ['-q', '/dev/null', 'sh', '-c', `${process.execPath} ${resolve('src/branches.mjs')} bogus 2>&1`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); // BSD script(1) needs a non-pipe stdin
+    assert.equal(r.error, undefined);
+    assert.match(r.stdout, /Usage: cloudy-cloud branches prune/);
+    assert.match(r.stdout, /--yes/);
+    for (const l of r.stdout.replace(/\r/g, '').split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+  for (const arg of ['--help', '-h']) {
+    const r = await run([arg], '/');
+    assert.equal(r.code, 0);
+    assert.match(r.out, /Usage: cloudy-cloud branches prune/);
+    for (const l of r.out.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  }
+});
+
 test('--yes skips a branch that changed since it was listed: the delete carries a lease', async () => {
   const f = fixture();
   const real = sh('/', 'command -v git');

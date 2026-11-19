@@ -4,14 +4,20 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { helpText } from './cli-help.mjs';
+import { makeUi } from './ui.mjs';
 
 const run = promisify(execFile);
 const OURS = /^cloudy-cloud\/(issue-\d{1,10}-)?[0-9a-f]{8}$/; // cloudy-cloud/<id> or, for a worker started from an issue, cloudy-cloud/issue-<n>-<id>
+// Piped stderr keeps the classic text (unchanged for scripts); a terminal gets the wrapped shared-help version.
+// --help always prints the full entry.
 const USAGE = 'Usage: cloudy-cloud branches prune [--yes] [--dry-run]\n  Lists cloudy-cloud/<id> branches on origin that are empty or merged into the default branch.\n  Nothing is deleted unless you pass --yes.';
+const onTerm = () => makeUi({ tty: Boolean(process.stderr.isTTY) }).term;
 
 export async function main(argv, { cwd = process.cwd(), out = console.log, err = console.error } = {}) {
   const [cmd, ...flags] = argv;
-  if (cmd !== 'prune' || flags.some((f) => f !== '--yes' && f !== '--dry-run')) { err(USAGE); return 2; }
+  if (cmd === '--help' || cmd === '-h') { out(helpText('branches')); return 0; }
+  if (cmd !== 'prune' || flags.some((f) => f !== '--yes' && f !== '--dry-run')) { err(onTerm() ? helpText('branches', true) : USAGE); return 2; }
   const del = flags.includes('--yes') && !flags.includes('--dry-run');
   const git = (...a) => run('git', a, { cwd, maxBuffer: 1 << 26 }).then((r) => r.stdout.trim());
   try {

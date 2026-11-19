@@ -1,6 +1,7 @@
 // Terminal styling for the coordinator commands. Same look as install.sh.
-// `ui.term` is a terminal that takes escapes (TTY, TERM not dumb); `ui.on` is term plus colour allowed
-// (no NO_COLOR, CLICOLOR not 0). Callers keep their script text for piped output, so it does not change.
+// `ui.term` is a terminal (a TTY of any flavour); `ui.on` is term plus colour allowed
+// (TERM not dumb, no NO_COLOR, CLICOLOR not 0). Layout keys on `term`, colour on `on`;
+// piped output keeps its script text, so it does not change.
 // Width of one character in terminal cells: 0 for combining marks and control characters, 2 for East Asian wide and emoji, else 1.
 const charWidth = (cp) => (cp < 32 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x300 && cp <= 0x36f) || cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) ? 0
   : (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f)
@@ -15,10 +16,10 @@ export const fitCells = (str, max) => {
 };
 
 export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = process.stdout.columns } = {}) {
-  // term: the output is a terminal that takes escapes (TTY, TERM not dumb). on: colour is allowed too
-  // (no NO_COLOR, CLICOLOR not 0). Callers key the script format off `term`, not `on`.
-  const term = Boolean(tty) && (env.TERM || 'dumb') !== 'dumb';
-  const on = term && !env.NO_COLOR && env.CLICOLOR !== '0';
+  // term: the output is a terminal (a TTY of any flavour). on: colour is allowed there too
+  // (TERM not dumb, no NO_COLOR, CLICOLOR not 0). Callers key the layout off `term`, colour off `on`.
+  const term = Boolean(tty);
+  const on = term && (env.TERM || 'dumb') !== 'dumb' && !env.NO_COLOR && env.CLICOLOR !== '0';
   const utf = /utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '');
   // The basic 16 colours are themed by the terminal, so they stay readable on light and dark
   // backgrounds where a fixed colour cannot. Marks carry the meaning; colour supports it.
@@ -27,7 +28,7 @@ export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = p
   const x = on ? '\x1b[0m' : '';
   const paint = (c, s) => (on && c ? `${c}${s}${x}` : String(s));
   const mark = { ok: utf ? '✔' : '[ok]', err: utf ? '✖' : '[x]', warn: utf ? '▲' : '!', hint: utf ? '›' : '>' };
-  const width = Math.min(cols || 80, 100);
+  const width = Math.min(cols || 80, 160); // the real column count, up to a wide-terminal cap
 
   const line = (kind, msg, detail) => `  ${paint(col[kind], mark[kind])} ${msg}${detail ? `  ${paint(col.dim, detail)}` : ''}`;
 
