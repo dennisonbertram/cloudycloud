@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { delimiter, resolve } from 'node:path';
 import { createLimiter } from '../limits.mjs';
 
@@ -114,8 +115,21 @@ function normalize(e) {
   return e;
 }
 
-const defaultSpawn = (argv, { inherit, env, input } = {}) => new Promise((resolve) => {
-  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : [input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'], env: { ...process.env, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } });
+// Environment and cwd for a spawned CLI. The npx fallback runs npm, which reads the checkout's .npmrc (registry,
+// script-shell) and every npm_config_* the caller exported — a repository could then run code while the Instabox
+// key is in the environment. So npx runs from os.tmpdir() (no project config) with this allowlist plus the key.
+// A resolved instabox binary does not read npm config and keeps the caller's environment.
+const CLI_ENV = new Set(['PATH', 'HOME', 'TERM', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'SSH_AUTH_SOCK']);
+export const cliSpawnOpts = (argv, env, base = process.env) => {
+  if (argv[0] !== 'npx') return { env: { ...base, ...(env?.[KEY_NAME] && { [KEY_NAME]: env[KEY_NAME] }) } };
+  const child = {};
+  for (const [k, v] of Object.entries(base)) if (CLI_ENV.has(k) || k.startsWith('LC_')) child[k] = v;
+  if (env?.[KEY_NAME]) child[KEY_NAME] = env[KEY_NAME];
+  return { env: child, cwd: tmpdir() };
+};
+
+const defaultSpawn = (argv, { inherit, env, input, cwd } = {}) => new Promise((resolve) => {
+  const p = nodeSpawn(argv[0], argv.slice(1), { stdio: inherit ? 'inherit' : [input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'], env, ...(cwd && { cwd }) });
   let stdout = '', stderr = '';
   p.stdout?.on('data', (d) => (stdout += d));
   p.stderr?.on('data', (d) => (stderr += d));
@@ -326,7 +340,7 @@ export function createProvider(env, deps = {}) {
   }
   const apiKeyOrEmpty = () => { try { return apiKey(); } catch { return '\0'; } };
 
-  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, env });
+  const spawn = (argv, o = {}) => (deps.spawn ?? defaultSpawn)(argv, { ...o, ...cliSpawnOpts(argv, env) });
 
   return {
     name: 'instabox',

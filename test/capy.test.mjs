@@ -193,6 +193,21 @@ test('preview_port: the port is published after a pushed turn and the result lin
   assert.equal(open.get(id).previewUrl, `https://fake.example/${machine}/3000`);
 });
 
+test('preview_port: the private link is in the result only, never the event log', async () => {
+  const events = [];
+  const { deps, start, wait } = await setup({ deps: { events: (e) => events.push(e) } });
+  const id = await start({ preview_port: 3000 });
+  const r = await wait([id]);
+  const url = /Preview: (\S+)/.exec(r)?.[1];
+  assert.ok(url, 'the result still carries the preview link');
+  const replies = events.filter((e) => e.type === 'reply').map((e) => e.text);
+  assert.ok(replies.length, 'a reply event was logged');
+  for (const text of replies) {
+    assert.ok(!text.includes(url), 'the logged reply must not persist the private preview link');
+    assert.match(text, /a private preview link was returned to the caller/);
+  }
+});
+
 test('preview_port: a later turn reuses the link instead of publishing again', async () => {
   const { deps, provider, start, wait } = await setup();
   const id = await start({ preview_port: 3000 });
