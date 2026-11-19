@@ -1931,12 +1931,22 @@ test('an image machine without the cloudy-cloud purpose label is never snapshott
   assert.doesNotMatch(g.log.out.join('\n'), /img-1/);
 });
 
-test('a pending snapshot finishes even when its recorded machine no longer verifies, but the machine is kept', async () => {
+test('a pending snapshot whose recorded machine no longer verifies keeps the machine and the pending record', async () => {
   const f = fixture({ snapshot: '' });
-  f.machines.push(f.mk('m_img', 'img-1', { role: 'coordinator-image' })); // recorded id exists but lacks the purpose label
+  f.machines.push(f.mk('m_img', 'img-1', {})); // recorded id exists but its labels are gone entirely
+  PENDING(f, 'm_img:sn_new');
+  await assert.rejects(main(['image', '--save'], f.deps), /could not be verified as ours/);
+  assert.deepEqual(f.log.killed, [], 'a machine without our labels is not deleted');
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.match(cfg, /CLOUDY_CLOUD_PENDING_SNAPSHOT=m_img:sn_new/, 'the pending record is kept so a later --save can finish it');
+});
+
+test('a pending snapshot still finishes when its recorded machine verifies under the historical claude-cloud purpose', async () => {
+  const f = fixture({ snapshot: '' });
+  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'claude-cloud', role: 'coordinator-image' }));
   PENDING(f, 'm_img:sn_new');
   await main(['image', '--save'], f.deps);
-  assert.deepEqual(f.log.killed, [], 'a machine without the cloudy-cloud labels is not deleted');
+  assert.deepEqual(f.log.killed, ['m_img']);
   const cfg = readFileSync(f.configFile, 'utf8');
   assert.match(cfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
   assert.doesNotMatch(cfg, /PENDING/);

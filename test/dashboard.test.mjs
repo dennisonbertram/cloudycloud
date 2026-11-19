@@ -1432,6 +1432,26 @@ test('liveState checks at most 20 distinct trunks per refresh, however many the 
   assert.ok(checked <= 20, `at most 20 merge checks ran per refresh, ran ${checked}`);
 });
 
+test('liveState rotates the per-refresh merge checks so every trunk is checked over successive refreshes', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
+  const lines = [];
+  for (let i = 0; i < 40; i++) {
+    lines.push(JSON.stringify({ type: 'agent', id: `w${i}`, t: 1, description: 'd', role: 'worker', branch: `cloudy-cloud/w${i}` }));
+    lines.push(JSON.stringify({ type: 'message', id: `w${i}`, t: 2, text: `work on fleet/t${i}` }));
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  const rounds = [];
+  let round = [];
+  const get = liveState({}, { list: async () => [], provider: createFakeProvider(), file, cacheMs: 0, now: () => 1_000_000,
+    mergedCheck: async (t) => { round.push(t); return null; } });
+  await get(); rounds.push(round); round = [];
+  await get(); rounds.push(round); round = [];
+  await get(); rounds.push(round);
+  assert.deepEqual(rounds.map((r) => r.length), [20, 20, 20]);
+  assert.notDeepEqual(rounds[0], rounds[1], 'the second refresh checks a different slice of trunks');
+  assert.equal(new Set(rounds.flat()).size, 40, 'over the refreshes every trunk is checked once');
+});
+
 test('liveState exposes fleets from the merged check, and null when git cannot answer', async () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cc-fleet-')), 'events.jsonl');
   writeFileSync(file, JSON.stringify({ type: 'agent', id: 'w1', t: 1, description: 'd', role: 'worker', branch: 'cloudy-cloud/w1' }) + '\n'

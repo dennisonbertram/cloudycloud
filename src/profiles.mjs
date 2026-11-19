@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, savedEnv } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, savedEnv, envLine } from './config.mjs';
 import { guide } from './errors.mjs';
 import { codexAuth } from './harness-codex.mjs';
 
@@ -73,7 +73,9 @@ export function coordinatorKeys(env, provider, { single = false } = {}) {
   let saved;
   const chosen = (k) => !OPT_IN_KEYS.includes(k) || proxied.has(k) || (saved ??= savedEnv(env))[k];
   const keys = [...new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(single ? claude.slice(0, 1) : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']), ...profileKeyNames(env).filter((k) => (!single || k !== 'ANTHROPIC_API_KEY') && chosen(k))])];
-  const secrets = [], lines = [...(own?.fixed ?? [])], legacy = [], skipped = [];
+  const secrets = [], legacy = [], skipped = [];
+  // The provider's fixed lines are interpolated from env too, so they are validated like every other line.
+  const lines = (own?.fixed ?? []).map((l) => { const i = l.indexOf('='); if (i < 0) throw new Error('coordinatorEnv fixed entries must be KEY=value lines'); return envLine(l.slice(0, i), l.slice(i + 1)); });
   const required = new Set([...(own ? [] : [provider.keyName, DEFAULT_PROVIDER_KEY]), ...(claude.some((k) => proxied.has(k)) ? [] : claude)]);
   if (!own && proxied.has(COORDINATOR_KEY_SECRET)) secrets.push(COORDINATOR_KEY_SECRET);
   for (const k of [...(own?.names ?? []), ...keys, 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS']) { // the last: a nested cloud_agent sees the same consent
@@ -81,7 +83,7 @@ export function coordinatorKeys(env, provider, { single = false } = {}) {
     if (isKey && proxied.has(COORDINATOR_KEY_SECRET) && k === DEFAULT_PROVIDER_KEY) continue; // the secret stands in for it
     if (isKey && proxied.has(k)) secrets.push(k);
     else if (env[k] && isKey && provider.caps.hasProxySecrets) (required.has(k) ? legacy : skipped).push(k); // never as a value
-    else if (env[k]) lines.push(`${k}=${env[k]}`);
+    else if (env[k]) lines.push(envLine(k, env[k])); // envLine refuses CR/LF/NUL, so a value cannot inject a line into the coordinator env file
   }
   return { secrets: [...new Set(secrets)], lines, legacy, skipped };
 }

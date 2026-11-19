@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, statSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { saveEnv, slotsFor } from '../src/self-hosted-setup.mjs';
-import { loadEnv } from '../src/config.mjs';
+import { loadEnv, consentHostId } from '../src/config.mjs';
 
 const script = resolve('src/self-hosted-setup.mjs');
 const version = JSON.parse(readFileSync(resolve('package.json'), 'utf8')).version;
@@ -214,6 +214,7 @@ test('setup on a Mac: prompts, checks, builds the image, saves settings at mode 
     'CLOUDY_CLOUD_SELF_HOSTED_CPUS=2', // 10 CPUs in the Docker VM / 4 slots
     'CLOUDY_CLOUD_SELF_HOSTED_MEMORY=3276m', // 80% of the VM's 16 GiB / 4 slots
     'CLOUDY_CLOUD_SELF_HOSTED_SLOTS=4',
+    `CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST=${consentHostId('me@mac-studio:22')}`,
     'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes',
     'CLOUDY_CLOUD_SSH_HOST=me@mac-studio',
     'CLOUDY_CLOUD_SSH_KEY=/home/me/.ssh/id_ed25519',
@@ -372,7 +373,7 @@ test('setup: a different SSH address resets the saved consent and never reuses t
   assert.match(r.out, /Allow the GitHub token on me@other-box\? \[y\/N\]/);
   assert.match(r.out, /full control of Docker on that machine\. Allow\? \[y\/N\]/);
   const saved = readFileSync(g.cfg, 'utf8');
-  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN|COORDINATORS|DOCKER_SOCKET/.test(saved), saved);
+  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN|COORDINATORS|DOCKER_SOCKET|CONSENT_HOST/.test(saved), saved);
 });
 
 test('setup: the same name on a different port is a different destination, so consent is re-asked', () => {
@@ -382,7 +383,7 @@ test('setup: the same name on a different port is a different destination, so co
   assert.match(r.out, /Allow the GitHub token on me@mac-studio\? \[y\/N\]/);
   const saved = readFileSync(g.cfg, 'utf8');
   assert.match(saved, /CLOUDY_CLOUD_SSH_PORT=2222/);
-  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN/.test(saved), saved);
+  assert.ok(!/TOKEN_ON_BOX|GH_TOKEN|CONSENT_HOST/.test(saved), saved);
 });
 
 test('setup: explicit consent on a new machine is saved, but the old machine token is not offered as the default', () => {

@@ -97,6 +97,18 @@ test('the egress and microsandbox keys load from the env file', () => {
   assert.equal(env.CLOUDY_CLOUD_MSB_SLOTS, '4');
 });
 
+test('an explicitly empty CLOUDY_CLOUD_EGRESS_ALLOW reaches egressAllow as a policy that lists no hosts, not as unset', () => {
+  // Every other empty env value still reads as unset; this one alone is kept.
+  const env = loadEnv({ CLOUDY_CLOUD_EGRESS_ALLOW: '', CLOUDY_CLOUD_MSB_SLOTS: '' });
+  assert.ok('CLOUDY_CLOUD_EGRESS_ALLOW' in env && env.CLOUDY_CLOUD_EGRESS_ALLOW === '');
+  assert.ok(!('CLOUDY_CLOUD_MSB_SLOTS' in env));
+  assert.match(egressAllow(env).error ?? '', /lists no hosts/);
+  // and a file line `CLOUDY_CLOUD_EGRESS_ALLOW=` reaches it the same way
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_EGRESS_ALLOW=\n');
+  assert.match(egressAllow(loadEnv({ CLOUDY_CLOUD_CONFIG: file })).error ?? '', /lists no hosts/);
+});
+
 test('envLine builds one KEY=value line and refuses CR, LF and NUL in the value, naming the key not the value', () => {
   assert.equal(config.envLine('GH_TOKEN', 'abc123'), 'GH_TOKEN=abc123');
   for (const bad of ['first\nsecond=yes', 'a\rb', 'a\0b']) {

@@ -9,7 +9,7 @@ import { basename, dirname, join } from 'node:path';
 import { Writable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { envLine, loadEnv, savedEnv } from './config.mjs';
+import { envLine, loadEnv, savedEnv, consentHostId } from './config.mjs';
 import { createSsh } from './providers/ssh.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -306,6 +306,11 @@ export async function runSetup({ env = loadEnv(), input = process.stdin, out = p
         ui.say('warn', 'Coordinators: not allowed, so they stay off on this machine', `${SETUP_CMD} (run it again and answer y)`);
       }
     }
+    // The consent flags apply only to the destination they were given for. Recording its id (opaque: the file's
+    // SSH destination is already readable, but a coordinator container is not told it) lets the provider refuse a
+    // flag that an exported CLOUDY_CLOUD_SSH_HOST/PORT would otherwise reuse on another machine.
+    if (set.CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX === 'yes' || set.CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS === 'yes') set.CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST = consentHostId(`${host}:${env.CLOUDY_CLOUD_SSH_PORT || '22'}`);
+    else del.push('CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST');
     saveEnv(file, set, del);
     ui.say('ok', `Saved the self-hosted settings to ${file}`);
     ui.text(`    ${slots} subagent${slots === 1 ? '' : 's'} at once on ${host}. Check the machine any time with: cloudy-cloud doctor`);

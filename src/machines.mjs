@@ -18,17 +18,21 @@ const fail = (m) => { throw new Error(m); };
 // stripped, and \r\n folded to spaces so a field cannot smuggle extra lines into the output.
 const one = (v) => safeText(v ?? '').replace(/[\r\n]+/g, ' ');
 
-// Live machines this tool made (label purpose=cloudy-cloud). The provider also accepts the key
-// under its CLOUDY_CLOUD_-prefixed name (a coordinator holds it as a proxy secret).
+// Live machines this tool made: label purpose=cloudy-cloud, or the historical purpose=claude-cloud
+// from before the rename. The provider also accepts the key under its CLOUDY_CLOUD_-prefixed name
+// (a coordinator holds it as a proxy secret).
+const OUR_PURPOSES = ['cloudy-cloud', 'claude-cloud'];
 const ours = async (env, provider) => {
   if (!env[provider.keyName] && !env[`CLOUDY_CLOUD_${provider.keyName}`]) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
-  return provider.list({ purpose: 'cloudy-cloud' }, { sdk: true });
+  const rows = [];
+  for (const purpose of OUR_PURPOSES) rows.push(...await provider.list({ purpose }, { sdk: true }));
+  return rows;
 };
 
 // The label is checked again on the rows, so a provider that ignored the list filter still cannot
 // put a foreign machine in the list, and every displayed field is normalised and safe to print.
 // `id` stays raw: it is the value provider.delete is called with.
-const clean = (rows) => rows.filter((m) => m.labels?.purpose === 'cloudy-cloud').map((m) => ({
+const clean = (rows) => rows.filter((m) => OUR_PURPOSES.includes(m.labels?.purpose)).map((m) => ({
   id: m.id, name: one(m.labels?.name ?? m.name ?? m.id) || one(m.id),
   agent: m.labels?.agent, cname: one(m.labels?.name), machineName: one(m.name ?? m.id),
   role: m.labels?.role === 'coordinator-image' ? 'image' : one(m.labels?.role ?? 'machine'),

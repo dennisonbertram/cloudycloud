@@ -10,6 +10,7 @@ import { makeUi } from './ui.mjs';
 
 const run = promisify(execFile);
 const OURS = /^cloudy-cloud\/(issue-\d{1,10}-)?[0-9a-f]{8}$/; // cloudy-cloud/<id> or, for a worker started from an issue, cloudy-cloud/issue-<n>-<id>
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/; // a git object id: 40 hex (SHA-1) or 64 (SHA-256 repos)
 // Piped stderr keeps the classic text (unchanged for scripts); a terminal gets the wrapped shared-help version.
 // --help always prints the full entry.
 const USAGE = 'Usage: cloudy-cloud branches prune [--yes] [--dry-run]\n  Lists cloudy-cloud/<id> branches on origin that are empty or merged into the default branch.\n  Nothing is deleted unless you pass --yes.';
@@ -23,14 +24,14 @@ export async function main(argv, { cwd = process.cwd(), out = console.log, err =
   const git = (...a) => run('git', a, { cwd, maxBuffer: 1 << 26 }).then((r) => r.stdout.trim());
   try {
     const listed = (await git('ls-remote', '--heads', 'origin', 'refs/heads/cloudy-cloud/*')).split('\n').filter(Boolean)
-      .map((l) => l.split(/\s+/)).map(([sha, ref]) => [sha, ref.replace(/^refs\/heads\//, '')]).filter(([sha, b]) => /^[0-9a-f]{40}$/.test(sha) && OURS.test(b));
+      .map((l) => l.split(/\s+/)).map(([sha, ref]) => [sha, ref.replace(/^refs\/heads\//, '')]).filter(([sha, b]) => OID.test(sha) && OURS.test(b));
     if (!listed.length) { out('No cloudy-cloud/<id> branches on origin.'); return 0; }
     const head = (await git('ls-remote', '--symref', 'origin', 'HEAD')).match(/^ref: refs\/heads\/(\S+)\tHEAD/m)?.[1];
     if (!head || !/^[A-Za-z0-9._/-]+$/.test(head) || head.startsWith('-')) throw new Error('could not read the default branch of origin');
     // The merge base is the remote's OID, never `origin/<head>`: a local tag or branch can shadow that name
     // and make merge-base resolve the wrong object.
     const headSha = (await git('ls-remote', 'origin', `refs/heads/${head}`)).split(/\s+/)[0] ?? '';
-    if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('could not read the default branch of origin');
+    if (!OID.test(headSha)) throw new Error('could not read the default branch of origin');
     await git('fetch', '-q', 'origin', `refs/heads/${head}`, ...listed.map(([, b]) => `+refs/heads/${b}:refs/remotes/origin/${b}`));
     if (await git('rev-parse', 'FETCH_HEAD') !== headSha) throw new Error('the default branch of origin moved while it was being checked; run again');
     const shownHead = safeText(head);

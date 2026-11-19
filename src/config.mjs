@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -7,7 +8,7 @@ import { resolveProfile } from './profiles.mjs';
 // The key of the default provider (Instabox), which a coordinator's machine loads: it is sent no CLOUDY_CLOUD_PROVIDER.
 export const DEFAULT_PROVIDER_KEY = 'INSTABOX_API_KEY';
 export const PROVIDER_KEY = /^[A-Z][A-Z0-9_]{2,63}_API_KEY$/;
-const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_TURN_MINUTES', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS', 'CLOUDY_CLOUD_PROFILE_MAX', 'CLOUDY_CLOUD_PROVIDER_RETRIES', 'CLOUDY_CLOUD_EGRESS_ALLOW', 'CLOUDY_CLOUD_MSB_BIN', 'CLOUDY_CLOUD_MSB_SLOTS'];
+const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_TURN_MINUTES', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS', 'CLOUDY_CLOUD_PROFILE_MAX', 'CLOUDY_CLOUD_PROVIDER_RETRIES', 'CLOUDY_CLOUD_EGRESS_ALLOW', 'CLOUDY_CLOUD_MSB_BIN', 'CLOUDY_CLOUD_MSB_SLOTS'];
 
 // Names of the Instabox secrets that hold the Claude token and provider keys (comma-separated). Names only, never values.
 export const proxySecrets = (env = process.env) => new Set(String(env.CLOUDY_CLOUD_PROXY_SECRETS ?? '').split(/[\s,]+/).filter(Boolean));
@@ -50,6 +51,11 @@ export function egressAllow(env = process.env) {
   return bad === -1 ? { list: parts.map((h) => h.toLowerCase()) } : { error: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` };
 }
 
+// What setup stores in CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST to bind a self-hosted consent (token on the box,
+// coordinators) to one SSH destination: the sha256 of "host:port". The destination stays opaque, so the id can be
+// forwarded to a coordinator container without giving it the SSH endpoint the laptop uses.
+export const consentHostId = (dest) => createHash('sha256').update(String(dest)).digest('hex');
+
 // One env-file line is NAME=value, so a value holding CR, LF or NUL would inject lines or corrupt the file.
 // Every writer builds its lines through this; the error names the key, never the value.
 export function envLine(key, value) {
@@ -73,8 +79,10 @@ export function savedEnv(env = process.env) {
   return saved;
 }
 
-// Environment values win over the saved file. Empty values count as unset; a missing file is fine.
-export const loadEnv = (env = process.env) => ({ ...savedEnv(env), ...Object.fromEntries(Object.entries(env).filter(([, v]) => v)) });
+// Environment values win over the saved file. Empty values count as unset — except an explicitly empty
+// CLOUDY_CLOUD_EGRESS_ALLOW, which must reach egressAllow as "set but lists no hosts", not as no policy.
+// A missing file is fine.
+export const loadEnv = (env = process.env) => ({ ...savedEnv(env), ...Object.fromEntries(Object.entries(env).filter(([k, v]) => v || k === 'CLOUDY_CLOUD_EGRESS_ALLOW')) });
 
 // Returns a function that re-reads the env file into `env` (the object the server shares) when the file's mtime changed,
 // so a key added after startup applies to the next agent. Keys deleted from the file are removed; real environment values stay.

@@ -46,9 +46,9 @@ export async function run(argv, deps = {}) {
     if (!provider.caps.hasShell) fail(guide('shell_unsupported', { provider: provider.name }));
     const tty = deps.isTTY ?? !!process.stdin.isTTY;
     if (!a.cmd && !tty) fail(`An interactive shell needs a terminal, and this has none. Pass a command instead: cloudy-cloud shell ${a.id} -- <command>`);
-    const [bin, ...args] = provider.shellArgv(machine, a.cmd);
-    const r = (deps.spawn ?? ((argv, o) => spawnSync(argv[0], argv.slice(1), o)))([bin, ...args], { stdio: 'inherit', env: { ...process.env, ...provider.shellEnv?.() } });
-    if (r.error) fail(`Could not start ${bin} (${r.error.message}). Install it or run: cloudy-cloud doctor`);
+    const shArgv = provider.shellArgv(machine, a.cmd);
+    const r = (deps.spawn ?? ((argv, o) => spawnSync(argv[0], argv.slice(1), o)))(shArgv, { stdio: 'inherit', env: { ...process.env, ...provider.shellEnv?.() }, ...provider.shellSpawnOpts?.(shArgv) });
+    if (r.error) fail(`Could not start ${shArgv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor`);
     return r.status ?? (r.signal ? 128 + (constants.signals[r.signal] ?? 0) : 1);
   } catch (e) {
     err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud shell: ${e.message}`);

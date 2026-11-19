@@ -89,6 +89,23 @@ test('an agent description containing a secret is logged scrubbed', async () => 
   assert.ok(!JSON.stringify(events).includes(SECRET));
 });
 
+test('a follow-up message echoing the preview link is redacted in the logged event; the reply never logs it either', async () => {
+  const events = [];
+  const { start, wait, msg, open } = await setup({ events: (e) => events.push(e) });
+  const id = await start({ prompt: 'EDIT', preview_port: 3000 });
+  const r = await wait([id]);
+  const url = open.get(id).previewUrl;
+  assert.ok(url, 'a preview link was published');
+  assert.match(r, new RegExp(`Preview: ${url}`), 'the result to the caller carries the link');
+  const reply = events.filter((e) => e.type === 'reply').at(-1);
+  assert.ok(!reply.text.includes(url), 'the logged reply does not carry the preview link');
+  await msg(id, `is the app still up at ${url}?`);
+  await wait([id]);
+  const sent = events.filter((e) => e.type === 'message').at(-1);
+  assert.ok(sent.text.includes('a private preview link was returned to the caller'), sent.text);
+  assert.ok(!sent.text.includes(url), 'the logged message does not carry the preview link');
+});
+
 test('the machine event records when the server deletes the machine', async () => {
   const events = [];
   const { start, wait } = await setup({ events: (e) => events.push(e) });

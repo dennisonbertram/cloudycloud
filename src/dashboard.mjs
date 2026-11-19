@@ -354,6 +354,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   let limiter; // made on first use: metrics reads leave at least one provider slot free for the state's own reads
   const lastRead = new Map(); // machine id -> when its last read started; kept after the machine stops so a quick restart is not read again within METRICS_MS
   let listSeq = 0, appliedSeq = 0; // a list answer older than the one already applied is ignored
+  let fleetCursor = 0; // round-robin start for the per-poll merge checks, so more than FLEET_MERGED_PER_POLL trunks still all get checked over successive refreshes
   mergedCheck ??= makeMergedCheck({ now });
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
@@ -445,7 +446,11 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(b.machine).samples, now()), now())) u.quiet = true; } }
     const u = planSnapshot(provider, now())?.usage;
     if (typeof u?.costUSD === 'number') cached.usage = Object.fromEntries(['costUSD', 'allowanceUSD', 'overageUSD', 'ratedUntil'].filter((k) => u[k] != null).map((k) => [k, u[k]]));
-    const trunks = [...new Set(cached.boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))].slice(0, FLEET_MERGED_PER_POLL);
+    const allTrunks = [...new Set(cached.boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))];
+    const trunks = allTrunks.length > FLEET_MERGED_PER_POLL
+      ? Array.from({ length: FLEET_MERGED_PER_POLL }, (_, i) => allTrunks[(fleetCursor + i) % allTrunks.length])
+      : allTrunks;
+    fleetCursor = allTrunks.length ? (fleetCursor + trunks.length) % allTrunks.length : 0;
     if (trunks.length) cached.fleets = fleetsOf(cached.boxes, new Map(await Promise.all(trunks.map(async (t) => [t, await mergedCheck(t)]))));
     at = now();
     return cached;

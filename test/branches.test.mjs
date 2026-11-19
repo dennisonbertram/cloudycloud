@@ -148,6 +148,22 @@ test('a local tag named origin/main cannot make an unmerged branch look merged',
   assert.ok(f.branches().includes('cloudy-cloud/00000003'), 'the unmerged branch is kept');
 });
 
+test('a SHA-256 repo (64-char object ids) is listed and pruned like a SHA-1 one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'branches-256-'));
+  const bare = join(dir, 'origin.git'), work = join(dir, 'work');
+  sh(dir, `git init -q --bare -b main --object-format=sha256 ${bare} && git clone -q ${bare} work`);
+  const g = 'git -c user.name=t -c user.email=t@t';
+  sh(work, `${g} commit -q --allow-empty -m base && git push -q origin HEAD:main`);
+  sh(work, 'git checkout -q -b tmp main && git push -q origin tmp:cloudy-cloud/00000001 && git checkout -q main && git branch -q -D tmp');
+  const sha = sh(work, 'git rev-parse main');
+  assert.equal(sha.length, 64);
+  const r = await run(['prune', '--yes'], work);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /cloudy-cloud\/00000001 .* prune/);
+  assert.match(r.out, /Deleted cloudy-cloud\/00000001/);
+  assert.ok(!sh(bare, "git for-each-ref '--format=%(refname:short)' refs/heads").split('\n').includes('cloudy-cloud/00000001'));
+});
+
 test('git stderr is scrubbed of terminal controls before it is printed', async () => {
   const f = fixture();
   const real = sh('/', 'command -v git');

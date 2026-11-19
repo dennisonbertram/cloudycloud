@@ -75,7 +75,7 @@ export function pushOf(text) {
 
 // A GitHub pull request URL, the only PR link the autofix lines may carry.
 const GH_PULL = /https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}(?![\d/])/;
-const GH_PULL_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}$/;
+export const GH_PULL_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,10}$/;
 const AF_STATE = new Set(['running', 'clean', 'not clean', 'stopped']);
 // a.autofix comes only from the typed `af` field the controller emits itself (run-subagent.mjs), never from reply
 // or progress text, which a worker — or a hostile repo through the worker — can write. The fields are still

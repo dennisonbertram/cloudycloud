@@ -146,11 +146,13 @@ const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hos
 // anything with spaces, semicolons, quotes or control characters would smuggle arguments or a second command.
 const WORD = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const word = (...vs) => vs.find((v) => typeof v === 'string' && WORD.test(v)) ?? '';
-// Every machine a command acts on must be one of ours: purpose=cloudy-cloud plus the role. The name (for
-// attach/status/stop) is a second filter, not a substitute — labels decide, never the reported name alone.
+// Every machine a command acts on must be one of ours: the purpose label plus the role. Machines made before the
+// rename carry the historical purpose=claude-cloud label; those count as ours too. The name (for attach/status/stop)
+// is a second filter, not a substitute — labels decide, never the reported name alone.
+const OUR_PURPOSES = new Set(['cloudy-cloud', 'claude-cloud']);
 const find = async (provider, role, name) =>
   (await provider.list({ role, ...(name && { name }) }, { sdk: true }))
-    .filter((m) => m.labels?.purpose === 'cloudy-cloud' && m.labels?.role === role && (!name || m.labels?.name === name));
+    .filter((m) => OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
 async function installTool(sbx, root) {
@@ -230,10 +232,18 @@ async function resumePending(c) {
     updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_ACCOUNT_KEY]);
     guided(`The pending snapshot ${sid} no longer exists, so it was forgotten. Run: cloudy-cloud coordinator image`, { short: `The pending snapshot ${sid} no longer exists.`, reason: 'It was forgotten.', next: 'cloudy-cloud coordinator image' });
   }
-  let sbx = null;
+  let sbx = null, foreign = false;
   // The recorded machine id is only a claim: connect (and so finishSave's delete) happens only when a fresh
-  // listing verifies it is still our image machine (purpose + role). An unverifiable machine is left alone.
-  try { if ((await find(c.provider, 'coordinator-image')).some((m) => m.id === mid)) sbx = await c.provider.connect(mid, { retry: false }); } catch (e) { if (!gone(e)) throw e; }
+  // listing verifies it is still our image machine (purpose + role). A machine that exists but no longer verifies
+  // stays untouched and the pending record is kept, so a later --save can finish it; only a machine that is really
+  // gone falls through to finishSave, which clears the record after saving the snapshot id.
+  try {
+    // Unfiltered: a role-filtered list would miss the machine entirely if its role label is what changed.
+    const row = (await c.provider.list({}, { sdk: true })).find((m) => m.id === mid);
+    if (row && OUR_PURPOSES.has(row.labels?.purpose) && row.labels?.role === 'coordinator-image') sbx = await c.provider.connect(mid, { retry: false });
+    else foreign = !!row;
+  } catch (e) { if (!gone(e)) throw e; }
+  if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image --save again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
   const saved = readKey(c.configFile, PENDING_ACCOUNT_KEY); // '' only for an entry written before this key existed
   await finishSave(c, sbx, snap, saved === 'none' ? '' : saved || null);
   return true;
@@ -335,9 +345,9 @@ async function image(c, args) {
   const already = img && await signedIn(sbx);
   if (already) { const r = await saveNew(c, sbx, already.email); storeNotice(c, stored); return r; } // an earlier run already finished the sign-in
   c.out(`Claude will show a link. Open it, sign in, and paste the code it shows when asked. This machine is deleted at ${until} if you don't finish.`);
-  const [bin, ...rest] = c.provider.shellArgv(sbx.id, ['claude', 'auth', 'login'], { tty: true });
+  const argv = c.provider.shellArgv(sbx.id, ['claude', 'auth', 'login'], { tty: true });
   for (let n = 1; ; n++) {
-    const r = c.spawn(bin, rest, { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() } });
+    const r = c.spawn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() }, ...c.provider.shellSpawnOpts?.(argv) });
     // Trust `claude auth status`, not the ssh exit code (unverified for `claude auth login` over instabox ssh); the machine was not signed in before this login.
     const who = !r?.error && await signedIn(sbx);
     if (who) { const saved = await saveNew(c, sbx, who.email); storeNotice(c, stored); return saved; }
@@ -440,7 +450,7 @@ async function start(c, args) {
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
   const machineWord = word(machine, sbx.id); // a suggested ssh command takes only a plain word — the id when the name is not one
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, ...(machineWord ? { attach: c.ssh(machineWord, 'tmux attach -t claude') } : {}), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: machineWord ? c.ssh(machineWord, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${name}`, started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -477,9 +487,9 @@ async function attach(c, args) {
   const [m] = await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.'));
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   if (c.tty) { // on a terminal, open the session here
-    const [bin, ...rest] = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
-    const r = c.spawn(bin, rest, { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() } });
-    if (r?.error) guided(`Could not start ${bin} (${r.error.message}). Install it or run: cloudy-cloud doctor`, { short: `Could not start ${bin} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' });
+    const argv = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
+    const r = c.spawn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() }, ...c.provider.shellSpawnOpts?.(argv) });
+    if (r?.error) guided(`Could not start ${argv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor`, { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' });
     return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
@@ -595,7 +605,7 @@ async function finish(c, args, deps) {
   const notHere = `This is not a coordinator machine (hostname ${host}). finish only runs on a machine started with: cloudy-cloud coordinator start`;
   const notHereFields = { short: 'This is not a coordinator machine.', reason: `hostname ${host}`, next: 'cloudy-cloud coordinator start NAME --repo URL' };
   if (!mname) guided(notHere, notHereFields);
-  const me = (await c.provider.list({ role: 'coordinator' })).find((m) => mach(m) === mname && m.labels?.purpose === 'cloudy-cloud' && m.labels?.role === 'coordinator');
+  const me = (await c.provider.list({ role: 'coordinator' })).find((m) => mach(m) === mname && OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === 'coordinator');
   if (!me?.id) guided(notHere, notHereFields);
   const verified = [`machine ${safeText(mach(me))} (${safeText(me.id)}), coordinator ${safeText(me.labels?.name)}`];
   if (force) verified.push('--force: skipped the git and worker checks');
@@ -617,7 +627,7 @@ async function finish(c, args, deps) {
     }
     for (const b of branches) {
       let ahead;
-      try { ahead = git('rev-list', `${b}@{u}..${b}`); } catch { problems.push(`Branch ${b} has no upstream on GitHub; push it with: git push -u origin ${b}`); continue; }
+      try { ahead = git('rev-list', `${b}@{u}..${b}`); } catch { problems.push(`Branch ${b} has no upstream on GitHub; push it with: git push -u origin ${q(b)}`); continue; }
       if (ahead) problems.push(`Branch ${b} has ${ahead.split('\n').length} commit(s) not pushed to its upstream; run: git push`);
     }
     let owner = '';
@@ -673,8 +683,9 @@ async function run(argv, deps) {
   }
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
   try { return await commands[cmd](c, args); } catch (e) {
-    // The key error always folds into one line for scripts; the terminal fields carry the same Next.
-    if (e?.code === 'no_key') guided(`${e.message} Run: cloudy-cloud setup`, { short: e.message, next: 'cloudy-cloud setup' });
+    // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
+    // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
+    if (e?.code === 'no_key') guided(`${String(e.message).replaceAll('\n', ' ')} Run: cloudy-cloud setup`, { short: `A required ${c.provider.name} key is missing.`, details: [String(e.message)], next: 'cloudy-cloud setup' });
     throw e;
   }
 }
