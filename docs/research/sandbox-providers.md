@@ -92,6 +92,18 @@ Notes on the table:
 
   Of these, GKE fits the interface best, because `kubectl exec` and `kubectl cp` cover running commands and writing files.
 
+- **Orble** (checked 2026-11-19; [orble.tech](https://orble.tech), alpha):
+  - Linux VMs for agents ("boxes"). A 2 vCPU / 4 GiB box costs $0.015 an hour, billed per second, and a suspended box costs only storage ($0.05 per GiB-month) ([pricing](https://orble.tech/pricing)). Egress rules, secrets and box networks need Orble Pro, $20 a month.
+  - Fits: a REST API (`/v1/boxes`, used by the SDKs, not documented as a reference), Python and TypeScript SDKs (`orble-sdk` and `@orble/sdk`, 0.1.2, published 2026-11-18, [source](https://github.com/orbletech/orble-sdk)), snapshots and memory-preserving fork ([docs](https://orble.tech/docs.md)), commands and files, per-port HTTPS addresses, and SSH. Secrets work as placeholders: `orble secret set NAME --host api.github.com` ([docs](https://orble.tech/docs.md)). A per-box allow list works with `orble net allow <box> *.example.com`, and it can change while the box runs.
+  - Does not fit yet:
+    - No server-side delete deadline. The Daytona-compatible layer lists "auto-delete" as working, but nobody checked what it does. `exec(..., then="delete")` deletes a box when a command exits, but a command is limited to 600 s.
+    - Labels are not in the native create call; the Daytona-compatible layer says it supports them [I].
+    - Commands do not stream (output returns at the end, last 64 KiB of each stream, 600 s maximum). Files are limited to 8 MiB.
+    - The CLI is the only documented way to set secrets and egress rules. Nobody checked whether `git push` over HTTPS works through the secret proxy.
+    - No image name at create. A prepared snapshot plays that role ("custom images" are Enterprise).
+  - The announced "introspection API" and "FUSE in every box" are not in the docs, SDK source or llms.txt. Keep-awake (`orble keep-awake`, `PATCH /v1/boxes/{name} {"keep_awake": true}`) and wake, fork and restore hooks (`~/.config/orble/on-resume.d/`, `ORBLE_EVENT`) are documented. The SDK docs list `keep_awake`, but the published 0.1.2 source has no such method. Amp's self-hosted orbs run on Orble through `dispatch.sh` ([docs](https://orble.tech/docs.md)); that is Amp on Orble, not a self-hosted Orble.
+  - Verdict: not yet. Compared with Zipbox it has snapshots, a documented GitHub-friendly secret proxy and a per-box allow list, but it shares the missing deadline and labels. Phase 2 or later, after Orble confirms a create-time deadline (or hard auto-delete) and a GitHub `git push` works through its secret proxy. Unknown: rate limits, concurrent box limits, free credit, whether the API keys can be scoped.
+
 ## Recommendation
 
 1. **Phase 0:** extract the `Provider`/`Sandbox` interface, move Instabox to `src/providers/instabox.mjs`, and add a `CLOUDY_CLOUD_PROVIDER` setting. Behavior does not change.
