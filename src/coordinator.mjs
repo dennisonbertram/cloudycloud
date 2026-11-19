@@ -39,38 +39,50 @@ const refuseEgress = (env) => { const e = egressAllow(env); if (e.error) fail(e.
 // (plain stderr, --json); a terminal renders the fields: ✖ short, dim details and reason, → Next.
 const guided = (message, fields) => { throw Object.assign(new Error(message), fields); };
 // The guidance labels a message can carry (author-chosen or appended for start): one parser, used by main()
-// for --json and by errorScreen for the terminal. Lines before the first label are the problem; a label line
-// swallows the lines after it into its field. "Tell the user" is for agents and never prints on a terminal.
-const LABELS = 'What happened|Likely cause|Next step|Tell the user|Next|Run';
-const parseGuidance = (text) => {
+// for --json (the four origin labels, so nextStep keeps a trailing Run: line as before) and by errorScreen for
+// the terminal (which also lifts "Run:"/"Next:" lines into the Next). Lines before the first label are the
+// problem; a label line swallows the lines after it into its field. "Tell the user" never prints on a terminal.
+const LABELS = 'What happened|Likely cause|Next step|Tell the user';
+const parseGuidance = (text, labels = LABELS) => {
+  const re = new RegExp(`^(${labels}): ?(.*)$`);
   const head = [], fields = {};
   let cur;
   for (const l of String(text).split('\n')) {
-    const m = l.match(new RegExp(`^(${LABELS}): ?(.*)$`));
-    if (m) { cur = m[1]; fields[cur] = fields[cur] === undefined ? m[2] : `${fields[cur]}\n${m[2]}`; }
+    const m = l.match(re);
+    if (m) { cur = m[1]; fields[cur] = m[2]; }
     else if (cur) fields[cur] += `\n${l}`;
     else head.push(l);
   }
   return { head, fields };
 };
-// The wrapped usage for the failing subcommand plus the help command: the tail of a usage error message.
-const usageOf = (cmd) => `${coordinatorUsage(cmd)}\nRun: cloudy-cloud coordinator --help`;
+// A usage error keeps the classic message for piped stderr and --json; the terminal renders the fields:
+// the problem (short), the relevant subcommand's wrapped usage (details) and the matching help command (next).
+const usageError = (message, cmd, short, details = []) =>
+  guided(message, { short, details: [coordinatorUsage(cmd), ...details], next: `cloudy-cloud coordinator ${cmd ? `${cmd} --help` : '--help'}`, wrapShort: true });
 const tilde = (p, env) => { const h = env.HOME || homedir(); return p.startsWith(`${h}/`) ? `~${p.slice(h.length)}` : p; };
 // "→ Next: <cmd>" on one line; a command too long for that wraps whole words onto indented lines: never an ellipsis.
 const nextFit = (u, cmd) => { const l = u.next(cmd); return cellWidth(l) <= u.width ? l : [`  ${u.paint(u.col.acc, `${u.utf ? '→' : '->'} Next:`)}`, ...wrapText(u, cmd).map((x) => `    ${x}`)].join('\n'); };
 // Same wrap for the "Attach with: <cmd>" hint.
 const attachFit = (u, name) => (4 + cellWidth(`Attach with: cloudy-cloud coordinator attach ${name}`) <= u.width
   ? u.hint(`Attach with: cloudy-cloud coordinator attach ${name}`) : [u.hint('Attach with:'), ...wrapText(u, `cloudy-cloud coordinator attach ${name}`).map((l) => `    ${u.dim(l)}`)].join('\n'));
-// Whole-word wrapped lines; a single word still over the room is then fitted: info text may be cut, never a command.
-const infoLines = (u, text, room = u.width - 4) => wrapText(u, text, room).map((l) => fitCells(l, room));
 // A hint line whose text wraps whole words onto indented dimmed lines instead of being cut mid-word.
-const hintFit = (u, text) => infoLines(u, text).map((l, i) => (i ? `    ${u.dim(l)}` : u.hint(l))).join('\n');
-// Whole-word wrap for a line of text: no word is cut, each returned line fits `room` cells (default: a 4-indent).
+const hintFit = (u, text) => wrapText(u, text).map((l, i) => (i ? `    ${u.dim(l)}` : u.hint(l))).join('\n');
+// The longest prefix of s fitting `max` cells (like fitCells but never an ellipsis: nothing is dropped).
+const takeCells = (s, max) => { let out = '', w = 0; for (const ch of String(s)) { const cw = cellWidth(ch); if (w + cw > max) break; w += cw; out += ch; } return out; };
+// Whole-word wrap for a line of text: words wrap at the room edge. A single word over the room is split at a '/'
+// boundary or, failing that, at the room edge — every character is kept and no command, URL or flag is cut.
 const wrapText = (u, text, room = u.width - 4) => {
   const lines = []; let cur = '';
-  for (const w of String(text).split(/\s+/).filter(Boolean)) {
-    const t = cur ? `${cur} ${w}` : w;
-    if (cellWidth(t) <= room) cur = t; else { if (cur) lines.push(cur); cur = w; }
+  for (const w0 of String(text).split(/\s+/).filter(Boolean)) {
+    let w = w0;
+    while (cellWidth(w) > room) { // a lone word over the room
+      if (cur) { lines.push(cur); cur = ''; }
+      const head = takeCells(w, room), slash = head.lastIndexOf('/');
+      const cut = slash > 0 ? slash + 1 : Math.max(1, head.length);
+      lines.push(w.slice(0, cut)); w = w.slice(cut);
+    }
+    if (cur && cellWidth(cur) + cellWidth(w) + 1 > room) { lines.push(cur); cur = ''; }
+    cur = cur ? `${cur} ${w}` : w;
   }
   if (cur) lines.push(cur);
   return lines;
@@ -325,23 +337,23 @@ const customHost = (env, key) => { try { const p = Object.values(loadProfiles(en
 async function start(c, args) {
   refuseEgress(c.env);
   const name = args[0];
-  if (!name || !NAME_RE.test(name)) fail(`NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\n${usageOf('start')}`);
+  if (!name || !NAME_RE.test(name)) usageError('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.', 'start', 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
   const repo = flag(args, '--repo');
-  if (!repo || !REPO_RE.test(repo)) fail(`--repo must be a github.com https URL.\nFor example https://github.com/OWNER/REPO\n${usageOf('start')}`);
+  if (!repo || !REPO_RE.test(repo)) usageError('--repo must be a github.com https URL, for example https://github.com/OWNER/REPO', 'start', '--repo must be a github.com https URL.', ['For example https://github.com/OWNER/REPO']);
   const branch = flag(args, '--branch');
-  if (branch && !/^[\w./-]+$/.test(branch)) fail(`--branch has characters that are not allowed.\n${usageOf('start')}`);
+  if (branch && !/^[\w./-]+$/.test(branch)) usageError('--branch has characters that are not allowed.', 'start', '--branch has characters that are not allowed.');
   const model = flag(args, '--model');
-  if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) fail(`--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.\n${usageOf('start')}`);
+  if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) usageError('--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.', 'start', '--model has characters that are not allowed.', ['Use a model name such as claude-opus-5-5 or an alias such as opus.']);
   const taskFile = flag(args, '--task-file');
   const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
   if (task !== undefined) {
-    if (!task.trim()) fail(`The task is empty.\n${usageOf('start')}`);
-    if (Buffer.byteLength(task) > TASK_MAX) fail(`The task is larger than ${TASK_MAX / 1000} KB.\n${usageOf('start')}`);
+    if (!task.trim()) usageError('The task is empty.', 'start', 'The task is empty.');
+    if (Buffer.byteLength(task) > TASK_MAX) usageError(`The task is larger than ${TASK_MAX / 1000} KB.`, 'start', `The task is larger than ${TASK_MAX / 1000} KB.`);
   }
   const maxHours = c.provider.caps.maxTtlSeconds / 3600;
   const hours = flag(args, '--max-hours') === undefined ? maxHours : Number(flag(args, '--max-hours'));
   const seconds = Math.round(hours * 3600);
-  if (!(seconds >= 60 && seconds <= maxHours * 3600)) fail(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).\n${usageOf('start')}`);
+  if (!(seconds >= 60 && seconds <= maxHours * 3600)) usageError(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).`, 'start', `--max-hours must be a number up to ${maxHours}.`, [`${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours.`]);
   const deleteAt = new Date(Date.now() + seconds * 1000).toISOString();
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved, signed-in image.', next: 'cloudy-cloud coordinator image', neutral: true });
@@ -444,7 +456,7 @@ async function start(c, args) {
 }
 
 async function attach(c, args) {
-  const [m] = await find(c.provider, 'coordinator', args[0] || fail(usageOf('attach')));
+  const [m] = await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.'));
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   if (c.tty) { // on a terminal, open the session here
     const [bin, ...rest] = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
@@ -469,7 +481,7 @@ async function screenOf(c, m) {
     return { read: true, waiting: st.waiting || st.blocked };
   } catch { return { read: false, waiting: '' }; }
 }
-const screenText = (r) => (!r.read ? 'not readable' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
+const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
 
 async function status(c, args) {
   const [m] = await find(c.provider, 'coordinator', args[0]);
@@ -482,7 +494,7 @@ async function status(c, args) {
     // a stopped coordinator has no live session to attach to: no attach action
     return c.out([u.block(`Coordinator ${name}`, [['Machine', mach(m)], ['State', state], ['Screen', screen]]), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
-  c.out([`Coordinator ${name} on machine ${mach(m)}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && state === 'running' && `Attach: ${attach}`].filter(Boolean).join('\n'));
+  c.out([`Coordinator ${name} on machine ${mach(m)}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
 
 async function ls(c) {
@@ -542,7 +554,7 @@ async function ls(c) {
 }
 
 async function stop(c, args) {
-  const name = args[0] || fail(usageOf('stop'));
+  const name = args[0] || usageError('Usage: cloudy-cloud coordinator stop NAME', 'stop', 'stop needs a coordinator name.');
   const [m] = await find(c.provider, 'coordinator', name);
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   c.progress('Deleting the coordinator machine...');
@@ -574,7 +586,7 @@ async function finish(c, args, deps) {
       dirty = git('status', '--porcelain');
       current = git('rev-parse', '--abbrev-ref', 'HEAD');
       branches = git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter((b) => b === current || b.startsWith('fleet/'));
-    } catch (e) { guided(`Could not read the git repo ${repo}: ${e.stderr || e.message}`, { short: `Could not read the git repo ${repo}.`, reason: e.stderr || e.message, next: 'cloudy-cloud coordinator finish --force' }); }
+    } catch (e) { guided(`Could not read the git repo ${repo}: ${e.stderr || e.message}`, { short: `Could not read the git repo ${repo}.`, reason: e.stderr || e.message, details: ['Or skip the checks and delete anyway: cloudy-cloud coordinator finish --force'], next: 'fix the problem above, then run: cloudy-cloud coordinator finish' }); }
     if (dirty) problems.push(`${repo} has uncommitted changes:\n${dirty.split('\n').slice(0, 10).join('\n')}`);
     if (current === 'HEAD') {
       let held = '';
@@ -590,19 +602,19 @@ async function finish(c, args, deps) {
     try { owner = readFileSync(deps.ownerFile ?? ownerFile(c.env), 'utf8').trim(); } catch { /* no server has run here */ }
     const workers = owner ? (await c.provider.list({ owner })).filter((m) => m.labels?.owner === owner && !/delet/.test(m.state ?? '')) : [];
     if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
-    if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'cloudy-cloud coordinator finish --force' });
+    if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'fix the problems above, then run: cloudy-cloud coordinator finish' });
     verified.push('working tree clean', `pushed: ${branches.join(', ')}`, 'no running workers');
   }
   // One attempt; list and delete here use the raw API, as finish always has (ls, attach, stop use the SDK).
   await c.provider.delete(me.id, { retries: 0 }).catch((e) => { throw e.status ? new Error(`Delete failed: HTTP ${e.status}`) : e; });
-  if (c.ui.term) return c.out([...verified.flatMap((v) => infoLines(c.ui, v).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))), ...infoLines(c.ui, `Deleted this machine (${mach(me)})`).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))].join('\n'));
+  if (c.ui.term) return c.out([...verified.flatMap((v) => wrapText(c.ui, v).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))), ...wrapText(c.ui, `Deleted this machine (${mach(me)})`).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))].join('\n'));
   c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${mach(me)}).`);
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
 const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
 function validateArgs(cmd, args) {
-  const bad = (message) => fail(`${message}\n${usageOf(cmd)}`);
+  const bad = (message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, message);
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
   if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
@@ -628,18 +640,19 @@ async function run(argv, deps) {
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) fail(`${cmd ? `"${cmd}" is not a coordinator command.\n` : ''}${usageOf()}`);
+  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
   validateArgs(cmd, args);
   const c = await context(deps);
   // A provider that cannot run coordinators at all says so in its own words first (it may name a working alternative);
-  // only then does the generic snapshots check apply.
+  // only then does the generic snapshots check apply. The first sentence is the problem; it wraps, never truncates.
   if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) {
     const s = c.provider.text.coordinatorRefusal.split(/(?<=\.) +/); // a second sentence is the action
-    guided(c.provider.text.coordinatorRefusal, { short: s[0], details: s.slice(1, -1), next: s.length > 1 ? s.at(-1) : 'cloudy-cloud coordinator --help' });
+    guided(c.provider.text.coordinatorRefusal, { short: s[0], details: s.slice(1, -1), next: s.length > 1 ? s.at(-1) : 'cloudy-cloud coordinator --help', wrapShort: true });
   }
   if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
   try { return await commands[cmd](c, args); } catch (e) {
-    if (e?.code === 'no_key') fail(`${e.message}\nRun: cloudy-cloud setup`);
+    // The key error always folds into one line for scripts; the terminal fields carry the same Next.
+    if (e?.code === 'no_key') guided(`${e.message} Run: cloudy-cloud setup`, { short: e.message, next: 'cloudy-cloud setup' });
     throw e;
   }
 }
@@ -665,7 +678,7 @@ export async function main(argv, deps = {}) {
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
     // The terminal view reads e.short/reason/next in errorScreen; plain stderr and --json keep the
     // message plus the appended guidance, as before — so the guide text is appended whenever it was before.
-    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral, details: e?.details && e.details.map((d) => clean(d)) });
+    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral, wrapShort: e?.wrapShort, details: Array.isArray(e?.details) ? e.details.map((d) => clean(d)) : undefined });
   }
 }
 
@@ -677,18 +690,32 @@ export function errorScreen(e, u) {
   const text = redact(safeText(e.message ?? e));
   if (!u.term) return `cloudy-cloud: ${text}`;
   const fit = (s, room = u.width - 4) => fitCells(s, Math.max(8, room));
+  // Fields reach here uncleaned for non-start errors (main() only scrubs start's): scrub them all the same.
+  const scrub = (s) => redact(safeText(String(s ?? '')));
   // Embedded label values are written for agents (markdown); a terminal gets the bare instruction.
   const bare = (s) => s.replaceAll('`', '').replace(/^Run /, '');
-  const { head, fields } = parseGuidance(text);
-  const structured = Boolean(e.next || e.short || e.reason); // author-chosen fields: the embedded text is not re-read
+  // Agent-directed text ("tell the user ...") is for the MCP caller: a sentence that says it drops whole;
+  // a sentence that leads with a command keeps the command and loses the clause.
+  const human = (s) => s.split(/(?<=[.!?])\s+/).map((p) => {
+    const i = p.search(/\btell the user\b/i);
+    if (i < 0) return p;
+    const head = p.slice(0, i).replace(/[\s,.;:]*\b(?:and|then)?\s*$/, '');
+    return /^(Run: |Call |cloudy-cloud |`)/i.test(head.trim()) ? head : '';
+  }).filter(Boolean).join(' ').replace(/[\s,;:]+$/, '').trim();
+  const { head, fields } = parseGuidance(text, `${LABELS}|Next|Run`);
+  const structured = Boolean(e.next || e.short || e.reason || Array.isArray(e.details)); // author-chosen fields: the embedded text is not re-read
   const first = text.split('\n')[0];
-  const short = e.short ?? (structured ? first : head[0] ?? fields['What happened'] ?? first);
-  const reason = (e.reason ?? (structured ? undefined : bare(fields['Likely cause'] ?? fields['What happened'] ?? ''))) || undefined;
-  const next = e.next ?? (structured ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean)) ?? 'cloudy-cloud coordinator --help';
-  const details = e.details ?? (structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== ''));
-  const body = details.flatMap((d) => String(d).split('\n').flatMap((l) => (l.trim() ? wrapText(u, bare(l)) : [''])));
+  const short = scrub(e.short ?? (structured ? first : head[0] ?? fields['What happened'] ?? first));
+  let reason = scrub(e.reason ?? (structured ? undefined : bare(fields['Likely cause'] ?? fields['What happened'] ?? ''))) || undefined;
+  const next = human(scrub(e.next ?? (structured ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean)) ?? 'cloudy-cloud coordinator --help')) || 'cloudy-cloud coordinator --help';
+  const details = (Array.isArray(e.details) ? e.details : structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== '')).map((d) => scrub(String(d)));
+  // A structured short has a 60-cell head; a refusal or usage-error short wraps whole words instead of cutting.
+  const shortLines = e.wrapShort ? wrapText(u, short) : [fit(short, e.short ? 60 : u.width - 4)];
+  const seen = new Set([short.trim(), ...shortLines.map((l) => l.trim())]); // never print the same line twice
+  if (reason && seen.has(reason.trim())) reason = undefined;
+  const body = details.flatMap((d) => d.split('\n').flatMap((l) => (l.trim() ? wrapText(u, bare(l)) : ['']))).filter((l) => { const t = l.trim(); if (!t) return true; if (seen.has(t)) return false; seen.add(t); return true; });
   return [
-    e.neutral ? `  ${fit(short, 60)}` : u.err(fit(short, e.short ? 60 : u.width - 4)),
+    ...(e.neutral ? shortLines.map((l, i) => (i ? `    ${l}` : `  ${l}`)) : shortLines.map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l)))),
     ...body.map((l) => (l ? `    ${u.dim(l)}` : '')),
     ...(reason ? [`    ${u.dim(fit(reason))}`] : []),
     nextFit(u, next),
@@ -697,7 +724,7 @@ export function errorScreen(e, u) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).then((code) => { if (typeof code === 'number') process.exitCode = code; }).catch((e) => {
-    console.error(errorScreen(e, makeUi({ tty: process.stderr.isTTY })));
+    console.error(errorScreen(e, makeUi({ tty: Boolean(process.stderr.isTTY) })));
     process.exit(1);
   });
 }

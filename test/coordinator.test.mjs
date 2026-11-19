@@ -819,7 +819,7 @@ test('a permission prompt on the screen counts as waiting; ordinary output does 
   assert.match(g.log.out.join('\n'), /waiting on a prompt/);
 });
 
-test('ls adds a WAITING column with the prompt line, and says "not readable" when the pane read fails (#88)', async () => {
+test('ls adds a WAITING column with the prompt line, and says "screen not read" when the pane read fails (#88)', async () => {
   const f = stuck();
   await main(['ls'], f.deps);
   const [head, row] = f.log.out;
@@ -833,7 +833,7 @@ test('ls adds a WAITING column with the prompt line, and says "not readable" whe
   const orig = h.deps.sdk.Sandbox.connect;
   h.deps.sdk.Sandbox.connect = async (id) => { const s = await orig(id); s.commands.run = async () => { throw new Error('network'); }; return s; };
   await main(['ls'], h.deps);
-  assert.ok(h.log.out[1].endsWith('\tnot readable'), h.log.out[1]);
+  assert.ok(h.log.out[1].endsWith('\tscreen not read'), h.log.out[1]); // the piped TSV word is unchanged
 });
 
 test('status NAME prints state, the waiting line and the attach command; --json gives the same fields; it never writes (#88)', async () => {
@@ -1694,26 +1694,32 @@ test('a start provider error renders the appended guidance once: short, cause, o
 
 // ---- r3: usage via cli-help wrapping (visual cluster 4) ----
 
-test('coordinator usage errors show only the relevant subcommand usage and the help command, wrapped at 80', async () => {
-  for (const [args, expect] of [
-    [['lss'], /Usage: cloudy-cloud coordinator <command>/],
-    [[], /Usage: cloudy-cloud coordinator <command>/],
-    [['start', 'boss', '--typo', 'x'], /Usage: cloudy-cloud coordinator start NAME --repo URL/],
-    [['stop'], /Usage: cloudy-cloud coordinator stop NAME/],
-    [['ls', '--all'], /Usage: cloudy-cloud coordinator ls/],
+test('coordinator usage errors keep the origin message for scripts and show the relevant usage only on a terminal', async () => {
+  for (const [args, message, usage, help] of [
+    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [['ls', '--all'], 'ls takes no arguments.\nRun: cloudy-cloud coordinator ls --help', /Usage: cloudy-cloud coordinator ls/, /Next: cloudy-cloud coordinator ls --help/],
+    [['stop'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator stop --help', /Usage: cloudy-cloud coordinator stop NAME/, /Next: cloudy-cloud coordinator stop --help/],
+    [['start'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help', /Usage: cloudy-cloud coordinator start NAME --repo URL/, /Next: cloudy-cloud coordinator start --help/],
+    [['start', 'boss', '--typo', 'x'], 'Unknown argument: --typo\nRun: cloudy-cloud coordinator start --help', /Usage: cloudy-cloud coordinator start NAME --repo URL/, /Next: cloudy-cloud coordinator start --help/],
+    [['attach'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator attach --help', /Usage: cloudy-cloud coordinator attach NAME/, /Next: cloudy-cloud coordinator attach --help/],
   ]) {
     const e = await main(args, { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
-    assert.match(e.message, expect, args.join(' '));
-    assert.match(e.message, /Run: cloudy-cloud coordinator --help/, args.join(' '));
-    assert.doesNotMatch(e.message.replace(expect, ''), /coordinator (image|start|attach|ls|status|stop|finish)\b/, `${args.join(' ')}: only the relevant subcommand usage`);
-    for (const l of e.message.split('\n')) assert.ok(cellWidth(l) <= 80, `${args.join(' ')}: ${l}`);
+    assert.equal(e.message, message, args.join(' ')); // piped stderr and --json stay byte-identical
     for (const u of [tty(), nocolor(), dumb()]) {
       const s = plainText(errorScreen(e, u));
+      assert.match(s, usage, `${args.join(' ')}: terminal shows the relevant wrapped usage`);
       for (const l of s.split('\n')) { assert.ok(cellWidth(l) <= 80, `${args.join(' ')}: ${l}`); assert.doesNotMatch(l, /…/, l); }
       assert.equal((s.match(/Next:/g) ?? []).length, 1, s);
-      assert.match(s, /Next: cloudy-cloud coordinator --help/);
+      assert.match(s, help, args.join(' '));
     }
   }
+  // a start argument error under --json prints the same error object origin/main printed
+  const out = [];
+  await main(['start', '--json'], { env: {}, out: (s) => out.push(s) }).then(() => { throw new Error('no fail'); }, () => {});
+  const o = JSON.parse(out[0]).error;
+  assert.equal(o.code, 'unknown');
+  assert.equal(o.whatHappened, 'Something failed: NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help');
 });
 
 // ---- r3: every refusal ships a Next (visual cluster 5 + flow 6) ----
@@ -1757,8 +1763,9 @@ test('status for a stopped coordinator says "not readable" and drops the attach 
   }
   const g = fixture({ machines: [stopped] });
   await main(['status', 'a'], g.deps);
-  assert.match(g.log.out.join('\n'), /Screen: not readable/);
-  assert.doesNotMatch(g.log.out.join('\n'), /Attach:/);
+  const text = g.log.out.join('\n');
+  assert.match(text, /Screen: screen not read/, text); // piped text is unchanged from origin/main
+  assert.match(text, /Attach: /, text);
 });
 
 test('ls at 120 columns spends the extra width on SCREEN before truncating', async () => {
@@ -1774,4 +1781,133 @@ test('ls at 120 columns spends the extra width on SCREEN before truncating', asy
   const w100 = await at(100), w120 = await at(120);
   for (const l of w120.split('\n')) assert.ok(cellWidth(l) <= 120, l);
   assert.ok(shown(w120) > shown(w100), `120 cols shows more of the prompt than 100: ${shown(w120)} vs ${shown(w100)}`);
+});
+
+// ---- fix round ----
+
+// A refusal to run `finish` points at fixing the problems; --force is only a detail, never the action.
+const finishProvider = (extra = {}) => ({
+  name: 'fake', caps: {}, keyName: 'FAKE_API_KEY', text: { ssh: (m, c) => `ssh ${m} -- ${c}`, listMachines: 'fake ls' },
+  localMachineName: () => 'cc-me',
+  list: async (o) => (o?.role === 'coordinator' ? [{ id: 'm1', name: 'cc-me', labels: { role: 'coordinator', name: 'a' } }] : []),
+  delete: async () => {},
+  ...extra,
+});
+const finishDeps = (extra = {}) => ({
+  provider: finishProvider(), env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-fin-')), 'env') },
+  out: () => {}, hostname: 'h', ownerFile: '/nonexistent/owner-file', ...extra,
+});
+
+test('a finish refusal\'s Next fixes the problems; --force stays a dim detail line', async () => {
+  const e1 = await main(['finish'], finishDeps({ repoDir: '/nonexistent/repo' })).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e1.next, 'fix the problem above, then run: cloudy-cloud coordinator finish');
+  assert.doesNotMatch(e1.next, /--force/);
+  const s1 = plainText(errorScreen(e1, tty()));
+  assert.match(s1, /Next: fix the problem above, then run: cloudy-cloud coordinator finish/);
+  assert.match(s1, /--force/); // mentioned, but not as the action
+  assert.doesNotMatch(s1, /Next:[^\n]*--force/);
+  const repo = mkdtempSync(join(tmpdir(), 'cc-frepo-'));
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+  writeFileSync(join(repo, 'x'), 'dirty'); // an uncommitted change: the work-could-be-lost refusal
+  const e2 = await main(['finish'], finishDeps({ repoDir: repo })).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e2.next, 'fix the problems above, then run: cloudy-cloud coordinator finish');
+  const s2 = plainText(errorScreen(e2, tty()));
+  assert.doesNotMatch(s2, /Next:[^\n]*--force/);
+  assert.match(s2, /--force/);
+  for (const l of s2.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('errorScreen scrubs control characters and escapes from every field, not just the message', () => {
+  const e = Object.assign(new Error('plain'), { short: 'bad \x1b[31mfile.txt', reason: 'a \x07bell', details: ['rm \x1b[2J x'], next: 'cloudy-cloud x\x08' });
+  const s = errorScreen(e, tty()).replace(/\x1b\[[0-9;]*m/g, '');
+  assert.doesNotMatch(s, /\x1b|\x07|\x08/, s);
+});
+
+test('a piped stderr gets the plain error even when stdout is a terminal', () => {
+  if (process.platform !== 'darwin') return; // the pty recipe below is the BSD script(1) form
+  const errFile = join(mkdtempSync(join(tmpdir(), 'cc-errpty-')), 'err.txt');
+  const r = spawnSync('script', ['-q', '/dev/null', 'sh', '-c', `${process.execPath} ${resolve('src/coordinator.mjs')} lss 2>${errFile}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); // BSD script(1) needs a non-pipe stdin
+  assert.equal(r.error, undefined);
+  const text = readFileSync(errFile, 'utf8');
+  assert.match(text, /^cloudy-cloud: /, text);
+  assert.doesNotMatch(text, /\x1b/);
+});
+
+test('a no_key error keeps the origin single-line message and still gets a terminal Next', async () => {
+  const provider = { name: 'fake', caps: {}, text: { ssh: () => 'x', listMachines: 'x' }, localMachineName: () => '', list: async () => { throw Object.assign(new Error('No FAKE_API_KEY in env.'), { code: 'no_key' }); } };
+  const e = await main(['ls'], { provider, env: { FAKE_API_KEY: 'k' }, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e.message, 'No FAKE_API_KEY in env. Run: cloudy-cloud setup');
+  assert.match(plainText(errorScreen(e, tty())), /Next: cloudy-cloud setup/);
+});
+
+test('--json folds a trailing "Run:" line into nextStep, exactly as on origin/main', async () => {
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw new Error('Denied.\nWhat happened: The sandbox refused.\nNext step: Call cloud_agent_list, then retry.\nRun: cloudy-cloud setup'); };
+  const out = [];
+  await main([...START, '--json'], { ...f.deps, out: (s) => out.push(s) }).then(() => { throw new Error('no fail'); }, () => {});
+  const o = JSON.parse(out[0]).error;
+  assert.equal(o.nextStep, 'Call cloud_agent_list, then retry.\nRun: cloudy-cloud setup');
+});
+
+test('piped ls TSV and status keep the origin "screen not read"/Attach text', async () => {
+  const f = fixture({ machines: [machine] });
+  f.deps.sdk.Sandbox.connect = async () => { throw new Error('gone'); };
+  await main(['ls'], f.deps);
+  assert.ok(f.log.out[1].endsWith('\tscreen not read'), f.log.out[1]);
+  const g = fixture({ machines: [machine] });
+  g.deps.sdk.Sandbox.connect = async () => { throw new Error('gone'); };
+  await main(['status', 'a'], g.deps);
+  const text = g.log.out.join('\n');
+  assert.match(text, /Screen: screen not read/, text);
+  assert.match(text, /Attach: /, text);
+});
+
+test('a non-array e.details is ignored by main() and by errorScreen', async () => {
+  const s = plainText(errorScreen(Object.assign(new Error('boom'), { details: { requestId: 'r1' }, next: 'cloudy-cloud x' }), tty()));
+  assert.doesNotMatch(s, /requestId/);
+  assert.match(s, /Next: cloudy-cloud x/);
+  const f = fixture();
+  f.deps.sdk.Sandbox.create = async () => { throw Object.assign(new Error('boom'), { details: { requestId: 'r1' } }); };
+  await assert.rejects(main(START, f.deps), /boom/);
+});
+
+test('a command hint wraps whole words and never ellipsizes inside a path (stop List machines)', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, {});
+  await provider.create({ labels: { role: 'coordinator', name: 'a' }, ttlSeconds: 3600 });
+  provider.text.listMachines = `ssh -i ${'/very/long/path/segment'.repeat(3)}k host machines ls`; // a >80-char command holding a path
+  const out = [];
+  await main(['stop', 'a'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-stop-')), 'env') }, out: (s) => out.push(s), ui: tty() });
+  const text = plainText(out.join('\n'));
+  assert.doesNotMatch(text, /…/, text);
+  for (const l of text.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+  const flat = text.replace(/\n +/g, ' ');
+  assert.match(flat, /List machines: ssh -i \/very\/long\/path/, flat);
+  assert.match(flat, /host machines ls/, flat);
+});
+
+test('a multi-sentence provider refusal wraps its short line in full: it is never truncated', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, {});
+  provider.text.coordinatorRefusal = 'Coordinators on box are not allowed yet: a coordinator starts its workers through the Docker socket on that machine, which gives it full control of Docker there. To allow it, run: cloudy-cloud setup --provider self-hosted and answer yes to the coordinators question. Until then start workers directly from your own session with cloud_agent.';
+  const e = await main(['image'], { provider, env: { FAKE_API_KEY: 'k' }, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
+  const s = plainText(errorScreen(e, tty()));
+  assert.doesNotMatch(s, /…/, s);
+  const flat = s.replace(/\s+/g, ' ');
+  assert.match(flat, /Coordinators on box are not allowed yet: a coordinator starts its workers through the Docker socket on that machine, which gives it full control of Docker there\./, flat);
+  assert.match(flat, /To allow it, run: cloudy-cloud setup --provider self-hosted/, flat);
+  for (const l of s.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('a terminal Next drops agent-directed "tell the user" clauses', () => {
+  const e = new Error('Machine limit.\nWhat happened: The provider machine limit is reached.\nNext step: Call cloud_agent_list, then cloud_agent_stop on agents you no longer need, then retry cloud_agent. If every agent is needed, tell the user the upgrade path.');
+  const s = plainText(errorScreen(e, tty()));
+  assert.doesNotMatch(s, /tell the user/i, s);
+  assert.match(s.replace(/\n/g, ' '), /retry cloud_agent\./, s);
+  assert.match(s, /Next:/);
+});
+
+test('errorScreen does not print the same line twice when short equals What happened', () => {
+  const e = new Error('What happened: The secret CLOUDY_CLOUD_X is missing.\nLikely cause: It is not in env.\nNext step: cloudy-cloud setup --more');
+  const s = plainText(errorScreen(e, tty()));
+  assert.equal((s.match(/secret CLOUDY_CLOUD_X/g) ?? []).length, 1, s);
 });
