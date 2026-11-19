@@ -45,10 +45,13 @@ export function egressAllow(env = process.env) {
   const value = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2');
   if (/^(off|none)$/i.test(value)) return { list: [] };
   const parts = value.split(/[\s,]+/).filter(Boolean);
-  if (!parts.length) return { error: `CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env or remove it.` };
+  // The error text is ours, so it carries the trusted fields a terminal renders: short, dim details and next.
+  const fix = 'fix CLOUDY_CLOUD_EGRESS_ALLOW in ~/.config/cloudy-cloud/env, or remove it.';
+  const names = 'Use host names such as api.example.com or *.example.com, separated by commas or spaces.';
+  if (!parts.length) return { error: `CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts. ${names}\nNext step: ${fix}`, local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW is set but lists no hosts.', details: [names], next: fix };
   // Name the position, never the content: a pasted entry can carry a token (a URL with credentials).
   const bad = parts.findIndex((n) => !EGRESS_HOST.test(n));
-  return bad === -1 ? { list: parts.map((h) => h.toLowerCase()) } : { error: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name. Use host names such as api.example.com or *.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.` };
+  return bad === -1 ? { list: parts.map((h) => h.toLowerCase()) } : { error: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name. ${names}\nNext step: ${fix}`, local: true, short: `CLOUDY_CLOUD_EGRESS_ALLOW entry ${bad + 1} is not a host name.`, details: [names], next: fix };
 }
 
 // What setup stores in CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST to bind a self-hosted consent (token on the box,

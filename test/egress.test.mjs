@@ -46,7 +46,7 @@ test('an invalid CLOUDY_CLOUD_EGRESS_ALLOW value is refused before anything is c
   deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'ok.example.com http://x' };
   const r = await start();
   assert.equal(r.isError, true);
-  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW entry 2 is not a host name\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env\./);
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW entry 2 is not a host name\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\.\nNext step: fix CLOUDY_CLOUD_EGRESS_ALLOW in ~\/\.config\/cloudy-cloud\/env, or remove it\./);
   assert.ok(!text(r).includes('http://x'), 'the bad entry is not echoed back');
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);

@@ -158,3 +158,16 @@ test('an omarchy machine is refused up front whether addressed by agent id, name
     assert.deepEqual(s.provider.log.display, [], id);
   }
 });
+
+test('a generic provider failure names the CLI to install; doctor is a self-hosted answer only', async () => {
+  let s = setup();
+  s.provider.displayLink = async () => { throw new Error('socket hangup'); };
+  assert.equal(await run(['box-aaa'], s.d), 1);
+  assert.match(s.err.join('\n'), /could not complete the display request.*fake-ssh/s);
+  assert.doesNotMatch(s.err.join('\n'), /doctor/);
+  s = setup();
+  s.provider.name = 'self-hosted';
+  s.provider.displayLink = async () => { throw new Error('socket hangup'); };
+  assert.equal(await run(['box-aaa'], s.d), 1);
+  assert.match(s.err.join('\n'), /cloudy-cloud doctor/);
+});

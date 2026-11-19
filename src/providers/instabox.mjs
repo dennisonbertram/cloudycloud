@@ -499,7 +499,7 @@ export function createProvider(env, deps = {}) {
 
     text: {
       ssh: SSH,
-      listMachines: 'npx --yes instabox@latest ls --meta purpose=cloudy-cloud',
+      listMachines: 'cloudy-cloud machines',
       noKeyFix: 'Add your Instabox key: run cloudy-cloud setup (or npx cloudycloud setup), or put INSTABOX_API_KEY=... in ~/.config/cloudy-cloud/env.',
       apiFix: 'Check your internet connection and that INSTABOX_API_KEY in ~/.config/cloudy-cloud/env is still valid (create a new one at instabox.sh if not).',
       githubTokenHelp: SECRET_HELP,

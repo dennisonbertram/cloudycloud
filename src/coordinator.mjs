@@ -34,11 +34,12 @@ const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw Object.assign(new Error(msg), { local: true }); };
 // Coordinators run unrestricted machines: a configured worker egress policy refuses them outright (same text as runSubagent's role refusal).
-const refuseEgress = (env) => { const e = egressAllow(env); if (e.error) fail(e.error); if (e.list.length) guided('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it, or call cloud_agent with role "worker".', { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: 'start the coordinator without it, or call cloud_agent with role "worker"' }); };
+const refuseEgress = (env, cmd) => { const e = egressAllow(env); if (e.error) guided(e.error, { short: e.short, details: e.details, next: e.next }); if (e.list.length) guided(`CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker".`, { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: `start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker"` }); };
 // A "not found" or refusal is a normal answer, not a failure. The message stays one paragraph for scripts
 // (plain stderr, --json); a terminal renders the fields: ✖ short, dim details and reason, → Next.
-// `local` marks an error this file created: only such an error may carry trusted guidance fields or embedded
-// guidance labels — the same labels inside provider text are diagnostics, never our instructions.
+// `local` marks an error our own code created (this file, a provider, config): only such an error may carry
+// trusted guidance fields or embedded guidance labels — the same labels inside provider text are diagnostics,
+// never our instructions.
 const guided = (message, fields) => { throw Object.assign(new Error(message), { ...fields, local: true }); };
 // The guidance labels a message can carry (author-chosen or appended for start): one parser, used by main()
 // for --json (the four origin labels, so nextStep keeps a trailing Run: line as before) and by errorScreen for
@@ -304,7 +305,7 @@ async function storeCoordinatorSecret(c) {
 }
 
 async function image(c, args) {
-  refuseEgress(c.env);
+  refuseEgress(c.env, 'image');
   const stored = await storeCoordinatorSecret(c); // repair the coordinator key on every path; a failed store is not silent
   if (await resumePending(c)) return storeNotice(c, stored);
   const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
@@ -361,7 +362,7 @@ const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? arg
 const customHost = (env, key) => { try { const p = Object.values(loadProfiles(env)).find((x) => x?.keyName === key); return URL.canParse(p?.baseUrl) ? new URL(p.baseUrl).host : undefined; } catch { return undefined; } };
 
 async function start(c, args) {
-  refuseEgress(c.env);
+  refuseEgress(c.env, 'start');
   const name = args[0];
   if (!name || !NAME_RE.test(name)) usageError('Usage: cloudy-cloud coordinator start NAME --repo <github https url> [--branch B]\nNAME: lowercase letters, digits and -, up to 40 characters.', 'start', 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
   const repo = flag(args, '--repo');
@@ -395,7 +396,9 @@ async function start(c, args) {
     const g = k === DEFAULT_PROVIDER_KEY
       ? { whatHappened: 'A real key was about to be placed on a machine whose provider keeps keys off machines.', likelyCause: 'The key was passed the old way, not as a proxy secret.', nextStep: 'Run `cloudy-cloud setup --more` (it stores the coordinator copy of your Instabox key), or ask a workspace admin.' }
       : guideObj('key_on_machine_refused');
-    throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { local: true, code: 'key_on_machine_refused' });
+    // The terminal fields carry the same facts the embedded labels do — the generic "passed the old way"
+    // likely-cause repeats the what-happened, so the fields skip it (the message and --json keep it).
+    throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { local: true, code: 'key_on_machine_refused', short: `${k} is set as a real value, not as a proxy secret.`, reason: g.whatHappened, next: g.nextStep.replace(/^Run `?/, '').replaceAll('`', '') });
   }
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
@@ -489,7 +492,9 @@ async function attach(c, args) {
   if (c.tty) { // on a terminal, open the session here
     const argv = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
     const r = c.spawn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() }, ...c.provider.shellSpawnOpts?.(argv) });
-    if (r?.error) guided(`Could not start ${argv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor`, { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' });
+    // doctor checks self-hosted boxes only; everywhere else the fix is the missing provider CLI itself.
+    if (r?.error) guided(c.provider.name === 'self-hosted' ? `Could not start ${argv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor` : `Could not start ${argv[0]} (${r.error.message}). Install ${argv[0]} first.`,
+      c.provider.name === 'self-hosted' ? { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' } : { short: `Could not start ${argv[0]} (${r.error.message}).`, next: `install ${argv[0]}, then attach again` });
     return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
@@ -552,31 +557,31 @@ async function ls(c) {
     const noted = data.some((d) => d.screen !== '-'); // a column only when some screen needs a look
     const waitingRow = data.find((d, i) => d.screen.startsWith('waiting') && NAME_RE.test(rows[i].labels?.name ?? '')); // the attach hint needs a server name that is also a valid argument
     const done = (text) => c.out(waitingRow ? `${text}\n\n${nextFit(u, `cloudy-cloud coordinator attach ${waitingRow.name}`)}` : text);
-    const anyNever = data.some((d) => !d.deleteAt); // with one open-ended row, the absolute dates are noise, not info
-    // Try the full table, then shorten SCREEN with an ellipsis, then drop the date, then the MACHINE column.
-    const build = ({ machine, date, screenMax }) => {
-      const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
-        d.deleteAt ? [[u.rel(d.deleteAt)], ...(date && !anyNever ? [[`  ${d.deleteAt.slice(0, 16)}Z`, u.col.dim]] : [])] : [['never', u.col.dim]]]);
-      if (noted) cells.forEach((row, i) => { const t = data[i].screen; row.push([[fitCells(t, screenMax), t.startsWith('waiting') ? u.col.warn : u.col.dim]]); });
-      return u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', ...(noted ? ['SCREEN'] : [])], cells);
+    // DELETES is the relative time only; the ISO date stays in the piped TSV.
+    const rowCells = (d, machine) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
+      d.deleteAt ? [[u.rel(d.deleteAt)]] : [['never', u.col.dim]]];
+    const fixedTable = (machine) => u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES'], data.map((d) => rowCells(d, machine)));
+    const widest = (t) => Math.max(...t.split('\n').map(cellWidth));
+    // The SCREEN column gets the width left after the fixed columns. A prompt that does not fit whole moves to
+    // wrapped dimmed sub-lines under its row — it is never cut mid-word with an ellipsis.
+    const build = (machine) => {
+      const cells = data.map((d) => [...rowCells(d, machine), [[d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]]);
+      return u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells);
     };
-    // A waiting prompt that cannot keep 24 cells in its column moves to a dimmed line under its own row instead of an ellipsis.
-    const buildTwo = ({ machine }) => {
-      const cells = data.map((d) => [d.name, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
-        d.deleteAt ? [[u.rel(d.deleteAt)]] : [['never', u.col.dim]], ...(noted ? [[[d.screen.startsWith('waiting') ? 'waiting' : d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]] : [])]);
-      const lines = u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', ...(noted ? ['SCREEN'] : [])], cells).split('\n');
+    const buildTwo = (machine) => {
+      const cells = data.map((d) => [...rowCells(d, machine), [[d.screen.startsWith('waiting') ? 'waiting' : d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]]);
+      const lines = u.table(['NAME', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells).split('\n');
       const out = [lines[0]];
-      data.forEach((d, i) => { out.push(lines[i + 1]); if (d.screen.startsWith('waiting')) out.push(`    ${u.dim(fitCells(d.screen.slice(21), Math.max(8, u.width - 4)))}`); });
+      data.forEach((d, i) => { out.push(lines[i + 1]); if (d.screen.startsWith('waiting')) out.push(...wrapText(u, d.screen.slice(21)).map((l) => `    ${u.dim(l)}`)); });
       return out.join('\n');
     };
-    const widest = (t) => Math.max(...t.split('\n').map(cellWidth));
-    for (const o of [{ machine: true, date: true }, { machine: true, date: false }, { machine: false, date: false }]) {
-      let table = build({ ...o, screenMax: 1000 });
-      if (widest(table) > u.width && noted) { // shorten SCREEN by the excess, but keep at least 24 characters of it
-        const longest = Math.max(...data.map((d) => cellWidth(d.screen))), max = longest - (widest(table) - u.width);
-        table = max >= 24 ? build({ ...o, screenMax: max }) : buildTwo(o);
-      }
-      if (widest(table) <= u.width) return done(table);
+    const longest = noted ? Math.max(...data.map((d) => cellWidth(d.screen))) : 0;
+    for (const machine of [true, false]) {
+      const fixed = fixedTable(machine), room = u.width - widest(fixed);
+      if (!noted) { if (room >= 0) return done(fixed); continue; }
+      if (longest + 3 <= room) return done(build(machine)); // every screen fits whole in its column
+      const t = buildTwo(machine);
+      if (widest(t) <= u.width) return done(t);
     }
     // A window too narrow even for that gets one short block per coordinator instead of wrapped columns.
     return done(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${fitCells(d.screen, u.width - 12)}`] : [])].join('\n')).join('\n\n'));
@@ -651,7 +656,7 @@ function validateArgs(cmd, args) {
   if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
-  if (!NAME_RE.test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
+  if (!NAME_RE.test(args[0] ?? '')) bad(cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
   if (cmd !== 'start') { if (args.length !== 1) bad(`${cmd} takes exactly one NAME.`); return; }
   const seen = new Set();
   for (let i = 1; i < args.length; i++) {
@@ -685,7 +690,8 @@ async function run(argv, deps) {
   try { return await commands[cmd](c, args); } catch (e) {
     // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
     // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
-    if (e?.code === 'no_key') guided(`${String(e.message).replaceAll('\n', ' ')} Run: cloudy-cloud setup`, { short: `A required ${c.provider.name} key is missing.`, details: [String(e.message)], next: 'cloudy-cloud setup' });
+    // An error our own providers mark local keeps the short/next they carry; a foreign one gets generic words.
+    if (e?.code === 'no_key') guided(`${String(e.message).replaceAll('\n', ' ')} Run: ${(e.local === true && e.next) || 'cloudy-cloud setup'}`, { short: (e.local === true && e.short) || `A required ${c.provider.name} key is missing.`, details: [String(e.message)], next: (e.local === true && e.next) || 'cloudy-cloud setup' });
     throw e;
   }
 }
@@ -718,14 +724,18 @@ export async function main(argv, deps = {}) {
   }
 }
 
+// A recovery the user can run gets "→ Next:"; an instruction in prose gets the quiet › hint marker.
+// A command is a line that starts with a known CLI word and carries no sentence punctuation.
+const CMD_HEAD = /^(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:cloudy-cloud|npx|msb|ssh|git|claude|curl|docker|tmux|instabox|printf|sudo|apt-get|open)\b/;
+const runnable = (s) => CMD_HEAD.test(s) && !/[,;:!?]|\.(?:\s|$)/.test(s);
+
 // How an error prints. One guidance layer on a terminal: ✖ short, dim details and reason, then exactly one
-// → Next. Embedded label text parses once (parseGuidance) into the same shape; "Tell the user" never prints.
-// Only problem and reason text is ever fitted — a command, URL, key name or flag wraps whole, never an ellipsis.
+// recovery line — → Next for a command, › for prose. Embedded label text parses once (parseGuidance) into the
+// same shape; "Tell the user" never prints. Problem and reason text wraps whole words, never an ellipsis.
 // Plain stderr is `cloudy-cloud: message`, unchanged for scripts.
 export function errorScreen(e, u) {
   const text = redact(safeText(e.message ?? e));
   if (!u.term) return `cloudy-cloud: ${text}`;
-  const fit = (s, room = u.width - 4) => fitCells(s, Math.max(8, room));
   // Fields reach here uncleaned for non-start errors (main() only scrubs start's): scrub them all the same.
   const scrub = (s) => redact(safeText(String(s ?? '')));
   // Embedded label values are written for agents (markdown); a terminal gets the bare instruction.
@@ -739,8 +749,8 @@ export function errorScreen(e, u) {
     return /^(Run: |Call |cloudy-cloud |`)/i.test(head.trim()) ? head : '';
   }).filter(Boolean).join(' ').replace(/[\s,;:]+$/, '').trim();
   const { head, fields } = parseGuidance(text, `${LABELS}|Next|Run`);
-  // Guidance — embedded labels or the short/reason/next/details fields — is trusted only from an error this
-  // file created (`local`). Anything else is provider text: it prints as dim diagnostics under a generic
+  // Guidance — embedded labels or the short/reason/next/details fields — is trusted only from an error our
+  // own code created (`local`). Anything else is provider text: it prints as dim diagnostics under a generic
   // short line, with the generic Next — never as our instructions.
   const ours = e?.local === true;
   const structured = ours && Boolean(e.next || e.short || e.reason || Array.isArray(e.details)); // author-chosen fields: the embedded text is not re-read
@@ -749,16 +759,16 @@ export function errorScreen(e, u) {
   let reason = scrub((ours && e.reason) || (structured || !ours ? undefined : bare(fields['Likely cause'] ?? fields['What happened'] ?? ''))) || undefined;
   const next = human(scrub(((ours && e.next) || (structured || !ours ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean))) ?? 'cloudy-cloud coordinator --help')) || 'cloudy-cloud coordinator --help';
   const details = (ours ? (Array.isArray(e.details) ? e.details : structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== '')) : text.split('\n')).map((d) => scrub(String(d)));
-  // A structured short has a 60-cell head; a refusal or usage-error short wraps whole words instead of cutting.
-  const shortLines = (ours && e.wrapShort) ? wrapText(u, short) : [fit(short, (ours && e.short) ? 60 : u.width - 4)];
+  // The short and reason lines wrap at word boundaries; nothing is ever cut mid-word with an ellipsis.
+  const shortLines = wrapText(u, short);
   const seen = new Set([short.trim(), ...shortLines.map((l) => l.trim())]); // never print the same line twice
   if (reason && seen.has(reason.trim())) reason = undefined;
   const body = details.flatMap((d) => d.split('\n').flatMap((l) => (l.trim() ? wrapText(u, bare(l)) : ['']))).filter((l) => { const t = l.trim(); if (!t) return true; if (seen.has(t)) return false; seen.add(t); return true; });
   return [
     ...(ours && e.neutral ? shortLines.map((l, i) => (i ? `    ${l}` : `  ${l}`)) : shortLines.map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l)))),
     ...body.map((l) => (l ? `    ${u.dim(l)}` : '')),
-    ...(reason ? [`    ${u.dim(fit(reason))}`] : []),
-    nextFit(u, next),
+    ...(reason ? wrapText(u, reason, u.width - 8).map((l) => `    ${u.dim(l)}`) : []),
+    runnable(next) ? nextFit(u, next) : hintFit(u, next),
   ].join('\n');
 }
 

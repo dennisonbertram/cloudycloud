@@ -88,6 +88,16 @@ test('egressAllow: off and none are an explicit opt-out with no policy; blank st
   assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: ' ' }).error ?? '', /lists no hosts/);
 });
 
+test('egressAllow errors carry a Next step that names the env setting, like the other config errors', () => {
+  for (const v of ['', '  ', 'bad..host', 'a.com:443']) {
+    const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: v });
+    assert.ok(r.error, `"${v}"`);
+    assert.match(r.error, /\nNext step: /, `"${v}": ${r.error}`);
+    assert.match(r.error.split('\n').at(-1), /CLOUDY_CLOUD_EGRESS_ALLOW in ~\/\.config\/cloudy-cloud\/env/);
+    assert.doesNotMatch(r.error.split('\n').at(-1), /bad\.\.host|a\.com:443/, 'the next step still names no entry content');
+  }
+});
+
 test('the egress and microsandbox keys load from the env file', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
   writeFileSync(file, 'CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com,*.example.org\nCLOUDY_CLOUD_MSB_BIN=/opt/msb/bin\nCLOUDY_CLOUD_MSB_SLOTS=4\n');

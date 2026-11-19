@@ -95,7 +95,7 @@ export function createProvider(env = process.env, deps = {}) {
     child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (d) => { d = String(d); stdout += d; try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', (e) => finish(reject, e?.code === 'ENOENT' ? fail('no_key', api.text.noKeyFix) : fail('transient', `cannot start ${bin}: ${e.message}`)));
+    child.on('error', (e) => finish(reject, e?.code === 'ENOENT' ? noMsb() : fail('transient', `cannot start ${bin}: ${e.message}`)));
     child.on('close', (code) => {
       if (code === null) return finish(reject, fail('transient', `${bin} was killed`));
       if (code !== 0) return finish(reject, Object.assign(new Error(stderr.trim().slice(-300) || `exit ${code}`), { exitCode: code, stdout, stderr }));
@@ -107,7 +107,7 @@ export function createProvider(env = process.env, deps = {}) {
   // Queue through the limiter; an abort while still queued rejects immediately, and a grant that lands after
   // the abort becomes a no-op that releases the slot without spawning.
   const msb = (args, opts) => {
-    if (!bin) return Promise.reject(fail('no_key', api.text.noKeyFix));
+    if (!bin) return Promise.reject(noMsb());
     const signal = opts?.signal;
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(aborted());
@@ -156,8 +156,11 @@ export function createProvider(env = process.env, deps = {}) {
   const aliveCount = async () => (await lsRows()).filter((r) => ALIVE.has(String(r.status))).length; // counted from ls status rows: no inspects
   const expired = (deleteAt) => deleteAt && Date.parse(deleteAt) <= now();
 
-  const missingImage = () => new Error(`The microsandbox worker image ${IMAGE} is missing. Build and load it (needs Docker running):\n  docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE}\n  docker save ${IMAGE} | ${bin} load\nThen call cloud_agent again.`);
-  const slotsFull = () => fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use.\nNext step: stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env.`);
+  // Our own error texts carry trusted guidance fields (local, short, next) so a terminal renders them as
+  // guidance rather than as dim diagnostics; values from msb or the API never go into short/next.
+  const noMsb = () => fail('no_key', api.text.noKeyFix, { local: true, short: 'The microsandbox CLI (msb) was not found.', next: 'curl -fsSL https://install.microsandbox.dev | sh' });
+  const missingImage = () => Object.assign(new Error(`The microsandbox worker image ${IMAGE} is missing. Build and load it (needs Docker running):\n  docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE}\n  docker save ${IMAGE} | ${bin} load\nThen call cloud_agent again.`), { local: true, short: `The microsandbox worker image ${IMAGE} is missing.`, next: `docker build --build-arg VERSION=${VERSION} -t ${IMAGE} - < ${DOCKERFILE} && docker save ${IMAGE} | ${bin} load` });
+  const slotsFull = () => fail('quota_exceeded', `All ${slots} microsandbox slots on this computer are in use.\nNext step: stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env.`, { local: true, short: `All ${slots} microsandbox slots on this computer are in use.`, next: `stop an agent with cloud_agent_stop, or raise the limit: add CLOUDY_CLOUD_MSB_SLOTS=<a number over ${slots}> to ~/.config/cloudy-cloud/env` });
 
   function sandbox(id, name = id, deleteAt) {
     const exec = (flags, cmd, opts) => msb(['exec', ...flags, id, '--', ...cmd], opts);
@@ -221,9 +224,9 @@ export function createProvider(env = process.env, deps = {}) {
     },
 
     async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress }) {
-      if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `microsandbox runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`);
-      if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
-      if (!bin) throw fail('no_key', api.text.noKeyFix);
+      if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `microsandbox runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`, { local: true, short: `microsandbox runs only linux machines, not ${kind.name}.`, next: 'call cloud_agent again with machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox' });
+      if (role === 'coordinator') throw Object.assign(new Error(api.text.coordinatorRefusal), { local: true, short: 'Coordinators are not supported on the microsandbox provider yet.', next: 'start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox' });
+      if (!bin) throw noMsb();
       const want = [...new Set(['GH_TOKEN', ...secrets])]; // GH_TOKEN always goes in, like the other providers
       for (const n of Object.keys(envs)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
@@ -241,8 +244,9 @@ export function createProvider(env = process.env, deps = {}) {
         const hl = hostsFor(n);
         if (!hl.length) throw fail('no_key', n.startsWith('MCP_')
           ? `The secret ${n} has no known host, so microsandbox cannot attach it. MCP server tokens are not supported on the microsandbox provider yet. Next step: remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox.`
-          : `The secret ${n} has no known host, so microsandbox cannot attach it. Next step: set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows.`);
-        if (env[n] === undefined) throw fail('no_key', `The secret ${n} has no value in ~/.config/cloudy-cloud/env. On the microsandbox provider the value stays on this computer and microsandbox puts it only into requests to ${hl.join(',')}. Next step: add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+          : `The secret ${n} has no known host, so microsandbox cannot attach it. Next step: set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows.`,
+          { local: true, short: `The secret ${n} has no known host, so microsandbox cannot attach it.`, next: n.startsWith('MCP_') ? `remove that server with cloudy-cloud mcp rm ${n.toLowerCase().replace(/_token$/, '')}, or set CLOUDY_CLOUD_PROVIDER=instabox` : 'set CLOUDY_CLOUD_PROVIDER=instabox, or use a credential name microsandbox knows' });
+        if (env[n] === undefined) throw fail('no_key', `The secret ${n} has no value in ~/.config/cloudy-cloud/env. On the microsandbox provider the value stays on this computer and microsandbox puts it only into requests to ${hl.join(',')}. Next step: add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`, { local: true, short: `The secret ${n} has no value in ~/.config/cloudy-cloud/env.`, next: `add ${n}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again` });
         senv[n] = env[n]; // secret values go into the create child's environment, nowhere else
         sargs.push('--secret', `${n}:headers=[authorization,x-api-key]@${hl.join(',')}`); // header-option syntax from the docs/source; unverified live
       }
@@ -312,7 +316,7 @@ export function createProvider(env = process.env, deps = {}) {
     async forwardPort(id, localRemote, { signal } = {}) {
       const [lport, remote = lport] = String(localRemote).split(':');
       if (!/^\d+$/.test(lport) || !/^\d+$/.test(remote)) throw new Error(`port must be a number or local:remote, not "${localRemote}"`);
-      if (!bin) throw fail('no_key', api.text.noKeyFix);
+      if (!bin) throw noMsb();
       if (signal?.aborted) return 0;
       try { // an abort before or during connect resolves the forward rather than hanging it
         await Promise.race([api.connect(id), new Promise((_, rej) => signal?.addEventListener('abort', () => rej(aborted()), { once: true }))]);
