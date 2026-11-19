@@ -19,6 +19,7 @@ export const takeCells = (s, max) => { let out = '', w = 0; for (const ch of Str
 // Whole-word wrap for a line of text: words wrap at the room edge. A single word over the room is split at a '/'
 // boundary or, failing that, at the room edge — every character is kept and no command, URL or flag is cut.
 export const wrapText = (u, text, room = u.width - 4) => {
+  room = Math.max(1, room); // a nonpositive room must not spin the word-splitting loop forever
   const lines = []; let cur = '';
   for (const w0 of String(text).split(/\s+/).filter(Boolean)) {
     let w = w0;

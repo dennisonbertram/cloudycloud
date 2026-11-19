@@ -13,7 +13,7 @@ import { cellWidth, fitCells, makeUi, nextFit, statusLine, wrapText } from './ui
 
 export const USAGE = helpText('machines', true);
 
-const fail = (m, fields) => { throw Object.assign(new Error(m), fields); };
+const fail = (m, fields) => { throw Object.assign(new Error(m), { ...fields, local: true }); };
 
 // Anything from outside (names, labels, provider errors) prints on one line: control sequences
 // stripped, and \r\n folded to spaces so a field cannot smuggle extra lines into the output.
@@ -51,26 +51,31 @@ const askOnce = async (q) => {
 };
 
 // One guidance layer, the same frame coordinator errors use: a ✖ headline (the message's first line,
-// wrapped whole-word), the rest of the message dim underneath, then one → Next. `e.next` — set only
-// by this file — wins; failing that a "Run:"-style line or an indented command line in the message
-// lifts into the Next and leaves the details. Everything is already control-stripped by safeText.
+// wrapped whole-word), the rest of the message dim underneath, then one → Next. Guidance — `e.next`,
+// `e.short`, `e.fallback` and "Run:"-style or indented lines lifted from the message — is trusted only
+// from an error this file made (`local`). Anything else is provider or SDK text: it prints as dim
+// diagnostics under a fixed headline with the fixed Next, never as our instructions. Everything is
+// already control-stripped by safeText.
 const errScreen = (u, e) => {
-  let next = e.next;
+  const ours = e?.local === true;
+  let next = ours ? e.next : undefined;
   const body = [];
-  for (const l of safeText(e.message ?? e).split('\n')) {
+  for (const l of safeText(e?.message ?? e).split('\n')) {
     const t = l.trim();
-    if (next && t === String(next).trim()) continue;
-    if (!next && t) {
+    if (ours && next && t === String(next).trim()) continue;
+    if (ours && !next && t) {
       const m = l.match(/^(?:Run|Next step|Next): (.+)$/) ?? l.match(/^\s{2,}(\S.*)$/);
       if (m) { next = m[1].trim(); continue; }
     }
     body.push(l);
   }
-  const head = e.short ?? body.shift() ?? 'Something failed.';
+  const head = ours ? (e.short ?? body.shift() ?? 'Something failed.') : 'Something failed.';
+  // The headline's first line carries the mark ('  ✖ ', wider '  [x] ' under LANG=C): budget what it renders.
+  const markW = cellWidth(u.err(''));
   return [
-    ...wrapText(u, head).map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l))),
+    ...wrapText(u, head, u.width - markW).map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l))),
     ...body.flatMap((l) => (l.trim() ? wrapText(u, l) : [''])).map((l) => (l ? `    ${u.dim(l)}` : '')),
-    nextFit(u, next ?? e.fallback ?? 'cloudy-cloud machines ls'),
+    nextFit(u, next ?? (ours ? e.fallback : undefined) ?? 'cloudy-cloud machines ls'),
   ].join('\n');
 };
 
@@ -83,7 +88,7 @@ const nameList = (names, room) => {
     if (cellWidth(`(${cand}${rest ? `, +${rest} more` : ''})`) > room) break;
     s = cand; used++;
   }
-  if (!used) { s = fitCells(names[0], Math.max(8, room - 12)); used = 1; }
+  if (!used) { s = fitCells(names[0], Math.max(8, room - 2 - cellWidth(names.length > 1 ? `, +${names.length - 1} more` : ''))); used = 1; }
   const rest = names.length - used;
   return `(${s}${rest ? `, +${rest} more` : ''})`;
 };
@@ -102,11 +107,19 @@ async function ls(c) {
   // NAME takes the cells the fixed columns leave, so it uses the whole terminal width.
   const wOf = (v) => (Array.isArray(v) ? v : [[String(v)]]).reduce((n, [t]) => n + cellWidth(t), 0);
   const fixed = ['ROLE', 'STATE', 'AGE', 'DELETES'].map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
-  const nameMax = Math.max(8, u.width - 2 - 3 * 4 - fixed.reduce((a, b) => a + b, 0));
-  const fitted = cells.map((r) => [fitCells(r[0], nameMax), ...r.slice(1)]);
+  const nameRoom = u.width - 2 - 3 * 4 - fixed.reduce((a, b) => a + b, 0);
   const running = rows.filter((m) => m.status === 'running').length;
   const count = running === rows.length ? `${running} running.` : `${running} of ${rows.length} running.`;
-  c.out([u.table(['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'], fitted), '', `  ${count}`, u.next('cloudy-cloud machines stop NAME')].join('\n'));
+  const foot = ['', `  ${count}`, nextFit(u, 'cloudy-cloud machines stop NAME')];
+  if (nameRoom < 8) {
+    // Too narrow for the table: a fitted line per machine, the id on a wrapped sub-line.
+    return c.out([...rows.flatMap((m) => [
+      `  ${fitCells(m.name, Math.max(4, u.width - 3 - cellWidth(m.state)))} ${u.paint(color[m.state] ?? u.col.err, m.state)}`,
+      ...wrapText(u, `id ${one(m.id)}`, u.width - 4).map((l) => `    ${u.dim(l)}`),
+    ]), ...foot].join('\n'));
+  }
+  const fitted = cells.map((r) => [fitCells(r[0], nameRoom), ...r.slice(1)]);
+  c.out([u.table(['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'], fitted), ...foot].join('\n'));
 }
 
 // The one machine a token means, in precedence order: an exact machine id first (so a machine can
@@ -136,9 +149,10 @@ const oneDeleted = (c, m) => (c.ui.term
   ? c.out(statusLine(c.ui, 'ok', `Deleted ${fitCells(m.name, Math.max(8, c.ui.width - 14))}`, [one(m.id)]))
   : c.out(`Deleted ${m.name} (${one(m.id)}).`));
 
-// A coordinator's workers are not deleted with it — say so once per stop that removed one.
+// A coordinator's workers are not deleted with it — say so once per stop that removed one. The hint
+// is terminal-only: piped output keeps exactly the lines scripts already parse.
 const WORKER_HINT = 'Its workers go with its cleanup or at their own deadline.';
-const workerHint = (c) => c.out(c.ui.term ? c.ui.hint(WORKER_HINT) : WORKER_HINT);
+const workerHint = (c) => { if (c.ui.term) c.out(c.ui.hint(WORKER_HINT)); };
 
 async function stop(c, { all, yes, pos }) {
   const rows = await c.list();
@@ -147,10 +161,11 @@ async function stop(c, { all, yes, pos }) {
     // List again right before deleting: the resolved row may have changed or gone since it was read.
     const still = (await c.list()).find((x) => x.id === m.id);
     if (!still) return c.out(`${m.name} (${one(m.id)}) is already gone; nothing to delete.`);
-    await c.provider.delete(still.id, { sdk: true });
+    try { await c.provider.delete(still.id, { sdk: true }); }
+    catch (e) { fail(`Could not delete ${still.name}.\n${one(e.message)}`, { next: 'cloudy-cloud machines ls' }); }
     oneDeleted(c, still);
     if (still.role === 'coordinator') workerHint(c);
-    if (c.ui.term) c.out(c.ui.next('cloudy-cloud machines'));
+    if (c.ui.term) c.out(nextFit(c.ui, 'cloudy-cloud machines'));
     return;
   }
   if (!rows.length) return c.out('No Cloudy Cloud machines running.');
@@ -170,13 +185,20 @@ async function stop(c, { all, yes, pos }) {
     try { await c.provider.delete(m.id, { sdk: true }); coord ||= m.role === 'coordinator'; oneDeleted(c, m); }
     catch (e) {
       failed++;
-      c.err(c.ui.term ? statusLine(c.ui, 'err', `Could not delete ${fitCells(m.name, Math.max(8, c.ui.width - 30))} (${one(m.id)})`, [one(e.message)])
-        : `cloudy-cloud machines: could not delete ${m.name} (${one(m.id)}): ${one(e.message)}`);
+      if (!c.ui.term) c.err(`cloudy-cloud machines: could not delete ${m.name} (${one(m.id)}): ${one(e.message)}`);
+      else {
+        // The id's width counts against the name budget; the provider diagnostic wraps on its own
+        // dim lines so the reason is never cut.
+        const id = `(${one(m.id)})`, markW = cellWidth(c.ui.err(''));
+        const head = `Could not delete ${fitCells(m.name, Math.max(8, c.ui.width - markW - 18 - cellWidth(id)))} ${id}`;
+        c.err([...wrapText(c.ui, head, c.ui.width - markW).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.err(l))),
+          ...wrapText(c.ui, one(e.message)).map((l) => `    ${c.ui.dim(l)}`)].join('\n'));
+      }
     }
   }
   c.out(`Deleted ${del.length - failed} machine${del.length - failed === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}.`);
   if (coord) workerHint(c);
-  if (failed) fail(`${failed} of ${del.length} machines could not be deleted.\nRun: cloudy-cloud machines`);
+  if (failed) fail(`${failed} of ${del.length} machines could not be deleted. List what is left: cloudy-cloud machines`, { next: 'cloudy-cloud machines' });
 }
 
 export async function run(argv, deps = {}) {
@@ -224,7 +246,10 @@ export async function run(argv, deps = {}) {
     else await ls(c);
     return 0;
   } catch (e) {
-    err(ui.term && !e.message.startsWith('Usage') ? errScreen(ui, e) : e.message.startsWith('Usage') ? e.message : `cloudy-cloud machines: ${one(e.message)}`);
+    // The raw-print Usage shortcut is only for errors this file made; a foreign "Usage"-looking
+    // message is sanitised like any other.
+    const usage = e?.local === true && String(e?.message ?? '').startsWith('Usage');
+    err(usage ? e.message : ui.term ? errScreen(ui, e) : `cloudy-cloud machines: ${one(e?.message ?? e)}`);
     return 1;
   }
 }

