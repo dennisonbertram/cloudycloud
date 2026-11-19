@@ -30,8 +30,11 @@ esac
 
 # `cloudy-cloud mcp-server` runs the MCP server on stdio (the transport the site's server card names).
 # It prints nothing itself and runs before the setup check: an empty config still answers tools/list.
+# Migration runs first: the server creates the new config directory, which would block it; the notice
+# goes to stderr because stdout is the MCP channel.
 if [ "${1:-}" = mcp-server ]; then
   shift
+  . "$root/bin/migrate-config.sh"; migrate_config >&2
   exec node "$root/src/server.mjs" "$@"
 fi
 
