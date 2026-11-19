@@ -4,23 +4,13 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from './config.mjs';
-import { loadProvider } from './providers/index.mjs';
-import { resolveMsbBin } from './providers/microsandbox.mjs';
+import { loadProvider, providerKey } from './providers/index.mjs';
+
+export { providerKey };
 
 const MAX_LIFETIME_MS = 24 * 60 * 60_000;
 
 const REAPER = fileURLToPath(import.meta.url);
-
-// The credential the adapter itself would use, so the reaper's start decision and the key the child
-// receives match what launches workers. A coordinator's machine holds the Instabox key only as the proxy
-// secret CLOUDY_CLOUD_INSTABOX_API_KEY (COORDINATOR_KEY_SECRET in profiles.mjs: the INSTABOX_ prefix is
-// reserved there), and `cloudy-cloud mcp-server` execs before the launcher maps it. The microsandbox
-// "key" is its binary, also found at ~/.local/bin/msb or on PATH, not only via the variable.
-export const providerKey = (env, provider) =>
-  env[provider.keyName]
-  || (provider.name === 'instabox' && env.CLOUDY_CLOUD_INSTABOX_API_KEY)
-  || (provider.name === 'microsandbox' && resolveMsbBin(env))
-  || '';
 
 // The key goes only in the child's environment, never in argv (argv is visible in `ps`).
 export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env) => ({

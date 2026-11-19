@@ -50,6 +50,23 @@ test('the profile cap and provider retry keys load from the env file', () => {
   assert.equal(env.CLOUDY_CLOUD_PROVIDER_RETRIES, '2');
 });
 
+test('loadEnv derives CLOUDY_CLOUD_PROVIDER from the first entry of CLOUDY_CLOUD_PROVIDERS', () => {
+  assert.equal(loadEnv({ CLOUDY_CLOUD_PROVIDERS: 'microsandbox,instabox' }).CLOUDY_CLOUD_PROVIDER, 'microsandbox');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_PROVIDERS: 'self-hosted', CLOUDY_CLOUD_PROVIDER: 'instabox' }).CLOUDY_CLOUD_PROVIDER, 'self-hosted');
+  // No list: the single name is untouched; an empty list derives nothing.
+  assert.equal(loadEnv({ CLOUDY_CLOUD_PROVIDER: 'self-hosted' }).CLOUDY_CLOUD_PROVIDER, 'self-hosted');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_PROVIDERS: ' , ' }).CLOUDY_CLOUD_PROVIDER, undefined);
+});
+
+test('savedEnv reads CLOUDY_CLOUD_PROVIDERS and the file drives the same derivation', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_PROVIDERS=microsandbox, instabox\n');
+  assert.equal(config.savedEnv({ CLOUDY_CLOUD_CONFIG: file }).CLOUDY_CLOUD_PROVIDERS, 'microsandbox, instabox');
+  const env = loadEnv({ CLOUDY_CLOUD_CONFIG: file });
+  assert.equal(env.CLOUDY_CLOUD_PROVIDERS, 'microsandbox, instabox');
+  assert.equal(env.CLOUDY_CLOUD_PROVIDER, 'microsandbox');
+});
+
 
 test('egressAllow parses a comma- or space-separated host list; unset is no policy, set-but-empty is an error', () => {
   assert.deepEqual(egressAllow({}), { list: [] });

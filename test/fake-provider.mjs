@@ -110,7 +110,7 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { name = 'fake', failCreate = 0, leakOnFail = false, hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
@@ -118,7 +118,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
   const needKey = () => { if (!env.FAKE_API_KEY) throw Object.assign(new Error('FAKE_API_KEY is not set.'), { code: 'no_key' }); };
   const wrap = (sbx, id, name) => Object.assign(sbx, { id, name, home: '/home/user' });
   return {
-    name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
+    name, keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true,
       maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true, hasEgressPolicy },
     async create(opts) {
@@ -127,13 +127,19 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
       const k = opts.kind?.name ?? 'linux';
       if (!machineKinds.includes(k)) throw Object.assign(new Error(`fake does not offer ${k} machines`), { code: 'machine_kind_unsupported' });
       log.create.push(opts);
-      const id = `fake-${++n}`, name = opts.name ?? `sbx-${n}`;
-      const sbx = wrap(await fakeSandbox(), id, name);
+      const id = `${name}-${++n}`, machineName = opts.name ?? `sbx-${n}`;
+      // failCreate makes the first N attempts fail after the create call was accepted; leakOnFail leaves
+      // the machine behind anyway, the way a provider can report failure after the machine exists.
+      if (failCreate-- > 0) {
+        if (leakOnFail) machines.set(id, { id, name: machineName, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
+        throw Object.assign(new Error('fake create failed'), { code: 'transient' });
+      }
+      const sbx = wrap(await fakeSandbox(), id, machineName);
       sbx.envs = opts.envs;
       const write = sbx.files.write, run = sbx.commands.run;
       sbx.files.write = (p, d) => { log.writes.push({ id, p, d: String(d) }); return write(p, d); };
       sbx.commands.run = (cmd, o) => { log.cmds.push({ id, cmd }); return run(cmd, o); };
-      machines.set(id, { id, name, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
+      machines.set(id, { id, name: machineName, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
       sandboxes.set(id, sbx);
       const kill = sbx.kill;
       sbx.kill = async () => { await kill(); machines.delete(id); };
@@ -174,7 +180,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
     async plan(o) { if (o?.refresh) log.planRefresh = (log.planRefresh ?? 0) + 1; return typeof plan === 'function' ? plan(o) : plan; },
     async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
     async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
-    localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),
+    localMachineName: (hostname) => (hostname.startsWith(`${name}-`) ? hostname.slice(name.length + 1) : ''),
     text: {
       ssh: (machine, cmd) => `fake ssh ${machine} -- ${cmd}`, listMachines: 'fake ls',
       noKeyFix: 'Set FAKE_API_KEY.', apiFix: 'Check FAKE_API_KEY.', githubTokenHelp: 'Create the GH_TOKEN secret.',

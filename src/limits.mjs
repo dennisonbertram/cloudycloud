@@ -119,7 +119,7 @@ export function classifyProviderError(text) {
   if (status === 401 || status === 403 || status === 400) return { kind: 'rejected', status, retryable: false };
   if (status === 429 || /rate.?limit|too many requests/i.test(s)) return { kind: 'rate_limited', status: status ?? 429, retryable: true };
   if (status >= 500) return { kind: 'server_error', status, retryable: true };
-  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|overloaded|connection (error|reset|refused)/i.test(s)) return { kind: 'connection', status: undefined, retryable: true };
+  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|overloaded|connection (error|reset|refused)/i.test(s)) return { kind: 'connection', status: undefined, retryable: true };
   return null;
 }
 // One short line for the result: "Provider status: 404 model_not_found". The text is scrubbed by the caller.
