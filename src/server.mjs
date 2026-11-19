@@ -13,16 +13,25 @@ import { createEventLog } from './events.mjs';
 const owner = randomUUID().slice(0, 12);
 const env = loadEnv();
 const provider = await loadProvider(env, { owner }).catch((e) => { console.error(e.message); process.exit(1); });
-const deps = { provider, owner, env, refreshEnv: envRefresher(env), open: new Map(), tasks: new Map(), events: createEventLog(env, owner) };
+
+// The reaper is the guarantee that machines are deleted. A server that started without the provider key
+// (cloudy-cloud mcp-server run before setup) starts it on the first env refresh that finds one — the
+// refresh runs at the top of cloud_agent, so the first authenticated launch is covered too.
+let reaperStarted = false;
+const maybeStartReaper = () => {
+  // The msb "key" is its binary, which is also found at ~/.local/bin/msb or on PATH, not only via the variable.
+  const providerReady = env[provider.keyName] || (provider.name === 'microsandbox' && resolveMsbBin(env));
+  if (reaperStarted || !providerReady || process.env.NODE_ENV?.includes('test')) return;
+  reaperStarted = true;
+  startReaper(process.pid, owner, env, provider);
+};
+const refresh = envRefresher(env);
+const deps = { provider, owner, env, refreshEnv: () => { refresh(); maybeStartReaper(); }, open: new Map(), tasks: new Map(), events: createEventLog(env, owner) };
 
 try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(ownerFile(env), `${owner}\n`); } catch { /* only `coordinator finish` reads it */ }
 
-// The reaper is the guarantee that machines are deleted. The handlers below only try to be quick about it.
-// The msb "key" is its binary, which is also found at ~/.local/bin/msb or on PATH, not only via the variable.
-const providerReady = env[provider.keyName] || (provider.name === 'microsandbox' && resolveMsbBin(env));
-if (providerReady && !process.env.NODE_ENV?.includes('test')) {
-  startReaper(process.pid, owner, env, provider);
-}
+// The handlers below only try to be quick about deleting machines; the reaper is the guarantee.
+maybeStartReaper();
 
 // kill() waits for the delete to finish, which can take seconds, so give it at most 1.5 s before exiting.
 const killOpen = () => Promise.race([killAll(deps.open), new Promise((r) => setTimeout(r, 1500))]);
