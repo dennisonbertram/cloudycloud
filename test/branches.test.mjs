@@ -133,3 +133,36 @@ test('--yes refuses to delete when origin has several push URLs', async () => {
   assert.match(r.err, /refus/i);
   assert.deepEqual(f.branches(), before);
 });
+
+test('a local tag named origin/main cannot make an unmerged branch look merged', async () => {
+  const f = fixture();
+  // refs/tags/origin/main shadows refs/remotes/origin/main in revision lookups; ancestry must use the remote OID.
+  const unmerged = sh(f.work, 'git ls-remote origin refs/heads/cloudy-cloud/00000003').split(/\s+/)[0];
+  sh(f.work, `git tag origin/main ${unmerged}`);
+  assert.equal(sh(f.work, 'git rev-parse origin/main'), unmerged, 'the shadow tag resolves');
+  const r = await run(['prune'], f.work);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /cloudy-cloud\/00000003 .* keep/);
+  const y = await run(['prune', '--yes'], f.work);
+  assert.equal(y.code, 0);
+  assert.ok(f.branches().includes('cloudy-cloud/00000003'), 'the unmerged branch is kept');
+});
+
+test('git stderr is scrubbed of terminal controls before it is printed', async () => {
+  const f = fixture();
+  const real = sh('/', 'command -v git');
+  const bin = mkdtempSync(join(tmpdir(), 'git-shim-'));
+  writeFileSync(join(bin, 'git'), `#!/bin/sh
+case "$1" in
+  ls-remote) printf 'remote \\033[2Jpoisoned\\n' >&2; exit 1;;
+esac
+exec "${real}" "$@"
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let r;
+  try { r = await run(['prune'], f.work); } finally { process.env.PATH = path; }
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.err, /\x1b|\x00/);
+  assert.match(r.err, /remote +poisoned/);
+});

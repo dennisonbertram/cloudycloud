@@ -32,12 +32,14 @@ const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
-const fail = (msg) => { throw new Error(msg); };
+const fail = (msg) => { throw Object.assign(new Error(msg), { local: true }); };
 // Coordinators run unrestricted machines: a configured worker egress policy refuses them outright (same text as runSubagent's role refusal).
 const refuseEgress = (env) => { const e = egressAllow(env); if (e.error) fail(e.error); if (e.list.length) guided('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it, or call cloud_agent with role "worker".', { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: 'start the coordinator without it, or call cloud_agent with role "worker"' }); };
 // A "not found" or refusal is a normal answer, not a failure. The message stays one paragraph for scripts
 // (plain stderr, --json); a terminal renders the fields: ✖ short, dim details and reason, → Next.
-const guided = (message, fields) => { throw Object.assign(new Error(message), fields); };
+// `local` marks an error this file created: only such an error may carry trusted guidance fields or embedded
+// guidance labels — the same labels inside provider text are diagnostics, never our instructions.
+const guided = (message, fields) => { throw Object.assign(new Error(message), { ...fields, local: true }); };
 // The guidance labels a message can carry (author-chosen or appended for start): one parser, used by main()
 // for --json (the four origin labels, so nextStep keeps a trailing Run: line as before) and by errorScreen for
 // the terminal (which also lifts "Run:"/"Next:" lines into the Next). Lines before the first label are the
@@ -140,8 +142,15 @@ async function context(deps) {
 }
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
+// A server-supplied machine name or id reaches a suggested command (`shell`, ssh) only as one plain word —
+// anything with spaces, semicolons, quotes or control characters would smuggle arguments or a second command.
+const WORD = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const word = (...vs) => vs.find((v) => typeof v === 'string' && WORD.test(v)) ?? '';
+// Every machine a command acts on must be one of ours: purpose=cloudy-cloud plus the role. The name (for
+// attach/status/stop) is a second filter, not a substitute — labels decide, never the reported name alone.
 const find = async (provider, role, name) =>
-  (await provider.list({ role, ...(name && { name }) }, { sdk: true })).filter((m) => m.labels?.role === role && (!name || m.labels?.name === name));
+  (await provider.list({ role, ...(name && { name }) }, { sdk: true }))
+    .filter((m) => m.labels?.purpose === 'cloudy-cloud' && m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
 async function installTool(sbx, root) {
@@ -203,11 +212,11 @@ async function finishSave(c, sbx, snap, email = '') {
   updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, ...(email && { [ACCOUNT_KEY]: email }) }, email === '' ? [ACCOUNT_KEY] : []); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
   updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_ACCOUNT_KEY]);
-  if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${snap.id}`, 'the image machine is deleted'),
+  if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${safeText(snap.id)}`, 'the image machine is deleted'),
     ...(email ? [hintFit(c.ui, `signed in as ${email}`)] : []),
     hintFit(c.ui, `Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
     c.ui.next('cloudy-cloud coordinator start NAME --repo URL')].join('\n'));
-  c.out(`Saved snapshot ${snap.id} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+  c.out(`Saved snapshot ${safeText(snap.id)} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
 // If an earlier run left a snapshot pending, finish that one (even when its machine is gone). Returns false when none is pending.
@@ -222,7 +231,9 @@ async function resumePending(c) {
     guided(`The pending snapshot ${sid} no longer exists, so it was forgotten. Run: cloudy-cloud coordinator image`, { short: `The pending snapshot ${sid} no longer exists.`, reason: 'It was forgotten.', next: 'cloudy-cloud coordinator image' });
   }
   let sbx = null;
-  try { sbx = await c.provider.connect(mid, { retry: false }); } catch (e) { if (!gone(e)) throw e; }
+  // The recorded machine id is only a claim: connect (and so finishSave's delete) happens only when a fresh
+  // listing verifies it is still our image machine (purpose + role). An unverifiable machine is left alone.
+  try { if ((await find(c.provider, 'coordinator-image')).some((m) => m.id === mid)) sbx = await c.provider.connect(mid, { retry: false }); } catch (e) { if (!gone(e)) throw e; }
   const saved = readKey(c.configFile, PENDING_ACCOUNT_KEY); // '' only for an entry written before this key existed
   await finishSave(c, sbx, snap, saved === 'none' ? '' : saved || null);
   return true;
@@ -243,9 +254,11 @@ const storeNotice = (c, res, { json = false } = {}) => { if (res === 'stored') (
 
 // The store error: a real key still refuses to go on a machine (key_on_machine_refused), but the cause is the failed
 // store — a personal or machine key cannot write org secrets (403 missing_scope) — and the next step is setup --more.
+// The provider's failure text is quoted in the cause as one line: a newline in it could otherwise forge a
+// guidance label inside a message our own error carries.
 const storeError = (detail) => Object.assign(new Error(
-  `Could not store the coordinator copy of your Instabox key as a proxy secret.\nWhat happened: A real key was about to be placed on a machine whose provider keeps keys off machines.\nLikely cause: Storing the coordinator key needs a workspace-admin Instabox key.${detail ? ` ${detail}` : ''}\nNext step: ${ADMIN_NEXT}.`),
-  { code: 'key_on_machine_refused', short: 'Could not store the coordinator key.', reason: 'Storing the coordinator key needs a workspace-admin Instabox key.', next: ADMIN_NEXT });
+  `Could not store the coordinator copy of your Instabox key as a proxy secret.\nWhat happened: A real key was about to be placed on a machine whose provider keeps keys off machines.\nLikely cause: Storing the coordinator key needs a workspace-admin Instabox key.${detail ? ` ${String(detail).replaceAll('\n', ' ')}` : ''}\nNext step: ${ADMIN_NEXT}.`),
+  { local: true, code: 'key_on_machine_refused', short: 'Could not store the coordinator key.', reason: 'Storing the coordinator key needs a workspace-admin Instabox key.', next: ADMIN_NEXT });
 
 // Records the secret name locally: env for this run, the config file for later ones (the loader's last-line value
 // wins, so read it). Write and read failures propagate — reporting success while the name was not saved repeats the write.
@@ -296,7 +309,7 @@ async function image(c, args) {
   }
   let sbx, name, started;
   if (img) {
-    c.progress(`Using the image machine ${img.name} you already started.`);
+    c.progress(`Using the image machine ${safeText(img.name)} you already started.`);
     sbx = await c.provider.connect(img.id, { retry: false });
     name = img.name; started = new Date(img.startedAt).getTime();
   } else {
@@ -309,11 +322,14 @@ async function image(c, args) {
     } catch (e) { await sbx.kill().catch(() => {}); throw e; }
     name = await nameOf(sbx);
   }
+  const shownName = safeText(name ?? ''); // the server-reported name is display data
+  const shellWord = word(name, sbx.id); // a suggested `shell` command takes only a plain word — the id when the name is not one
   const until = clock(started + IMAGE_SECONDS * 1000);
-  const fallback = `Image machine ${name} is ready and cloudy-cloud is installed on it. It is deleted at ${until}.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell ${name}\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save`;
+  const firstStep = shellWord ? `1. cloudy-cloud shell ${shellWord}` : '1. open a shell on the image machine';
+  const fallback = `Image machine ${shownName} is ready and cloudy-cloud is installed on it. It is deleted at ${until}.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  ${firstStep}\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save`;
   if (!c.tty) {
-    c.out(c.ui.term ? [statusLine(c.ui, 'ok', `Image machine ${name} is ready`, [`cloudy-cloud installed; deleted at ${until}`]), '',
-      '  Sign in to Claude on it (a setup-token cannot open Remote Control sessions):', `    1. cloudy-cloud shell ${name}`, '    2. claude auth login', '    3. exit', c.ui.next('cloudy-cloud coordinator image --save')].join('\n') : fallback);
+    c.out(c.ui.term ? [statusLine(c.ui, 'ok', `Image machine ${shownName} is ready`, [`cloudy-cloud installed; deleted at ${until}`]), '',
+      '  Sign in to Claude on it (a setup-token cannot open Remote Control sessions):', `    ${firstStep}`, '    2. claude auth login', '    3. exit', c.ui.next('cloudy-cloud coordinator image --save')].join('\n') : fallback);
     return storeNotice(c, stored);
   }
   const already = img && await signedIn(sbx);
@@ -369,7 +385,7 @@ async function start(c, args) {
     const g = k === DEFAULT_PROVIDER_KEY
       ? { whatHappened: 'A real key was about to be placed on a machine whose provider keeps keys off machines.', likelyCause: 'The key was passed the old way, not as a proxy secret.', nextStep: 'Run `cloudy-cloud setup --more` (it stores the coordinator copy of your Instabox key), or ask a workspace admin.' }
       : guideObj('key_on_machine_refused');
-    throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { code: 'key_on_machine_refused' });
+    throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { local: true, code: 'key_on_machine_refused' });
   }
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
@@ -403,7 +419,7 @@ async function start(c, args) {
     let pane = '';
     try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch (e) {
       // A command that ran and failed carries exitCode (no tmux session). Anything else is the provider or network: the session may be fine.
-      if (typeof e?.exitCode === 'number') throw Object.assign(new Error(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`), { short: 'The Claude session on the new machine exited right after it started.', reason: 'the saved Claude login is missing or expired; the machine was deleted', next: 'cloudy-cloud coordinator image' });
+      if (typeof e?.exitCode === 'number') throw Object.assign(new Error(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`), { local: true, short: 'The Claude session on the new machine exited right after it started.', reason: 'the saved Claude login is missing or expired; the machine was deleted', next: 'cloudy-cloud coordinator image' });
       screenRead = false;
     }
     // The task is typed into the session, so its own lines can be on screen; they are not errors. Configured values are
@@ -417,12 +433,14 @@ async function start(c, args) {
       const [code, cause, next, nextCmd] = /limit|credit balance/i.test(line) ? ['spend_limit', 'the saved Claude login has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`, `check the plan at claude.ai, then start ${name} again`]
         : /invalid api key/i.test(line) ? ['coordinator_invalid_key', 'the session reports an invalid API key', again, 'cloudy-cloud coordinator image']
         : ['coordinator_login_expired', 'the saved Claude login has expired or is signed out', again, 'cloudy-cloud coordinator image'];
-      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { code, short: 'The coordinator session started but is not working.', reason: `screen: ${fitCells(line, 40)}; the machine was deleted`, next: nextCmd });
+      throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { local: true, code, short: 'The coordinator session started but is not working.', reason: `screen: ${fitCells(line, 40)}; the machine was deleted`, next: nextCmd });
     }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
+  const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
+  const machineWord = word(machine, sbx.id); // a suggested ssh command takes only a plain word — the id when the name is not one
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine, remoteControlName: name, attach: c.ssh(machine, 'tmux attach -t claude'), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, ...(machineWord ? { attach: c.ssh(machineWord, 'tmux attach -t claude') } : {}), started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -450,8 +468,8 @@ async function start(c, args) {
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook ? ['', nextFit(u, `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
   }
-  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${machine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
-    `  - Terminal: cloudy-cloud coordinator attach ${name}\n    (runs: ${c.ssh(machine, 'tmux attach -t claude')})\n\n${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
+  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
+    `  - Terminal: cloudy-cloud coordinator attach ${name}${machineWord ? `\n    (runs: ${c.ssh(machineWord, 'tmux attach -t claude')})` : ''}\n\n${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
 }
 
@@ -465,7 +483,8 @@ async function attach(c, args) {
     return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
-  c.out(c.ssh(mach(m), 'tmux attach -t claude'));
+  const target = word(mach(m), m.id); // the printed command takes a plain word, or the name the user gave
+  c.out(target ? c.ssh(target, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${args[0]}`);
 }
 
 // Reads a coordinator's screen once, read-only. waiting is the prompt line a person must answer ('' if none);
@@ -486,15 +505,18 @@ const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on
 async function status(c, args) {
   const [m] = await find(c.provider, 'coordinator', args[0]);
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
-  const r = await screenOf(c, m), attach = c.ssh(mach(m), 'tmux attach -t claude'), name = args[0], state = safeText(m.state ?? '') || 'unknown';
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: mach(m), state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), attach }));
+  const r = await screenOf(c, m), name = args[0], state = safeText(m.state ?? '') || 'unknown';
+  const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
+  const target = word(mach(m), m.id); // a suggested ssh command takes a plain word, or the name the user gave
+  const attach = target ? c.ssh(target, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${name}`;
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: shown, state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), attach }));
   if (c.ui.term) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [['Machine', mach(m)], ['State', state], ['Screen', screen]]), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
-  c.out([`Coordinator ${name} on machine ${mach(m)}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
+  c.out([`Coordinator ${name} on machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
 
 async function ls(c) {
@@ -518,7 +540,7 @@ async function ls(c) {
   if (c.ui.term) {
     const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
     const noted = data.some((d) => d.screen !== '-'); // a column only when some screen needs a look
-    const waitingRow = data.find((d) => d.screen.startsWith('waiting'));
+    const waitingRow = data.find((d, i) => d.screen.startsWith('waiting') && NAME_RE.test(rows[i].labels?.name ?? '')); // the attach hint needs a server name that is also a valid argument
     const done = (text) => c.out(waitingRow ? `${text}\n\n${nextFit(u, `cloudy-cloud coordinator attach ${waitingRow.name}`)}` : text);
     const anyNever = data.some((d) => !d.deleteAt); // with one open-ended row, the absolute dates are noise, not info
     // Try the full table, then shorten SCREEN with an ellipsis, then drop the date, then the MACHINE column.
@@ -559,10 +581,10 @@ async function stop(c, args) {
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   c.progress('Deleting the coordinator machine...');
   await c.provider.delete(m.id, { sdk: true });
-  if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${mach(m)}`]),
+  if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
     hintFit(c.ui, `List machines: ${c.provider.text.listMachines}`)].join('\n'));
-  c.out(`Deleted coordinator ${name} (machine ${mach(m)}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
+  c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
 }
 
 // Run ON a coordinator machine by the coordinator itself: checks that nothing is lost, then deletes this machine.
@@ -573,9 +595,9 @@ async function finish(c, args, deps) {
   const notHere = `This is not a coordinator machine (hostname ${host}). finish only runs on a machine started with: cloudy-cloud coordinator start`;
   const notHereFields = { short: 'This is not a coordinator machine.', reason: `hostname ${host}`, next: 'cloudy-cloud coordinator start NAME --repo URL' };
   if (!mname) guided(notHere, notHereFields);
-  const me = (await c.provider.list({ role: 'coordinator' })).find((m) => mach(m) === mname && m.labels?.role === 'coordinator');
+  const me = (await c.provider.list({ role: 'coordinator' })).find((m) => mach(m) === mname && m.labels?.purpose === 'cloudy-cloud' && m.labels?.role === 'coordinator');
   if (!me?.id) guided(notHere, notHereFields);
-  const verified = [`machine ${mach(me)} (${me.id}), coordinator ${me.labels.name}`];
+  const verified = [`machine ${safeText(mach(me))} (${safeText(me.id)}), coordinator ${safeText(me.labels?.name)}`];
   if (force) verified.push('--force: skipped the git and worker checks');
   else {
     const repo = deps.repoDir ?? join(homedir(), 'repo');
@@ -603,12 +625,12 @@ async function finish(c, args, deps) {
     const workers = owner ? (await c.provider.list({ owner })).filter((m) => m.labels?.owner === owner && !/delet/.test(m.state ?? '')) : [];
     if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
     if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'fix the problems above, then run: cloudy-cloud coordinator finish' });
-    verified.push('working tree clean', `pushed: ${branches.join(', ')}`, 'no running workers');
+    verified.push('working tree clean', `pushed: ${safeText(branches.join(', '))}`, 'no running workers');
   }
   // One attempt; list and delete here use the raw API, as finish always has (ls, attach, stop use the SDK).
-  await c.provider.delete(me.id, { retries: 0 }).catch((e) => { throw e.status ? new Error(`Delete failed: HTTP ${e.status}`) : e; });
-  if (c.ui.term) return c.out([...verified.flatMap((v) => wrapText(c.ui, v).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))), ...wrapText(c.ui, `Deleted this machine (${mach(me)})`).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))].join('\n'));
-  c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${mach(me)}).`);
+  await c.provider.delete(me.id, { retries: 0 }).catch((e) => { throw e.status ? Object.assign(new Error(`Delete failed: HTTP ${e.status}`), { local: true }) : e; });
+  if (c.ui.term) return c.out([...verified.flatMap((v) => wrapText(c.ui, v).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))), ...wrapText(c.ui, `Deleted this machine (${safeText(mach(me))})`).map((l, i) => (i ? `    ${c.ui.dim(l)}` : c.ui.ok(l)))].join('\n'));
+  c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${safeText(mach(me))}).`);
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
@@ -667,9 +689,10 @@ export async function main(argv, deps = {}) {
     const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
     const message = clean(e?.message ?? e);
     const code = CODES.includes(e?.code) ? e.code : classify(message);
-    // A message whose own lines start with the guidance labels is already guided: keep its fields, do not wrap or repeat it.
+    // A message whose own lines start with the guidance labels is already guided — but only when the error is
+    // ours (`local`): the same labels inside provider or other foreign text are data, not our guidance.
     const { fields } = parseGuidance(message);
-    const has = !!(fields['What happened']?.trim() && fields['Next step']?.trim());
+    const has = e?.local === true && !!(fields['What happened']?.trim() && fields['Next step']?.trim());
     const f = (n) => fields[n]?.trim() || undefined;
     // Embedded guidance fields win over the code's template: the message author chose them (e.g. setup --more for the coordinator key).
     const g = has
@@ -678,7 +701,9 @@ export async function main(argv, deps = {}) {
     if (argv.includes('--json')) (deps.out ?? console.log)(JSON.stringify({ error: g }));
     // The terminal view reads e.short/reason/next in errorScreen; plain stderr and --json keep the
     // message plus the appended guidance, as before — so the guide text is appended whenever it was before.
-    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral, wrapShort: e?.wrapShort, details: Array.isArray(e?.details) ? e.details.map((d) => clean(d)) : undefined });
+    // The rethrown error keeps `local` when the message ends in our own guidance: it was already ours, or
+    // a known code got our template appended. Foreign text alone never becomes trusted guidance.
+    throw Object.assign(new Error(code !== 'unknown' && !has ? `${message}\n${guide(code, { message, secrets })}` : message), { code: e?.code, local: e?.local === true || code !== 'unknown', short: e?.short && clean(e.short), reason: e?.reason && clean(e.reason), next: e?.next && clean(e.next), neutral: e?.neutral, wrapShort: e?.wrapShort, details: Array.isArray(e?.details) ? e.details.map((d) => clean(d)) : undefined });
   }
 }
 
@@ -703,19 +728,23 @@ export function errorScreen(e, u) {
     return /^(Run: |Call |cloudy-cloud |`)/i.test(head.trim()) ? head : '';
   }).filter(Boolean).join(' ').replace(/[\s,;:]+$/, '').trim();
   const { head, fields } = parseGuidance(text, `${LABELS}|Next|Run`);
-  const structured = Boolean(e.next || e.short || e.reason || Array.isArray(e.details)); // author-chosen fields: the embedded text is not re-read
+  // Guidance — embedded labels or the short/reason/next/details fields — is trusted only from an error this
+  // file created (`local`). Anything else is provider text: it prints as dim diagnostics under a generic
+  // short line, with the generic Next — never as our instructions.
+  const ours = e?.local === true;
+  const structured = ours && Boolean(e.next || e.short || e.reason || Array.isArray(e.details)); // author-chosen fields: the embedded text is not re-read
   const first = text.split('\n')[0];
-  const short = scrub(e.short ?? (structured ? first : head[0] ?? fields['What happened'] ?? first));
-  let reason = scrub(e.reason ?? (structured ? undefined : bare(fields['Likely cause'] ?? fields['What happened'] ?? ''))) || undefined;
-  const next = human(scrub(e.next ?? (structured ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean)) ?? 'cloudy-cloud coordinator --help')) || 'cloudy-cloud coordinator --help';
-  const details = (Array.isArray(e.details) ? e.details : structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== '')).map((d) => scrub(String(d)));
+  const short = scrub((ours && e.short) || (ours ? (structured ? first : head[0] ?? fields['What happened'] ?? first) : 'Something failed.'));
+  let reason = scrub((ours && e.reason) || (structured || !ours ? undefined : bare(fields['Likely cause'] ?? fields['What happened'] ?? ''))) || undefined;
+  const next = human(scrub(((ours && e.next) || (structured || !ours ? undefined : [fields['Next step'], fields.Next, fields.Run].map((v) => v && bare(v.trim())).find(Boolean))) ?? 'cloudy-cloud coordinator --help')) || 'cloudy-cloud coordinator --help';
+  const details = (ours ? (Array.isArray(e.details) ? e.details : structured ? [] : [...head.slice(1), ...(fields['Likely cause'] ? [fields['What happened']] : [])].filter((l) => l !== undefined && l !== '')) : text.split('\n')).map((d) => scrub(String(d)));
   // A structured short has a 60-cell head; a refusal or usage-error short wraps whole words instead of cutting.
-  const shortLines = e.wrapShort ? wrapText(u, short) : [fit(short, e.short ? 60 : u.width - 4)];
+  const shortLines = (ours && e.wrapShort) ? wrapText(u, short) : [fit(short, (ours && e.short) ? 60 : u.width - 4)];
   const seen = new Set([short.trim(), ...shortLines.map((l) => l.trim())]); // never print the same line twice
   if (reason && seen.has(reason.trim())) reason = undefined;
   const body = details.flatMap((d) => d.split('\n').flatMap((l) => (l.trim() ? wrapText(u, bare(l)) : ['']))).filter((l) => { const t = l.trim(); if (!t) return true; if (seen.has(t)) return false; seen.add(t); return true; });
   return [
-    ...(e.neutral ? shortLines.map((l, i) => (i ? `    ${l}` : `  ${l}`)) : shortLines.map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l)))),
+    ...(ours && e.neutral ? shortLines.map((l, i) => (i ? `    ${l}` : `  ${l}`)) : shortLines.map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l)))),
     ...body.map((l) => (l ? `    ${u.dim(l)}` : '')),
     ...(reason ? [`    ${u.dim(fit(reason))}`] : []),
     nextFit(u, next),

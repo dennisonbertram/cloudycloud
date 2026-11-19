@@ -70,7 +70,7 @@ function fixture({ machines = [], snapshot = 'sn_1' } = {}) {
   return { calls, out, deps: { sdk, fetchFn, env, tty: false, root, sleep: async () => {}, out: (s) => out.push(s), ownerFile: join(dir, 'owner'), cliSpawn } };
 }
 
-const coord = (id, name, cname) => ({ sandboxId: id, name, state: 'running', startedAt: started, metadata: { role: 'coordinator', name: cname } });
+const coord = (id, name, cname) => ({ sandboxId: id, name, state: 'running', startedAt: started, metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: cname } });
 const normalise = (v) => JSON.parse(JSON.stringify(v)
   .replaceAll(KEY, '<API_KEY>').replaceAll(TOK, '<OAUTH_TOKEN>')
   .replace(/\b[0-9a-f]{40}\b/g, '<SHA>').replace(/cc-keep\/tool-[0-9a-f]+/g, 'cc-keep/tool-<RAND>')
@@ -89,7 +89,7 @@ test('coordinator calls are unchanged', async () => {
     record[label] = { args, calls: f.calls, out: f.out };
   };
   await run('image', ['image']);
-  await run('image --save', ['image', '--save'], { snapshot: '', machines: [{ sandboxId: 'm_img', name: 'img-1', metadata: { role: 'coordinator-image' } }] });
+  await run('image --save', ['image', '--save'], { snapshot: '', machines: [{ sandboxId: 'm_img', name: 'img-1', metadata: { purpose: 'cloudy-cloud', role: 'coordinator-image' } }] });
   await run('start', ['start', 'boss', '--repo', 'https://github.com/o/r', '--branch', 'main', '--task', 'do it', '--max-hours', '3']);
   await run('start --json', ['start', 'boss', '--repo', 'https://github.com/o/r', '--json']);
   await run('ls', ['ls'], { machines: [coord('m1', 'coord-boss', 'boss')] });

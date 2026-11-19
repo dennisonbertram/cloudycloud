@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { helpText } from './cli-help.mjs';
+import { safeText } from './terminal.mjs';
 import { makeUi } from './ui.mjs';
 
 const run = promisify(execFile);
@@ -22,16 +23,21 @@ export async function main(argv, { cwd = process.cwd(), out = console.log, err =
   const git = (...a) => run('git', a, { cwd, maxBuffer: 1 << 26 }).then((r) => r.stdout.trim());
   try {
     const listed = (await git('ls-remote', '--heads', 'origin', 'refs/heads/cloudy-cloud/*')).split('\n').filter(Boolean)
-      .map((l) => l.split(/\s+/)).map(([sha, ref]) => [sha, ref.replace(/^refs\/heads\//, '')]).filter(([, b]) => OURS.test(b));
+      .map((l) => l.split(/\s+/)).map(([sha, ref]) => [sha, ref.replace(/^refs\/heads\//, '')]).filter(([sha, b]) => /^[0-9a-f]{40}$/.test(sha) && OURS.test(b));
     if (!listed.length) { out('No cloudy-cloud/<id> branches on origin.'); return 0; }
     const head = (await git('ls-remote', '--symref', 'origin', 'HEAD')).match(/^ref: refs\/heads\/(\S+)\tHEAD/m)?.[1];
     if (!head || !/^[A-Za-z0-9._/-]+$/.test(head) || head.startsWith('-')) throw new Error('could not read the default branch of origin');
-    await git('fetch', '-q', 'origin', head, ...listed.map(([, b]) => `+refs/heads/${b}:refs/remotes/origin/${b}`));
-    const base = `origin/${head}`;
+    // The merge base is the remote's OID, never `origin/<head>`: a local tag or branch can shadow that name
+    // and make merge-base resolve the wrong object.
+    const headSha = (await git('ls-remote', 'origin', `refs/heads/${head}`)).split(/\s+/)[0] ?? '';
+    if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('could not read the default branch of origin');
+    await git('fetch', '-q', 'origin', `refs/heads/${head}`, ...listed.map(([, b]) => `+refs/heads/${b}:refs/remotes/origin/${b}`));
+    if (await git('rev-parse', 'FETCH_HEAD') !== headSha) throw new Error('the default branch of origin moved while it was being checked; run again');
+    const shownHead = safeText(head);
     const gone = [];
     for (const [sha, b] of listed) {
-      const merged = await git('merge-base', '--is-ancestor', sha, base).then(() => true, () => false);
-      out(`${b}  ${sha.slice(0, 7)}  ${merged ? 'prune (in ' + head + ')' : 'keep (has commits not in ' + head + ')'}`);
+      const merged = await git('merge-base', '--is-ancestor', sha, headSha).then(() => true, () => false);
+      out(`${safeText(b)}  ${sha.slice(0, 7)}  ${merged ? 'prune (in ' + shownHead + ')' : 'keep (has commits not in ' + shownHead + ')'}`);
       if (merged) gone.push([sha, b]);
     }
     if (!del) { out(`Dry run: nothing deleted${gone.length ? `; ${gone.length} would be deleted` : ''}. Run again with --yes to delete.`); return 0; }
@@ -43,15 +49,15 @@ export async function main(argv, { cwd = process.cwd(), out = console.log, err =
     for (const [sha, b] of gone) { // the lease rejects the delete if the branch moved since it was listed
       try {
         await git('push', '-q', `--force-with-lease=refs/heads/${b}:${sha}`, 'origin', `:refs/heads/${b}`);
-        out(`Deleted ${b}`);
+        out(`Deleted ${safeText(b)}`);
       } catch (e) {
         if (!String(e.stderr ?? '').includes('stale info')) throw e;
-        out(`${b} skipped (changed since check)`);
+        out(`${safeText(b)} skipped (changed since check)`);
       }
     }
     return 0;
   } catch (e) {
-    err(`cloudy-cloud branches: ${e.stderr || e.message}\nNext step: run it inside a git repo whose origin you can access.`);
+    err(`cloudy-cloud branches: ${safeText(e.stderr || e.message)}\nNext step: run it inside a git repo whose origin you can access.`);
     return 1;
   }
 }
