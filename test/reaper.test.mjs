@@ -52,13 +52,44 @@ test('a failed list or delete is logged without the key, and reaping continues',
 
 test('spawn options pass the key and provider only in env', () => {
   const provider = createFakeProvider();
-  const { args, options } = reaperSpawn(42, OWNER, KEY, provider, { PATH: '/bin' });
+  const { args, options } = reaperSpawn(42, OWNER, { FAKE_API_KEY: KEY }, provider, { PATH: '/bin' });
   assert.ok(!JSON.stringify(args).includes(KEY));
   assert.deepEqual(args.slice(1), ['42', OWNER]);
   assert.equal(options.env.FAKE_API_KEY, KEY);
   assert.equal(options.env.CLOUDY_CLOUD_PROVIDER, 'fake');
+  assert.equal(options.env.CLOUDY_CLOUD_PROVIDERS, 'fake');
   assert.equal(options.detached, true);
   assert.equal(options.stdio, 'ignore');
+});
+
+// With several providers each gets the key variable its adapter reads — but only when it resolves: a
+// provider without a credential must never receive the string "undefined".
+test('reaperSpawn passes every provider key that resolves, skips the missing ones, and names all providers', () => {
+  const a = { name: 'a', keyName: 'A_API_KEY' }, b = { name: 'b', keyName: 'B_API_KEY' };
+  const provider = { ...a, providers: [a, b] };
+  const { options } = reaperSpawn(42, OWNER, { A_API_KEY: 'ka' }, provider, { PATH: '/bin' });
+  assert.equal(options.env.A_API_KEY, 'ka');
+  assert.equal(options.env.CLOUDY_CLOUD_PROVIDER, 'a');
+  assert.equal(options.env.CLOUDY_CLOUD_PROVIDERS, 'a,b');
+  assert.ok(!('B_API_KEY' in options.env), 'a provider without a key must not get the string "undefined"');
+  assert.ok(!Object.values(options.env).includes('undefined'));
+  const both = reaperSpawn(42, OWNER, { A_API_KEY: 'ka', B_API_KEY: 'kb' }, provider, { PATH: '/bin' });
+  assert.equal(both.options.env.A_API_KEY, 'ka');
+  assert.equal(both.options.env.B_API_KEY, 'kb');
+});
+
+test('startReaper passes every provider key and the full provider list to the spawned reaper', () => {
+  const calls = [];
+  const child = { on() { return this; }, unref() { calls.push('unref'); } };
+  const a = { name: 'a', keyName: 'A_API_KEY' }, b = { name: 'b', keyName: 'B_API_KEY' };
+  const provider = { ...a, providers: [a, b] };
+  startReaper(42, OWNER, { A_API_KEY: 'ka', B_API_KEY: 'kb' }, provider, (cmd, args, options) => { calls.push({ cmd, args, options }); return child; });
+  assert.equal(calls[0].options.env.A_API_KEY, 'ka');
+  assert.equal(calls[0].options.env.B_API_KEY, 'kb');
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDER, 'a');
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDERS, 'a,b');
+  assert.deepEqual(calls[0].args.slice(1), ['42', OWNER]);
+  assert.equal(calls[1], 'unref');
 });
 
 test('the reaper process exits 1 with no key, without touching the network', () => {
@@ -313,5 +344,119 @@ test('bin/cloudy-cloud mcp-server: migration first, clean stdout, one reaper acr
       const j = JSON.parse(line);
       assert.equal(j.jsonrpc, '2.0', `stdout carried a non-RPC line: ${line}`);
     }
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// ---- several providers (CLOUDY_CLOUD_PROVIDERS) ----
+
+// server.mjs must give buildServer the whole list (deps.providers) as well as the combined provider.
+test('server.mjs hands buildServer the provider list and the combined provider', () => {
+  const src = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
+  assert.match(src, /providers = await loadProviders\(env, \{ owner \}\)/);
+  assert.match(src, /deps = \{[^}]*providers[^}]*\}/s);
+});
+
+// reap() through combine: every provider is listed, a failure of one is logged with its name, and the
+// delete still reaches the provider that owns the machine.
+test('reap covers every provider: a failing list is logged with its name, the rest are still reaped', async () => {
+  const { combine } = await import('../src/providers/index.mjs');
+  const { reap } = await import('../src/reaper.mjs');
+  const a = createFakeProvider(undefined, { name: 'a' });
+  const b = createFakeProvider({}, { name: 'b' }); // no FAKE_API_KEY: its list throws no_key
+  a.machines.set('a-1', { id: 'a-1', name: 'n1', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  const logs = [];
+  const n = await reap({ owner: OWNER, provider: combine([a, b]), log: (l) => logs.push(l) });
+  assert.equal(n, 1);
+  assert.deepEqual(a.log.delete, ['a-1']);
+  assert.deepEqual(b.log.delete, []);
+  assert.match(logs.join('\n'), /list failed on b/);
+});
+
+// The spawned reaper reads CLOUDY_CLOUD_PROVIDERS and reaps them all: instabox has no key here so its
+// list fails fast (no network), and the microsandbox machine the owner left behind is still deleted.
+test('the reaper reaps every configured provider; one failing list does not stop the others', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-rpmulti-'));
+  const log = join(dir, 'msb-calls');
+  const own = join(dir, 'owner');
+  writeFileSync(join(dir, 'msb'), `#!/bin/sh
+echo "msb $*" >> "${log}"
+case "$1" in
+  ls) for a in "$@"; do case "$a" in cloudy-cloud.owner=*) printf %s "\${a#cloudy-cloud.owner=}" > "${own}" ;; esac; done
+      echo '[{"name":"m1","status":"Running","created_at":"2026-01-01T00:00:00Z"}]' ;;
+  inspect) printf '{"config":{"labels":{"cloudy-cloud.purpose":"cloudy-cloud","cloudy-cloud.owner":"%s"}},"status":"Running"}' "$(cat "${own}" 2>/dev/null)" ;;
+  *) exit 0 ;;
+esac
+`);
+  chmodSync(join(dir, 'msb'), 0o755);
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: mkdtempSync(join(tmpdir(), 'cc-rphome-')), CLOUDY_CLOUD_PROVIDERS: 'instabox,microsandbox', CLOUDY_CLOUD_CONFIG: '/nonexistent/cloudy-cloud-env' };
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL('../src/reaper.mjs', import.meta.url)), '99999999', OWNER], { env, timeout: 10000 });
+  assert.equal(r.status, 0, String(r.stderr));
+  const calls = readFileSync(log, 'utf8');
+  assert.match(calls, /msb ls /);
+  assert.match(calls, /msb rm --force m1/);
+});
+
+// The reaper starts when ANY provider in the list has its credential: self-hosted has no SSH host here,
+// but the stub msb on PATH makes microsandbox ready, so exactly one reaper must run.
+test('a multi-provider server starts the reaper when any provider has a key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-multi-'));
+  writeFileSync(join(dir, 'env'), '');
+  mkdirSync(join(dir, 'bin'));
+  writeFileSync(join(dir, 'bin', 'msb'), '#!/bin/sh\ncase "$1" in ls) echo "[]" ;; *) exit 0 ;; esac\n', { mode: 0o755 });
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_PROVIDERS: 'self-hosted,microsandbox' },
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+  try {
+    assert.equal((await until(() => reaperPids(child.pid).length === 1 && reaperPids(child.pid))).length, 1, `no reaper though microsandbox is ready; stderr: ${stderr}`);
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// End to end: the server hands every provider to the reaper, so a dead server still gets its machines
+// deleted on a provider that is not the primary (self-hosted fails without a host, microsandbox reaps).
+test('a multi-provider server hands every provider to the reaper, which deletes their machines', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-rpe2e-'));
+  writeFileSync(join(dir, 'env'), '');
+  mkdirSync(join(dir, 'bin'));
+  const log = join(dir, 'msb-calls');
+  const own = join(dir, 'owner-label');
+  writeFileSync(join(dir, 'bin', 'msb'), `#!/bin/sh
+echo "msb $*" >> "${log}"
+case "$1" in
+  ls) for a in "$@"; do case "$a" in cloudy-cloud.owner=*) printf %s "\${a#cloudy-cloud.owner=}" > "${own}" ;; esac; done
+      echo '[{"name":"m1","status":"Running","created_at":"2026-01-01T00:00:00Z"}]' ;;
+  inspect) printf '{"config":{"labels":{"cloudy-cloud.purpose":"cloudy-cloud","cloudy-cloud.owner":"%s"}},"status":"Running"}' "$(cat "${own}" 2>/dev/null)" ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 });
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_PROVIDERS: 'self-hosted,microsandbox' },
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+  try {
+    assert.ok(await until(() => reaperPids(child.pid)[0]), `no reaper started; stderr: ${stderr}`);
+    child.kill('SIGKILL'); // the server is gone: the detached reaper notices and reaps
+    assert.ok(await until(() => existsSync(log) && /msb rm --force m1/.test(readFileSync(log, 'utf8'))),
+      `the reaper never deleted m1; msb calls: ${existsSync(log) ? readFileSync(log, 'utf8') : '(none)'}; stderr: ${stderr}`);
+  } finally { child.kill('SIGKILL'); killReapers(child.pid); }
+});
+
+// No provider has a credential: the server boots but starts no reaper, same as a single provider without a key.
+test('a multi-provider server starts no reaper when no provider has a key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-reaper-none-'));
+  writeFileSync(join(dir, 'env'), '');
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_PROVIDERS: 'instabox,self-hosted' },
+  });
+  let buf = '', stderr = '';
+  child.stdout.on('data', (d) => { buf += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  try {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } } })}\n`);
+    for (const end = Date.now() + 10000; !buf.includes('\n') && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(buf.includes('"id":1'), `no initialize response; stderr: ${stderr}`);
+    assert.equal(reaperPids(child.pid).length, 0, 'a reaper started though no provider has a key');
   } finally { child.kill('SIGKILL'); killReapers(child.pid); }
 });
