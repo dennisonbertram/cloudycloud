@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
+import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail, isRateLimited, isQuotaExceeded } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
@@ -40,7 +40,7 @@ const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.g
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = guide('no_origin');
 // A real key was about to go to a machine whose provider keeps keys off machines.
-export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
+export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused', credentialRefusal: true });
 const IDLE_MS = 60 * 60_000;
 const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
@@ -300,7 +300,7 @@ const RETRY_MIN_LEFT_MS = 5 * 60_000; // no attempt starts with less than this l
 // One deadline covers the whole caller-visible turn: each attempt, retries included, gets only the time left of it.
 async function turn(a, message, ctx, t) {
   const max = a.profile && harnessOf(a) !== 'claude' ? (ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES !== undefined && Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) >= 0 ? Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) : 3) : 0;
-  const deadline = Date.now() + (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000;
+  const deadline = Date.now() + (turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000;
   const giveUp = (r, c, n) => {
     const why = !c.retryable ? '' : c.kind === 'model_not_found' && !answered.has(a.profile.name) ? `\nThe model is not available to this key (profile ${a.profile.name} has not answered in this session).\n${guide('model_not_found', { profiles: a.profile.name })}` : `\nGave up after ${n + 1} attempt${n ? 's' : ''}.\n${guide('provider_unavailable', { id: a.id, profile: a.profile.name })}`;
     return { ...r, text: ctx.scrub(`${r.text}\n${providerDetail(r.text)}${why}`) };
@@ -451,10 +451,53 @@ async function checkTools(a) {
   if (missing.length) throw Object.assign(new Error(`${a.kind.label} machine lacks ${missing.join(', ')}`), { guideText: guide('machine_missing_tools', { kind: a.kind.label, tools: missing.join(', ') }) });
 }
 
+// The credential part of a create, for one candidate provider: which key goes to it and how (a secret name, a
+// local substitution, or an env value). What refuses on one provider may be fine on another, so a refusal is
+// marked credentialRefusal: the failover chain skips the provider while a candidate remains, and throws the
+// same error as before when none is left.
+function credentialsFor(p, a, env) {
+  const envs = {};
+  // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
+  // sending both would make Claude Code bill the API key.
+  // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
+  const named = proxySecrets(env);
+  const proxied = p.caps.hasProxySecrets ? named : new Set();
+  // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
+  // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
+  const keyName = a.profile ? a.profile.keyName
+    : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!p.caps.localSecrets && named.has(n)))
+      ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
+  const keySecrets = [];
+  const refusal = (message) => Object.assign(new Error(message), { credentialRefusal: true });
+  if (keyName && p.caps.localSecrets) {
+    // The provider substitutes the local value into matching requests itself (microsandbox --secret), so a
+    // plain value is attached by name: no CLOUDY_CLOUD_PROXY_SECRETS line, no real value on the machine.
+    if (env[keyName]) keySecrets.push(keyName);
+    else throw refusal(`${keyName} is named in CLOUDY_CLOUD_PROXY_SECRETS but has no value. On the ${p.name} provider the value stays on this computer: add ${keyName}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+  }
+  else if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
+  else if (keyName && !env[keyName]) throw refusal(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${p.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
+  else if (keyName && p.caps.hasProxySecrets) throw refused(keyName); // never copy a real key to such a machine
+  else if (keyName) envs[keyName] = env[keyName]; // a provider without proxy secrets (self-hosted) keeps the env-file path
+  const coord = a.role === 'coordinator' ? coordinatorKeys(env, p, { single: true }) : { secrets: [] };
+  if (coord.legacy?.length) throw refused(coord.legacy[0]);
+  return { envs, keySecrets, coord };
+}
+
+// May this provider.create failure move the agent to the next candidate? quota, rate and capacity limits and a
+// missing key fail over at once ('next'); transient and "the provider cannot be reached" errors fail over after
+// leftover machines are deleted ('clean'). Anything else never fails over.
+const failoverHow = (e) => {
+  const code = `${e?.code ?? ''}`;
+  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity') return 'next';
+  if (code === 'transient' || (!code && classifyProviderError(e?.message)?.kind === 'connection')) return 'clean';
+};
+
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
-  const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress }, labels) => provider.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }) })); // role and egress are options, not labels: Instabox's wire request stays the same
+  const { env } = ctx;
+  const cands = a.providers?.length ? a.providers : [ctx.provider];
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress }, labels, p) => p.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }) })); // role and egress are options, not labels: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = a.branch;
@@ -474,7 +517,7 @@ async function setup(a, ctx) {
     await git(a.root, 'update-ref', ref, a.sha);
     let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
     let data;
-    const max = ctx.bundleMax ?? provider.caps.uploadMaxBytes - BUNDLE_MARGIN;
+    const max = ctx.bundleMax ?? Math.min(...cands.map((p) => p.caps.uploadMaxBytes ?? Infinity)) - BUNDLE_MARGIN; // the bundle must fit whichever candidate lands it
     try {
       await git(a.root, 'bundle', 'create', bundle, ref);
       data = await readFile(bundle);
@@ -493,43 +536,64 @@ async function setup(a, ctx) {
     } finally {
       await git(a.root, 'update-ref', '-d', ref).catch(() => {});
     }
-    const envs = {};
-    // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
-    // sending both would make Claude Code bill the API key.
-    // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
-    const named = proxySecrets(env);
-    const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
-    // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
-    const keyName = a.profile ? a.profile.keyName
-      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && named.has(n)))
-        ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
-    const keySecrets = [];
-    if (keyName && provider.caps.localSecrets) {
-      // The provider substitutes the local value into matching requests itself (microsandbox --secret), so a
-      // plain value is attached by name: no CLOUDY_CLOUD_PROXY_SECRETS line, no real value on the machine.
-      if (env[keyName]) keySecrets.push(keyName);
-      else throw new Error(`${keyName} is named in CLOUDY_CLOUD_PROXY_SECRETS but has no value. On the ${provider.name} provider the value stays on this computer: add ${keyName}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
-    }
-    else if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
-    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
-    else if (keyName && provider.caps.hasProxySecrets) throw refused(keyName); // never copy a real key to such a machine
-    else if (keyName) envs[keyName] = env[keyName]; // a provider without proxy secrets (self-hosted) keeps the env-file path
     // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
-    if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
-    if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
-    const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [] };
-    if (coord.legacy?.length) throw refused(coord.legacy[0]);
+    const envs0 = {};
+    if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs0.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
+    if (a.role === 'coordinator') Object.assign(envs0, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
+    const labels = machineLabels(a, ctx);
+    const line160 = (s) => ctx.scrub(String(s ?? '')).split('\n')[0].slice(0, 160);
     a.cancelQueue = () => ctx.queue.cancel(a);
-    a.sandbox = await ctx.queue.create(a, () => {
-      const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
-      a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-      const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-      return createSandbox(envs, { deleteAfterSeconds, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
+    // The create walks the candidate list inside one queue slot: a failover-code error, a credential refusal
+    // or an unreachable provider moves to the next candidate; anything else throws as before. A provider that
+    // returned a sandbox is never re-entered, so a post-create failure never starts a second machine.
+    a.sandbox = await ctx.queue.create(a, async () => {
+      const tried = [], errs = [];
+      for (const [i, p] of cands.entries()) {
+        const next = cands[i + 1];
+        try {
+          const { envs, keySecrets, coord } = credentialsFor(p, a, env);
+          const deleteAfterSeconds = workerSeconds(env, p.caps.maxTtlSeconds);
+          const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
+          const envs1 = { ...envs, ...envs0 };
+          const sbx = await createSandbox(envs1, { deleteAfterSeconds, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p);
+          a.provider = p; // the provider the machine actually runs on: publish, metrics, TTL and list route by it
+          a.envs = envs1; // the env vars this machine got, for the coordinator install below
+          a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
+          a.serverTtl = p.caps.hasServerTTL;
+          a.tokenOnBox = !p.caps.hasProxySecrets && p.caps.hasConsentedSecrets ? (p.text?.hostLabel ?? p.name) : '';
+          const notes = [...(a.skipped ?? []).map((s) => `${s.name} cannot run this request (${s.why})`), ...tried.map((t) => `${t.name} could not start it (${[t.code, t.message].filter(Boolean).join(': ')})`)];
+          if (notes.length) a.providerNote = `Started on ${p.name} because ${notes.join('; ')}.`;
+          return sbx;
+        } catch (e) {
+          if (e?.credentialRefusal) { // the key cannot go on this provider as configured: try the next, or throw as today
+            const why = line160(e?.message);
+            (a.skipped ??= []).push({ name: p.name, why });
+            errs.push(e);
+            if (next) {
+              a.emit?.({ type: 'progress', text: `${p.name} cannot run this request (${why}); trying ${next.name}` });
+              log(`agent ${a.id}: ${p.name} -> ${next.name} (${e.code ?? 'credential refused'})`);
+            }
+            continue;
+          }
+          const how = failoverHow(e);
+          if (!how) throw e;
+          tried.push({ name: p.name, code: e?.code, message: line160(e?.message) });
+          errs.push(e);
+          a.emit?.({ type: 'progress', text: `${p.name} could not start a machine (${e?.code ?? 'connection failed'})${next ? `; trying ${next.name}` : ''}` });
+          if (next) log(`agent ${a.id}: ${p.name} -> ${next.name} (${e?.code ?? 'connection'})`);
+          if (how === 'clean') { // transient or unreachable: the provider may have left a half-made machine; the reaper stays the backstop
+            try { for (const m of await p.list({ agent: a.id, ...(ctx.owner && { owner: ctx.owner }) })) await p.delete(m.id).catch(() => {}); } catch { /* best effort */ }
+          }
+        }
+      }
+      // Every candidate refused or failed: report the first rate/quota error (the queue retries those), else the last.
+      const e = errs.find((x) => isRateLimited(x) || isQuotaExceeded(x)) ?? errs.at(-1);
+      if (e) e.tried = tried.map(({ name, code, message }) => ({ name, code, message }));
+      throw e ?? new Error('no provider could run this request');
     });
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     a.home = a.sandbox.home ?? '/home/user';
-    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
+    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt, provider: a.provider?.name });
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
@@ -563,7 +627,7 @@ async function setup(a, ctx) {
         break;
       } catch (e) {
         const said = tail(e?.stderr ?? e?.message);
-        if (AUTH_FAIL.test(said) && !provider.caps.hasProxySecrets) throw new Error(`The GitHub access check for origin ${branch} failed. ${provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
+        if (AUTH_FAIL.test(said) && !a.provider.caps.hasProxySecrets) throw new Error(`The GitHub access check for origin ${branch} failed. ${a.provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
         if (AUTH_FAIL.test(said)) throw new Error(`The GitHub access check for origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
         if (n === 3) throw new Error(`The GitHub access check for origin ${branch} failed after 3 attempts. Git said: ${said}`);
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
@@ -571,7 +635,7 @@ async function setup(a, ctx) {
     }
     const apt = aptPackages(env).list; // validated at start
     if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
-    if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
+    if (a.role === 'coordinator') await installCoordinator(a, ctx, a.envs);
     if (hasMcp(a) && !['codex', 'opencode'].includes(harnessOf(a))) { // codex gets its servers in config.toml (setupCodex), opencode in opencode.json. References only, except servers the user allowed to carry a real value
       // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
       const dir = { pi: `${a.home}/pi-agent`, omp: `${a.home}/omp-agent` }[harnessOf(a)] ?? `${a.home}/.config/cloudy-cloud`;
@@ -606,7 +670,7 @@ async function installCoordinator(a, ctx, envs) {
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS were attached at create time; the file holds their names and the settings only.
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
-  const { lines } = coordinatorKeys(env, ctx.provider, { single: true });
+  const { lines } = coordinatorKeys(env, a.provider ?? ctx.provider, { single: true });
   lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -806,7 +870,7 @@ function autofix(a, ctx, t) {
       const list = problems.map((p) => `- ${p}`).join('\n');
       const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
       if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`, { state: 'not clean', round: fixes, cap });
-      if (left() <= (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
+      if (left() <= (turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
       fixes++;
       say('worker is fixing');
       t.note = '';
@@ -839,13 +903,14 @@ async function work(a, message, first, ctx, t) {
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
     if (first && a.fallbackNote) r = { ...r, text: `${a.fallbackNote}\n${r.text}` };
+    if (first && a.providerNote) r = { ...r, text: `${a.providerNote}\n${r.text}` }; // failover says where the machine ran, first line
     if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
     // preview_port: publish the app's port once per agent, after a turn that pushed, before autofix. The link is private: it shows only in the result, never in the PR body.
     if (a.previewPort && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
       if (!a.previewUrl) {
         try {
-          const { url } = await ctx.provider.publishPort(a.sandbox.id, String(a.previewPort));
+          const { url } = await (a.provider ?? ctx.provider).publishPort(a.sandbox.id, String(a.previewPort));
           if (PREVIEW_URL.test(String(url))) a.previewUrl = url;
           else throw new Error('the provider returned no usable link');
         } catch (e) {
@@ -864,12 +929,13 @@ async function work(a, message, first, ctx, t) {
     }
   } catch (e) {
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
+    r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, a.provider ?? ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
+    if (e?.tried?.length && (a.providers?.length ?? 0) > 1) r = { ...r, text: `${r.text}\nProviders tried: ${e.tried.map((t) => `${t.name} (${[t.code, t.message].filter(Boolean).join(': ')})`).join(', ')}` };
   }
   if (a.status === 'stopped') return;
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
   const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
-  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
@@ -975,8 +1041,22 @@ export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent');
   ctx.queue.learnPlan?.(); // fire and forget; the pace follows once the plan arrives
   const { fail, ok } = ctx;
-  const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
-  if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
+  // The ordered candidate providers (deps.providers; the server passes the configured list, a test may pass
+  // two fakes). With one candidate every check below produces today's exact message and order.
+  let cands = ctx.providers?.length ? [...ctx.providers] : [ctx.provider];
+  const skipped = []; // { name, why }: candidates that cannot run this request, for the result's first line
+  // Keep only candidates `keep` accepts and note the dropped ones. When none is left, return the first
+  // remaining candidate's own refusal — the same text a single provider gives today.
+  const narrow = (keep, why) => {
+    const dropped = [];
+    const kept = cands.filter((p) => { const yes = keep(p); if (!yes) dropped.push(p); return yes; });
+    if (!kept.length) return why(cands[0]);
+    for (const p of dropped) skipped.push({ name: p.name, why: ctx.scrub(why(p)).split('\n')[0].slice(0, 160) });
+    cands = kept;
+  };
+  let why;
+  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`))) return fail(why);
+  const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps; // the rest of this function reads the first candidate's model; credentials for the others are checked when tried
   const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base, issue, preview_port } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
@@ -987,7 +1067,7 @@ export async function runSubagent(args, deps) {
     const p = typeof preview_port === 'number' ? preview_port : typeof preview_port === 'string' && /^\d+$/.test(preview_port) ? Number(preview_port) : NaN;
     if (!Number.isInteger(p) || p < 1 || p > 65535) return fail('invalid preview_port: pass a port number from 1 to 65535, such as 3000.');
     previewPort = p;
-    if (!ctx.provider.caps.hasPublish) return fail(`${ctx.provider.name[0].toUpperCase() + ctx.provider.name.slice(1)} does not support published links.`);
+    if ((why = narrow((q) => q.caps.hasPublish, (q) => `${q.name[0].toUpperCase() + q.name.slice(1)} does not support published links.`))) return fail(why);
   }
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
@@ -997,19 +1077,19 @@ export async function runSubagent(args, deps) {
   }
   const egress = egressAllow(ctx.env);
   if (egress.error) return fail(egress.error);
-  if (egress.list.length && !ctx.provider.caps.hasEgressPolicy) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${ctx.provider.name} cannot limit where a machine connects, so the agent was not started.\nNext step: remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again.`);
+  if (egress.list.length && (why = narrow((p) => p.caps.hasEgressPolicy, (p) => `CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${p.name} cannot limit where a machine connects, so the agent was not started.\nNext step: remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again.`))) return fail(why);
   let profile, fallbackNote;
   if (profileName !== undefined) {
     // Try the profile, then each fallback in order. A start-time failure (no key, or a refused one-token check) moves on; the result says which one ran.
     if (args.fallback !== undefined && !(Array.isArray(args.fallback) && args.fallback.every((n) => typeof n === 'string'))) return fail('invalid fallback: must be a list of profile names');
     let names = [profileName], tried = [];
     for (let i = 0; i < names.length; i++) {
-      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !ctx.provider.caps.localSecrets });
+      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !cands[0].caps.localSecrets });
       if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`);
       let err = r.error;
       // caps.localSecrets: the provider swaps the local value into matching requests itself (like proxied),
       // so a preflight from this computer would send the real key off-machine — skip it there too.
-      if (!err && args.preflight !== false && !ctx.provider.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+      if (!err && args.preflight !== false && !cands[0].caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
       if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
       if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
       tried.push({ name: names[i], why: ctx.scrub(err) });
@@ -1018,17 +1098,16 @@ export async function runSubagent(args, deps) {
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
-  const turnLimit = turnMinutes(ctx.env, ctx.provider.caps.maxTtlSeconds);
+  const turnLimit = turnMinutes(ctx.env, cands[0].caps.maxTtlSeconds);
   if (turnLimit.error) return fail(turnLimit.error, true);
-  if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
+  if (apt.list.length && (why = narrow((p) => p.caps.hasProxySecrets, (p) => `CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${p.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`))) return fail(why);
   if (egress.list.length) {
     if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker".');
     if (profile?.baseUrl && !URL.canParse(profile.baseUrl)) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl "${String(profile.baseUrl).slice(0, 80)}". Fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`);
   }
   const kind = parseMachine(args.machine);
   if (kind.error) return fail(guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) }));
-  const offered = ctx.provider.caps.machineKinds ?? ['linux'];
-  if (!offered.includes(kind.name)) return fail(guide('machine_kind_unsupported', { provider: ctx.provider.name, kind: kind.name, kinds: offered.join(', ') }));
+  if ((why = narrow((p) => (p.caps.machineKinds ?? ['linux']).includes(kind.name), (p) => guide('machine_kind_unsupported', { provider: p.name, kind: kind.name, kinds: (p.caps.machineKinds ?? ['linux']).join(', ') })))) return fail(why);
   if (EXPENSIVE.includes(kind.name) && !String(ctx.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS ?? '').split(/[\s,]+/).includes(kind.name)) return fail(guide('machine_needs_consent', { kind: kind.name, price: PRICE[kind.name] }));
   if (apt.list.length && ['omarchy', 'macos'].includes(kind.name)) return fail(`CLOUDY_CLOUD_APT_PACKAGES cannot be installed on a ${kind.name} machine (it has no apt-get). Call cloud_agent again with machine "linux" or "android", or clear CLOUDY_CLOUD_APT_PACKAGES.`);
   const size = parseSize(args.size);
@@ -1036,17 +1115,20 @@ export async function runSubagent(args, deps) {
   if (size?.error) return fail(size.error, true);
   if (size) {
     if (EXPENSIVE.includes(kind.name)) return fail('gpu and macos machines have their own sizes, so size cannot be used with them. Call cloud_agent again without size.');
-    if (!ctx.provider.caps.hasSizes) return fail(`size is not available: the ${ctx.provider.name} provider has one machine size. Call cloud_agent again without size.`);
+    if ((why = narrow((p) => p.caps.hasSizes, (p) => `size is not available: the ${p.name} provider has one machine size. Call cloud_agent again without size.`))) return fail(why);
     const has = (p) => p?.specs?.some((s) => s.vcpus === size.vcpus && s.memMiB === size.memMiB);
-    let plan = await ctx.provider.plan?.().catch(() => null);
-    if (plan?.specs && !has(plan)) plan = await ctx.provider.plan({ refresh: true }).catch(() => null); // the plan may have been upgraded since it was cached
+    let plan = await cands[0].plan?.().catch(() => null); // the plan check reads the primary's plan only (guidance stays the primary's)
+    if (plan?.specs && !has(plan)) plan = await cands[0].plan({ refresh: true }).catch(() => null); // the plan may have been upgraded since it was cached
     if (plan?.specs && !has(plan)) {
       return fail(sizeGuide(size, plan));
     }
     if (!plan?.specs) sizeNote = `Your Instabox plan could not be read, so size ${size.label} was not checked against it and Instabox may refuse it (read the reason with cloud_agent_result).`;
   }
-  if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
+  if (role === 'coordinator' && (why = narrow((p) => !p.text?.coordinatorRefusal, (p) => p.text.coordinatorRefusal))) return fail(why);
   if (role === 'coordinator' && ['pi', 'omp', 'codex', 'opencode'].includes(profile?.harness)) return fail('A coordinator cannot use a pi, omp, codex or opencode profile, because coordinators run Claude Code. Use such a profile for workers only.');
+  // Failover never crosses secret models (owner decision): a provider that keeps a real token on the machine
+  // and one that keeps keys off machines are not interchangeable. The first candidate always keeps itself.
+  narrow((p) => Boolean(p.caps.hasProxySecrets) === Boolean(cands[0].caps.hasProxySecrets), (p) => `${p.name} ${p.caps.hasProxySecrets ? 'keeps keys off machines with proxy secrets' : 'puts real token values on machines'} — a different secret model than ${cands[0].name}; failover never crosses it.`);
   let root;
   try {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
@@ -1135,7 +1217,7 @@ export async function runSubagent(args, deps) {
   count.started++;
   const id = randomUUID().slice(0, 8);
   const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch: issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, waiters: [], result: null, idleSince: Date.now(),
-    serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
+    serverTtl: cands[0].caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (cands[0].text?.hostLabel ?? cands[0].name) : '', providers: cands, skipped };
   ctx.open.set(id, a);
   if (mcp) a.mcp = mcp;
   if (mcpError) a.mcpError = mcpError;
@@ -1153,8 +1235,8 @@ export async function runSubagent(args, deps) {
   ctx.tasks.set(t.id, t);
   work(a, msg, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
-  const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  const coordSkipped = role === 'coordinator' ? coordinatorKeys(ctx.env, cands[0], { single: true }).skipped ?? [] : [];
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${coordSkipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${coordSkipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
@@ -1235,8 +1317,9 @@ export async function listAgents(args, deps) {
   if (!open.size) return tail('No agents.');
   const usage = await usageOf([...open.values()], ctx);
   const seg = (a) => usage.get(a) ?? '';
+  const multi = (ctx.providers?.length ?? 0) > 1; // more than one provider configured: say where each machine runs
   return ok([[...open.values()].map((a) => (
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}${multi ? `  provider ${(a.provider ?? a.providers?.[0] ?? ctx.provider)?.name}` : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
     (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'), ...(spend ? [spend] : [])].join('\n'));
@@ -1246,15 +1329,16 @@ export async function listAgents(args, deps) {
 // At most 4 reads at once (the provider's own limiter paces the calls), 3 s in total. Stopped and queued agents are never touched.
 async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
   const out = new Map();
+  const prov = (a) => a.provider ?? provider; // the provider the machine runs on (it may not be the primary after failover)
   const eligible = (a) => a.sandbox?.id && (a.status === 'running' || a.status === 'idle');
-  const todo = provider?.caps?.hasMetrics ? agents.filter(eligible) : [];
+  const todo = agents.filter((a) => eligible(a) && prov(a)?.caps?.hasMetrics);
   for (const a of todo) out.set(a, '  usage n/a (timeout)');
   let next = 0, timer;
   const read = async () => {
     for (let a; (a = todo[next++]);) {
       if (!eligible(a)) { out.delete(a); continue; } // stopped while it waited for a slot: no call, no segment
       try {
-        const { samples } = await provider.metrics(a.sandbox.id, { since: Date.now() - 120_000 });
+        const { samples } = await prov(a).metrics(a.sandbox.id, { since: Date.now() - 120_000 });
         const s = samples?.at(-1);
         if (s && Number.isFinite(s.cpuPct) && s.memTotal > 0) {
           const gib = (n) => (n / 2 ** 30).toFixed(1).replace(/\.0$/, ''), sec = Math.max(0, Math.round((Date.now() - s.t) / 1000));
