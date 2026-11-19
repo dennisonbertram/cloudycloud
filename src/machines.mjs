@@ -7,12 +7,13 @@ import { createInterface } from 'node:readline/promises';
 import { loadEnv } from './config.mjs';
 import { eventsFile, readEvents } from './events.mjs';
 import { loadProvider } from './providers/index.mjs';
+import { resolveMsbBin } from './providers/microsandbox.mjs';
 import { safeText } from './terminal.mjs';
-import { fitCells, makeUi } from './ui.mjs';
+import { cellWidth, fitCells, makeUi, nextFit, statusLine, wrapText } from './ui.mjs';
 
 export const USAGE = helpText('machines', true);
 
-const fail = (m) => { throw new Error(m); };
+const fail = (m, fields) => { throw Object.assign(new Error(m), fields); };
 
 // Anything from outside (names, labels, provider errors) prints on one line: control sequences
 // stripped, and \r\n folded to spaces so a field cannot smuggle extra lines into the output.
@@ -20,10 +21,12 @@ const one = (v) => safeText(v ?? '').replace(/[\r\n]+/g, ' ');
 
 // Live machines this tool made: label purpose=cloudy-cloud, or the historical purpose=claude-cloud
 // from before the rename. The provider also accepts the key under its CLOUDY_CLOUD_-prefixed name
-// (a coordinator holds it as a proxy secret).
+// (a coordinator holds it as a proxy secret). The msb "key" is its binary, also found at
+// ~/.local/bin/msb or on PATH without the variable — the same readiness test dashboard's
+// listMachines uses, so machines works everywhere shell, display and open do.
 const OUR_PURPOSES = ['cloudy-cloud', 'claude-cloud'];
 const ours = async (env, provider) => {
-  if (!env[provider.keyName] && !env[`CLOUDY_CLOUD_${provider.keyName}`]) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  if (!env[provider.keyName] && !env[`CLOUDY_CLOUD_${provider.keyName}`] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
   const rows = [];
   for (const purpose of OUR_PURPOSES) rows.push(...await provider.list({ purpose }, { sdk: true }));
   return rows;
@@ -47,6 +50,44 @@ const askOnce = async (q) => {
   try { return await rl.question(q); } finally { rl.close(); }
 };
 
+// One guidance layer, the same frame coordinator errors use: a ✖ headline (the message's first line,
+// wrapped whole-word), the rest of the message dim underneath, then one → Next. `e.next` — set only
+// by this file — wins; failing that a "Run:"-style line or an indented command line in the message
+// lifts into the Next and leaves the details. Everything is already control-stripped by safeText.
+const errScreen = (u, e) => {
+  let next = e.next;
+  const body = [];
+  for (const l of safeText(e.message ?? e).split('\n')) {
+    const t = l.trim();
+    if (next && t === String(next).trim()) continue;
+    if (!next && t) {
+      const m = l.match(/^(?:Run|Next step|Next): (.+)$/) ?? l.match(/^\s{2,}(\S.*)$/);
+      if (m) { next = m[1].trim(); continue; }
+    }
+    body.push(l);
+  }
+  const head = e.short ?? body.shift() ?? 'Something failed.';
+  return [
+    ...wrapText(u, head).map((l, i) => (i ? `    ${u.dim(l)}` : u.err(l))),
+    ...body.flatMap((l) => (l.trim() ? wrapText(u, l) : [''])).map((l) => (l ? `    ${u.dim(l)}` : '')),
+    nextFit(u, next ?? e.fallback ?? 'cloudy-cloud machines ls'),
+  ].join('\n');
+};
+
+// "(a, b, +K more)": as many names as fit `room` cells, the rest just counted.
+const nameList = (names, room) => {
+  let s = '', used = 0;
+  for (const n of names) {
+    const cand = used ? `${s}, ${n}` : n;
+    const rest = names.length - used - 1;
+    if (cellWidth(`(${cand}${rest ? `, +${rest} more` : ''})`) > room) break;
+    s = cand; used++;
+  }
+  if (!used) { s = fitCells(names[0], Math.max(8, room - 12)); used = 1; }
+  const rest = names.length - used;
+  return `(${s}${rest ? `, +${rest} more` : ''})`;
+};
+
 async function ls(c) {
   const rows = await c.list();
   if (!rows.length) return c.out('No Cloudy Cloud machines running.');
@@ -57,10 +98,15 @@ async function ls(c) {
   }
   const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, starting: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
   const rel = (v) => (Number.isFinite(new Date(v).getTime()) ? u.rel(v) : 'unknown');
-  const cells = rows.map((m) => [fitCells(m.name, 24), m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
+  const cells = rows.map((m) => [m.name, m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
+  // NAME takes the cells the fixed columns leave, so it uses the whole terminal width.
+  const wOf = (v) => (Array.isArray(v) ? v : [[String(v)]]).reduce((n, [t]) => n + cellWidth(t), 0);
+  const fixed = ['ROLE', 'STATE', 'AGE', 'DELETES'].map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
+  const nameMax = Math.max(8, u.width - 2 - 3 * 4 - fixed.reduce((a, b) => a + b, 0));
+  const fitted = cells.map((r) => [fitCells(r[0], nameMax), ...r.slice(1)]);
   const running = rows.filter((m) => m.status === 'running').length;
   const count = running === rows.length ? `${running} running.` : `${running} of ${rows.length} running.`;
-  c.out([u.table(['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'], cells), '', `  ${count}`, u.next('cloudy-cloud machines stop NAME')].join('\n'));
+  c.out([u.table(['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'], fitted), '', `  ${count}`, u.next('cloudy-cloud machines stop NAME')].join('\n'));
 }
 
 // The one machine a token means, in precedence order: an exact machine id first (so a machine can
@@ -78,15 +124,21 @@ function resolve(token, rows, events) {
   if (machineId) {
     const m = rows.find((x) => x.id === machineId);
     if (m) return m;
-    fail(`Agent ${one(token)} is not running (its machine is gone).`);
+    fail(`Agent ${one(token)} is not running (its machine is gone).`, { next: 'cloudy-cloud machines ls' });
   }
   const named = rows.filter((m) => m.cname === token || m.machineName === token);
-  if (named.length > 1) fail(`"${one(token)}" is the name of ${named.length} machines (${named.map((m) => one(m.id)).join(', ')}). Stop one by id instead.`);
+  if (named.length > 1) fail(`"${one(token)}" is the name of ${named.length} machines (${named.map((m) => one(m.id)).join(', ')}).\nStop one by id instead.`, { next: 'cloudy-cloud machines ls' });
   if (named.length) return named[0];
-  fail(`Unknown id "${one(token)}". Running machines: ${rows.map((m) => m.name).join(', ') || 'none'}.`);
+  fail(`Unknown id "${one(token)}".\nRunning machines: ${rows.map((m) => m.name).join(', ') || 'none'}.`, { next: 'cloudy-cloud machines ls' });
 }
 
-const oneDeleted = (c, m) => (c.ui.term ? c.out(c.ui.ok(`Deleted ${m.name}`, one(m.id))) : c.out(`Deleted ${m.name} (${one(m.id)}).`));
+const oneDeleted = (c, m) => (c.ui.term
+  ? c.out(statusLine(c.ui, 'ok', `Deleted ${fitCells(m.name, Math.max(8, c.ui.width - 14))}`, [one(m.id)]))
+  : c.out(`Deleted ${m.name} (${one(m.id)}).`));
+
+// A coordinator's workers are not deleted with it — say so once per stop that removed one.
+const WORKER_HINT = 'Its workers go with its cleanup or at their own deadline.';
+const workerHint = (c) => c.out(c.ui.term ? c.ui.hint(WORKER_HINT) : WORKER_HINT);
 
 async function stop(c, { all, yes, pos }) {
   const rows = await c.list();
@@ -97,47 +149,62 @@ async function stop(c, { all, yes, pos }) {
     if (!still) return c.out(`${m.name} (${one(m.id)}) is already gone; nothing to delete.`);
     await c.provider.delete(still.id, { sdk: true });
     oneDeleted(c, still);
+    if (still.role === 'coordinator') workerHint(c);
     if (c.ui.term) c.out(c.ui.next('cloudy-cloud machines'));
     return;
   }
   if (!rows.length) return c.out('No Cloudy Cloud machines running.');
   if (!yes) {
-    if (!c.tty) fail(`Deleting all ${rows.length} Cloudy Cloud machines needs --yes when there is no terminal to ask. Run: cloudy-cloud machines stop --all --yes`);
-    const names = fitCells(rows.map((m) => m.name).join(', '), Math.max(20, c.ui.width - 30));
-    if (!/^y/i.test((await c.ask(`Delete ${rows.length} Cloudy Cloud machine${rows.length === 1 ? '' : 's'} (${names})? [y/N] `)).trim())) return c.out('Nothing deleted.');
+    if (!c.tty) fail(`Deleting all ${rows.length} Cloudy Cloud machines needs --yes when there is no terminal to ask.\nRun: cloudy-cloud machines stop --all --yes`);
+    const q = [`Delete ${rows.length} Cloudy Cloud machine${rows.length === 1 ? '' : 's'}?`,
+      `    ${nameList(rows.map((m) => m.name), c.ui.width - 4)}`, '  [y/N] '].join('\n');
+    if (!/^y/i.test((await c.ask(q)).trim())) return c.out('Nothing deleted.');
   }
   // The confirmed list can be stale by the time the user answers: re-list and delete only the
   // shown ids that are still there (still purpose-filtered by list()).
   const shown = new Set(rows.map((m) => m.id));
   const del = (await c.list()).filter((m) => shown.has(m.id));
   if (!del.length) return c.out('All those machines were already deleted.');
-  let failed = 0;
+  let failed = 0, coord = false;
   for (const m of del) {
-    try { await c.provider.delete(m.id, { sdk: true }); oneDeleted(c, m); }
-    catch (e) { failed++; c.err(`cloudy-cloud machines: could not delete ${m.name} (${one(m.id)}): ${one(e.message)}`); }
+    try { await c.provider.delete(m.id, { sdk: true }); coord ||= m.role === 'coordinator'; oneDeleted(c, m); }
+    catch (e) {
+      failed++;
+      c.err(c.ui.term ? statusLine(c.ui, 'err', `Could not delete ${fitCells(m.name, Math.max(8, c.ui.width - 30))} (${one(m.id)})`, [one(e.message)])
+        : `cloudy-cloud machines: could not delete ${m.name} (${one(m.id)}): ${one(e.message)}`);
+    }
   }
   c.out(`Deleted ${del.length - failed} machine${del.length - failed === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}.`);
-  if (failed) fail(`${failed} of ${del.length} machines could not be deleted. List what is left: cloudy-cloud machines`);
+  if (coord) workerHint(c);
+  if (failed) fail(`${failed} of ${del.length} machines could not be deleted.\nRun: cloudy-cloud machines`);
 }
 
 export async function run(argv, deps = {}) {
   const env = deps.env ?? loadEnv();
   const out = deps.out ?? ((s) => console.log(s)), err = deps.err ?? ((s) => console.error(s));
+  const ui = deps.ui ?? makeUi();
   const [cmd, ...args] = argv;
   if (cmd === '--help' || cmd === '-h') { out(helpText('machines')); return 0; }
   const flags = args.filter((a) => a.startsWith('--')), pos = args.filter((a) => !a.startsWith('--'));
   const all = flags.includes('--all'), yes = flags.includes('--yes');
-  let bad = flags.some((f) => f !== '--all' && f !== '--yes');
+  const badFlag = flags.find((f) => f !== '--all' && f !== '--yes');
+  let bad = Boolean(badFlag);
   if (cmd === 'ls') bad ||= args.length > 0;
   else if (cmd === 'stop') bad ||= all ? pos.length !== 0 : pos.length !== 1;
   else if (cmd !== undefined) bad = true;
-  if (bad) { err(USAGE); return 2; }
+  if (bad) {
+    if (!ui.term) { err(USAGE); return 2; }
+    const short = badFlag ? `Unknown option ${one(badFlag)}.`
+      : cmd === 'ls' ? 'machines ls takes no arguments.'
+      : cmd === 'stop' ? (all ? 'machines stop --all takes no names.' : 'machines stop needs one machine name or id (or --all).')
+      : `"${one(cmd)}" is not a machines subcommand.`;
+    err([ui.err(short), USAGE, nextFit(ui, 'cloudy-cloud machines --help')].join('\n'));
+    return 2;
+  }
   try {
     const provider = deps.provider ?? await loadProvider(env);
-    const Name = provider.name[0].toUpperCase() + provider.name.slice(1);
     const c = {
-      env, provider, out, err,
-      ui: deps.ui ?? makeUi(),
+      env, provider, out, err, ui,
       tty: deps.tty ?? !!process.stdin.isTTY,
       ask: deps.ask ?? askOnce,
       events: deps.events ?? (() => readEvents(eventsFile(env))),
@@ -145,8 +212,10 @@ export async function run(argv, deps = {}) {
         let rows;
         try { rows = await (deps.list ?? ours)(env, provider); }
         catch (e) {
-          if (e.code === 'no_key') fail(`${Name} is not signed in. Run: cloudy-cloud setup`);
-          fail(`Could not list your machines (${one(e.message)}). Check your internet connection and that ${provider.keyName} is still valid.`);
+          // The provider's own fix text names the real recovery (setup, an install line or an env var);
+          // "is not signed in" is wrong for every provider whose key is not a sign-in.
+          if (e.code === 'no_key') fail(provider.text.noKeyFix, { fallback: 'cloudy-cloud setup' });
+          fail(`Could not list your machines (${one(e.message)}). Check your internet connection and that ${provider.keyName} is still valid.`, { next: 'cloudy-cloud machines ls' });
         }
         return clean(rows);
       },
@@ -155,7 +224,7 @@ export async function run(argv, deps = {}) {
     else await ls(c);
     return 0;
   } catch (e) {
-    err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud machines: ${one(e.message)}`);
+    err(ui.term && !e.message.startsWith('Usage') ? errScreen(ui, e) : e.message.startsWith('Usage') ? e.message : `cloudy-cloud machines: ${one(e.message)}`);
     return 1;
   }
 }
