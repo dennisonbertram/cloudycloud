@@ -11,9 +11,10 @@ from pathlib import Path
 
 SITE = Path(__file__).resolve().parent
 BASE = 'https://cloudycloud.tech'
-LASTMOD = '2026-11-09'
-DEFINITION = ('Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives '
-              'every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.')
+LASTMOD = '2026-11-19'
+DEFINITION = ('Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with '
+              'npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the '
+              'provider you choose, a copy of your repo, and its own branch.')
 GH = 'https://github.com/dennisonbertram/cloudycloud'
 NPM = 'https://www.npmjs.com/package/cloudycloud'
 DOC_SLUGS = ['index', 'how-it-works', 'models', 'reference', 'fleets', 'dashboard', 'mcp', 'self-hosted', 'troubleshooting',
@@ -298,8 +299,9 @@ def main():
     L = ['# Cloudy Cloud', '', f'> {DEFINITION}', '',
          f'Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.2.0). '
          f'Install and set up with `npx cloudycloud setup`. The code is at {GH}. '
-         'You need an account with a cloud sandbox provider (Instabox is supported today), Claude credentials '
-         '(a Claude subscription or an API key), a GitHub repo you can push to, and Node.js 20 or later. '
+         'You need a sandbox provider (Instabox is the default; self-hosted and microsandbox also work), '
+         'a credential for each worker agent you use (a Claude subscription or an API key for Claude Code workers), '
+         'a GitHub repo you can push to, and Node.js 20 or later. '
          'Cloudy Cloud has no price of its own; you pay your own providers. A hosted version is coming.', '',
          'Each page below also has its text as Markdown at its URL with `.html` replaced by `.md`. '
          f'[llms-full.txt]({BASE}/llms-full.txt) holds all of them in one file.', '']

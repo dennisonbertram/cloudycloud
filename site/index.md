@@ -1,10 +1,46 @@
-# Cloudy Cloud: keep your coding agent, give it a cloud fleet
+# Cloudy Cloud: the OpenRouter of sandboxes
 
-> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
+> Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.
 
 Source: https://cloudycloud.tech/
 
-Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own cloud machine, a copy of your repo, and its own branch.
+One open-source tool for every sandbox provider. Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own sandbox, a copy of your repo, and its own branch. Switch providers with one setting.
+
+## Sandboxes we connect to.
+
+One setting, `CLOUDY_CLOUD_PROVIDER`, picks where your subagents run. You are not locked in: if a provider is down or too expensive, switch providers with one setting and start a new session. There is no automatic failover between providers today.
+
+### Instabox
+
+Default · machines in the cloud
+
+Cloud machines from the Instabox service. The provider `npx cloudycloud setup` configures.
+
+`CLOUDY_CLOUD_PROVIDER=instabox`
+
+### Your own server
+
+Self-hosted · over SSH
+
+A Mac or Linux machine you control, reached over SSH, with Docker or Podman. Each subagent runs in its own container.
+
+`CLOUDY_CLOUD_PROVIDER=self-hosted`
+
+### microsandbox
+
+Experimental · this computer
+
+MicroVMs on this computer: an Apple Silicon Mac, or a Linux machine with KVM.
+
+`CLOUDY_CLOUD_PROVIDER=microsandbox`
+
+### Zipbox
+
+Coming soon
+
+An experimental adapter is being built. It does not work yet.
+
+More providers are on the way. What a provider must support is written up in [docs/research/sandbox-providers.md](https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/research/sandbox-providers.md) on GitHub.
 
 ## Run it from your laptop. Run it at any scale.
 
@@ -128,7 +164,7 @@ Your own provider
 
 ## Other ways to run agents in the cloud.
 
-Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the coding agent session you already use: Claude Code, Codex, opencode, pi or free-pi.
+Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs sandboxes from the provider you choose into the coding agent session you already use: Claude Code, Codex, opencode, pi or free-pi.
 
 | Product | Starts from your local coding agent session | One machine per subagent | Results land as | Models for workers | Hosted app, no setup |
 |---|---|---|---|---|---|
@@ -148,7 +184,7 @@ When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a pie
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.
+An account with a sandbox provider (Instabox is the default; your own server over SSH and microsandbox on this computer also work), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.
 
 ### What can a subagent see?
 

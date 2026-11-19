@@ -26,7 +26,7 @@ A cloud agent started with `role: "coordinator"`, which gets `cloudy-cloud` inst
 
 ### Box (machine)
 
-The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud agent. It is deleted when the agent stops or at its delete deadline.
+The cloud machine, a sandbox from your provider (Instabox by default), that Cloudy Cloud creates for one cloud agent. It is deleted when the agent stops or at its delete deadline.
 
 ### Profile
 

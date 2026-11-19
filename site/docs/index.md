@@ -12,7 +12,7 @@ This page applies to every supported main session (Claude Code, Codex, opencode,
 
 You need these accounts and tools:
 
-- **An Instabox account.** Instabox is the cloud provider supported today. The free plan is too small for more than a few subagents at once; swarms need a paid plan.
+- **A sandbox provider.** Instabox is the default and the provider setup configures. Its free plan is too small for more than a few subagents at once; swarms need a paid plan. Subagents can instead run on a Mac or Linux machine you own ([self-hosted](https://cloudycloud.tech/docs/self-hosted.html)), or in microsandbox microVMs on this computer (experimental).
 - **A credential for each agent you use.** Claude Code workers (the default) use a Claude subscription token from `claude setup-token`, or an Anthropic API key that is billed separately. Workers on another agent use that profile's key instead: `PARTICLE_API_KEY` for pi, oh-my-pi and opencode, `OPENROUTER_API_KEY` for the OpenRouter profiles, and `OPENAI_API_KEY` or a ChatGPT login file for Codex. [Models and keys](https://cloudycloud.tech/docs/models.html#agents) lists them all. A session that uses only non-Claude workers needs no Claude credential.
 - **A GitHub repository you can push to.** The repo you work in must have a `github.com` remote named `origin`.
 - **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and the agent you will start as your main session: [Claude Code](https://code.claude.com) signed in (the default), or Codex, opencode, pi or free-pi (see Start a session with another agent).

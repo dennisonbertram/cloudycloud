@@ -167,7 +167,7 @@ See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html) for what
 
 ### What runs where
 
-Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-cloud` tool server run on your machine. Each subagent runs its agent (`claude -p` by default, or pi, omp, Codex or opencode for a profile) on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.
+Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-cloud` tool server run on your machine. Each subagent runs its agent (`claude -p` by default, or pi, omp, Codex or opencode for a profile) on its own sandbox machine (an Instabox machine by default), on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.
 
 ### Which credentials reach the cloud machine
 
@@ -202,7 +202,7 @@ rm ~/.config/cloudy-cloud/env
 
 ### What does it cost?
 
-The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.
+The tool itself has no price in this repo. You pay for your sandbox provider plan (such as Instabox), your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.
 
 ### Which models can subagents use?
 

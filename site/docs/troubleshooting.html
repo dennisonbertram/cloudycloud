@@ -198,7 +198,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <li><code>free-pi</code> stops at its first-run consent prompt: <code>free-pi-cli</code> asks for consent the first time it runs, and that needs an interactive terminal. Start it once yourself in a terminal, answer the prompt, then use <code>cloudy-cloud free-pi</code>.</li>
 </ul>
 <h3 id="what-runs-where">What runs where</h3>
-<p>Your main session (Claude Code, Codex, opencode, pi or free-pi) and the <code>cloudy-cloud</code> tool server run on your machine. Each subagent runs its agent (<code>claude -p</code> by default, or pi, omp, Codex or opencode for a profile) on its own Instabox machine, on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.</p>
+<p>Your main session (Claude Code, Codex, opencode, pi or free-pi) and the <code>cloudy-cloud</code> tool server run on your machine. Each subagent runs its agent (<code>claude -p</code> by default, or pi, omp, Codex or opencode for a profile) on its own sandbox machine (an Instabox machine by default), on a snapshot of your repo's tracked files. Subagents run with permission checks off, so protect your main branch with a GitHub ruleset that blocks direct pushes. The GitHub token can push to any branch it reaches.</p>
 
 <h3 id="credentials">Which credentials reach the cloud machine</h3>
 <ul>
@@ -226,7 +226,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <h2 id="faq">FAQ</h2>
 
 <h3 id="faq-cost">What does it cost?</h3>
-<p>The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
+<p>The tool itself has no price in this repo. You pay for your sandbox provider plan (such as Instabox), your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
 
 <h3 id="faq-models">Which models can subagents use?</h3>
 <p>Claude Code by default. A <code>profile</code> can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. See <a href="models.html">Models and keys</a>.</p>

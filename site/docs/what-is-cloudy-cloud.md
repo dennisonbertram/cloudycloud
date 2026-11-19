@@ -31,7 +31,7 @@ For a long job that must keep going with your laptop closed, use a [cloud coordi
 
 ## What do I need?
 
-- An account with a cloud sandbox provider. Instabox is supported today.
+- An account with a sandbox provider. Instabox is the default; a machine you own over SSH (self-hosted) and microsandbox on this computer also work.
 - A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup asks for a Claude token only if you use Claude; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 - A GitHub repo you can push to.
 - Node.js 20 or later.
@@ -40,7 +40,7 @@ Subagents run Claude Code by default. A profile can run them on open models such
 
 ## What does it cost?
 
-Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your Instabox plan, your Claude subscription or API usage, and any other provider (OpenAI, open-model hosts) you use. The free Instabox plan is too small for more than a few subagents at once.
+Cloudy Cloud is open source under the MIT license, and the tool itself has no price in this repo. You pay your own providers: your sandbox provider plan (such as an Instabox plan), your Claude subscription or API usage, and any other provider (OpenAI, open-model hosts) you use. The free Instabox plan is too small for more than a few subagents at once.
 
 ## How do I start it?
 

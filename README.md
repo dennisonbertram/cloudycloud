@@ -1,5 +1,7 @@
 # Cloudy Cloud
 
+Cloudy Cloud is the OpenRouter of sandboxes: one open-source tool for every sandbox provider. You are not locked in — you can move between providers, and if one is down or too expensive you switch providers with one setting.
+
 Cloudy Cloud is open-source software (MIT license, install with `npx cloudycloud setup`) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
 
 [![npm version](https://img.shields.io/npm/v/cloudycloud)](https://www.npmjs.com/package/cloudycloud)
@@ -8,9 +10,20 @@ Cloudy Cloud is open-source software (MIT license, install with `npx cloudycloud
 
 [Website](https://cloudycloud.tech) · [Docs](https://cloudycloud.tech/docs/) · [npm](https://www.npmjs.com/package/cloudycloud)
 
-![The Cloudy Cloud website: "Your subagents, up in the clouds", with the setup command npx -y cloudycloud setup](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/website.jpg)
+![The Cloudy Cloud website: "The OpenRouter of sandboxes", with the setup command npx -y cloudycloud setup](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/website.jpg)
 
 You run `cloudy-cloud` instead of `claude`. It starts an ordinary Claude Code session. When that session uses a subagent, the subagent runs as its own Claude Code on its own cloud machine by default. Your main session can also be Codex, opencode, pi or free-pi, and a worker can run Claude Code, pi, oh-my-pi, Codex or opencode (see [Supported agents](#supported-agents)). It commits and pushes its work to a branch on your GitHub repo, and it stays open for follow-up messages until it is stopped. Plain `claude` is not affected.
+
+## Sandbox providers
+
+One setting picks where subagents run: `CLOUDY_CLOUD_PROVIDER`. There is no automatic failover between providers today — switch the setting and start a new session.
+
+| Provider | Where it runs | Status | Setting |
+| --- | --- | --- | --- |
+| [Instabox](#providers) | Cloud machines | Default | `CLOUDY_CLOUD_PROVIDER=instabox` |
+| [Your own server](#run-on-your-own-machine) | A Mac or Linux machine you own, over SSH, with Docker or Podman | Supported | `CLOUDY_CLOUD_PROVIDER=self-hosted` |
+| [microsandbox](#run-on-this-computer-with-microsandbox-experimental) | MicroVMs on this computer (Apple Silicon Mac or Linux with KVM) | Experimental | `CLOUDY_CLOUD_PROVIDER=microsandbox` |
+| Zipbox | — | Coming soon; an experimental adapter is being built | — |
 
 ## Why
 

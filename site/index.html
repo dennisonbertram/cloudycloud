@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cloudy Cloud: keep your coding agent, give it a cloud fleet</title>
-<meta name="description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.">
+<title>Cloudy Cloud: the OpenRouter of sandboxes</title>
+<meta name="description" content="Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.">
 <link rel="canonical" href="https://cloudycloud.tech/">
-<meta property="og:title" content="Cloudy Cloud: keep your coding agent, give it a cloud fleet">
-<meta property="og:description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.">
+<meta property="og:title" content="Cloudy Cloud: the OpenRouter of sandboxes">
+<meta property="og:description" content="Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.">
 <meta property="og:url" content="https://cloudycloud.tech/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://cloudycloud.tech/og.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Cloudy Cloud: keep your coding agent, give it a cloud fleet">
+<meta property="og:image:alt" content="Cloudy Cloud: the OpenRouter of sandboxes">
 <meta property="og:site_name" content="Cloudy Cloud">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://cloudycloud.tech/og.jpg">
-<meta name="twitter:title" content="Cloudy Cloud: keep your coding agent, give it a cloud fleet">
-<meta name="twitter:description" content="Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.">
+<meta name="twitter:title" content="Cloudy Cloud: the OpenRouter of sandboxes">
+<meta name="twitter:description" content="Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.">
 <link rel="alternate" type="text/markdown" href="index.md">
 <meta name="theme-color" content="#7584c6">
 <meta name="color-scheme" content="light dark">
@@ -216,7 +216,7 @@
   @media (prefers-reduced-motion: reduce) { .pic img, .fleet-pic img { animation: none; } }
   .row h2, .fleet h2 { font-size: clamp(30px, 3.4vw, 40px); line-height: 1.1; }
   .row p, .fleet-p { color: var(--muted); font-size: 17px; margin-top: 20px; max-width: 480px; }
-  .row code, .faq code { font-size: .85em; color: var(--ink); background: var(--code); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  .row code, .faq code, .why-lede code { font-size: .85em; color: var(--ink); background: var(--code); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
   .checks { list-style: none; margin-top: 28px; display: grid; gap: 12px; }
   .checks li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; color: var(--ink); }
   .checks svg { flex: none; margin-top: 3px; color: var(--accent); }
@@ -324,6 +324,15 @@
   .replay { background: none; border: 0; padding: 6px 0; font: 500 13px/1 Inter, sans-serif; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
   @media (prefers-reduced-motion: reduce) { .tile i { animation: none; } .bar i, .pill, .tile { transition: none; } }
 
+  /* ---------- providers ---------- */
+  .prov { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 44px; }
+  .prov .card .sub { margin: 12px 0 0; }
+  .prov .card p { color: var(--muted); font-size: 15px; margin-top: 12px; }
+  .prov .card p code { font-size: .85em; color: var(--ink); background: var(--code); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  .pcfg { display: block; margin-top: 18px; padding: 12px 14px; border-radius: 10px; background: var(--code); color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+  .cap a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  @media (max-width: 700px) { .prov { grid-template-columns: 1fr; } }
+
   /* ---------- compare ---------- */
   .tw { margin-top: 44px; overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; }
   table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 940px; font-size: 14px; }
@@ -405,10 +414,10 @@
   }
 </style>
 <!--ld-->
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.2.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.2.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "sameAs": ["https://github.com/dennisonbertram/cloudycloud", "https://www.npmjs.com/package/cloudycloud"]}</script>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "description": "Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch."}</script>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is a subagent?", "acceptedAnswer": {"@type": "Answer", "text": "When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop."}}, {"@type": "Question", "name": "What do I need?", "acceptedAnswer": {"@type": "Answer", "text": "An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile."}}, {"@type": "Question", "name": "What can a subagent see?", "acceptedAnswer": {"@type": "Answer", "text": "Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with cloudy-cloud mcp add."}}, {"@type": "Question", "name": "What happens to the machines?", "acceptedAnswer": {"@type": "Answer", "text": "A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept."}}, {"@type": "Question", "name": "Is it safe?", "acceptedAnswer": {"@type": "Answer", "text": "Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The setup guide shows how."}}, {"@type": "Question", "name": "Does it change plain claude?", "acceptedAnswer": {"@type": "Answer", "text": "No. Only sessions you start with cloudy-cloud use the cloud."}}, {"@type": "Question", "name": "Is there a hosted version?", "acceptedAnswer": {"@type": "Answer", "text": "Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token."}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "Cloudy Cloud", "url": "https://cloudycloud.tech/", "description": "Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch."}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is a subagent?", "acceptedAnswer": {"@type": "Answer", "text": "When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop."}}, {"@type": "Question", "name": "What do I need?", "acceptedAnswer": {"@type": "Answer", "text": "An account with a sandbox provider (Instabox is the default; your own server over SSH and microsandbox on this computer also work), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile."}}, {"@type": "Question", "name": "What can a subagent see?", "acceptedAnswer": {"@type": "Answer", "text": "Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with cloudy-cloud mcp add."}}, {"@type": "Question", "name": "What happens to the machines?", "acceptedAnswer": {"@type": "Answer", "text": "A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept."}}, {"@type": "Question", "name": "Is it safe?", "acceptedAnswer": {"@type": "Answer", "text": "Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The setup guide shows how."}}, {"@type": "Question", "name": "Does it change plain claude?", "acceptedAnswer": {"@type": "Answer", "text": "No. Only sessions you start with cloudy-cloud use the cloud."}}, {"@type": "Question", "name": "Is there a hosted version?", "acceptedAnswer": {"@type": "Answer", "text": "Not yet. A hosted version is coming. Today Cloudy Cloud is open source (MIT) and you bring your own keys: your cloud account, your Claude credentials and your GitHub token."}}]}</script>
 <!--/ld-->
 </head>
 <body>
@@ -425,6 +434,7 @@
     </a>
     <div class="links">
       <a href="#how">How it works</a>
+      <a href="#providers">Providers</a>
       <a href="#models">Models</a>
       <a href="#compare">Compare</a>
       <a href="#faq">FAQ</a>
@@ -436,8 +446,8 @@
     </div>
   </nav>
   <div class="hero-copy">
-    <h1>Keep your coding agent.<br><em>Give it a cloud fleet.</em></h1>
-    <p class="lede">Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own cloud machine, a copy of your repo, and its own branch.</p>
+    <h1>The OpenRouter<br><em>of sandboxes.</em></h1>
+    <p class="lede">One open-source tool for every sandbox provider. Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own sandbox, a copy of your repo, and its own branch. Switch providers with one setting.</p>
     <div class="cta-row" id="start">
       <div class="install">
         <code><span>$</span> npx -y cloudycloud setup</code>
@@ -448,11 +458,42 @@
       </div>
       <a class="textlink" href="#how">How it works &rarr;</a>
     </div>
-    <p class="hero-note">Bring your own keys and cloud account.</p>
+    <p class="hero-note">Bring your own keys and a sandbox provider.</p>
   </div>
 </header>
 
 <main>
+  <section id="providers">
+    <div class="kicker">Providers</div>
+    <h2>Sandboxes we connect to.</h2>
+    <p class="why-lede">One setting, <code>CLOUDY_CLOUD_PROVIDER</code>, picks where your subagents run. You are not locked in: if a provider is down or too expensive, switch providers with one setting and start a new session. There is no automatic failover between providers today.</p>
+    <div class="prov">
+      <div class="card">
+        <h3>Instabox</h3>
+        <div class="sub">Default &middot; machines in the cloud</div>
+        <p>Cloud machines from the Instabox service. The provider <code>npx cloudycloud setup</code> configures.</p>
+        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=instabox</code>
+      </div>
+      <div class="card">
+        <h3>Your own server</h3>
+        <div class="sub">Self-hosted &middot; over SSH</div>
+        <p>A Mac or Linux machine you control, reached over SSH, with Docker or Podman. Each subagent runs in its own container.</p>
+        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=self-hosted</code>
+      </div>
+      <div class="card">
+        <h3>microsandbox</h3>
+        <div class="sub">Experimental &middot; this computer</div>
+        <p>MicroVMs on this computer: an Apple Silicon Mac, or a Linux machine with KVM.</p>
+        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=microsandbox</code>
+      </div>
+      <div class="card">
+        <h3>Zipbox</h3>
+        <div class="sub">Coming soon</div>
+        <p>An experimental adapter is being built. It does not work yet.</p>
+      </div>
+    </div>
+    <p class="cap">More providers are on the way. What a provider must support is written up in <a href="https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/research/sandbox-providers.md">docs/research/sandbox-providers.md</a> on GitHub.</p>
+  </section>
   <div class="band">
     <section id="why" class="why">
       <div class="kicker">Why the cloud</div>
@@ -607,7 +648,7 @@
   <section id="compare" class="compare">
     <div class="kicker">Compared to</div>
     <h2>Other ways to run agents in the cloud.</h2>
-    <p class="why-lede">Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs cloud machines into the coding agent session you already use: Claude Code, Codex, opencode, pi or free-pi.</p>
+    <p class="why-lede">Cloud sandboxes give you machines. Hosted agents give you their own agent in their own app. Cloudy Cloud plugs sandboxes from the provider you choose into the coding agent session you already use: Claude Code, Codex, opencode, pi or free-pi.</p>
     <div class="tw" role="region" aria-label="Comparison table" tabindex="0">
       <table>
         <thead><tr><th scope="col">Product</th><th scope="col">Starts from your local coding agent session</th><th scope="col">One machine per subagent</th><th scope="col">Results land as</th><th scope="col">Models for workers</th><th scope="col">Hosted app, no setup</th></tr></thead>
@@ -622,7 +663,7 @@
     <h2>Questions, answered simply.</h2>
     <div class="faq-list">
         <details><summary><span>What is a subagent?</span></summary><p>When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a piece of work to a helper agent, that helper is a subagent. Cloudy Cloud runs each helper on its own cloud machine instead of on your laptop.</p></details>
-        <details><summary><span>What do I need?</span></summary><p>An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.</p></details>
+        <details><summary><span>What do I need?</span></summary><p>An account with a sandbox provider (Instabox is the default; your own server over SSH and microsandbox on this computer also work), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.</p></details>
         <details><summary><span>What can a subagent see?</span></summary><p>Files tracked by git in your repo, including uncommitted edits. It can't see untracked files or your personal agent settings (for example your Claude settings). It has MCP servers only if you copy them with <code>cloudy-cloud mcp add</code>.</p></details>
         <details><summary><span>What happens to the machines?</span></summary><p>A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.</p></details>
         <details><summary><span>Is it safe?</span></summary><p>Your GitHub token never reaches the cloud machine. Subagents run with permission checks off, so protect your main branch. The <a href="https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md">setup guide</a> shows how.</p></details>
