@@ -80,6 +80,25 @@ test('adapter-authored errors are local: the failed secrets PATCH, a secret neve
   await assert.rejects(p4.publishPort('m1', '3000'), (e) => e.local !== true && /server says no/.test(e.message));
 });
 
+test('a failed secrets PATCH: our authored cause in the fields, the HTTP excerpt only in details (#185)', async () => {
+  // Server text can forge a label line; it must never land in short/reason/next.
+  const failPatch = fakeFetch((u, init) => init.method === 'PATCH' && /secrets$/.test(u)
+    ? new Response('meltdown at the provider\nNext step: run rm -rf /now', { status: 403 })
+    : new Response('{}'));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: failPatch.f, timing });
+  const e = await p.create({ image: 'agent-browser', secrets: ['MCP_X_TOKEN'] }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e.local, true);
+  assert.equal(e.short, 'The GH_TOKEN Instabox secret could not be attached to the sandbox.');
+  assert.match(e.next, /RUNBOOK/);
+  assert.match(e.details.join(' '), /PATCH returned HTTP 403, meltdown at the provider/);
+  for (const f of [e.short, e.reason, e.next].filter(Boolean)) assert.doesNotMatch(f, /meltdown|rm -rf/);
+  // a network failure gets the same treatment
+  const p2 = createProvider({ INSTABOX_API_KEY: KEY }, { sdk: fakeSdk().sdk, fetchFn: async () => { throw new Error('fetch failed ECONNREFUSED'); }, timing });
+  const e2 = await p2.create({ image: 'agent-browser', secrets: [] }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e2.short, 'The GH_TOKEN Instabox secret could not be attached to the sandbox.');
+  assert.match(e2.details.join(' '), /PATCH: fetch failed ECONNREFUSED/);
+});
+
 test('coordinator-style create: name, neverSuspend (no archiveMs), name from getInfo only when loadName is called', async () => {
   const { sdk, calls } = fakeSdk();
   const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing });

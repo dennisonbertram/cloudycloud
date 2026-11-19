@@ -59,7 +59,7 @@
  * @property {(id: string) => Promise<void>} revokeDisplayLinks
  * @property {(id: string) => Promise<Uint8Array>} screenshot   PNG bytes
  * @property {(hostname: string) => string} localMachineName   machine name for the host this runs on, or ''
- * @property {{ ssh(machine: string, cmd: string): string, listMachines: string, noKeyFix: string, apiFix: string, githubTokenHelp: string }} text
+ * @property {{ ssh(machine: string, cmd: string): string, listMachines: string, listMachinesUi?: string, noKeyFix: string, apiFix: string, githubTokenHelp: string }} text   listMachines is the provider-native command piped output has always named; listMachinesUi, when present, is the friendlier line a terminal shows
  */
 
 // Adapters are imported lazily, so a missing or heavy adapter costs nothing until it is chosen.

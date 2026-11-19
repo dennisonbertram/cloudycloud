@@ -88,6 +88,19 @@ test('egressAllow: off and none are an explicit opt-out with no policy; blank st
   assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: ' ' }).error ?? '', /lists no hosts/);
 });
 
+test('egressAllow errors keep the one-paragraph script text; the fix lives in the terminal fields', () => {
+  for (const v of ['', '  ', 'bad..host', 'a.com:443']) {
+    const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: v });
+    assert.ok(r.error, `"${v}"`);
+    assert.doesNotMatch(r.error, /\n/, `"${v}": ${r.error}`); // piped and --json output is the origin/main paragraph
+    assert.match(r.error, /CLOUDY_CLOUD_EGRESS_ALLOW (is set but lists no hosts|entry \d+ is not a host name)\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env/);
+    // the same fix names the env setting in the trusted fields a terminal renders
+    assert.match(r.next, /CLOUDY_CLOUD_EGRESS_ALLOW in ~\/\.config\/cloudy-cloud\/env/);
+    assert.doesNotMatch(r.next, /bad\.\.host|a\.com:443/, 'the next step still names no entry content');
+    assert.ok(r.local === true && r.short && Array.isArray(r.details) && r.details.length, 'terminal fields');
+  }
+});
+
 test('the egress and microsandbox keys load from the env file', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
   writeFileSync(file, 'CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com,*.example.org\nCLOUDY_CLOUD_MSB_BIN=/opt/msb/bin\nCLOUDY_CLOUD_MSB_SLOTS=4\n');

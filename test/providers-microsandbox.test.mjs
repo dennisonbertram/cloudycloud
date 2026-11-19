@@ -159,9 +159,9 @@ test('secrets: one --secret per name with host restrictions; values ride only in
 });
 
 test('secret validation: env/secret name collision, unknown host, and missing value all throw before create', async () => {
-  const { box, provider } = make({ MCP_X_TOKEN: 'mcp-x' });
+  const { box, provider } = make({ MCP_X_TOKEN: 'mcp-x', CLOUDY_CLOUD_MCP: '/nonexistent-cc-test-mcp.json' });
   await assert.rejects(mk(provider, { envs: { GH_TOKEN: 'dup' } }), /also attached as a secret/);
-  await assert.rejects(mk(provider, { secrets: ['MCP_X_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('MCP_X_TOKEN') && e.message.includes('cloudy-cloud mcp rm') && e.message.includes('CLOUDY_CLOUD_PROVIDER=instabox'));
+  await assert.rejects(mk(provider, { secrets: ['MCP_X_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('MCP_X_TOKEN') && e.message.includes('cloudy-cloud mcp ls') && e.message.includes('CLOUDY_CLOUD_PROVIDER=instabox'));
   await assert.rejects(mk(provider, { secrets: ['WHATEVER_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('WHATEVER_TOKEN') && e.message.includes('credential name microsandbox knows') && !e.message.includes('mcp rm'));
   await assert.rejects(mk(provider, { secrets: ['CLAUDE_CODE_OAUTH_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('has no value') && e.message.includes('api.anthropic.com') && e.message.includes('~/.config/cloudy-cloud/env') && !e.message.includes('CLOUDY_CLOUD_PROXY_SECRETS'), 'the value stays local: no proxy-secret line is needed');
   assert.equal(box.table.size, 0, 'nothing was created');
@@ -220,9 +220,19 @@ test('role coordinator is refused with coordinatorRefusal and never spawns msb c
   assert.ok(!box.calls.some((c) => c.args[0] === 'create'), 'msb create was spawned');
 });
 
-test('a missing worker image says how to build and load it', async () => {
+test('a missing worker image says how to build and load it; the command is marked runnable and quotes spaced paths', async () => {
   const { provider } = make({}, { imageOk: false });
-  await assert.rejects(mk(provider), (e) => e.message.includes(`worker image ${IMAGE} is missing`) && e.message.includes('docker build') && e.message.includes(`${BIN} load`) && e.message.includes('worker.Dockerfile'));
+  await assert.rejects(mk(provider), (e) => e.message.includes(`worker image ${IMAGE} is missing`) && e.message.includes('docker build') && e.message.includes(`${BIN} load`) && e.message.includes('worker.Dockerfile') && e.nextCmd === true);
+  const spaced = join(mkdtempSync(join(tmpdir(), 'cc msbbin-')), 'msb bin'); // a path with a space must be shell-quoted in the command
+  const p = createProvider({ ...ENV, CLOUDY_CLOUD_MSB_BIN: spaced }, { spawn: fakeMsb({ imageOk: false }).spawn });
+  await assert.rejects(mk(p), (e) => e.nextCmd === true && e.next.includes(`| '${spaced}' load`) && e.next.includes('worker.Dockerfile'));
+});
+
+test('an unknown-host MCP secret names the configured server that uses it, or mcp ls when it cannot be found', async () => {
+  const mcpJson = join(mkdtempSync(join(tmpdir(), 'cc-mcpfile-')), 'mcp.json');
+  writeFileSync(mcpJson, JSON.stringify({ mcpServers: { 'my-srv': { type: 'stdio', command: 'npx', args: ['srv'], env: { KEY: '${MCP_MY_SRV_TOKEN}' } } } }));
+  const { provider } = make({ CLOUDY_CLOUD_MCP: mcpJson, MCP_MY_SRV_TOKEN: 'mcp-x' });
+  await assert.rejects(mk(provider, { secrets: ['MCP_MY_SRV_TOKEN'] }), (e) => e.code === 'no_key' && e.message.includes('cloudy-cloud mcp rm my-srv') && !e.message.includes('mcp_my_srv'));
 });
 
 test('slots full gives quota_exceeded naming the count; raising the env lets it through', async () => {
