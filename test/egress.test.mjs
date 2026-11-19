@@ -46,7 +46,8 @@ test('an invalid CLOUDY_CLOUD_EGRESS_ALLOW value is refused before anything is c
   deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'ok.example.com http://x' };
   const r = await start();
   assert.equal(r.isError, true);
-  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW has an invalid host "http:\/\/x"\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env\./);
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW entry 2 is not a host name\. Use host names such as api\.example\.com or \*\.example\.com, separated by commas or spaces\. Fix the value in ~\/\.config\/cloudy-cloud\/env\./);
+  assert.ok(!text(r).includes('http://x'), 'the bad entry is not echoed back');
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
 });
@@ -97,14 +98,31 @@ test('profiles that install their agent or the LiteLLM gateway at start are refu
   assert.equal(deps.open.size, 0);
 });
 
-test('a coordinator with egress set is refused before anything is created', async () => {
+test('a coordinator with egress set is refused before anything is created, with the per-command opt-out', async () => {
   const { start, text, created, deps } = await setup();
   deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: 'example.com' };
   const r = await start({ role: 'coordinator' });
   assert.equal(r.isError, true);
-  assert.ok(text(r).startsWith('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it, or call cloud_agent with role "worker".'), text(r));
+  assert.ok(text(r).startsWith('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.'), text(r));
+  assert.match(text(r), /CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start/);
+  assert.match(text(r), /call cloud_agent with role "worker"/);
   assert.equal(created.length, 0);
   assert.equal(deps.open.size, 0);
+});
+
+test('CLOUDY_CLOUD_EGRESS_ALLOW=off opts out per call: a worker starts with no policy and a coordinator is not refused by it', async () => {
+  for (const word of ['off', 'none']) {
+    const { id, wait, createOpts, deps, stop, start, text } = await setup();
+    deps.env = { ...deps.env, CLOUDY_CLOUD_EGRESS_ALLOW: word };
+    const agent = await id();
+    await wait([agent]);
+    assert.ok(!('egress' in createOpts[0]), word);
+    await stop([agent]);
+    // the opt-out word must not trip the workers-only coordinator refusal
+    const r = await start({ role: 'coordinator' });
+    assert.doesNotMatch(text(r), /applies to workers only/, `${word}: ${text(r)}`);
+    await stop([...deps.open.keys()]);
+  }
 });
 
 test('with egress unset, create options have no egress key', async () => {

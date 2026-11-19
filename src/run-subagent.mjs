@@ -499,9 +499,19 @@ async function setup(a, ctx) {
     // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
     const named = proxySecrets(env);
     const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    const keyName = a.profile ? a.profile.keyName : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || named.has(n));
+    // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
+    // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
+    const keyName = a.profile ? a.profile.keyName
+      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && named.has(n)))
+        ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
     const keySecrets = [];
-    if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
+    if (keyName && provider.caps.localSecrets) {
+      // The provider substitutes the local value into matching requests itself (microsandbox --secret), so a
+      // plain value is attached by name: no CLOUDY_CLOUD_PROXY_SECRETS line, no real value on the machine.
+      if (env[keyName]) keySecrets.push(keyName);
+      else throw new Error(`${keyName} is named in CLOUDY_CLOUD_PROXY_SECRETS but has no value. On the ${provider.name} provider the value stays on this computer: add ${keyName}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+    }
+    else if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
     else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
     else if (keyName && provider.caps.hasProxySecrets) throw refused(keyName); // never copy a real key to such a machine
     else if (keyName) envs[keyName] = env[keyName]; // a provider without proxy secrets (self-hosted) keeps the env-file path
@@ -989,10 +999,12 @@ export async function runSubagent(args, deps) {
     if (args.fallback !== undefined && !(Array.isArray(args.fallback) && args.fallback.every((n) => typeof n === 'string'))) return fail('invalid fallback: must be a list of profile names');
     let names = [profileName], tried = [];
     for (let i = 0; i < names.length; i++) {
-      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets });
+      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !ctx.provider.caps.localSecrets });
       if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`);
       let err = r.error;
-      if (!err && args.preflight !== false) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+      // caps.localSecrets: the provider swaps the local value into matching requests itself (like proxied),
+      // so a preflight from this computer would send the real key off-machine — skip it there too.
+      if (!err && args.preflight !== false && !ctx.provider.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
       if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
       if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
       tried.push({ name: names[i], why: ctx.scrub(err) });
@@ -1005,7 +1017,7 @@ export async function runSubagent(args, deps) {
   if (turnLimit.error) return fail(turnLimit.error, true);
   if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (egress.list.length) {
-    if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it, or call cloud_agent with role "worker".');
+    if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker".');
     if (profile?.baseUrl && !URL.canParse(profile.baseUrl)) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl "${String(profile.baseUrl).slice(0, 80)}". Fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`);
   }
   const kind = parseMachine(args.machine);
@@ -1132,7 +1144,7 @@ export async function runSubagent(args, deps) {
   work(a, msg, true, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.

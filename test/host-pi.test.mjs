@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -60,8 +60,17 @@ test('missingSetup: Instabox key or self-hosted machine is needed, a Claude toke
   assert.equal(missingSetup({ INSTABOX_API_KEY: 'x' }), '');
   assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'self-hosted' }), /CLOUDY_CLOUD_SSH_HOST/);
   assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'self-hosted', CLOUDY_CLOUD_SSH_HOST: 'h' }), '');
-  assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox' }), /CLOUDY_CLOUD_MSB_BIN/);
+  // msb counts when the variable is set, and also when it is auto-discovered at ~/.local/bin/msb or on PATH.
+  const noMsb = mkdtempSync(join(tmpdir(), 'pi-nomsb-'));
+  assert.match(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', HOME: noMsb, PATH: '' }), /CLOUDY_CLOUD_MSB_BIN/);
   assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', CLOUDY_CLOUD_MSB_BIN: '/x/msb' }), '');
+  const home = mkdtempSync(join(tmpdir(), 'pi-msbhome-'));
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+  writeFileSync(join(home, '.local', 'bin', 'msb'), '#!/bin/sh\n'); chmodSync(join(home, '.local', 'bin', 'msb'), 0o755);
+  assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', HOME: home, PATH: '' }), '');
+  const onPathDir = mkdtempSync(join(tmpdir(), 'pi-msbpath-'));
+  writeFileSync(join(onPathDir, 'msb'), '#!/bin/sh\n'); chmodSync(join(onPathDir, 'msb'), 0o755);
+  assert.equal(missingSetup({ CLOUDY_CLOUD_PROVIDER: 'microsandbox', HOME: noMsb, PATH: onPathDir }), '');
 });
 
 test('prompt tells the model to delegate through the cloud_agent tools and keep keys private', () => {

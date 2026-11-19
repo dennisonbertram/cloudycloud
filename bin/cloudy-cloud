@@ -220,9 +220,15 @@ find_missing() {
       missing='self-hosted machine (CLOUDY_CLOUD_SSH_HOST)'
     fi
   elif [ "$provider" = microsandbox ]; then
-    if [ -z "$(printenv CLOUDY_CLOUD_MSB_BIN)" ] && ! grep -q '^CLOUDY_CLOUD_MSB_BIN=.' "$config" 2>/dev/null; then
-      missing='microsandbox CLI (CLOUDY_CLOUD_MSB_BIN)'
+    # The msb binary: CLOUDY_CLOUD_MSB_BIN (environment or file), else the installer's default, else PATH —
+    # the same ladder src/providers/microsandbox.mjs uses.
+    msb=$(printenv CLOUDY_CLOUD_MSB_BIN)
+    [ -n "$msb" ] || msb=$(sed -n 's/^CLOUDY_CLOUD_MSB_BIN=//p' "$config" 2>/dev/null | tail -n 1)
+    if [ -z "$msb" ]; then
+      if [ -x "$HOME/.local/bin/msb" ]; then msb=$HOME/.local/bin/msb
+      else msb=$(command -v msb 2>/dev/null); fi
     fi
+    [ -n "$msb" ] || missing='microsandbox CLI (msb)'
   # The Instabox key counts from the environment or the file.
   elif [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
     missing='Instabox API key'

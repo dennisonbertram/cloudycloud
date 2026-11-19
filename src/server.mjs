@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { loadProvider } from './providers/index.mjs';
+import { resolveMsbBin } from './providers/microsandbox.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { envRefresher, loadEnv, ownerFile } from './config.mjs';
@@ -17,7 +18,9 @@ const deps = { provider, owner, env, refreshEnv: envRefresher(env), open: new Ma
 try { mkdirSync(dirname(ownerFile(env)), { recursive: true }); writeFileSync(ownerFile(env), `${owner}\n`); } catch { /* only `coordinator finish` reads it */ }
 
 // The reaper is the guarantee that machines are deleted. The handlers below only try to be quick about it.
-if (env[provider.keyName] && !process.env.NODE_ENV?.includes('test')) {
+// The msb "key" is its binary, which is also found at ~/.local/bin/msb or on PATH, not only via the variable.
+const providerReady = env[provider.keyName] || (provider.name === 'microsandbox' && resolveMsbBin(env));
+if (providerReady && !process.env.NODE_ENV?.includes('test')) {
   startReaper(process.pid, owner, env, provider);
 }
 

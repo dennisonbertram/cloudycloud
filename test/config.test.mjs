@@ -60,20 +60,31 @@ test('egressAllow parses a comma- or space-separated host list; unset is no poli
   }
 });
 
-test('egressAllow rejects entries that are not plain host names', () => {
+test('egressAllow rejects entries that are not plain host names, naming the position not the content', () => {
   for (const bad of ['*.com', 'http://x', 'a.com:443', 'a/b', 'localhost', '-bad.example.com', 'bad-.example.com', '-.example.com']) {
     const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `ok.example.com ${bad}` });
-    assert.ok(r.error && r.error.includes(`invalid host "${bad}"`), `${bad}: ${r.error ?? r.list}`);
+    assert.ok(r.error && r.error.includes('entry 2 is not a host name') && !r.error.includes(bad), `${bad}: ${r.error ?? r.list}`);
     assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
   }
-  const overlong = `a${'b'.repeat(63)}.example.com`; // 64-char label; the error truncates the entry to 60 chars
+  // A pasted URL can carry a token; the error must not echo the entry.
+  const leak = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'ok.example.com https://u:SECRET-PASSWORD-123@h.example.com/p' });
+  assert.ok(leak.error && !leak.error.includes('SECRET-PASSWORD-123') && !leak.error.includes('https://'), leak.error);
+  assert.match(leak.error, /entry 2 is not a host name/);
+  const overlong = `a${'b'.repeat(63)}.example.com`; // a 64-char label
   const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: overlong });
-  assert.ok(r.error && r.error.includes(`invalid host "${overlong.slice(0, 60)}"`), r.error ?? 'accepted');
+  assert.ok(r.error && r.error.includes('entry 1 is not a host name') && !r.error.includes('bbb'), r.error ?? 'accepted');
   assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: `a${'b'.repeat(62)}.example.com` }), { list: [`a${'b'.repeat(62)}.example.com`] }, 'a 63-character label is fine');
 });
 
 test('egressAllow lowercases the list so case folds into the built-in hosts', () => {
   assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'GITHUB.COM Example.COM' }), { list: ['github.com', 'example.com'] });
+});
+
+test('egressAllow: off and none are an explicit opt-out with no policy; blank still errors', () => {
+  for (const off of ['off', 'none', 'OFF', 'None']) assert.deepEqual(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: off }), { list: [] }, off);
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'offs' }).error ?? '', /entry 1 is not a host name/, 'offs');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: 'off api.example.com' }).error ?? '', /entry 1 is not a host name/, 'off is not a host when mixed into a list');
+  assert.match(egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: ' ' }).error ?? '', /lists no hosts/);
 });
 
 test('the egress and microsandbox keys load from the env file', () => {
@@ -94,5 +105,7 @@ test('defaultWorkerNote recommends only a profile that resolveProfile accepts un
   assert.match(defaultWorkerNote({ ...base, OPENAI_API_KEY: 'sk-real-value-123456' }), /cloudy-cloud setup/, 'nothing usable: the exact next step is setup');
   // self-hosted keeps real values on the machine, so the plain key is usable there
   assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROVIDER: 'self-hosted', OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
+  // microsandbox substitutes local values into matching requests, so the plain key is usable there too
+  assert.match(defaultWorkerNote({ ...base, CLOUDY_CLOUD_PROVIDER: 'microsandbox', OPENAI_API_KEY: 'sk-real-value-123456' }), /profile: codex\b/);
   assert.equal(defaultWorkerNote({ ...base, CLAUDE_CODE_OAUTH_TOKEN: 'x' }), '');
 });
