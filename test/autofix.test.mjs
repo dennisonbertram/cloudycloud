@@ -29,10 +29,11 @@ async function setup(g = {}, env = {}) {
   g.calls = [];
   g.prompts = [];
   g.permCalls = [];
+  g.shaCalls = []; // one boolean per REST check call: true when it asked for the pushed sha
   g.hasPr ??= false;
   g.checks ??= [[]]; // one list per `pr checks` call; the last repeats
-  g.runs ??= [[]]; // one list per actions-runs call; the last repeats
-  g.statuses ??= [[]]; // one list per commit-status call; the last repeats
+  g.runs ??= [[]]; // GitHub workflow_run objects per actions-runs call; the last repeats; a function is (call, sha) => list
+  g.statuses ??= [[]]; // GitHub commit-status objects per status call; the last repeats; a function is (call, sha) => list
   g.view ??= () => prView();
   const prView = (o = {}) => ({ number: 7, url: PR, state: 'OPEN', headRefOid: g.sha, baseRefName: 'main', mergeable: 'MERGEABLE', author: { login: 'me' }, reviews: [], ...o });
   g.prView = prView;
@@ -52,8 +53,22 @@ async function setup(g = {}, env = {}) {
     if (cmd.includes('/collaborators/')) { const login = /collaborators\/([^/]+)\/permission/.exec(cmd)[1]; g.permCalls.push(login); const p = g.perms?.[login] ?? 'write'; if (p === 'ERR') throw fail('HTTP 404'); return `${p}\n`; }
     if (cmd.startsWith('gh api')) {
       await g.apiGate; if (g.apiFail) throw fail('HTTP 500');
-      if (cmd.includes('/actions/runs?')) return JSON.stringify(g.runs[Math.min(runCalls++, g.runs.length - 1)]);
-      if (cmd.includes('/status')) return JSON.stringify(g.statuses[Math.min(statusCalls++, g.statuses.length - 1)]);
+      // The REST fallback reads --jq projections, one object per line; the fake answers from raw API objects with the
+      // same projection, and filters runs by head_sha the way the endpoint does.
+      if (cmd.includes('/actions/runs?')) {
+        const want = /head_sha=([0-9a-f]{40})/.exec(cmd)?.[1];
+        g.shaCalls.push(want === g.sha);
+        const raw = typeof g.runs === 'function' ? g.runs(runCalls, want) : g.runs[Math.min(runCalls, g.runs.length - 1)];
+        runCalls++;
+        return (Array.isArray(raw) ? raw : []).filter((x) => !x.head_sha || x.head_sha === want).map((x) => JSON.stringify({ name: x.name, id: x.id, workflow_id: x.workflow_id, event: x.event, created_at: x.created_at, status: x.status, conclusion: x.conclusion, link: x.html_url })).join('\n') + '\n';
+      }
+      if (cmd.includes('/status')) {
+        const want = /\/commits\/([0-9a-f]{40})\/status/.exec(cmd)?.[1];
+        g.shaCalls.push(want === g.sha);
+        const raw = typeof g.statuses === 'function' ? g.statuses(statusCalls, want) : g.statuses[Math.min(statusCalls, g.statuses.length - 1)];
+        statusCalls++;
+        return (Array.isArray(raw) ? raw : []).map((x) => JSON.stringify({ name: x.context, state: x.state, link: x.target_url })).join('\n') + '\n';
+      }
       const all = g.inline ?? [];
       // --paginate with --jq prints one JSON object per line for every page; without it only the first 100 come back
       if (cmd.includes('--paginate')) return `${all.map((c) => JSON.stringify({ id: c.id, login: c.user?.login, path: c.path, line: c.line, body: c.body, created_at: c.created_at ?? '2026-01-01T00:00:00Z' })).join('\n')}\n`;
@@ -68,6 +83,7 @@ async function setup(g = {}, env = {}) {
       if (g.dead) throw new Error('connection lost');
       if (cmd.startsWith('gh ')) {
         g.sha = (await run('git rev-parse HEAD', { cwd: o.cwd, timeoutMs: 1000 }).catch(() => ({ stdout: '' }))).stdout.trim();
+        if (g.sha && !cmd.startsWith('gh auth')) g.sha0 ??= g.sha; // the pushed sha autofix starts on (gh auth runs in setup, before it)
         return { stdout: await handle(cmd), stderr: '', exitCode: 0 };
       }
       // the fake claude commits nothing for an autofix prompt, so commit for it (the real worker would)
@@ -212,8 +228,10 @@ test('autofix: pending and failing checks work when the provider drops stdout of
 });
 
 test('autofix: a token denied pr checks falls back to REST, a failed run still feeds a fix round, and pr checks is called once', async () => {
-  const run = (conclusion) => ({ name: 'test', status: 'completed', conclusion, link: 'https://github.com/o/r/actions/runs/123' });
-  const { g, start, wait } = await setup({ checksDenied: true, runs: [[run('failure')], [run('success')]], log: 'x\nAssertionError: boom in foo.test.js\n' });
+  const gg = { checksDenied: true, log: 'x\nAssertionError: boom in foo.test.js\n' };
+  const run = (conclusion) => ({ id: 123, workflow_id: 9, event: 'push', name: 'test', status: 'completed', conclusion, html_url: 'https://github.com/o/r/actions/runs/123', created_at: '2026-01-01T00:00:00Z' });
+  gg.runs = (i, sha) => [run(sha === gg.sha0 ? 'failure' : 'success')]; // the pushed sha fails, the fix-turn sha passes
+  const { g, start, wait } = await setup(gg);
   const id = await start({ autofix: true });
   const r = await wait([id]);
   assert.equal(turns(g), 2);
@@ -221,11 +239,12 @@ test('autofix: a token denied pr checks falls back to REST, a failed run still f
   assert.match(g.prompts[1], /AssertionError: boom in foo\.test\.js/);
   assert.ok(g.calls.includes('gh run view 123 --log-failed'));
   assert.equal(g.calls.filter((c) => c.startsWith('gh pr checks')).length, 1);
+  assert.ok(g.shaCalls.length > 0 && g.shaCalls.every(Boolean), 'every REST check call carried the pushed sha');
   assert.match(r, /fine-grained token/);
 });
 
 test('autofix: denied checks with a passing run end not-confirmed, never clean, with no fix turn', async () => {
-  const { g, start, wait } = await setup({ checksDenied: true, runs: [[{ name: 'build', status: 'completed', conclusion: 'success', link: 'https://github.com/o/r/actions/runs/124' }]] });
+  const { g, start, wait } = await setup({ checksDenied: true, runs: [[{ id: 124, workflow_id: 9, event: 'push', name: 'build', status: 'completed', conclusion: 'success', html_url: 'https://github.com/o/r/actions/runs/124', created_at: '2026-01-01T00:00:00Z' }]] });
   const id = await start({ autofix: true });
   const r = await wait([id]);
   assert.equal(turns(g), 1);
@@ -236,13 +255,72 @@ test('autofix: denied checks with a passing run end not-confirmed, never clean, 
 });
 
 test('autofix: a pending commit status is waited out, then the round ends with no fix turn', async () => {
-  const st = (state) => ({ name: 'ci', state, link: 'https://github.com/o/r/status/1' });
+  const st = (state) => ({ context: 'ci', state, target_url: 'https://github.com/o/r/status/1' });
   const { g, start, wait } = await setup({ checksDenied: true, statuses: [[st('pending')], [st('success')]] });
   const id = await start({ autofix: true });
   const r = await wait([id]);
   assert.equal(turns(g), 1);
   assert.ok(g.calls.filter((c) => c.includes('/status')).length >= 2);
   assert.match(r, /fine-grained token/);
+});
+
+test('autofix: a terminal REST list inside the creation grace keeps polling, so a late pull_request run is seen', async () => {
+  const gg = { checksDenied: true, deps: { autofixGraceMs: 400 } };
+  const push = { id: 1, workflow_id: 9, event: 'push', name: 'push-ci', status: 'completed', conclusion: 'success', html_url: 'https://github.com/o/r/actions/runs/1', created_at: '2026-01-01T00:00:00Z' };
+  const pr = { id: 2, workflow_id: 9, event: 'pull_request', name: 'pr-ci', status: 'completed', conclusion: 'failure', html_url: 'https://github.com/o/r/actions/runs/2', created_at: '2026-01-01T00:01:00Z' };
+  gg.runs = (i, sha) => sha === gg.sha0 ? (i === 0 ? [push] : [push, pr]) : [push, { ...pr, conclusion: 'success' }];
+  const { g, start, wait } = await setup(gg);
+  const id = await start({ autofix: true });
+  await wait([id]);
+  assert.equal(turns(g), 2); // the pull_request run appeared a poll later and its failure fed a fix round
+  assert.match(g.prompts[1], /Failed check "pr-ci"/);
+  assert.ok(g.calls.filter((c) => c.includes('/actions/runs?')).every((c) => c.includes('--paginate')), 'runs are read with --paginate');
+  assert.ok(g.shaCalls.length > 0 && g.shaCalls.every(Boolean), 'every REST check call carried the pushed sha');
+});
+
+test('autofix: a check whose name contains the denial text does not latch the REST fallback', async () => {
+  const { g, start, wait } = await setup({ checks: [[{ name: 'lint: Resource not accessible by integration', bucket: 'fail', link: RUN_LINK }], PASS] });
+  const id = await start({ autofix: true });
+  await wait([id]);
+  assert.equal(turns(g), 2);
+  assert.match(g.prompts[1], /Failed check "lint: Resource not accessible by integration"/);
+  assert.ok(!g.calls.some((c) => c.includes('/actions/runs?') || /\/commits\/[0-9a-f]{40}\/status/.test(c)), 'the REST fallback was never used');
+});
+
+test('autofix: denied checks keep only the newest run per workflow and event', async () => {
+  const run = (id, conclusion, created_at) => ({ id, workflow_id: 9, event: 'push', name: 'ci', status: 'completed', conclusion, html_url: `https://github.com/o/r/actions/runs/${id}`, created_at });
+  // a reopened pull request can list an older run of the same workflow and event for the same head sha
+  const { g, start, wait } = await setup({ checksDenied: true, runs: [[run(1, 'failure', '2026-01-01T00:00:00Z'), run(3, 'success', '2026-01-02T00:00:00Z'), run(2, 'failure', '2026-01-02T00:00:00Z')]] });
+  const r = await wait([await start({ autofix: true })]);
+  assert.equal(turns(g), 1); // id 3 wins: newest created_at, then highest id
+  assert.doesNotMatch(g.prompts.join('\n') + r, /Failed check/);
+  assert.match(r, /could not be confirmed clean/);
+});
+
+test('autofix: denied checks keep push and pull_request runs of one workflow distinct', async () => {
+  const run = (id, event) => ({ id, workflow_id: 9, event, name: 'ci', status: 'completed', conclusion: 'failure', html_url: `https://github.com/o/r/actions/runs/${id}`, created_at: '2026-01-01T00:00:00Z' });
+  const { g, start, wait } = await setup({ checksDenied: true, runs: [[run(1, 'push'), run(2, 'pull_request')]] }, { CLOUDY_CLOUD_AUTOFIX_ROUNDS: '0' });
+  const r = await wait([await start({ autofix: true })]);
+  assert.equal((r.match(/Failed check "ci"/g) ?? []).length, 2);
+});
+
+test('autofix: a stale run reads as pending in the REST fallback, not failed', async () => {
+  const gg = { checksDenied: true, deps: { autofixGraceMs: 0 } };
+  const run = (conclusion) => ({ id: 1, workflow_id: 9, event: 'push', name: 'ci', status: 'completed', conclusion, html_url: 'https://github.com/o/r/actions/runs/1', created_at: '2026-01-01T00:00:00Z' });
+  gg.runs = (i) => [run(i === 0 ? 'stale' : 'success')];
+  const { g, start, wait } = await setup(gg);
+  const r = await wait([await start({ autofix: true })]);
+  assert.equal(turns(g), 1);
+  assert.doesNotMatch(g.prompts.join('\n') + r, /Failed check/);
+  assert.match(r, /could not be confirmed clean/);
+});
+
+test('autofix: a failed commit status is not handed the log of the run its target_url points at', async () => {
+  const { g, start, wait } = await setup({ checksDenied: true, log: 'UNRELATED RUN LOG', statuses: [[{ context: 'ci', state: 'failure', target_url: 'https://github.com/o/r/actions/runs/999' }]] }, { CLOUDY_CLOUD_AUTOFIX_ROUNDS: '0' });
+  const r = await wait([await start({ autofix: true })]);
+  assert.match(r, /Failed check "ci"/);
+  assert.ok(!g.calls.some((c) => c.startsWith('gh run view')), 'a commit status never fetches a run log');
+  assert.doesNotMatch(r, /UNRELATED RUN LOG/);
 });
 
 test('autofix: a cancelled autofix run emits a terminal stopped event and never stays running', async () => {
