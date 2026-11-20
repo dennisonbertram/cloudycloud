@@ -12,7 +12,7 @@ This runbook applies to every main session (Claude Code, Codex, opencode, pi, fr
 | `git` and Node.js 20 or later | Check with `git --version` and `node --version`. |
 | At least one coding agent | Claude Code, Codex, opencode, pi or free-pi, as your main session. [Claude Code](https://code.claude.com) is needed only if you choose it (as your main session or for Claude workers); check with `claude --version`. You must be signed in. |
 | Another main session (optional) | Codex: `npm install -g @openai/codex`. opencode: `npm install -g opencode-ai`. pi and free-pi run through `npx` if they are not installed. They need no Claude token, at run time or in setup. |
-| A credential for each worker agent you use | Claude Code workers (the default): a long-lived token from `claude setup-token`, or an Anthropic API key billed separately. pi, oh-my-pi and opencode workers: `PARTICLE_API_KEY`. OpenRouter profiles: `OPENROUTER_API_KEY`. Codex workers: `OPENAI_API_KEY` or a ChatGPT login file (section 2.5). |
+| A credential for each worker agent you use | Claude Code workers (the default): a long-lived token from `claude setup-token`, or an Anthropic API key billed separately. pi, oh-my-pi and opencode workers: `PARTICLE_API_KEY`. OpenRouter profiles: `OPENROUTER_API_KEY`. Codex workers: `OPENAI_API_KEY` or a ChatGPT login file (section 2.6). |
 | An [Instabox](https://instabox.sh) account | **Free plan:** too small for more than a few subagents at once. **Paid plan:** needed for swarms. |
 | A GitHub repository you can push to | Subagents push their branches there. |
 
@@ -32,7 +32,7 @@ Run it in a terminal; it asks for keys, so it will not run from a pipe. It check
 | --- | --- |
 | **Instabox API key** (`ibk_…`) | Create it at https://dashboard.instabox.sh/dashboard/api-keys. The script checks it with Instabox before saving. |
 | **Claude token** (`sk-ant-oat01-…`), only if you chose claude, or answered `y` to "Also run Claude Code workers" | In another terminal run `claude setup-token`. Your own `claude` login is not changed. |
-| **OpenAI key** (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | https://platform.openai.com/api-keys. Or use your ChatGPT login file instead (section 2.5). |
+| **OpenAI key** (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | https://platform.openai.com/api-keys. Or use your ChatGPT login file instead (section 2.6). |
 | **GitHub token** | Create a fine-grained token (section 2.3). The Instabox command-line tool asks for it, so `install.sh` never sees it. |
 
 The Claude step runs only when claude is one of your agents, or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Such a user needs at least one worker credential, though: setup warns at the end if none is saved (an OpenAI, Particle.ai or OpenRouter key, or the Codex login file). Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass, and `cloudy-cloud codex|opencode|pi|free-pi` prints the same next step on start. `cloudy-cloud setup --check-only` reads the saved `CLOUDY_CLOUD_AGENTS` (default: claude).
@@ -43,7 +43,7 @@ The Instabox key is saved to `~/.config/cloudy-cloud/env`, which only your user 
 
 ### 2.2 Providers
 
-Set `CLOUDY_CLOUD_PROVIDER` to choose the sandbox provider: `instabox` (the default) or `self-hosted` (Docker or Podman containers on a machine you own, reached over SSH). `cloudy-cloud setup --provider instabox|self-hosted` saves the choice and the settings that provider needs. A provider must enforce a server-side delete deadline, support snapshots for coordinators, and forward ports for `cloudy-cloud open`.
+Set `CLOUDY_CLOUD_PROVIDER` to choose the sandbox provider: `instabox` (the default), `self-hosted` (Docker or Podman containers on a machine you own, reached over SSH) or `microsandbox` (local microVMs on your own computer, see the README). `cloudy-cloud setup --provider instabox|self-hosted|microsandbox` saves the choice and the settings that provider needs. A provider needs a delete deadline (the server deletes the machine, or the adapter deletes it at its own deadline) and port forwarding for `cloudy-cloud open`; snapshots are needed only for coordinators.
 
 - **Instabox** keeps the GitHub token behind proxy secrets, so a machine only sees a placeholder. It needs `INSTABOX_API_KEY`.
 - **Self-hosted** has no proxy secrets. You consent once, during setup, to storing the GitHub token on your own machine (`CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes`); it lives only in memory (a tmpfs file) while an agent runs. That consent covers `GH_TOKEN` only. An MCP server whose token is a `${MCP_X_TOKEN}` reference or a literal value is delivered only if its entry in `mcp.json` has `"cloudyCloudAllowLiteral": true` (or you added it with `cloudy-cloud mcp add NAME --allow-literal`); otherwise it is skipped and the reply says why. It needs `CLOUDY_CLOUD_SSH_HOST`, not an Instabox key. Coordinators are allowed only after a second consent in setup (`CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS=yes`, see section 9); without it they are refused and the reply says to run setup. Run `cloudy-cloud doctor` to check the machine.
@@ -79,7 +79,7 @@ It shows what it will do and asks first (`--yes` answers for you). It uses your 
 
 If it stops: run `gh auth login` when `gh` is not signed in; ask a repo admin to run it when you are not one; a private repo on a plan without rulesets needs GitHub Pro or Team, or classic branch protection with "Do not allow bypassing the above settings".
 
-### 2.4 First run
+### 2.5 First run
 
 The repo you work in needs a GitHub `origin` that your token can push to:
 
@@ -91,7 +91,7 @@ cloudy-cloud
 
 Setup happens only in `install.sh`. If a key is missing, `cloudy-cloud` prints `cloudy-cloud is not set up yet (...). Run: cloudy-cloud setup`. In a terminal it also asks `Run setup now? [Y/n]` and continues into the session after setup; without a terminal it exits 1.
 
-### 2.5 Other agents (optional)
+### 2.6 Other agents (optional)
 
 **Main session.** Run one of these from inside your repo instead of `cloudy-cloud`. Arguments after the subcommand go to that agent. Each needs only the Instabox key from setup at run time, not a Claude token. They add the cloud tools for that session only and do not edit the agent's own config. Codex, opencode and pi cannot receive MCP task results, so the session uses `cloud_agent_wait`.
 
@@ -133,7 +133,7 @@ Checked live: Codex (codex-cli 0.166.0 listed the six cloud tools) and opencode.
 
 Verification status of every agent: see the table in [STATUS.md](STATUS.md#supported-agents-and-what-is-proven). Codex and opencode workers are not verified on a real machine.
 
-### 2.6 MCP servers for subagents (optional)
+### 2.7 MCP servers for subagents (optional)
 
 By default a subagent has no MCP servers. To give it some, copy them from your Claude Code settings, one at a time:
 
@@ -233,11 +233,11 @@ git show FETCH_HEAD:proof.txt
 | `cloudy-cloud needs the repo to have an origin remote on github.com` | Add one with `git remote add origin https://github.com/<owner>/<repo>.git`, and make sure your token includes that repo. |
 | `The GitHub access check for origin cloudy-cloud/<id> failed` (the setup check is `git ls-remote origin HEAD`) | The `GH_TOKEN` secret is missing, or the token can't write to this repo. Run `cloudy-cloud setup` and replace the GitHub token, and check the token's repository list. |
 | `the codex command was not found` or `opencode is not installed` | Install the main-session agent: `npm install -g @openai/codex` or `npm install -g opencode-ai`. |
-| `Profile NAME needs KEY, which is not set` | The profile's provider key is missing (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`). Run `cloudy-cloud setup --more` for the first two; for `OPENAI_API_KEY` too (see section 2.5). |
+| `Profile NAME needs KEY, which is not set` | The profile's provider key is missing (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`). Run `cloudy-cloud setup --more` for the first two; for `OPENAI_API_KEY` too (see section 2.6). |
 | `The Codex ChatGPT login file ... was not found` | Run `codex login`, then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. |
 | `The Codex login file ... can be read by other users` | Run `chmod 600 ~/.config/cloudy-cloud/codex-auth.json`. |
 | `coordinator cannot use a pi, omp, codex or opencode profile` | Coordinators always run Claude Code. Start the coordinator without a profile; its workers can use any profile. |
-| `The Instabox secret MCP_<NAME>_TOKEN could not be attached` | The MCP token secret does not exist. Create it with `printf %s "$TOKEN" \| npx --yes instabox@latest secrets set MCP_<NAME>_TOKEN --host <host>`, signed in with `instabox login` (section 2.5). |
+| `The Instabox secret MCP_<NAME>_TOKEN could not be attached` | The MCP token secret does not exist. Create it with `printf %s "$TOKEN" \| npx --yes instabox@latest secrets set MCP_<NAME>_TOKEN --host <host>`, signed in with `instabox login` (section 2.7). |
 | `The GH_TOKEN Instabox secret could not be attached` | The secret doesn't exist or is named differently. Run `cloudy-cloud setup` and replace the GitHub token. The name must be exactly `GH_TOKEN`. |
 | `Not logged in · Please run /login` or `401` from a subagent | No valid Claude token reached the machine. Run `claude setup-token`, then run `cloudy-cloud setup` and replace the Claude token, and restart `cloudy-cloud`. This also happens if you only have `ANTHROPIC_API_KEY` exported, because some wrappers, such as cmux's `claude`, remove it. |
 | `Instabox usage alert emails are off` or `Could not change the alerts` | Instabox emails the workspace's owner and admins at 80% of included usage and when usage goes beyond it. Turn them on with `npx --yes instabox@latest workspace alerts <org-id> --usage 80 --overage on` (needs `instabox login` as the owner or an admin; `<org-id>` is printed in the message). A monthly spend cap, which stops machines when reached, is never set by setup: `npx --yes instabox@latest workspace spend-cap <org-id> <usd>`. |

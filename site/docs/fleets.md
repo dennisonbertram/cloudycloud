@@ -71,7 +71,7 @@ The first time, attach once and accept any trust or Remote Control prompts. To l
 - You can delete it at any time with `cloudy-cloud coordinator stop NAME`.
 - If neither happens, the server deletes the machine at its deadline.
 
-> Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds your real Instabox key, your Claude setup-token and your provider API keys, because it needs them to start workers. Anyone who can SSH into the machine can read them. Use keys you can revoke.
+> Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds names and settings only: the Instabox key, Claude token and provider keys are attached Instabox secrets, so the machine environment holds `ibsec_` placeholders that Instabox swaps for the real value only on requests to each key's own host. The exception is the saved Claude sign-in in the coordinator image, which is a real login. Use an account you can revoke.
 
 ## Getting one result from many workers
 

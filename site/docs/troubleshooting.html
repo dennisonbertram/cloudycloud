@@ -221,7 +221,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <p>Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://github.com/settings/personal-access-tokens, the Claude token by revoking it in your Claude account, and any OpenAI, Particle.ai or OpenRouter key in that provider's dashboard. If you used <code>codex-chatgpt</code>, sign out in your ChatGPT account and delete the copy <code>~/.config/cloudy-cloud/codex-auth.json</code>, because that file is sent to worker machines. Then run <code>cloudy-cloud setup</code> to enter new ones. To remove saved keys from your machine:</p>
 <pre><code>rm ~/.config/cloudy-cloud/env</code></pre>
 
-<div class="warn"><p>On a cloud coordinator, <code>~/.config/cloudy-cloud/env</code> holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.</p></div>
+<div class="warn"><p>On a cloud coordinator, <code>~/.config/cloudy-cloud/env</code> holds secret names and settings only; the real keys are attached Instabox secrets, so the machine environment holds <code>ibsec_</code> placeholders that Instabox swaps for the real value only on requests to each key's own host. The exception is the saved Claude sign-in in the coordinator image, which is a real login. Use an account you can revoke.</p></div>
 
 <h2 id="faq">FAQ</h2>
 

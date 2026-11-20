@@ -12,7 +12,7 @@ This page applies to every supported main session (Claude Code, Codex, opencode,
 
 You need these accounts and tools:
 
-- **An Instabox account.** Instabox is the cloud provider supported today. The free plan is too small for more than a few subagents at once; swarms need a paid plan.
+- **An Instabox account.** Instabox is the default cloud provider (`self-hosted` and `microsandbox` run on your own machines). The free plan is too small for more than a few subagents at once; swarms need a paid plan.
 - **A credential for each agent you use.** Claude Code workers (the default) use a Claude subscription token from `claude setup-token`, or an Anthropic API key that is billed separately. Workers on another agent use that profile's key instead: `PARTICLE_API_KEY` for pi, oh-my-pi and opencode, `OPENROUTER_API_KEY` for the OpenRouter profiles, and `OPENAI_API_KEY` or a ChatGPT login file for Codex. [Models and keys](https://cloudycloud.tech/docs/models.html#agents) lists them all. A session that uses only non-Claude workers needs no Claude credential.
 - **A GitHub repository you can push to.** The repo you work in must have a `github.com` remote named `origin`.
 - **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and the agent you will start as your main session: [Claude Code](https://code.claude.com) signed in (the default), or Codex, opencode, pi or free-pi (see Start a session with another agent).
@@ -45,7 +45,7 @@ cd cloudycloud
 ./install.sh
 ```
 
-Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source). If an older `cloudy-cloud` command is already installed, setup says so and offers to replace it; if npm still fails, setup prints the fix commands and carries on, and you can use `npx cloudycloud` instead, copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH). It asks only for the keys those agents need. Cloud coordinators are set up only from source for now. Nothing shows as you paste, and only the last four characters are printed back.
+Run it in a terminal. It asks for keys, so it does not work from a pipe. It checks your tools, offers to install `cloudy-cloud` onto your PATH (`npm install -g cloudycloud` for the npx route, `npm link` from source). If an older `cloudy-cloud` command is already installed, setup says so and offers to replace it; if npm still fails, setup prints the fix commands and carries on, and you can use `npx cloudycloud` instead, copies the Cloudy Cloud skills into `~/.claude/skills/`, and then asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH). It asks only for the keys those agents need. Cloud coordinators are an optional step in `setup --more`. Nothing shows as you paste, and only the last four characters are printed back.
 
 | Key | Where to get it |
 |---|---|

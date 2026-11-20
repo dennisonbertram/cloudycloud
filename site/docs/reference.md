@@ -10,7 +10,7 @@ These commands and tools apply to every main session: Claude Code (`cloudy-cloud
 
 ## Command line
 
-These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `codex`, `opencode`, `pi`, `free-pi`, `dashboard`, `open`, `shell`, `display`, `coordinator`, `setup` or `--setup`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal` and `mcp rm NAME` run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Any other arguments start a Claude Code session.
+These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `codex`, `opencode`, `pi`, `free-pi`, `dashboard`, `open`, `shell`, `display`, `coordinator`, `setup`, `--setup`, `protect`, `doctor`, `machines`, `branches` or `help`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal` and `mcp rm NAME` run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Alone, `--version` prints the package version and `--help`, `-h` or `help` prints help. Any other arguments start a Claude Code session.
 
 ### cloudy-cloud (Claude Code as the main session)
 
@@ -70,14 +70,14 @@ cloudy-cloud --version
 ### cloudy-cloud setup
 
 ```
-cloudy-cloud setup [--check-only] [--provider instabox|self-hosted]
+cloudy-cloud setup [--check-only] [--provider instabox|self-hosted|microsandbox]
 ```
 
 Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx -y cloudycloud setup` runs it without installing anything first (`-y` skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, asks which agents you run locally (claude, codex, opencode, pi, free-pi; Enter accepts the ones it finds on your PATH), and asks for your Instabox key and your GitHub token, plus a Claude token only if you chose claude or want Claude workers and an OpenAI key if you chose codex. Then it offers optional steps for model provider keys and cloud coordinators. If an older `cloudy-cloud` global command blocks the install, setup offers to replace it (`npm rm -g cloudy-cloud`, then `npm install -g cloudycloud`). Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
 
 | Flag | Meaning |
 |---|---|
-| `--provider instabox\|self-hosted` | Choose where subagents run without being asked. `self-hosted` asks for your machine instead of an Instabox key. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html). |
+| `--provider instabox\|self-hosted\|microsandbox` | Choose where subagents run without being asked. `self-hosted` asks for your machine instead of an Instabox key. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html). |
 | `--check-only` | Check that `git`, Node.js, `npm`, `curl` and `claude` are installed, then exit. Does not need a terminal and changes nothing. |
 
 Example:
@@ -172,7 +172,7 @@ cloudy-cloud display <agent-id-or-machine> --screenshot FILE
 cloudy-cloud display <agent-id-or-machine> --unshare
 ```
 
-Prints a link to the desktop of an `android`, `gpu` or `macos` machine. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An `omarchy` machine has no display. The first desktop start on a `gpu` machine takes about 2 minutes.
+Prints a link to the desktop of a `linux`, `android` or `gpu` machine. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An `omarchy` machine has no display; `macos` is not verified. The first desktop start on a `gpu` machine takes about 2 minutes.
 
 | Flag | Meaning |
 |---|---|
@@ -306,7 +306,7 @@ Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` chang
 | `model` | string | no | the Claude default | A Claude model name, such as `haiku`. For a non-Claude model, use `profile` instead. It is needed with a profile only for `openrouter`, `codex-openrouter` and `opencode-openrouter`, which have no built-in model. It may contain only letters, digits and `. _ : -`. When `profile` is also set, `/` is allowed too. |
 | `profile` | string | no | Claude | Runs the worker on another agent or model. Built in: `glm`, `deepseek`, `particle` and `openrouter` (Claude Code on another model); `pi-glm`, `pi-deepseek` and `pi-particle` (pi); `omp-glm`, `omp-deepseek` and `omp-particle` (oh-my-pi); `codex`, `codex-chatgpt` and `codex-openrouter` (Codex); `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (opencode). You can add names in `profiles.json`, where each entry's `harness` (`claude`, `pi`, `omp`, `codex` or `opencode`) says which agent runs the worker. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
 | `role` | string, `worker` or `coordinator` | no | `worker` | A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3). A coordinator always runs Claude Code, so it cannot use a pi, omp, Codex or opencode profile. |
-| `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 8), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
+| `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 4), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
 | `size` | string | no | `4x8` | Machine size as VCPUSxGIB, for example `2x4`, `4x8` or `8x16`. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused. |
 | `autofix` | boolean | no | `false` | After the worker pushes, the server opens a pull request for its branch and keeps the worker fixing failed checks, review comments and merge conflicts, for at most `CLOUDY_CLOUD_AUTOFIX_ROUNDS` rounds, before the task ends. The result says whether the pull request is clean. Not for coordinators. |
 | `base` | string | no | the local `HEAD` | A branch name or a commit hash of 7 to 40 hex characters. The worker starts from it instead of your local `HEAD`; the server fetches it from origin if needed. Uncommitted edits are ignored when `base` is set. |
@@ -348,7 +348,7 @@ Returns an agent's latest result again, as often as asked, even after `cloud_age
 
 ### cloud_agent_list
 
-Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With `all: true` it instead lists every machine on the provider labelled `purpose=cloudy-cloud` (other sessions and coordinators included), grouped by its `parent` label. Each worker machine carries the labels `role`, `profile` (`claude` for the default), `parent`, `agent` and a short redacted `description`.
+Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step), plus the CPU and memory use of each running or idle machine when it can be read. A queued agent says why it waits and how many are ahead; the last line gives this month's Instabox usage when it can be read. The tool is read-only. With `all: true` it instead lists every machine on the provider labelled `purpose=cloudy-cloud` (other sessions and coordinators included), grouped by its `parent` label. Each worker machine carries the labels `role`, `profile` (`claude` for the default), `parent`, `agent` and a short redacted `description`.
 
 ### cloud_agent_stop
 
@@ -371,11 +371,11 @@ The `machine` argument of cloud_agent picks the machine. Prices are Instabox's (
 
 | machine | What it is | Price | Consent | Display |
 |---|---|---|---|---|
-| `linux` | The standard machine (default). | Your plan | no | no |
+| `linux` | The standard machine (default). | Your plan | no | yes |
 | `android` | Android emulator with `adb`. Its desktop starts in about 1 second. | Not checked | no | yes |
 | `gpu` | NVIDIA GPU (one L4 by default). The first desktop start takes about 2 minutes. | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
 | `omarchy` | Omarchy Linux with a Hyprland desktop. `display` and `--screenshot` are refused; `shell` works. | Not checked | no | no |
-| `macos` | A Mac, for Xcode builds. Experimental, not yet run live. | $0.45 to $1.25 per hour, 24-hour minimum lease | yes | yes |
+| `macos` | A Mac, for Xcode builds. Experimental, not yet run live. | $0.45 to $1.25 per hour, 24-hour minimum lease | yes | not verified |
 
 See cloudy-cloud shell and cloudy-cloud display to look at a machine.
 
@@ -402,7 +402,7 @@ Environment variables win over values in the config file. An empty value counts 
 |---|---|---|
 | `CLOUDY_CLOUD_CONFIG` | `~/.config/cloudy-cloud/env` | Path of the config file. |
 | `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` | none | Comma-separated machine kinds you allow although they cost much more: `gpu`, `macos`. Without it, `cloud_agent` refuses those kinds and starts nothing. |
-| `CLOUDY_CLOUD_PROVIDER` | `instabox` | Sandbox provider: `instabox` or `self-hosted`. |
+| `CLOUDY_CLOUD_PROVIDER` | `instabox` | Sandbox provider: `instabox`, `self-hosted` or `microsandbox`. |
 | `CLOUDY_CLOUD_SSH_HOST` | none | Self-hosted: the SSH address of your machine, `user@host`. |
 | `CLOUDY_CLOUD_SSH_KEY` | none | Self-hosted: path to the SSH key. Optional. |
 | `CLOUDY_CLOUD_SSH_PORT` | the SSH default | Self-hosted: the SSH port, when it is not the default. |
@@ -412,6 +412,11 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_SELF_HOSTED_CPUS` | 2 if unset | Self-hosted: CPU limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_MEMORY` | 4g if unset | Self-hosted: memory limit per container. Setup saves a value. |
 | `CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX` | unset | Self-hosted: `yes` means you allowed the GitHub token inside worker containers on your machine. Without it, workers do not start. |
+| `CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS` | unset | Self-hosted: `yes` means you allowed a coordinator container to start workers through the machine's Docker socket, which gives it full control of Docker on that machine. Setup asks; without it, coordinators are refused. |
+| `CLOUDY_CLOUD_DOCKER_SOCKET` | `/var/run/docker.sock` | Self-hosted: the Docker socket path on the machine that coordinators get mounted. Setup saves it. |
+| `CLOUDY_CLOUD_EGRESS_ALLOW` | unset | Comma- or space-separated host names a worker may connect to (`*.example.com` covers the domain and its subdomains). Only the microsandbox provider enforces it; on any other provider a nonempty value is refused. `off` or `none` means no policy; a value that is set but names nothing is an error. Workers only, and only Claude Code workers that reach their model directly. |
+| `CLOUDY_CLOUD_MSB_BIN` | `msb` on PATH | Microsandbox: full path of the `msb` program, when it is not on PATH. |
+| `CLOUDY_CLOUD_MSB_SLOTS` | 2 | Microsandbox: how many sandboxes run at once on this computer. |
 | `CLOUDY_CLOUD_PROFILES` | `~/.config/cloudy-cloud/profiles.json` | Path of the file that adds or overrides model profiles. Each entry can set `harness` to choose the agent (`claude`, `pi`, `omp`, `codex` or `opencode`), `fallback` (profile names to try in order) and `maxConcurrent` (a positive whole number). |
 | `CLOUDY_CLOUD_MCP` | `~/.config/cloudy-cloud/mcp.json` | Path of the file that lists the MCP servers cloud subagents get. If the file is missing, no servers are sent. |
 | `CLOUDY_CLOUD_EVENTS` | `~/.config/cloudy-cloud/events.jsonl` | Path of the event log that the dashboard reads. Set it in the environment before you start `cloudy-cloud` and the dashboard. |
@@ -429,10 +434,12 @@ Environment variables win over values in the config file. An empty value counts 
 | `CLOUDY_CLOUD_AGENTS` | none | The agents you chose in setup, comma-separated (`claude`, `codex`, `opencode`, `pi`, `free-pi`). `setup --check-only` reads it; when it is not set, claude is assumed. |
 | `CLOUDY_CLOUD_CHECK_SECONDS` | 60 | Setup only: how long to wait for the test request that checks your Claude token. |
 | `CLOUDY_CLOUD_NO_ANIMATION` | unset | Setup only: set to `1` to skip the animated banner. The banner is also skipped when `CI` is set or there is no terminal. |
+| `CLOUDY_CLOUD_NO_UPDATE_CHECK` | unset | Set to `1` to skip the new-version notice before a session starts. |
+| `CLOUDY_CLOUD_STREAM_THINKING` | unset | Set to `1` when an agent starts to keep the text of its *Thinking* steps; without it the dashboard shows only their length. |
 | `MCP_TOOL_TIMEOUT` | 1800000 | Claude Code's timeout for one MCP tool call, in milliseconds. The launcher sets it only if you have not. |
 | `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb` | unset | Any of these turns off colour and the animated setup display. Output is plain text with the same messages. |
 
-> Note: You can set `CLOUDY_CLOUD_STARTS_PER_MIN`, `CLOUDY_CLOUD_MAX_INSTABOX_CALLS`, `CLOUDY_CLOUD_WORKER_HOURS`, `CLOUDY_CLOUD_TURN_MINUTES`, `CLOUDY_CLOUD_MAX_DEPTH`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION`, `CLOUDY_CLOUD_PROXY_SECRETS` and `CLOUDY_CLOUD_APT_PACKAGES` in the config file as well as in the environment.
+> Note: Every `CLOUDY_CLOUD_` setting above except the setup-only ones (`CLOUDY_CLOUD_CHECK_SECONDS`, `CLOUDY_CLOUD_NO_ANIMATION`), `CLOUDY_CLOUD_NO_UPDATE_CHECK` and `CLOUDY_CLOUD_STREAM_THINKING` can go in the config file as a `NAME=value` line, as well as in the environment. Any other name ending in `_API_KEY` is also read from it.
 
 ### Files
 

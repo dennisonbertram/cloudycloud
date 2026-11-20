@@ -31,7 +31,7 @@ For a long job that must keep going with your laptop closed, use a [cloud coordi
 
 ## What do I need?
 
-- An account with a cloud sandbox provider. Instabox is supported today.
+- An account with a cloud sandbox provider. Instabox is the default; `self-hosted` and `microsandbox` run subagents on your own machines.
 - A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup asks for a Claude token only if you use Claude; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 - A GitHub repo you can push to.
 - Node.js 20 or later.
