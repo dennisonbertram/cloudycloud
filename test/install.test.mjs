@@ -1301,7 +1301,7 @@ test('arguments: unknown ones print usage and exit 2 before any work, in any ord
   for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
     const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
     assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
-    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\] \[--check-only\]/);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\|zipbox\] \[--check-only\]/);
     assert.doesNotMatch(r.stdout, /\[1\/4\]/);
   }
 });
@@ -1527,4 +1527,29 @@ test('setup --provider instabox from a saved microsandbox provider writes the sw
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Setup complete\./);
   assert.match(readFileSync(g.cfg, 'utf8'), /^CLOUDY_CLOUD_PROVIDER=instabox$/m);
+});
+
+// Zipbox check-only: `node` stubs to the real binary so the egress check can actually parse.
+const zbCheck = (cfgText, env = {}) => {
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `CLOUDY_CLOUD_PROVIDER=zipbox\n${cfgText}`, { mode: 0o600 });
+  const path = `${stubDir(all, { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n` })}`;
+  return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${path}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, ...env } });
+};
+const zbKeys = 'ZIPBOX_API_KEY=zb_test\nCLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+
+test('check-only on zipbox fails an egress allow list the runtime would refuse', () => {
+  const r = zbCheck(`${zbKeys}CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com\n`);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /CLOUDY_CLOUD_EGRESS_ALLOW/);
+  assert.match(r.stdout, /zipbox cannot limit/i);
+});
+
+test('check-only on zipbox passes with egress off or unset', () => {
+  const off = zbCheck(`${zbKeys}CLOUDY_CLOUD_EGRESS_ALLOW=off\n`);
+  assert.equal(off.status, 0, off.stdout);
+  assert.match(off.stdout, /No egress allow list \(turned off\)/);
+  const none = zbCheck(zbKeys);
+  assert.equal(none.status, 0, none.stdout);
+  assert.match(none.stdout, /No egress allow list is set/);
 });
