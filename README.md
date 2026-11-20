@@ -180,7 +180,7 @@ Credential values stay in that file on this computer — no `CLOUDY_CLOUD_PROXY_
 - **What the guest sees:** placeholders only. `GH_TOKEN` and each secret named in `secrets` are attached as `--secret NAME@hosts` rules; the values travel only in the `msb create` process's environment, never in argv or the guest's env.
 - **Egress:** `CLOUDY_CLOUD_EGRESS_ALLOW` limits where workers connect (see below). With no allowlist, or the explicit opt-out `off`, microsandbox's default policy applies (public internet only; private and metadata addresses are blocked).
 - **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — start workers directly, or use Instabox for coordinators), no MCP server tokens yet (`cloudy-cloud mcp add` writes the reference but calls using that server are refused until supported), no `CLOUDY_CLOUD_APT_PACKAGES` and no display; at most `CLOUDY_CLOUD_MSB_SLOTS` (default 2) sandboxes at once.
-- **Status:** covered by unit tests only; the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) has not been run on this machine yet. See [STATUS.md](docs/STATUS.md).
+- **Status:** the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) passed on an Apple Silicon Mac with microsandbox 0.7.16: a secret's real value reaches its configured host while the guest sees only a placeholder, and the value was not found in files under `~/.microsandbox` after use; the egress allowlist blocks another host, and the default policy blocks the metadata address and a private address (msb's proxy answers with HTTP 403 `network_policy_denied`); files, commands, the delete deadline and port forwarding work. See [STATUS.md](docs/STATUS.md).
 
 ### Run on Zipbox (experimental)
 

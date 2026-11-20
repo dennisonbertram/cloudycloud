@@ -14,6 +14,35 @@ export const fitCells = (str, max) => {
   for (const ch of str) { const w = charWidth(ch.codePointAt(0)); if (n + w > max - 1) break; out += ch; n += w; }
   return `${out}…`;
 };
+// The longest prefix of s fitting `max` cells (like fitCells but never an ellipsis: nothing is dropped).
+export const takeCells = (s, max) => { let out = '', w = 0; for (const ch of String(s)) { const cw = cellWidth(ch); if (w + cw > max) break; w += cw; out += ch; } return out; };
+// Whole-word wrap for a line of text: words wrap at the room edge. A single word over the room is split at a '/'
+// boundary or, failing that, at the room edge — every character is kept and no command, URL or flag is cut.
+export const wrapText = (u, text, room = u.width - 4) => {
+  room = Math.max(1, room); // a nonpositive room must not spin the word-splitting loop forever
+  const lines = []; let cur = '';
+  for (const w0 of String(text).split(/\s+/).filter(Boolean)) {
+    let w = w0;
+    while (cellWidth(w) > room) { // a lone word over the room
+      if (cur) { lines.push(cur); cur = ''; }
+      const head = takeCells(w, room), slash = head.lastIndexOf('/');
+      const cut = slash > 0 ? slash + 1 : Math.max(1, head.length);
+      lines.push(w.slice(0, cut)); w = w.slice(cut);
+    }
+    if (cur && cellWidth(cur) + cellWidth(w) + 1 > room) { lines.push(cur); cur = ''; }
+    cur = cur ? `${cur} ${w}` : w;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+};
+// A status line (ok/warn/err) whose detail rides beside the message when it fits — measuring the real mark, so
+// [ok] under LANG=C is budgeted too — and otherwise moves to its own dimmed line so it is never dropped.
+export const statusLine = (u, kind, msg, details = []) => {
+  for (const d of details) { const l = u[kind](msg, d); if (cellWidth(l) <= u.width) return l; }
+  return `${u[kind](msg)}${details.length ? `\n    ${u.dim(fitCells(details[0], u.width - 4))}` : ''}`;
+};
+// "→ Next: <cmd>" on one line; a command too long for that wraps whole words onto indented lines: never an ellipsis.
+export const nextFit = (u, cmd) => { const l = u.next(cmd); return cellWidth(l) <= u.width ? l : [`  ${u.paint(u.col.acc, `${u.utf ? '→' : '->'} Next:`)}`, ...wrapText(u, cmd).map((x) => `    ${x}`)].join('\n'); };
 
 export function makeUi({ tty = process.stdout.isTTY, env = process.env, cols = process.stdout.columns } = {}) {
   // term: the output is a terminal (a TTY of any flavour). on: colour is allowed there too

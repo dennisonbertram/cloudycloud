@@ -105,3 +105,13 @@ test('the shell child gets the provider env (same account as the SDK), never in 
   assert.equal(opts.env.FAKE_API_KEY, 'k-secret');
   assert.ok(!JSON.stringify(s.spawned).includes('k-secret'));
 });
+
+test('a failed shell spawn names the binary to install; doctor is a self-hosted answer only', async () => {
+  const s = setup(); s.d.spawn = () => ({ error: new Error('spawn fake-ssh ENOENT') });
+  assert.equal(await run(['box-aaa', '--', 'ls'], s.d), 1);
+  assert.match(s.err.join('\n'), /Could not start fake-ssh.*Install fake-ssh first\./s);
+  assert.doesNotMatch(s.err.join('\n'), /doctor/);
+  const h = setup(); h.d.provider.name = 'self-hosted'; h.d.spawn = () => ({ error: new Error('spawn ssh ENOENT') });
+  assert.equal(await run(['box-aaa', '--', 'ls'], h.d), 1);
+  assert.match(h.err.join('\n'), /cloudy-cloud doctor/);
+});
