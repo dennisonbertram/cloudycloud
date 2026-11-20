@@ -412,6 +412,66 @@
     .nav-cta .btn { padding: 0 14px; }
     .finale .install .btn { display: none; }
   }
+  /* ---------- any sandbox ---------- */
+  .anysb { --sb-cloud: #6d6fd8; --sb-dim: rgba(255,255,255,.12); --sb-txt: var(--ink); --sb-run: #ffc9a8; --sb-full: #ff9fb0; }
+  :root:not([data-theme="dark"]) .anysb { --sb-cloud: #b7b9f2; --sb-dim: rgba(40,44,110,.14); --sb-run: #b4541c; --sb-full: #b4233f; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .anysb { --sb-cloud: #6d6fd8; --sb-dim: rgba(255,255,255,.12); --sb-run: #ffc9a8; --sb-full: #ff9fb0; } }
+  .anysb .row { grid-template-columns: 1fr 1.1fr; }
+  .anysb .row > div > p { color: var(--muted); font-size: 17px; margin-top: 20px; max-width: 520px; }
+  .sw { display: inline-flex; margin-top: 32px; padding: 4px; border-radius: 999px; background: var(--code); border: 1px solid var(--line); }
+  .sw button { font: 500 14px Inter, sans-serif; color: var(--muted); background: none; border: 0; border-radius: 999px; padding: 8px 18px; cursor: pointer; transition: background .25s, color .25s; }
+  .sw button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.18), 0 0 0 1px var(--line); }
+  .sw button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .envl { margin-top: 20px; max-width: 520px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 14px 18px 16px; }
+  .envl .fn { display: block; font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: .06em; color: var(--faint); margin-bottom: 10px; }
+  .envl code { display: block; font-size: 14px; color: var(--muted); overflow-wrap: normal; }
+  .envl code b { font-weight: 500; color: var(--ink); background: var(--hl); border-radius: 4px; padding: 1px 4px; transition: background .4s; }
+  .envl p { margin-top: 10px; font-size: 14px; color: var(--muted); min-height: 2.9em; }
+  .stage svg { width: 100%; height: auto; overflow: visible; }
+  .stage .cl { fill: url(#sbCloud); filter: url(#sbSoft); opacity: .7; transition: opacity .6s; }
+  .stage .node.on .cl { opacity: .95; }
+  .stage .node.full .cl { opacity: .3; }
+  .stage .cube { transition: opacity .5s, transform .6s; transform-box: fill-box; transform-origin: center; }
+  .stage .cube .t { fill: #e8ebff; fill-opacity: .55; }
+  .stage .cube .l { fill: url(#sbFace); }
+  .stage .cube .r { fill: #6f78f0; fill-opacity: .55; }
+  .stage .cube .e { fill: none; stroke: #f1f2ff; stroke-opacity: .6; stroke-width: 1; }
+  .stage .cube .code { stroke: #fff; stroke-opacity: .75; stroke-width: 1.6; stroke-linecap: round; }
+  .stage .node .cube { opacity: .55; }
+  .stage .node.on .cube { opacity: 1; filter: drop-shadow(0 0 14px rgba(255,201,168,.55)); transform: translateY(-4px); }
+  .stage .node.full .cube { opacity: .35; }
+  .stage .node.soon .cube { opacity: .22; }
+  .stage .lbl { font: 500 14px Inter, sans-serif; fill: var(--sb-txt); text-anchor: middle; }
+  .stage .wh { font: 400 12px Inter, sans-serif; fill: var(--faint); text-anchor: middle; }
+  .stage .tag { font: 500 10px "JetBrains Mono", monospace; letter-spacing: .06em; text-anchor: middle; fill: var(--faint); }
+  .stage .node.on .tag { fill: var(--sb-run); }
+  .stage .node.full .tag { fill: var(--sb-full); }
+  .stage .th { fill: none; stroke: var(--sb-dim); stroke-width: 1.5; transition: stroke .5s, stroke-width .5s, opacity .5s; }
+  .stage .th.on { stroke: url(#sbHot); stroke-width: 2.6; filter: url(#sbGlow); }
+  .stage .th.cut { stroke-dasharray: 2 7; opacity: .7; }
+  .stage #sbPulse { fill: #fff3ea; }
+  .stage { position: relative; }
+  .stage .field { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+    -webkit-mask-image: radial-gradient(ellipse 75% 70% at 50% 34%, #000 35%, transparent 100%); mask-image: radial-gradient(ellipse 75% 70% at 50% 34%, #000 35%, transparent 100%); }
+  .stage svg { position: relative; }
+  .stage .hub .disc { fill: url(#sbHub); stroke: rgba(255,255,255,.35); stroke-width: 1; }
+  .stage .hub .glyph { fill: none; stroke: #fff; stroke-width: 2.2; stroke-linejoin: round; }
+  .stage .hub .lbl { font-size: 15px; text-anchor: start; }
+  .stage .hub .wh { text-anchor: start; }
+  .stage .me .win { fill: var(--surface); stroke: var(--line); filter: drop-shadow(0 10px 24px rgba(0,0,0,.35)); }
+  .stage .me .dot { fill: var(--sb-dim); }
+  .stage .mono { font: 500 13px "JetBrains Mono", monospace; fill: var(--ink); }
+  .stage .mono.dim { font-size: 11px; fill: var(--faint); font-weight: 400; }
+  .stage .mono .pr { fill: var(--accent); }
+  .stage .trunk { fill: none; stroke: #ffc9a8; stroke-width: 2.6; stroke-linecap: round; }
+  .stage .trunk-glow { fill: none; stroke: #ffc9a8; stroke-opacity: .25; stroke-width: 10; stroke-linecap: round; }
+  .sbsteps { list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 72px; }
+  .sbsteps li { border-top: 1px solid var(--line); padding-top: 18px; color: var(--muted); font-size: 15px; }
+  .sbsteps span { display: block; font: 500 12px/1 "JetBrains Mono", monospace; color: var(--accent); margin-bottom: 14px; }
+  .sbsteps b { display: block; font: 400 22px/1.2 "Inter Tight", sans-serif; letter-spacing: -.02em; color: var(--ink); margin-bottom: 8px; }
+  .sbsteps i { font: 500 10px/1 "JetBrains Mono", monospace; font-style: normal; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 3px 7px; margin-left: 6px; vertical-align: 4px; }
+  @media (max-width: 900px) { .anysb .row { grid-template-columns: 1fr; } .stage { order: -1; max-width: 560px; margin: 0 auto; width: 100%; } }
+  @media (max-width: 700px) { .sbsteps { grid-template-columns: 1fr; gap: 22px; margin-top: 48px; } .sw button { padding: 8px 14px; } }
 </style>
 <!--ld-->
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud", "description": "Cloudy Cloud is the OpenRouter of sandboxes: open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own sandbox on the provider you choose, a copy of your repo, and its own branch.", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux", "softwareVersion": "0.2.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "license": "https://github.com/dennisonbertram/cloudycloud/blob/HEAD/LICENSE", "downloadUrl": "https://www.npmjs.com/package/cloudycloud", "codeRepository": "https://github.com/dennisonbertram/cloudycloud", "url": "https://cloudycloud.tech/", "isAccessibleForFree": true}</script>
@@ -447,7 +507,7 @@
   </nav>
   <div class="hero-copy">
     <h1>The OpenRouter<br><em>of sandboxes.</em></h1>
-    <p class="lede">One open-source tool for every sandbox provider. Keep the coding agent you already use, with your skills, instructions and hooks. Every subagent it starts gets its own sandbox, a copy of your repo, and its own branch. Switch providers with one setting.</p>
+    <p class="lede">One open-source tool for every sandbox provider.</p>
     <div class="cta-row" id="start">
       <div class="install">
         <code><span>$</span> npx -y cloudycloud setup</code>
@@ -463,36 +523,55 @@
 </header>
 
 <main>
-  <section id="providers">
-    <div class="kicker">Providers</div>
-    <h2>Sandboxes we connect to.</h2>
-    <p class="why-lede">One setting, <code>CLOUDY_CLOUD_PROVIDER</code>, picks where your subagents run. You are not locked in: if a provider is down or too expensive, switch providers with one setting and start a new session. There is no automatic failover between providers today.</p>
-    <div class="prov">
-      <div class="card">
-        <h3>Instabox</h3>
-        <div class="sub">Default &middot; machines in the cloud</div>
-        <p>Cloud machines from the Instabox service. The provider <code>npx cloudycloud setup</code> configures.</p>
-        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=instabox</code>
+  <section id="providers" class="anysb">
+    <div class="row">
+      <div>
+        <div class="kicker">Any sandbox</div>
+        <h2>Your agent stays. <span>The sandbox is up to you.</span></h2>
+        <p>Keep the coding agent you use, with your skills, instructions and hooks. Each subagent gets its own sandbox, a copy of your repo and its own branch, on whichever provider you pick.</p>
+        <div class="sw" role="group" aria-label="Show an example">
+          <button type="button" data-s="0" aria-pressed="true">Try</button><button type="button" data-s="1" aria-pressed="false">Switch</button><button type="button" data-s="2" aria-pressed="false">Fail over</button>
+        </div>
+        <div class="envl" aria-live="polite"><span class="fn">~/.config/cloudy-cloud/env</span><code id="sbEnv">CLOUDY_CLOUD_PROVIDER=<b>instabox</b></code><p id="sbMsg">Subagents run on Instabox machines in the cloud.</p></div>
       </div>
-      <div class="card">
-        <h3>Your own server</h3>
-        <div class="sub">Self-hosted &middot; over SSH</div>
-        <p>A Mac or Linux machine you control, reached over SSH, with Docker or Podman. Each subagent runs in its own container.</p>
-        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=self-hosted</code>
-      </div>
-      <div class="card">
-        <h3>microsandbox</h3>
-        <div class="sub">Experimental &middot; this computer</div>
-        <p>MicroVMs on this computer: an Apple Silicon Mac, or a Linux machine with KVM.</p>
-        <code class="pcfg">CLOUDY_CLOUD_PROVIDER=microsandbox</code>
-      </div>
-      <div class="card">
-        <h3>Zipbox</h3>
-        <div class="sub">Coming soon</div>
-        <p>An experimental adapter is being built. It does not work yet.</p>
+      <div class="stage" role="img" aria-label="Your coding agent connects through Cloudy Cloud to one sandbox provider at a time: Instabox, your own server, microsandbox on this computer, or Zipbox (coming soon).">
+        <canvas class="field" aria-hidden="true"></canvas>
+        <svg viewBox="0 0 600 600" aria-hidden="true">
+          <defs>
+            <radialGradient id="sbCloud" cx="50%" cy="40%" r="55%"><stop offset="0" stop-color="var(--sb-cloud)"/><stop offset=".7" stop-color="var(--sb-cloud)" stop-opacity=".55"/><stop offset="1" stop-color="var(--sb-cloud)" stop-opacity="0"/></radialGradient>
+            <radialGradient id="sbHub" cx="50%" cy="45%" r="50%"><stop offset="0" stop-color="#7b86ff"/><stop offset=".6" stop-color="#3b42b8"/><stop offset="1" stop-color="#1c2068"/></radialGradient>
+            <radialGradient id="sbHalo" r="50%"><stop offset="0" stop-color="#8fa0ff" stop-opacity=".55"/><stop offset="1" stop-color="#8fa0ff" stop-opacity="0"/></radialGradient>
+            <linearGradient id="sbHot" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ffc9a8"/><stop offset=".55" stop-color="#d8a6ff"/><stop offset="1" stop-color="#8fb8ff"/></linearGradient>
+            <linearGradient id="sbFace" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#cfd6ff" stop-opacity=".9"/><stop offset="1" stop-color="#7d86ff" stop-opacity=".35"/></linearGradient>
+            <filter id="sbGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <filter id="sbSoft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="9"/></filter>
+          </defs>
+          <g id="sbThreads"></g>
+          <path class="trunk-glow" d="M300 492 L300 428"/><path class="trunk" d="M300 492 L300 428"/>
+          <g id="sbNodes"></g>
+          <g class="hub" transform="translate(300 392)">
+            <circle r="78" fill="url(#sbHalo)"/>
+            <circle r="38" class="disc"/>
+            <path d="M-17 10h34a12 12 0 0 0 1.5-23.9A17 17 0 0 0-15.5-17.5 14.5 14.5 0 0 0-17 10Z" class="glyph"/>
+            <text x="56" y="-3" class="lbl" text-anchor="start">Cloudy Cloud</text>
+            <text x="56" y="15" class="wh" text-anchor="start">One tool, any provider</text>
+          </g>
+          <g class="me" transform="translate(300 530)">
+            <rect x="-118" y="-38" width="236" height="76" rx="12" class="win"/>
+            <circle cx="-100" cy="-22" r="3.5" class="dot"/><circle cx="-88" cy="-22" r="3.5" class="dot"/><circle cx="-76" cy="-22" r="3.5" class="dot"/>
+            <text x="-100" y="6" class="mono"><tspan class="pr">$</tspan> cloudy-cloud</text>
+            <text x="-100" y="24" class="mono dim">claude · codex · opencode · pi</text>
+            <text y="62" class="wh">Your coding agent</text>
+          </g>
+          <circle r="5" id="sbPulse" filter="url(#sbGlow)"/>
+        </svg>
       </div>
     </div>
-    <p class="cap">More providers are on the way. What a provider must support is written up in <a href="https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/research/sandbox-providers.md">docs/research/sandbox-providers.md</a> on GitHub.</p>
+    <ol class="sbsteps">
+      <li><span>01</span><b>Try</b>Start on any provider: the cloud, your own server, or microVMs on your laptop.</li>
+      <li><span>02</span><b>Switch</b>Change one setting. Your agent, repo and workflow stay the same.</li>
+      <li><span>03</span><b>Fail over <i>coming</i></b>List several providers. When one is full or down, new subagents start on the next.</li>
+    </ol>
   </section>
   <div class="band">
     <section id="why" class="why">
@@ -910,6 +989,115 @@ document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () =
     };
   });
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) timer = setInterval(() => show((cur() + 1) % tabs.length), 7000);
+})();
+// Any sandbox: one active provider at a time; the threads and env line follow the chosen example.
+// Behind them a field of thousands of small sandboxes (canvas) shows how many providers there are to pick from.
+(() => {
+  const stage = document.querySelector('.stage'), svg = stage?.querySelector('svg'); if (!svg) return;
+  const NS = 'http://www.w3.org/2000/svg', el = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const P = [
+    { id: 'instabox', n: 'Instabox', w: 'Cloud machines', x: 92, y: 196 },
+    { id: 'self-hosted', n: 'Your own server', w: 'Over SSH', x: 226, y: 128 },
+    { id: 'microsandbox', n: 'microsandbox', w: 'This computer', x: 374, y: 128 },
+    { id: 'zipbox', n: 'Zipbox', w: 'Cloud', x: 508, y: 196, soon: true },
+  ];
+  const S = [
+    { on: 'instabox', env: ['CLOUDY_CLOUD_PROVIDER=', 'instabox'], msg: 'Subagents run on Instabox machines in the cloud.' },
+    { on: 'microsandbox', env: ['CLOUDY_CLOUD_PROVIDER=', 'microsandbox'], msg: 'One setting changed. Same agent, same repo, now running on this computer.' },
+    { on: 'microsandbox', full: 'instabox', env: ['CLOUDY_CLOUD_PROVIDERS=instabox,', 'microsandbox'], msg: 'Instabox is out of quota, so the next subagent starts on microsandbox.' },
+  ];
+
+  // The field: rows of tiny isometric cubes receding toward a horizon, a few of them lit.
+  const cv = stage.querySelector('.field'), cx = cv.getContext('2d');
+  let rnd = 7; const r = () => ((rnd = (rnd * 16807) % 2147483647) / 2147483647);
+  const cubes = [];
+  for (let row = 0; row < 40; row++) {
+    const t = row / 39, y = 14 + 300 * t * t, sz = 1 + 3.6 * t * t, gap = sz * 3.4;
+    for (let x = -30 + (row % 2) * gap / 2; x < 630; x += gap) {
+      const edge = Math.max(0, 1 - Math.abs(x - 300) / 320), fadeBottom = Math.min(1, (330 - y) / 90), fadeTop = Math.min(1, t * 3);
+      const a = (.16 + .5 * t) * Math.sqrt(edge) * fadeBottom * fadeTop;
+      if (a > .01) cubes.push({ x: x + (r() - .5) * gap * .35, y: y + (r() - .5) * sz, sz, a, lit: r() < .025, ph: r() * 6.28, sp: .3 + r() * 1.1 });
+    }
+  }
+  // Each provider's subagents: field cubes around and behind it, joined to it by fine wires.
+  const clear = (c, p) => P.every((q) => q === p || (Math.hypot(c.x - q.x, c.y - q.y) > 62 && !(Math.abs(c.x - q.x) < 80 && c.y > q.y - 80 && c.y < q.y - 30)));
+  const near = (p) => cubes.filter((c) => c.sz > 1.6 && c.y > p.y - 4 && c.y < p.y + 150 && Math.abs(c.x - p.x) > 30 && Math.hypot(c.x - p.x, c.y - p.y) < 175 && clear(c, p));
+  for (const p of P) { const pool = near(p); p.subs = []; for (let i = 0; i < (p.soon ? 7 : 22) && pool.length; i++) p.subs.push(pool.splice(Math.floor(r() * pool.length), 1)[0]); }
+  const quad = (p, c, t) => { const mx = (p.x + c.x) / 2, my = p.y + 6, u = 1 - t; return [u * u * p.x + 2 * u * t * mx + t * t * c.x, u * u * p.y + 2 * u * t * my + t * t * c.y]; };
+  const dark = () => getComputedStyle(stage).getPropertyValue('--sb-dim').includes('255');
+  const draw = (now = 0) => {
+    const w = cv.clientWidth, h = cv.clientHeight, dpr = Math.min(devicePixelRatio || 1, 2);
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const k = (w / 600) * dpr; cx.setTransform(k, 0, 0, k, 0, 0); cx.clearRect(0, 0, 600, 600 * h / w);
+    const d = dark(), base = d ? '150,160,255' : '88,103,240', amp = d ? 1 : .55;
+    const st = S[cur] ?? S[0], live = new Set();
+    for (const p of P) {
+      const on = p.id === st.on, full = p.id === st.full;
+      if (on) for (const c of p.subs) live.add(c);
+      cx.lineWidth = on ? 1 : .6; cx.setLineDash(full ? [1.5, 3] : []);
+      cx.strokeStyle = on ? (d ? 'rgba(255,214,190,.62)' : 'rgba(200,110,70,.6)') : `rgba(${base},${p.soon ? .14 : full ? .3 : .26})`;
+      for (const c of p.subs) { cx.beginPath(); cx.moveTo(p.x, p.y); cx.quadraticCurveTo((p.x + c.x) / 2, p.y + 6, c.x, c.y); cx.stroke(); }
+    }
+    cx.setLineDash([]);
+    for (const c of cubes) {
+      const s = c.sz, on = live.has(c), glow = on ? .8 + .2 * Math.sin(now / 500 + c.ph) : c.lit ? Math.max(0, Math.sin(now / 1000 * c.sp + c.ph)) : 0;
+      const a = on ? .95 : Math.min(1, (c.a + glow * c.a * 2.6) * amp);
+      cx.fillStyle = (on || (c.lit && glow > .3)) ? (d || !on ? `rgba(255,214,190,${a})` : `rgba(214,120,70,${a})`) : `rgba(${base},${a})`;
+      cx.beginPath(); cx.moveTo(c.x, c.y - s); cx.lineTo(c.x + s, c.y - s / 2); cx.lineTo(c.x, c.y); cx.lineTo(c.x - s, c.y - s / 2); cx.fill();
+      cx.fillStyle = `rgba(${base},${a * .55})`;
+      cx.beginPath(); cx.moveTo(c.x - s, c.y - s / 2); cx.lineTo(c.x, c.y); cx.lineTo(c.x, c.y + s); cx.lineTo(c.x - s, c.y + s / 2); cx.fill();
+      cx.fillStyle = `rgba(${base},${a * .3})`;
+      cx.beginPath(); cx.moveTo(c.x + s, c.y - s / 2); cx.lineTo(c.x, c.y); cx.lineTo(c.x, c.y + s); cx.lineTo(c.x + s, c.y + s / 2); cx.fill();
+    }
+    const ap = P.find((p) => p.id === st.on);
+    if (ap && !still) {
+      cx.fillStyle = d ? 'rgba(255,240,230,.95)' : 'rgba(190,90,50,.9)';
+      ap.subs.forEach((c, i) => { const t = ((now / 1500) + i * .173) % 1, [x, y] = quad(ap, c, t); cx.globalAlpha = Math.sin(Math.PI * t); cx.beginPath(); cx.arc(x, y, 1.6, 0, 6.29); cx.fill(); });
+      cx.globalAlpha = 1;
+    }
+  };
+
+  const th = svg.querySelector('#sbThreads'), nodes = svg.querySelector('#sbNodes'), paths = {}, groups = {};
+  const cube = (s) => `<g class="cube"><path class="t" d="M0 ${-s} L${s} ${-s / 2} L0 0 L${-s} ${-s / 2}Z"/><path class="l" d="M${-s} ${-s / 2} L0 0 L0 ${s} L${-s} ${s / 2}Z"/><path class="r" d="M${s} ${-s / 2} L0 0 L0 ${s} L${s} ${s / 2}Z"/><path class="e" d="M0 ${-s} L${s} ${-s / 2} L${s} ${s / 2} L0 ${s} L${-s} ${s / 2} L${-s} ${-s / 2}Z M0 0 L0 ${s} M0 0 L${s} ${-s / 2} M0 0 L${-s} ${-s / 2}"/><path class="code" d="M${-s * .72} ${-s * .08} l${s * .42} ${s * .21} M${-s * .72} ${s * .16} l${s * .3} ${s * .15} M${-s * .72} ${s * .4} l${s * .48} ${s * .24}"/></g>`;
+  for (const p of P) {
+    th.append(paths[p.id] = el('path', { d: `M300 356 C300 ${p.y + 150} ${p.x} ${p.y + 130} ${p.x} ${p.y + 30}`, class: 'th' }));
+    const g = el('g', { class: 'node' + (p.soon ? ' soon' : ''), transform: `translate(${p.x} ${p.y})` });
+    g.innerHTML = `<ellipse class="cl" rx="70" ry="30" cy="14"/><ellipse class="cl" rx="38" ry="30" cx="-30" cy="-2"/><ellipse class="cl" rx="44" ry="36" cx="18" cy="-10"/><ellipse class="cl" rx="30" ry="22" cx="48" cy="6"/>${cube(24)}<text class="lbl" y="-62">${p.n}</text><text class="wh" y="-45">${p.w}<tspan class="tag" dx="6">${p.soon ? 'SOON' : ''}</tspan></text>`;
+    nodes.append(groups[p.id] = g);
+  }
+  const trunk = svg.querySelector('.trunk'), pulse = svg.querySelector('#sbPulse'), env = document.getElementById('sbEnv'), msg = document.getElementById('sbMsg');
+  const btns = [...document.querySelectorAll('.sw button')];
+  let cur = 0, t0 = 0, auto = !still;
+  const show = (i) => {
+    cur = i; const s = S[i];
+    for (const p of P) {
+      const g = groups[p.id], on = p.id === s.on, full = p.id === s.full;
+      g.classList.toggle('on', on); g.classList.toggle('full', full);
+      if (!p.soon) g.querySelector('.tag').textContent = on ? '· RUNNING' : full ? '· FULL' : '';
+      paths[p.id].setAttribute('class', 'th' + (on ? ' on' : full ? ' cut' : ''));
+    }
+    env.innerHTML = `${s.env[0].replace(/[=,]/g, '$&<wbr>')}<b>${s.env[1]}</b>`; msg.textContent = s.msg;
+    btns.forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+    t0 = performance.now();
+    if (still) { const pa = paths[s.on], pt = pa.getPointAtLength(pa.getTotalLength()); pulse.setAttribute('cx', pt.x); pulse.setAttribute('cy', pt.y); draw(); }
+  };
+  btns.forEach((b, j) => b.addEventListener('click', () => { auto = false; show(j); }));
+  addEventListener('resize', () => draw(performance.now()));
+  if (!still) {
+    let seen = false; new IntersectionObserver(([e]) => { seen = e.isIntersecting; }).observe(stage);
+    const tick = (now) => {
+      if (seen) {
+        draw(now);
+        const k = ((now - t0) % 2000) / 2000, pa = k < .3 ? trunk : paths[S[cur].on], f = k < .3 ? k / .3 : (k - .3) / .7;
+        const pt = pa.getPointAtLength(pa.getTotalLength() * f); pulse.setAttribute('cx', pt.x); pulse.setAttribute('cy', pt.y); pulse.style.opacity = String(Math.min(1, Math.sin(Math.PI * k) * 1.6));
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    setInterval(() => { if (auto && seen) show((cur + 1) % S.length); }, 4200);
+  }
+  show(0); draw();
 })();
 </script>
 </body>
