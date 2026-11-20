@@ -37,21 +37,21 @@ export function render({ desc, usages, rows = [], note }) {
 const ID = '<agent-id-or-machine>';
 const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
 const cmds = {
-  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted']], rows: [
+  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
-    ['--provider NAME', 'instabox (default) or self-hosted'],
+    ['--provider NAME', 'instabox (default), self-hosted or microsandbox (not configured by setup; prints the config path)'],
   ], note: 'Run it in a terminal: it asks for your keys.' },
   shell: { desc: 'Open a shell on a cloud machine, or run one command there.', usages: [['shell', ID, '[-- command [args...]]']], rows: [
     ['(no command)', 'Interactive login shell on the machine'],
     ['-- command', 'Run the command, stream its output and exit with its exit code'],
   ], note: `Each argument after -- reaches the machine unchanged. Do not put secrets in the command. ${WHERE}` },
   display: { desc: "Print a link to a cloud machine's desktop. Only the link goes to stdout.", usages: [['display', ID, '[--control]', '[--ttl SECONDS]'], ['display', ID, '--screenshot FILE'], ['display', ID, '--unshare']], rows: [
-    ['(default)', 'View-only link for 1 hour'],
+    ['(default)', 'View-only link; stops taking new viewers after 1 hour'],
     ['--control', 'Let the viewer click and type'],
-    ['--ttl SECONDS', 'Link lifetime, 60 to 86400'],
+    ['--ttl SECONDS', 'Seconds until the link stops taking new viewers, 60 to 86400'],
     ['--screenshot FILE', 'Write a PNG of the screen to FILE and print the path'],
-    ['--unshare', 'Revoke every display link for the machine'],
+    ['--unshare', 'Revoke every display link for the machine, including connected viewers'],
   ], note: `linux, android and gpu machines have a desktop (the first gpu start is slow); omarchy has none and macos is not verified. Display links need the Instabox provider. ${WHERE}` },
   open: { desc: "Reach an app (for example a dev server) running on a cloud agent's machine.", usages: [['open', ID, '<port>', '[--share]'], ['open', ID, '<port>', '--unshare']], rows: [
     ['<port>', 'App port on the machine, or LOCAL:REMOTE to use another port on your computer'],
@@ -63,27 +63,27 @@ const cmds = {
     ['add <name>', 'Give subagents the MCP server <name> from your Claude Code settings'],
     ['ls', 'List the servers subagents get'],
     ['rm <name>', 'Stop giving subagents that server'],
-    ['--allow-literal', 'Copy the actual credential value onto subagent machines'],
+    ['--allow-literal', 'Copy the actual credential value into the worker config file on subagent machines'],
   ], note: "Claude Code's own `mcp list` and `mcp add <name> -- <command>` still go to claude." },
   'mcp-server': { desc: 'Run the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts.', usages: [['mcp-server']],
     note: 'The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],
-  ], note: 'Changes need a pull request, no force pushes, no deletion, and nobody can bypass it (including you and the cloud agents). Uses your own gh sign-in; you must be a repo admin.' },
+  ], note: 'Changes need a pull request, no force pushes, no deletion, and no bypass actors (it covers you and the cloud agents). A repo admin can still edit or disable the ruleset. Uses your own gh sign-in; you must be a repo admin.' },
   doctor: { desc: 'Check your own machine when subagents run there (self-hosted provider only).', usages: [['doctor']], note: 'Changes nothing. Run `cloudy-cloud setup --provider self-hosted` to choose that provider.' },
   dashboard: { desc: 'Open a read-only web page about your cloud machines.', usages: [['dashboard', '[--demo]', '[--port N]', '[--no-open]'], ['dashboard', '--prune']], rows: [
     ['--demo', 'Show made-up machines instead of yours'],
     ['--port N', 'Listen on port N (default: 4477)'],
     ['--no-open', 'Print the link but do not open a browser'],
-    ['--prune', 'Delete stored agent logs older than 30 days (then the oldest over 1 GB), then exit'],
+    ['--prune', 'Delete every file in the streams folder older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
   machines: { desc: 'List or delete the Cloudy Cloud machines of the active provider.', usages: [['machines', '[ls]'], ['machines', 'stop', ID], ['machines', 'stop', '--all', '[--yes]']], rows: [
     ['ls', 'One line per machine: name, role, state, age and when it is deleted'],
-    ['stop <id>', 'Delete one machine (an id, a machine name or an agent id)'],
+    ['stop <id>', 'Delete one machine at once (an id, a machine name or an agent id)'],
     ['stop --all', 'Delete every machine in the list (asks once on a terminal)'],
     ['--yes', 'Say yes to that question, or delete without a terminal'],
-  ], note: `Only machines Cloudy Cloud made are listed or deleted; a machine without the cloudy-cloud purpose label is never touched. ${WHERE}` },
+  ], note: `Only machines Cloudy Cloud made are listed or deleted (labels purpose=cloudy-cloud and the older purpose=claude-cloud); a machine without one is never touched. On microsandbox, listing also removes expired microVMs. ${WHERE}` },
   branches: { desc: 'List or delete the cloudy-cloud/<id> branches on origin that add nothing to the default branch (empty, or already merged).', usages: [['branches', 'prune', '[--yes]', '[--dry-run]']], rows: [
     ['(default)', 'Dry run: list what would be deleted'],
     ['--yes', 'Actually delete the listed branches'],
