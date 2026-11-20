@@ -734,13 +734,42 @@ function autofix(a, ctx, t) {
     if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
     const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
     if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    // `gh pr checks` reads check runs through GraphQL, which a fine-grained personal access token can never be
+    // granted. On that denial the checks come from two REST endpoints such a token can read (Actions runs and
+    // commit statuses), and `pr checks` is not called again for the rest of this autofix run.
+    let denied = false;
+    const restChecks = async () => {
+      const runs = await gh(`api --paginate 'repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100' --jq '.workflow_runs[] | {name, id, workflow_id, event, created_at, status, conclusion, link: .html_url} | tojson'`);
+      if (!runs.ok) return { error: runs.err || tail(runs.out) };
+      const states = await gh(`api --paginate 'repos/{owner}/{repo}/commits/${sha}/status' --jq '.statuses[] | {name: .context, state, link: .target_url} | tojson'`);
+      if (!states.ok) return { error: states.err || tail(states.out) };
+      // --paginate --jq prints one compact JSON object per line; a line that is not JSON fails the whole read
+      const lines = (out) => { const a = []; for (const l of out.split('\n')) { if (!l.trim()) continue; try { a.push(JSON.parse(l)); } catch { return undefined; } } return a; };
+      const wr = lines(runs.out), st = lines(states.out);
+      if (!wr || !st) return { error: 'gh api returned output that is not JSON' };
+      // One head sha can list an older run of the same workflow and event (a reopened pull request runs it again): only the newest counts
+      const newest = new Map();
+      for (const x of wr) { const k = x.workflow_id === undefined ? `id${x.id}` : `${x.workflow_id} ${x.event}`, y = newest.get(k); if (!y || String(x.created_at) > String(y.created_at) || (String(x.created_at) === String(y.created_at) && Number(x.id) > Number(y.id))) newest.set(k, x); }
+      const rb = (x) => x.status !== 'completed' || x.conclusion === 'stale' ? 'pending' : ['success', 'neutral', 'skipped'].includes(x.conclusion) ? 'pass' : x.conclusion === 'cancelled' ? 'cancel' : 'fail';
+      const sb = (x) => x.state === 'pending' ? 'pending' : x.state === 'success' ? 'pass' : 'fail'; // the only other states are failure and error
+      return { list: [...[...newest.values()].map((x) => ({ name: x.name, bucket: rb(x), link: x.link })), ...st.map((x) => ({ name: x.name, bucket: sb(x), link: x.link, cs: true }))] };
+    };
     const waitChecks = async () => {
       const t0 = Date.now(), limit = Math.min(t0 + checksMs, Date.now() + left() - AUTOFIX_MARGIN_MS);
       for (;;) {
-        const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
-        let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+        const r = denied ? { out: '' } : await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
+        let list;
+        try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+        // A check's name can hold the denial text, so it is tested only when stdout is not a JSON array
+        denied ||= !Array.isArray(list) && /Resource not accessible by (personal access token|integration)/i.test(r.out);
+        if (denied) {
+          const f = await restChecks();
+          if (f.error) return { error: f.error };
+          list = f.list;
+        }
         const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
-        if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
+        // A run triggered by the push can be complete before its pull_request twin exists, so a settled REST list is trusted only after grace
+        if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending') && (!denied || Date.now() - t0 >= grace)) return { list };
         if (none && Date.now() - t0 >= grace) return { list: [] };
         if (!none && !Array.isArray(list)) return { error: r.err || tail(r.out) };
         if (Date.now() >= limit) return { timeout: Math.round((Date.now() - t0) / 60_000) };
@@ -755,11 +784,14 @@ function autofix(a, ctx, t) {
       say('reading failures and review comments');
       const problems = [], incomplete = [], pendingSeen = []; // comments sent are remembered only once a fix turn pushed a new commit
       ignored = 0;
+      if (denied) incomplete.push('check runs from GitHub Apps other than GitHub Actions cannot be read with a fine-grained token');
       const bad = w.list.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel');
       const logs = new Map();
-      for (const id of [...new Set(bad.map((c) => RUN.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3)) logs.set(id, tail(safe((await gh(`run view ${id} --log-failed`, 120_000)).out)));
+      // Only Actions runs supply a failed log: a commit status target_url can name an unrelated run, so cs entries are skipped
+      const runId = (c) => c.cs ? undefined : RUN.exec(c.link ?? '')?.[1];
+      for (const id of [...new Set(bad.map(runId).filter(Boolean))].slice(0, 3)) logs.set(id, tail(safe((await gh(`run view ${id} --log-failed`, 120_000)).out)));
       for (const c of bad) {
-        const id = RUN.exec(c.link ?? '')?.[1];
+        const id = runId(c);
         problems.push(`Failed check "${safe(c.name).slice(0, 100)}"${c.bucket === 'cancel' ? ' (cancelled)' : ''}${LINK.test(c.link ?? '') ? ` (${c.link})` : ''}${id && logs.get(id) ? `. End of the failed log:\n${logs.get(id)}` : ''}`);
         if (id) logs.delete(id); // one log per run
       }
