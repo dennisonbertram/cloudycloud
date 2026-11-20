@@ -8,7 +8,7 @@ Cloud subagents have no MCP servers unless you choose some. `cloudy-cloud mcp ad
 
 ## Add a server
 
-This page describes the Instabox provider, where the real token is stored as an Instabox secret. On other providers the token step differs and the command prints its own instruction: on self-hosted the value is delivered only under the `--allow-literal` consent path below, and on microsandbox the command warns that tokens do not reach workers yet.
+This page describes the Instabox provider, where the real token is stored as an Instabox secret. On other providers the token step differs and the command prints its own instruction: on self-hosted the value is delivered only under the `--allow-literal` consent path below, and on microsandbox named secret references are not supported, so a token reaches a worker only that same way.
 
 Three steps. Replace `notion` with the name of the server in your Claude Code settings (`claude mcp list` shows it). `mcp add` reads only Claude Code's settings, whichever agent is your main session, so a server that is set up only in Codex, opencode or pi must be added to Claude Code first, or written into `mcp.json` by hand.
 
@@ -80,7 +80,7 @@ The same checks run again every time a subagent starts, on whatever is in `mcp.j
 
 ## Tokens and secrets
 
-The token is never written to `mcp.json`. `mcp add` replaces each secret value in `env` or `headers` with `${MCP_<NAME>_TOKEN}`. `NAME` is the server name in capitals with `-` changed to `_`, so `notion` becomes `MCP_NOTION_TOKEN`. A second secret on the same server is `MCP_<NAME>_2_TOKEN`, and so on. A header is treated as secret when it is `Authorization`, its value starts with `Bearer`, its name ends in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or the value looks like a known key format. The same name rule applies to `env` values.
+Without `--allow-literal`, the token is never written to `mcp.json`. `mcp add` replaces each secret value in `env` or `headers` with `${MCP_<NAME>_TOKEN}`. `NAME` is the server name in capitals with `-` changed to `_`, so `notion` becomes `MCP_NOTION_TOKEN`. A second secret on the same server is `MCP_<NAME>_2_TOKEN`, and so on. A header is treated as secret when it is `Authorization`, its value starts with `Bearer`, its name ends in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or the value looks like a known key format. The same name rule applies to `env` values.
 
 You store the real value once in Instabox with the command `mcp add` prints:
 
@@ -107,9 +107,9 @@ Two server names that map to the same secret name (`my-srv` and `my_srv`) cannot
 
 ### Putting the real token on the machine
 
-Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to the machine of each subagent you start. A coordinator's own session gets it, but the workers a coordinator starts do not: consent is not passed down, so those workers skip the server. It only applies to values in `env` and `headers`. It is off unless you pass the flag.
+Some servers cannot work with a placeholder, for example one that does not send the token in a header. For those, `cloudy-cloud mcp add NAME --allow-literal` keeps the real value in `mcp.json` and copies it to the machine of each subagent you start. A coordinator's own session gets it, but the workers a coordinator starts do not: consent is not passed down, so those workers skip the server. It only applies to values in `env` and `headers` that `mcp add` recognized as secret-looking. It is off unless you pass the flag.
 
-> Warning: With `--allow-literal`, the real token sits on the machine in a file with mode 600. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
+> Warning: With `--allow-literal`, the real token is written into the worker's own config file with mode 600 — `~/.config/cloudy-cloud/mcp.json` for a Claude Code worker, `~/pi-agent/mcp.json` or `~/omp-agent/mcp.json`, `~/codex-home/config.toml` for a Codex worker, or `~/opencode-agent/opencode.json` for an opencode worker. Cloud machines run agents (Claude Code, pi, oh-my-pi, Codex and opencode alike) with permission checks off, so a prompt injection in a web page or file could make the agent send that token anywhere. Use a token you can revoke and that has the least access it needs.
 
 The command prints this warning, then asks `Copy the real NAME token onto cloud machines? [y/N]`. Anything other than `y` or `yes` cancels it with `Not added. Run without --allow-literal to keep the token in Instabox.` It also needs a terminal, so you can confirm. Without one it prints `Not added: --allow-literal needs a terminal so you can confirm.` No Instabox secret is created for a server added this way. The entry in `mcp.json` gets `"cloudyCloudAllowLiteral": true`, which is removed before the file is sent to the machine. Remove the server with `cloudy-cloud mcp rm NAME`.
 

@@ -38,18 +38,18 @@ Run setup once, in a terminal:
 npx -y cloudycloud setup
 ```
 
-(`-y` skips npm's "Ok to proceed?" question. If `npm install -g cloudycloud` fails with `EEXIST`, the old `cloudy-cloud` package left a link in npm's global `bin` folder: remove the file named in the error with `rm <that path>`, then run `npm install -g cloudycloud` again. Setup offers to remove it for you.) Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`), copies the Cloudy Cloud skills into `~/.claude/skills/`, uses the agents it finds on your PATH (it asks only if it finds none), and asks for the keys the first agent run needs, with a note on where to get each one:
+(`-y` skips npm's "Ok to proceed?" question. If `npm install -g cloudycloud` fails with `EEXIST`, the old `cloudy-cloud` package left a link in npm's global `bin` folder: remove the file named in the error with `rm <that path>`, then run `npm install -g cloudycloud` again. Setup offers to remove it for you.) Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`), copies the Cloudy Cloud skills into `~/.claude/skills/`, uses the saved agent list or the agents it finds on your PATH (on a fresh install it picks `claude` alone when it finds it; it asks only when it finds none, and `--more` asks anyway), and asks for the keys the first agent run needs, with a note on where to get each one:
 
 | Key | Where to get it |
 | --- | --- |
 | Instabox API key (`ibk_...`) | [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). Setup checks it with Instabox before saving. |
 | Claude token (`sk-ant-oat01-...`), only if you chose claude or want Claude workers | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
-| OpenAI key (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
+| OpenAI key (`OPENAI_API_KEY`), for codex workers; `setup --more` asks when codex is chosen or installed, plain setup only when codex is chosen and no other worker credential is saved | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
 | GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions and Commit statuses set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
 
-`cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (Particle.ai, OpenRouter). Plain setup asks for them only when no saved credential could start a first worker. It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
+`cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (OpenAI for codex workers, Particle.ai, OpenRouter). Plain setup asks for them only when no saved credential could start a first worker (a saved Codex login file counts as one, even one a worker would later reject). It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
 
-The Claude step runs only if claude is one of your agents or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass (for example `codex`, which needs `OPENAI_API_KEY` or the ChatGPT login file) and prints the same next step on start. Setup warns at the end if no worker credential is saved at all. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
+The Claude step runs only if claude is one of your agents or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass (for example `codex`, which needs `OPENAI_API_KEY` or the ChatGPT login file) and prints the same next step on start. Setup ends with "Setup incomplete" and exit status 1 if no worker credential is saved at all. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
  The Instabox key is saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600) and stays on your computer. The Claude token and the provider keys are stored as Instabox proxy secrets, so worker machines see a placeholder; setup asks before moving keys that are already in the env file. Run `cloudy-cloud setup` (`setup --more` for the extra keys) again from any folder to change a key.
 
 ![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/setup.jpg)
@@ -204,7 +204,7 @@ Both screenshots show demo data (`--demo`). Each box shows the harness that runs
 | --- | --- | --- | --- | --- |
 | `linux` (default) | Standard machine | Your plan | no | yes |
 | `android` | Android emulator with `adb`, for running or testing an Android app | Not checked | no | yes |
-| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 4 (Instabox's limit for an L4)) for training, inference and CUDA builds | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
+| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 4 for any GPU type) for training, inference and CUDA builds | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
 | `omarchy` | Omarchy Linux (Hyprland desktop) | Not checked | no | no (see below) |
 | `macos`, `macos:MODEL` | Mac (`m2`, `m2pro`, `m4`, `m4pro`) for Xcode builds. Experimental, not yet run live | $0.45 to $1.25 per hour by model, 24-hour minimum lease | yes | not verified |
 
@@ -214,12 +214,12 @@ Prices are Instabox's, from [instabox.sh/docs/account/pricing.md](https://instab
 
 `cloudy-cloud shell <agent-id-or-machine>` opens an interactive shell on the machine. `cloudy-cloud shell <agent-id-or-machine> -- <command>` runs one command, streams its output and exits with the command's exit code. Each argument after `--` reaches the machine unchanged. Do not put secrets in the command.
 
-`cloudy-cloud display <agent-id-or-machine>` prints a link to the machine's desktop (`linux`, `android`, `gpu`, `macos`) and nothing else on stdout. The link is view-only and lasts 1 hour by default.
+`cloudy-cloud display <agent-id-or-machine>` prints a link to the machine's desktop (`linux`, `android`, `gpu`, `macos`; the `macos` desktop is not verified) and nothing else on stdout. The link is view-only. It stops working for new viewers after 1 hour by default; a viewer already connected can stay, and `--unshare` cuts everyone off.
 
 | Flag | Meaning |
 | --- | --- |
 | `--control` | Let the viewer click and type. |
-| `--ttl SECONDS` | Link lifetime, 60 to 86400. |
+| `--ttl SECONDS` | Seconds until the link stops taking new viewers, 60 to 86400. |
 | `--screenshot FILE` | Write a PNG of the screen to a new file and print its path. Use it when there is no browser tool. |
 | `--unshare` | Cut off every display link for the machine, including viewers already connected. |
 
@@ -302,13 +302,14 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
-| `cloudy-cloud machines` \| `machines stop <id-or-name\|--all> [--yes]` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |
-| `cloudy-cloud protect [owner/repo] [--yes]` | Creates a GitHub ruleset on the default branch that requires pull requests, blocks force pushes and deletion, and cannot be bypassed. Asks first unless you pass `--yes`; needs `gh` signed in and repo admin. |
+| `cloudy-cloud machines` \| `machines stop <id-or-name\|--all> [--yes]` | Lists your Cloudy Cloud machines (label `purpose=cloudy-cloud`, or the older `purpose=claude-cloud`), or deletes them. `stop <id-or-name>` deletes at once without asking; `stop --all` asks first unless you pass `--yes`. On microsandbox, listing also removes expired microVMs. |
+| `cloudy-cloud protect [owner/repo] [--yes]` | Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the default branch: changes need a pull request, force pushes and deletion are refused, and the ruleset has no bypass actors, so nobody it covers can push around it — including you and the cloud agents, which push as you. A repo admin can still edit or disable the ruleset, and the command changes nothing when an equivalent ruleset or classic branch protection already covers the branch. Asks first unless you pass `--yes`; needs `gh` signed in and repo admin. |
 | `cloudy-cloud branches prune [--yes] [--dry-run]` | Deletes empty or merged `cloudy-cloud/<id>` and `cloudy-cloud/issue-<n>-<id>` branches on origin. A dry run unless you pass `--yes`. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
 | `cloudy-cloud shell <agent> [-- command]` | Opens a shell on a cloud machine, or runs one command there. |
 | `cloudy-cloud display <agent> [--control] [--ttl S] [--screenshot FILE] [--unshare]` | Prints a link to a machine's desktop, or saves a screenshot. |
 | `cloudy-cloud mcp add <name> [--allow-literal]` \| `ls` \| `rm <name>` | Chooses which of your MCP servers cloud subagents get. |
+| `cloudy-cloud mcp-server` | Runs the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts. |
 | `cloudy-cloud coordinator ...` | Manages cloud coordinators: `image`, `start` (`--repo`, `--branch`, `--task`, `--task-file`, `--max-hours`, `--model`, `--json`), `attach`, `ls`, `status NAME [--json]`, `stop`, `finish`. |
 | `cloudy-cloud --version` | Prints the version. |
 
