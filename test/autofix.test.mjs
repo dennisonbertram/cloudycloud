@@ -31,15 +31,18 @@ async function setup(g = {}, env = {}) {
   g.permCalls = [];
   g.hasPr ??= false;
   g.checks ??= [[]]; // one list per `pr checks` call; the last repeats
+  g.runs ??= [[]]; // one list per actions-runs call; the last repeats
+  g.statuses ??= [[]]; // one list per commit-status call; the last repeats
   g.view ??= () => prView();
   const prView = (o = {}) => ({ number: 7, url: PR, state: 'OPEN', headRefOid: g.sha, baseRefName: 'main', mergeable: 'MERGEABLE', author: { login: 'me' }, reviews: [], ...o });
   g.prView = prView;
-  let checkCalls = 0;
+  let checkCalls = 0, runCalls = 0, statusCalls = 0;
   const handle = async (cmd) => {
     g.calls.push(cmd);
     if (cmd.startsWith('gh pr view')) { if (!g.hasPr) throw fail('no pull requests found'); if (g.viewFailAfter !== undefined && g.calls.filter((c) => c.startsWith('gh pr view')).length > g.viewFailAfter) throw fail('HTTP 502'); return JSON.stringify(g.view()); }
     if (cmd.startsWith('gh pr create')) { if (g.createError) throw fail(g.createError); g.hasPr = g.created = true; return `${PR}\n`; }
     if (cmd.startsWith('gh pr checks')) {
+      if (g.checksDenied) return 'GraphQL: Resource not accessible by personal access token (node.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)';
       const list = g.checks[Math.min(checkCalls++, g.checks.length - 1)];
       // Instabox rejects a nonzero exit with only exitCode (no stdout), unless the command itself always exits 0.
       if (g.strictExit && !cmd.endsWith('; true') && list.some((c) => c.bucket !== 'pass')) throw Object.assign(new Error('x'), { exitCode: list.some((c) => c.bucket === 'pending') ? 8 : 1 });
@@ -49,6 +52,8 @@ async function setup(g = {}, env = {}) {
     if (cmd.includes('/collaborators/')) { const login = /collaborators\/([^/]+)\/permission/.exec(cmd)[1]; g.permCalls.push(login); const p = g.perms?.[login] ?? 'write'; if (p === 'ERR') throw fail('HTTP 404'); return `${p}\n`; }
     if (cmd.startsWith('gh api')) {
       await g.apiGate; if (g.apiFail) throw fail('HTTP 500');
+      if (cmd.includes('/actions/runs?')) return JSON.stringify(g.runs[Math.min(runCalls++, g.runs.length - 1)]);
+      if (cmd.includes('/status')) return JSON.stringify(g.statuses[Math.min(statusCalls++, g.statuses.length - 1)]);
       const all = g.inline ?? [];
       // --paginate with --jq prints one JSON object per line for every page; without it only the first 100 come back
       if (cmd.includes('--paginate')) return `${all.map((c) => JSON.stringify({ id: c.id, login: c.user?.login, path: c.path, line: c.line, body: c.body, created_at: c.created_at ?? '2026-01-01T00:00:00Z' })).join('\n')}\n`;
@@ -204,6 +209,40 @@ test('autofix: pending and failing checks work when the provider drops stdout of
   assert.doesNotMatch(r, /could not read the checks/);
   assert.equal(turns(g), 2);
   assert.match(r, /is clean/);
+});
+
+test('autofix: a token denied pr checks falls back to REST, a failed run still feeds a fix round, and pr checks is called once', async () => {
+  const run = (conclusion) => ({ name: 'test', status: 'completed', conclusion, link: 'https://github.com/o/r/actions/runs/123' });
+  const { g, start, wait } = await setup({ checksDenied: true, runs: [[run('failure')], [run('success')]], log: 'x\nAssertionError: boom in foo.test.js\n' });
+  const id = await start({ autofix: true });
+  const r = await wait([id]);
+  assert.equal(turns(g), 2);
+  assert.match(g.prompts[1], /Failed check "test"/);
+  assert.match(g.prompts[1], /AssertionError: boom in foo\.test\.js/);
+  assert.ok(g.calls.includes('gh run view 123 --log-failed'));
+  assert.equal(g.calls.filter((c) => c.startsWith('gh pr checks')).length, 1);
+  assert.match(r, /fine-grained token/);
+});
+
+test('autofix: denied checks with a passing run end not-confirmed, never clean, with no fix turn', async () => {
+  const { g, start, wait } = await setup({ checksDenied: true, runs: [[{ name: 'build', status: 'completed', conclusion: 'success', link: 'https://github.com/o/r/actions/runs/124' }]] });
+  const id = await start({ autofix: true });
+  const r = await wait([id]);
+  assert.equal(turns(g), 1);
+  assert.ok(r.includes(PR));
+  assert.match(r, /not (be )?confirmed/i);
+  assert.match(r, /fine-grained token/);
+  assert.doesNotMatch(r, /is clean/);
+});
+
+test('autofix: a pending commit status is waited out, then the round ends with no fix turn', async () => {
+  const st = (state) => ({ name: 'ci', state, link: 'https://github.com/o/r/status/1' });
+  const { g, start, wait } = await setup({ checksDenied: true, statuses: [[st('pending')], [st('success')]] });
+  const id = await start({ autofix: true });
+  const r = await wait([id]);
+  assert.equal(turns(g), 1);
+  assert.ok(g.calls.filter((c) => c.includes('/status')).length >= 2);
+  assert.match(r, /fine-grained token/);
 });
 
 test('autofix: a cancelled autofix run emits a terminal stopped event and never stays running', async () => {

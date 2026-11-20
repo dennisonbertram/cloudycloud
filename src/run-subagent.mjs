@@ -732,11 +732,31 @@ function autofix(a, ctx, t) {
     if (!Number.isInteger(n)) return stop('gh returned no pull request number.');
     const unsynced = (p) => `Autofix: pull request ${p.url} could not be confirmed clean: GitHub shows it ${p.state === 'OPEN' ? `at commit ${String(p.headRefOid).slice(0, 7)} instead of the pushed ${sha.slice(0, 7)}` : `as ${p.state}`}.\nNext step: look at ${p.url} later, or ${hand}`;
     if (pr.state !== 'OPEN' || pr.headRefOid !== sha) return done(unsynced(pr));
+    // `gh pr checks` reads check runs through GraphQL, which a fine-grained personal access token can never be
+    // granted. On that denial the checks come from two REST endpoints such a token can read (Actions runs and
+    // commit statuses), and `pr checks` is not called again for the rest of this autofix run.
+    let denied = false;
+    const restChecks = async () => {
+      const runs = await gh(`api 'repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100' --jq '[.workflow_runs[] | {name, status, conclusion, link: .html_url}]'`);
+      if (!runs.ok) return { error: runs.err || tail(runs.out) };
+      const states = await gh(`api 'repos/{owner}/{repo}/commits/${sha}/status' --jq '[.statuses[] | {name: .context, state, link: .target_url}]'`);
+      if (!states.ok) return { error: states.err || tail(states.out) };
+      let wr, st; try { wr = JSON.parse(runs.out); st = JSON.parse(states.out); } catch { return { error: 'gh api returned output that is not JSON' }; }
+      const rb = (x) => x.status !== 'completed' ? 'pending' : ['success', 'neutral', 'skipped'].includes(x.conclusion) ? 'pass' : x.conclusion === 'cancelled' ? 'cancel' : 'fail';
+      const sb = (x) => x.state === 'pending' ? 'pending' : x.state === 'success' ? 'pass' : 'fail'; // the only other states are failure and error
+      return { list: [...(Array.isArray(wr) ? wr : []).map((x) => ({ name: x.name, bucket: rb(x), link: x.link })), ...(Array.isArray(st) ? st : []).map((x) => ({ name: x.name, bucket: sb(x), link: x.link }))] };
+    };
     const waitChecks = async () => {
       const t0 = Date.now(), limit = Math.min(t0 + checksMs, Date.now() + left() - AUTOFIX_MARGIN_MS);
       for (;;) {
-        const r = await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
-        let list; try { list = JSON.parse(r.out); } catch { /* no JSON */ }
+        const r = denied ? { out: '' } : await gh(`pr checks ${n} --json name,bucket,link 2>&1; true`); // gh exits 8 while pending and 1 on a failure, and a provider may drop stdout of a failed command, so exit 0 and read everything from stdout
+        denied ||= /Resource not accessible by (personal access token|integration)/i.test(r.out);
+        let list;
+        if (denied) {
+          const f = await restChecks();
+          if (f.error) return { error: f.error };
+          list = f.list;
+        } else { try { list = JSON.parse(r.out); } catch { /* no JSON */ } }
         const none = /no checks reported/i.test(r.out) || (Array.isArray(list) && !list.length); // new commits show none for a moment, so wait out the grace time
         if (Array.isArray(list) && list.length && !list.some((c) => c.bucket === 'pending')) return { list };
         if (none && Date.now() - t0 >= grace) return { list: [] };
@@ -753,6 +773,7 @@ function autofix(a, ctx, t) {
       say('reading failures and review comments');
       const problems = [], incomplete = [], pendingSeen = []; // comments sent are remembered only once a fix turn pushed a new commit
       ignored = 0;
+      if (denied) incomplete.push('check runs from GitHub Apps other than GitHub Actions cannot be read with a fine-grained token');
       const bad = w.list.filter((c) => c.bucket === 'fail' || c.bucket === 'cancel');
       const logs = new Map();
       for (const id of [...new Set(bad.map((c) => RUN.exec(c.link ?? '')?.[1]).filter(Boolean))].slice(0, 3)) logs.set(id, tail(safe((await gh(`run view ${id} --log-failed`, 120_000)).out)));
