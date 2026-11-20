@@ -592,6 +592,34 @@ check_setup() {
       bad "GH_TOKEN is not allowed on Zipbox boxes, so subagents cannot push"; fails=1
       hint "Add CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes to $(cfg)."
     else ok "GH_TOKEN is saved and allowed on Zipbox boxes"; fi
+    # zipbox has no egress policy, so a configured allow list is a refusal, not a warning: the runtime
+    # refuses every worker while it is set, and this check must say the same.
+    if [ -n "$(eff CLOUDY_CLOUD_EGRESS_ALLOW)" ] || grep -q '^CLOUDY_CLOUD_EGRESS_ALLOW=' "$(cfg)" 2>/dev/null; then
+      egv=$(eff CLOUDY_CLOUD_EGRESS_ALLOW | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      case $egv in \"*\") egv=${egv#\"}; egv=${egv%\"} ;; \'*\') egv=${egv#\'}; egv=${egv%\'} ;; esac
+      case $(printf '%s' "$egv" | tr 'A-Z' 'a-z') in
+      off|none) ok "No egress allow list (turned off)" ;;
+      *)
+        if ! command -v node >/dev/null 2>&1; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node is missing"
+        else
+          # Parse with src/config.mjs like the runtime refusal does: a set list is a failure on zipbox,
+          # and so is a value that does not parse.
+          egerr=$(CLOUDY_CLOUD_EGRESS_CHECK=$(eff CLOUDY_CLOUD_EGRESS_ALLOW) node --input-type=module -e '
+            const { egressAllow } = await import(process.argv[1]);
+            const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: process.env.CLOUDY_CLOUD_EGRESS_CHECK });
+            if (r.error) { console.log(r.error); process.exit(3); }
+            if (r.list.length) process.exit(4);' "file://$root/src/config.mjs") && rc=0 || rc=$?
+          if [ "$rc" = 4 ]; then bad "CLOUDY_CLOUD_EGRESS_ALLOW is set, but zipbox cannot limit where a machine connects"; fails=1
+            hint "cloud_agent refuses every worker while it is set. Remove it"
+            hint "from $(cfg) — or set it to off — or use"
+            hint "CLOUDY_CLOUD_PROVIDER=microsandbox, which enforces it."
+          elif [ "$rc" = 3 ]; then bad "CLOUDY_CLOUD_EGRESS_ALLOW does not parse"; fails=1
+            while IFS= read -r l; do hint "$l"; done <<<"$egerr"
+          elif [ "$rc" != 0 ]; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node failed"
+          else ok "No effective egress allow list"; fi
+        fi ;;
+      esac
+    else ok "No egress allow list is set" "zipbox does not support one"; fi
   elif [ "$provider" = self-hosted ]; then
     if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
     elif [ "$(eff CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX)" != yes ]; then

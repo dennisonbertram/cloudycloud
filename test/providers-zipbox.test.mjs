@@ -2,12 +2,13 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider } from '../src/providers/zipbox.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
+import { isQuotaExceeded, isRateLimited } from '../src/limits.mjs';
 
 const KEY = 'zb_test_key_0000000000000000000000';
 const GH = 'ghp_zipbox_test_secret';
@@ -23,7 +24,8 @@ function fakeZipbox() {
   const store = new Map(); // id -> box record
   const files = new Map(); // id -> Map(path -> body string)
   const execs = new Map(); // id -> [cmd]
-  const fail = new Map(); // pathname -> () => response
+  const fail = new Map(); // pathname -> (method, url) => response (a falsy return falls through to normal handling)
+  const idem = new Map(); // Idempotency-Key -> stored claim answer (a replay returns it unchanged)
   const z = { execState: { code: 0, out: '', err: '', timedOut: false } }; // what the next /exec answers
   let n = 0;
   const boxRow = (id, name, extra = {}) => ({ id, name, status: 'running', ready: true, readiness: 'ready', tier: 's',
@@ -36,14 +38,18 @@ function fakeZipbox() {
     const u = new URL(String(url));
     const method = init.method ?? 'GET';
     const body = typeof init.body === 'string' && u.pathname !== '/files/write' ? JSON.parse(init.body) : init.body;
-    log.push({ method, url: String(url), path: u.pathname + u.search, headers: init.headers ?? {}, body });
+    log.push({ method, url: String(url), path: u.pathname + u.search, headers: init.headers ?? {}, body, redirect: init.redirect });
     const forced = fail.get(u.pathname);
-    if (forced) return forced();
+    if (forced) { const out = forced(method, u); if (out) return out; }
     if (u.hostname === 'api.tribes.xyz') {
       if (u.pathname === '/sandbox/identity/claim' && method === 'POST') {
+        const k = init.headers?.['Idempotency-Key'];
+        if (k && idem.has(k)) return idem.get(k);
         const id = `sbx-${++n}`;
         store.set(id, boxRow(id, body.name));
-        return respond(200, { sandboxId: id, name: body.name, status: 'provisioning', created: true, ready: false, readiness: 'settling' });
+        const r = respond(200, { sandboxId: id, name: body.name, status: 'provisioning', created: true, ready: false, readiness: 'settling' });
+        if (k) idem.set(k, r);
+        return r;
       }
       if (u.pathname === '/sandbox' && method === 'GET') return respond(200, [...store.values()]);
       const m = u.pathname.match(/^\/sandbox\/([^/]+?)(\/wait)?$/);
@@ -61,6 +67,8 @@ function fakeZipbox() {
       if (u.pathname === '/exec' && method === 'POST') {
         (execs.get(rec.id) ?? execs.set(rec.id, []).get(rec.id)).push(body.cmd);
         const st = z.execState;
+        if (st.raw !== undefined) return respond(200, st.raw); // a literal SSE body (malformed-event tests)
+        if (st.events) return sse(st.events); // an exact event list (gap-event tests)
         return sse([['start', { id: 'cmd_1' }], ...(st.out ? [['stdout', { data: st.out }]] : []), ...(st.err ? [['stderr', { data: st.err }]] : []),
           ['exit', { state: 'exited', exitCode: st.code, signal: null, timedOut: !!st.timedOut }]]);
       }
@@ -187,8 +195,13 @@ test('zipbox: http errors normalize (429, 401, 5xx, quota)', async () => {
   z.fail.set('/sandbox', () => z.respond(503, { error: { code: 'unavailable', message: 'maintenance' } }));
   await assert.rejects(p.list(), (e) => e.code === 'transient');
   z.fail.clear();
-  z.fail.set('/sandbox/identity/claim', () => z.respond(403, { error: { code: 'machine_limit_reached', message: 'limit' } }));
+  z.fail.set('/sandbox/identity/claim', () => z.respond(402, { error: { code: 'insufficient_credits', message: 'top up' } }));
   await assert.rejects(create(p), (e) => e.code === 'quota_exceeded');
+  // machine_limit_reached is permanent (a name is never freed) — never quota_exceeded, never retried.
+  z.fail.set('/sandbox/identity/claim', () => z.respond(403, { error: { code: 'machine_limit_reached', message: 'limit' } }));
+  const lim = await create(p).then(() => { throw new Error('should fail'); }, (x) => x);
+  assert.equal(lim.code, 'machine_limit_reached');
+  assert.ok(!isQuotaExceeded(lim) && !isRateLimited(lim));
 });
 
 test('zipbox: publishPort creates a public preview and unpublishPort removes it', async () => {
@@ -260,4 +273,249 @@ test('loadProvider knows zipbox', async () => {
   const p = await loadProvider({ CLOUDY_CLOUD_PROVIDER: 'zipbox' });
   assert.equal(p.name, 'zipbox');
   assert.equal(p.keyName, 'ZIPBOX_API_KEY');
+});
+
+// ---- Astra review fixes ----
+
+// A provider with an isolated state file (no env dir needed): env values plus a chosen stateFile.
+const mkState = (z, dir, deps = {}) => createProvider({
+  ZIPBOX_API_KEY: KEY, CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX: 'yes', GH_TOKEN: GH,
+  CLAUDE_CODE_OAUTH_TOKEN: OAT, CLOUDY_CLOUD_CONFIG: join(dir, 'env'),
+}, { fetchFn: z.fetch, stateFile: join(dir, 'zipbox-boxes.json'), ...deps });
+
+// create: a claim answer lost on the wire is recovered by replaying the SAME Idempotency-Key,
+// which returns the original box instead of claiming a second one.
+test('zipbox: a dropped claim answer is retried with the same Idempotency-Key', async () => {
+  const z = fakeZipbox();
+  const realFetch = z.fetch;
+  let dropped = false;
+  z.fetch = async (url, init) => {
+    if (!dropped && new URL(String(url)).pathname === '/sandbox/identity/claim') {
+      dropped = true;
+      await realFetch(url, init); // the claim landed; the answer never arrived
+      throw new Error('socket hang up');
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z, {}, { sleep: async () => {} });
+  const s = await create(p);
+  try {
+    const claims = z.log.filter((l) => l.path === '/sandbox/identity/claim');
+    assert.equal(claims.length, 2);
+    assert.equal(claims[0].headers['Idempotency-Key'], claims[1].headers['Idempotency-Key']);
+    assert.equal(z.store.size, 1, 'the replay returned the original box instead of claiming a second one');
+  } finally { await s.kill(); }
+});
+
+// create: the first state write (and everything after the claim) is covered by cleanup —
+// a failure there deletes the claimed box.
+test('zipbox: a state-write failure after claim deletes the box', async () => {
+  const z = fakeZipbox();
+  const dir = mkdtempSync(join(tmpdir(), 'ccz-'));
+  const blocker = join(dir, 'blocked');
+  writeFileSync(blocker, 'x'); // a file where the state file's parent directory must be
+  const p = mkState(z, dir, { stateFile: join(blocker, 'zipbox-boxes.json') });
+  await assert.rejects(create(p));
+  assert.equal(z.store.size, 0, 'the claimed box was deleted');
+  assert.ok(z.log.some((l) => l.method === 'DELETE'));
+});
+
+// delete: ownership survives a failed delete — the state row stays (marked with the error) and
+// list() keeps the box visible.
+test('zipbox: a failed delete keeps the record and list shows the error', async () => {
+  const z = fakeZipbox();
+  const dir = mkdtempSync(join(tmpdir(), 'ccz-'));
+  const p = mkState(z, dir, { sleep: async () => {} });
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  z.fail.set(`/sandbox/${s.id}`, (m) => (m === 'DELETE' ? z.respond(503, { error: { code: 'unavailable', message: 'down' } }) : undefined));
+  await assert.rejects(p.delete(s.id, { retries: 0 }), (e) => e.code === 'transient');
+  const rows = await p.list({ owner: 'o1' });
+  assert.equal(rows.length, 1, 'a failed delete stays visible');
+  assert.match(rows[0].deleteError ?? '', /delete failed|unavailable|down/i);
+  const st = JSON.parse(readFileSync(join(dir, 'zipbox-boxes.json'), 'utf8'));
+  assert.match(st.boxes[s.id]?.deleteError ?? '', /unavailable|down/, 'the state record keeps the failure');
+  z.fail.delete(`/sandbox/${s.id}`);
+  await s.kill();
+});
+
+// The deadline sweep in list(): a failed delete is reported through onError and the row stays listed
+// (so the reaper and machines ls keep seeing it and retry).
+test('zipbox: the deadline sweep reports a failed delete and keeps the row', async () => {
+  const z = fakeZipbox();
+  const p = mk(z, {}, { sleep: async () => {} });
+  const past = Math.floor((Date.now() - 60_000) / 1000).toString(36);
+  z.store.set('stuck', z.boxRow('stuck', `cc-${past}-bbbb22`));
+  z.fail.set('/sandbox/stuck', (m) => (m === 'DELETE' ? z.respond(503, { error: { code: 'unavailable', message: 'down' } }) : undefined));
+  const errs = [];
+  const rows = await p.list({ purpose: 'cloudy-cloud' }, { onError: (e) => errs.push(e) });
+  assert.equal(errs.length, 1, 'the sweep reported the failed delete');
+  assert.equal(rows[0]?.id, 'stuck', 'the row is still listed');
+  assert.match(rows[0].deleteError ?? '', /unavailable|down/);
+});
+
+// connect() must not report an expired box removed when the delete itself failed.
+test('zipbox: connect does not report an expired box removed when the delete failed', async () => {
+  const z = fakeZipbox();
+  const p = mk(z, {}, { sleep: async () => {} });
+  const past = Math.floor((Date.now() - 60_000) / 1000).toString(36);
+  z.store.set('old', z.boxRow('old', `cc-${past}-aaaa11`));
+  z.fail.set('/sandbox/old', (m) => (m === 'DELETE' ? z.respond(503, { error: { code: 'unavailable', message: 'down' } }) : undefined));
+  const e = await p.connect('old').then(() => { throw new Error('x'); }, (x) => x);
+  assert.notEqual(e.code, 'not_found', 'must not claim removal when the delete failed');
+  assert.ok(z.store.has('old'), 'the box is still there');
+});
+
+// State writes are serialised with a lock dir: a lock held by another process fails loudly
+// (never a half-written file or a silently lost row).
+test('zipbox: a held state lock fails create loudly and the claimed box is deleted', async () => {
+  const z = fakeZipbox();
+  const dir = mkdtempSync(join(tmpdir(), 'ccz-'));
+  const p = mkState(z, dir, { sleep: async () => {} });
+  mkdirSync(`${join(dir, 'zipbox-boxes.json')}.lock`);
+  await assert.rejects(create(p), (e) => e.code === 'transient');
+  assert.equal(z.store.size, 0, 'the claimed box was deleted');
+});
+
+// A stale lock (crashed process) is taken over.
+test('zipbox: a stale state lock is taken over', async () => {
+  const z = fakeZipbox();
+  const dir = mkdtempSync(join(tmpdir(), 'ccz-'));
+  const p = mkState(z, dir);
+  const lock = `${join(dir, 'zipbox-boxes.json')}.lock`;
+  mkdirSync(lock);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(lock, old, old);
+  const s = await create(p);
+  try {
+    assert.ok(JSON.parse(readFileSync(join(dir, 'zipbox-boxes.json'), 'utf8')).boxes[s.id]);
+  } finally { await s.kill(); }
+});
+
+// secrets: the full error field is scrubbed BEFORE truncation, so a token crossing the 200-char
+// cut cannot leave a visible fragment.
+test('zipbox: error text is redacted before it is truncated', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  z.fail.set('/sandbox', () => z.respond(500, { error: { code: 'unavailable', message: `${'x'.repeat(195)}${KEY}` } }));
+  const e = await p.list().then(() => { throw new Error('x'); }, (x) => x);
+  assert.ok(!e.message.includes('zb_'), `key fragment leaked: ${e.message}`);
+});
+
+// secrets: the boxToken from /wait is registered with the scrubber before the first box call,
+// so a provisioning exec error cannot leak it.
+test('zipbox: the box token is scrubbed from provisioning exec errors', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  z.execState = { code: 1, out: '', err: 'provision died: bt-sbx-1' };
+  const e = await create(p).then(() => { throw new Error('x'); }, (x) => x);
+  assert.ok(!e.message.includes('bt-sbx-1'), e.message);
+  assert.ok(!(e.stderr ?? '').includes('bt-sbx-1'), e.stderr);
+});
+
+// secrets: a failed exec attaches redacted stdout/stderr, never raw secret-bearing output.
+test('zipbox: exec errors carry redacted stdout and stderr', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  const s = await create(p, { envs: { CLAUDE_CODE_OAUTH_TOKEN: OAT } });
+  try {
+    z.execState = { code: 3, out: `out ${GH}`, err: `err ${GH} ${OAT}` };
+    const e = await s.commands.run('x').then(() => { throw new Error('x'); }, (x) => x);
+    for (const v of [GH, OAT]) {
+      assert.ok(!e.message.includes(v), e.message);
+      assert.ok(!(e.stdout ?? '').includes(v));
+      assert.ok(!(e.stderr ?? '').includes(v));
+    }
+  } finally { await s.kill(); }
+});
+
+// The diagnostic hints pipe the Authorization header to curl on stdin; the key never sits in argv.
+test('zipbox: the diagnostic curl hints pass the key on stdin, never in argv', () => {
+  const p = mk(fakeZipbox());
+  for (const t of [p.text.listMachines, p.text.apiFix]) {
+    assert.doesNotMatch(t, /curl[^\n|]*-H/); // no -H flag on the curl argv
+    assert.match(t, /curl -s -K - /);
+  }
+});
+
+// Uploads carrying credentials (the env file write) must not follow redirects to another origin.
+test('zipbox: box calls refuse redirects so credential bodies cannot leave the origin', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    const boxCalls = z.log.filter((l) => l.url.includes('zbox.sh'));
+    assert.ok(boxCalls.length > 0);
+    for (const l of boxCalls) assert.equal(l.redirect, 'error', `${l.method} ${l.path}`);
+  } finally { await s.kill(); }
+});
+
+// machine_limit_reached is permanent (names are never freed) — it must not look like a retryable quota.
+test('zipbox: machine_limit_reached is a permanent error, not a retryable quota', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  z.fail.set('/sandbox/identity/claim', () => z.respond(403, { error: { code: 'machine_limit_reached', message: "You've reached this account's limit of 250 machines." } }));
+  const e = await create(p).then(() => { throw new Error('x'); }, (x) => x);
+  assert.equal(e.code, 'machine_limit_reached');
+  assert.match(e.message, /250|name/);
+  assert.ok(!isQuotaExceeded(e) && !isRateLimited(e), 'the start queue must not retry it');
+});
+
+// Exec SSE: a `gap` event (dropped output) or a malformed output event fails explicitly instead
+// of returning partial stdout as a success.
+test('zipbox: a gap event or a malformed output event fails with incomplete_output', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.execState = { events: [['start', { id: 'c' }], ['stdout', { data: 'partial' }], ['gap', { dropped: 64 }], ['exit', { state: 'exited', exitCode: 0, signal: null, timedOut: false }]] };
+    const e1 = await s.commands.run('x').then(() => { throw new Error('x'); }, (x) => x);
+    assert.equal(e1.code, 'incomplete_output');
+    z.execState = { raw: 'event: stdout\ndata: {broken\n\nevent: exit\ndata: {"exitCode":0}\n\n' };
+    const e2 = await s.commands.run('x').then(() => { throw new Error('x'); }, (x) => x);
+    assert.equal(e2.code, 'incomplete_output');
+  } finally { await s.kill(); }
+});
+
+// Error normalisation: a malformed list answer is an error (not an empty account), a locally
+// missing key is no_key (not transient), and box-API 400/403 errors get their permanent codes.
+test('zipbox: a malformed list answer is an error, a missing key is no_key, box 400/403 are permanent', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  z.fail.set('/sandbox', () => z.respond(200, { boxes: [] })); // a success in the wrong shape
+  await assert.rejects(p.list(), (e) => e.code === 'transient');
+  z.fail.set('/sandbox', () => z.respond(200, '<html>not json</html>'));
+  await assert.rejects(p.list(), (e) => e.code === 'transient');
+  z.fail.delete('/sandbox');
+  const noKey = mk(z, { ZIPBOX_API_KEY: undefined });
+  await assert.rejects(noKey.list(), (e) => e.code === 'no_key');
+  await assert.rejects(noKey.delete('sbx-1'), (e) => e.code === 'no_key');
+  const s = await create(p);
+  try {
+    z.fail.set('/files/download', () => z.respond(400, { error: 'path must be absolute', code: 'invalid_request' }));
+    await assert.rejects(s.files.read('rel/path'), (e) => e.code === 'invalid_request');
+    z.fail.set('/files/download', () => z.respond(403, { error: 'This folder is read-only.' }));
+    await assert.rejects(s.files.read('/root/x'), (e) => e.code === 'forbidden');
+  } finally { await s.kill(); }
+});
+
+// publishPort propagates the last caddy failure; publish/unpublish validate the port range.
+test('zipbox: publishPort propagates a caddy failure and both calls validate the port', async () => {
+  const z = fakeZipbox();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.execState = { code: 1, out: '', err: 'caddy exploded' };
+    await assert.rejects(p.publishPort(s.id, '8080'), (e) => /caddy exploded/.test(e.message ?? '') || e.exitCode === 1);
+    for (const bad of ['x', '0', '65536', '80; rm -rf /']) {
+      await assert.rejects(p.publishPort(s.id, bad), /port/);
+      await assert.rejects(p.unpublishPort(s.id, bad), /port/);
+    }
+  } finally { await s.kill(); }
+});
+
+// The README consent line must be copy-pasteable: config readers keep an inline comment as part
+// of the value, and the provider requires exactly `yes`.
+test('zipbox: the README consent line has no inline comment', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /^CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes$/m);
 });

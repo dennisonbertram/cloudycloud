@@ -21,7 +21,7 @@
 //   docker/worker.Dockerfile (git, gh, node, claude, uv, tmux).
 // Coordinators are refused: a box has no Docker socket for sibling workers.
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, statSync, rmdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLimiter } from '../limits.mjs';
@@ -34,6 +34,11 @@ const ENVFILE = '/root/.cloudy-cloud-env'; // consented credential values live h
 const PREFIX = /^cc-([0-9a-z]+)-[0-9a-z]{6}$/; // our boxes: deadline (unix seconds, base36) + random tag
 const STATUS = { provisioning: 'starting', running: 'running', stopping: 'stopped', paused: 'stopped', deleting: 'stopped', destroyed: 'stopped' };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
+const portOf = (port) => {
+  const p = String(port);
+  if (!/^\d+$/.test(p) || Number(p) < 1 || Number(p) > 65535) throw new Error(`port must be a number from 1 to 65535, not "${p.slice(0, 30)}"`);
+  return p;
+};
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, inside the box's bash -lc
 
 // One idempotent install run (marker file exits at once on a rerun), mirroring docker/worker.Dockerfile.
@@ -89,31 +94,65 @@ export function createProvider(env = process.env, deps = {}) {
     writeFileSync(tmp, `${JSON.stringify({ boxes }, null, 1)}\n`, { mode: 0o600 });
     renameSync(tmp, stateFile);
   };
-  const setState = (id, entry) => { const b = readState(); if (entry) b[id] = entry; else delete b[id]; writeState(b); };
+  // Mutations run under a lock dir and re-read the file inside it, so two cloudy-cloud processes
+  // (a create racing a machines stop, say) can never lose each other's rows. A lock older than
+  // 30 s is a crashed holder and is taken over; Atomics.wait works on Node's main thread.
+  const lockDir = `${stateFile}.lock`;
+  const withStateLock = (fn) => {
+    mkdirSync(dirname(stateFile), { recursive: true });
+    for (let tries = 0; ; tries++) {
+      try { mkdirSync(lockDir); break; }
+      catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        let stale = false;
+        try { stale = Date.now() - statSync(lockDir).mtimeMs > 30_000; } catch { stale = true; }
+        if (stale) { try { rmdirSync(lockDir); } catch { /* raced to it */ } continue; }
+        if (tries >= 300) throw fail('transient', 'the Zipbox state file stayed locked by another process');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+    try { return fn(); } finally { try { rmdirSync(lockDir); } catch { /* lock holder vanished */ } }
+  };
+  const setState = (id, entry) => withStateLock(() => {
+    const b = readState();
+    const e = typeof entry === 'function' ? entry(b[id]) : entry;
+    if (e) b[id] = e; else delete b[id];
+    writeState(b);
+  });
 
   // ---- HTTP ----
   const httpError = (status, e, raw, retryAfter) => {
-    const msg = scrub(String(e?.message ?? raw).replaceAll('\n', ' ').slice(0, 200));
+    // Scrub the WHOLE field before cutting it: truncating first could leave a visible token fragment.
+    const msg = scrub(String(e?.message ?? raw)).replaceAll('\n', ' ').slice(0, 200);
     if (status === 429 || e?.code === 'rate_limited')
       return fail('rate_limited', `The Zipbox API rate-limited the request.`, { retryAfterSeconds: Math.max(1, Math.ceil((e?.retryAfterMs ?? (Number(retryAfter) * 1000 || 1000)) / 1000)) });
     if (status === 401 || ['unauthorized', 'box_key_changed'].includes(e?.code))
       return fail('no_key', `The Zipbox API key was refused (HTTP ${status}). ${api.text.noKeyFix}`);
     if (status === 404 || e?.code === 'not_found') return fail('not_found', `Zipbox: ${msg || 'not found'}`);
-    if (status === 402 || e?.code === 'insufficient_credits' || e?.code === 'machine_limit_reached')
+    if (status === 402 || e?.code === 'insufficient_credits')
       return fail('quota_exceeded', `Zipbox: ${msg || e?.code || 'the account limit was reached'}`);
+    // A machine name is never freed (a deleted box keeps it), so the 250-name cap is permanent:
+    // no retry helps. Box names encode the deadline, so this adapter always claims a fresh one.
+    if (e?.code === 'machine_limit_reached')
+      return fail('machine_limit_reached', `Zipbox refused the create: the account already holds its 250 machine names, and a name is never freed, not even by deleting its box. Retrying cannot help.\nNext step: tell the user the limit is permanent — a different Zipbox account key for ZIPBOX_API_KEY, or another CLOUDY_CLOUD_PROVIDER (microsandbox, instabox), is needed.`);
     if (status >= 500 || e?.retryable === true || ['unavailable', 'box_not_running', 'source_busy'].includes(e?.code))
       return fail('transient', `Zipbox: ${msg || `HTTP ${status}`}`);
     if (e?.code) return fail(e.code, `Zipbox: ${msg || e.code}`); // name_taken, conflict, forbidden, invalid_request, ...
+    // A 4xx without a code is still permanent; the box API often carries only a string `error`.
+    if (status === 403) return fail('forbidden', `Zipbox: ${msg || 'forbidden (HTTP 403)'}`);
+    if (status === 400 || status === 413) return fail('invalid_request', `Zipbox: ${msg || `HTTP ${status}`}`);
     return fail('transient', `The Zipbox API returned HTTP ${status}${msg ? ` (${msg})` : ''}`);
   };
 
   // One control-plane call. Errors: {error:{code,message,retryable,retryAfterMs}}.
   const ctl = async (method, path, body, { idempotencyKey } = {}) => {
+    const key = apiKey(); // no_key must surface as no_key, not be wrapped into transient below
     let res;
     try {
       res = await limiter.run(() => fetchFn(`${API}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${apiKey()}`, ...(body !== undefined && { 'Content-Type': 'application/json' }), ...(idempotencyKey && { 'Idempotency-Key': idempotencyKey }) },
+        redirect: 'error', // never follow a redirect while a credential header is attached
+        headers: { Authorization: `Bearer ${key}`, ...(body !== undefined && { 'Content-Type': 'application/json' }), ...(idempotencyKey && { 'Idempotency-Key': idempotencyKey }) },
         ...(body !== undefined && { body: JSON.stringify(body) }),
       }));
     } catch (e) { throw fail('transient', `The Zipbox API could not be reached (${scrub(e?.message ?? e).replaceAll('\n', ' ')})`); }
@@ -140,8 +179,8 @@ export function createProvider(env = process.env, deps = {}) {
       let res;
       try {
         res = await limiter.run(() => fetchFn(`${info.baseUrl}${path}`, {
-          method, signal, headers: { Authorization: `Bearer ${info.boxToken}`, ...headers },
-          ...(body !== undefined && { body }),
+          method, signal, redirect: 'error', headers: { Authorization: `Bearer ${info.boxToken}`, ...headers },
+          ...(body !== undefined && { body }), // credential bodies must never ride a redirect to another origin
         }));
       } catch (e) {
         if (e?.name === 'AbortError') throw e;
@@ -184,7 +223,9 @@ export function createProvider(env = process.env, deps = {}) {
 
   const sandbox = (id, name, info, deleteAt) => {
     // Past its deadline the box must not serve again; every handle operation removes it first.
-    const guard = async () => { if (deleteAt && deleteAt <= now()) { await api.delete(id).catch(() => {}); throw fail('not_found', `the Zipbox box ${name} passed its deleteAt and was removed`); } };
+    // A failed delete propagates instead of being swallowed: removal is not confirmed, so the op
+    // must not report the box gone while it may still be running.
+    const guard = async () => { if (deleteAt && deleteAt <= now()) { await api.delete(id); throw fail('not_found', `the Zipbox box ${name} passed its deleteAt and was removed`); } };
     // A foreground exec: POST /exec, SSE until the exit event. Disconnecting kills the command on the box,
     // so an abort needs nothing more; timeoutMs lets the box enforce the deadline itself.
     const run = async (cmd, { cwd, timeoutMs, signal, onStdout } = {}) => {
@@ -193,24 +234,34 @@ export function createProvider(env = process.env, deps = {}) {
       const body = { cmd: inner, cwd: cwd || HOME, ...(timeoutMs > 0 && { timeoutMs: Math.ceil(timeoutMs) }) };
       const res = await boxCall(id, info, '/exec', { method: 'POST', body: JSON.stringify(body), headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' }, signal });
       if (!res.ok) { const t = await res.text().catch(() => ''); throw boxErr(res.status, t); }
-      let stdout = '', stderr = '', exit;
+      let stdout = '', stderr = '', exit, broken;
       await sseRead(res, (ev, data) => {
-        let j = {};
-        try { j = JSON.parse(data); } catch { /* keep raw text out of exit handling */ }
-        if (ev === 'stdout' && typeof j.data === 'string') { stdout += j.data; try { onStdout?.(j.data); } catch { /* a bad callback must not kill the call */ } }
-        else if (ev === 'stderr' && typeof j.data === 'string') stderr += j.data;
-        else if (ev === 'exit') exit = j;
+        let j;
+        try { j = JSON.parse(data); } catch { j = undefined; }
+        // `gap` means the stream dropped output; a malformed event on an output channel means the
+        // same thing. Partial stdout must never come back as a success.
+        if (ev === 'gap') { broken = 'the exec stream reported dropped output (a gap event)'; return; }
+        if (ev === 'stdout' && typeof j?.data === 'string') { stdout += j.data; try { onStdout?.(j.data); } catch { /* a bad callback must not kill the call */ } return; }
+        if (ev === 'stderr' && typeof j?.data === 'string') { stderr += j.data; return; }
+        if (ev === 'exit' && j && typeof j === 'object') { exit = j; return; }
+        if (ev === 'stdout' || ev === 'stderr' || ev === 'exit') broken = `the exec stream carried a malformed ${ev} event`;
       });
-      if (!exit) throw fail('transient', 'the Zipbox exec stream ended without an exit event');
+      // Errors carry redacted output only: the worker's stdout/stderr can hold secret values.
+      const out = () => ({ stdout: scrub(stdout), stderr: scrub(stderr), ...(exit && typeof exit.exitCode === 'number' ? { exitCode: exit.exitCode } : {}) });
+      if (broken) throw fail('incomplete_output', `the Zipbox exec output is incomplete (${broken}), so its result cannot be trusted — run the command again`, out());
+      if (!exit) throw fail('transient', 'the Zipbox exec stream ended without an exit event', out());
       const r = { stdout, stderr, exitCode: exit.exitCode ?? 1 };
-      if (exit.timedOut) throw fail('timeout', `timed out after ${Math.ceil((timeoutMs ?? 0) / 1000)} s`, r);
-      if (r.exitCode !== 0) throw Object.assign(new Error(stderr.trim().slice(-300) || `exit ${r.exitCode}`), r);
+      if (exit.timedOut) throw fail('timeout', `timed out after ${Math.ceil((timeoutMs ?? 0) / 1000)} s`, out());
+      if (r.exitCode !== 0) throw Object.assign(new Error(scrub(stderr.trim()).slice(-300) || `exit ${r.exitCode}`), out());
       return r;
     };
+    // Box-API errors predate the control-plane envelope: {error: "<message>", code: "<code>"}.
     const boxErr = (status, raw) => {
       let j = {};
       try { j = JSON.parse(raw); } catch { /* not JSON */ }
-      return httpError(status, j?.error && typeof j.error === 'object' ? j.error : {}, raw);
+      const e = j?.error && typeof j.error === 'object' ? j.error
+        : { ...(typeof j?.error === 'string' && { message: j.error }), ...(typeof j?.code === 'string' && { code: j.code }) };
+      return httpError(status, e, raw);
     };
     return {
       id, name, home: HOME,
@@ -278,11 +329,32 @@ export function createProvider(env = process.env, deps = {}) {
       for (const n of Object.keys(vars)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
       for (const v of Object.values(vars)) if (typeof v === 'string') sensitive.add(v); // never let a written value reach an error string
 
-      const claim = await ctl('POST', '/sandbox/identity/claim', { name: boxName, tier: 's' }, { idempotencyKey: randomUUID() });
+      // ONE Idempotency-Key for the whole claim: replaying the same key + body returns the original
+      // answer, so a response lost on the wire is recovered by retrying instead of claiming twice.
+      const idem = randomUUID();
+      let claim, lastErr;
+      for (let attempt = 0; attempt < 3 && !claim; attempt++) {
+        try { claim = await ctl('POST', '/sandbox/identity/claim', { name: boxName, tier: 's' }, { idempotencyKey: idem }); }
+        catch (e) {
+          lastErr = e;
+          if (e.code !== 'transient' && e.code !== 'rate_limited') break; // a definitive refusal
+          await sleep(500 * (attempt + 1));
+        }
+      }
+      if (!claim) {
+        // The claim may still have landed though every answer was lost — or a crashed earlier create
+        // claimed this name. The unique name lets a list recover it (names are account-scoped).
+        const found = (await ctl('GET', '/sandbox').then((bs) => (Array.isArray(bs) ? bs : [])).catch(() => [])).find((b) => b?.name === boxName);
+        if (found?.id) claim = { sandboxId: found.id, name: boxName, created: false };
+        else throw lastErr;
+      }
       const id = claim.sandboxId ?? claim.id;
       if (!id) throw fail('transient', 'the Zipbox claim answer carried no sandbox id');
-      setState(id, { name: boxName, labels: all }); // tracked before provisioning: a crash still sweeps it
+      if (claim.boxToken) sensitive.add(claim.boxToken);
       try {
+        // Everything after the claim — including the first state write — is covered by cleanup:
+        // any failure deletes the claimed box instead of leaking a billed, untracked machine.
+        setState(id, { name: boxName, labels: all }); // tracked before provisioning: a crash still sweeps it
         // wait?until=ready is server-held; loop briefly in case it returns early or the box is still settling.
         let rec;
         for (const deadline = t0 + 180_000; ; ) {
@@ -291,6 +363,7 @@ export function createProvider(env = process.env, deps = {}) {
           if (now() >= deadline) throw fail('transient', 'the Zipbox box did not become ready within 180 s');
           await sleep(1000);
         }
+        sensitive.add(rec.boxToken); // registered before the first box call, so errors can never leak it
         const sb = sandbox(id, boxName, { baseUrl: rec.baseUrl, boxToken: rec.boxToken }, deleteAt);
         await sb.commands.run(PROVISION, { timeoutMs: 600_000 });
         const envText = Object.entries(vars).map(([k, v]) => `${k}=${q(v)}\n`).join('');
@@ -307,20 +380,27 @@ export function createProvider(env = process.env, deps = {}) {
       const rec = await boxInfo(id);
       if (!PREFIX.test(rec?.name ?? '')) throw fail('not_found', `No cloudy-cloud Zipbox box ${id}`);
       const deleteAt = deadlineOf(rec?.name) || Date.parse(readState()[id]?.labels?.deleteAt ?? '') || 0;
-      if (deleteAt && deleteAt <= now()) { await api.delete(id).catch(() => {}); throw fail('not_found', `the Zipbox box ${id} passed its deleteAt and was removed`); }
+      if (deleteAt && deleteAt <= now()) { await api.delete(id); throw fail('not_found', `the Zipbox box ${id} passed its deleteAt and was removed`); }
       if (!rec?.baseUrl || !rec?.boxToken) throw fail('transient', `the Zipbox box ${id} is not running (status ${rec?.status ?? 'unknown'})`);
       return sandbox(id, rec.name ?? id, { baseUrl: rec.baseUrl, boxToken: rec.boxToken }, deleteAt);
     },
 
-    async list(labels = {}) {
+    async list(labels = {}, { onError } = {}) {
       const state = readState();
       const boxes = await ctl('GET', '/sandbox');
+      if (!Array.isArray(boxes)) throw fail('transient', 'the Zipbox sandbox list answer was not a JSON array — the account cannot be read, so nothing can be shown or swept');
       const rows = [];
-      for (const rec of Array.isArray(boxes) ? boxes : []) {
+      for (const rec of boxes) {
         if (!PREFIX.test(rec?.name ?? '')) continue; // not ours: only cc-* names are cloudy-cloud boxes
         const st = state[rec.id] ?? {};
         const deleteAt = deadlineOf(rec.name) || Date.parse(st?.labels?.deleteAt ?? '') || 0;
-        if (deleteAt && deleteAt <= now()) { await api.delete(rec.id).catch(() => {}); continue; } // sweep expired owned boxes
+        let deleteError = st.deleteError;
+        if (deleteAt && deleteAt <= now()) {
+          // Sweep expired owned boxes. A failed delete is reported and the row kept: the box is still
+          // out there billing, so it must stay visible (and the next sweep tries again).
+          try { await api.delete(rec.id); continue; }
+          catch (e) { deleteError = `delete failed: ${e.message}`; onError?.(e); }
+        }
         const l = { purpose: 'cloudy-cloud', ...(st.labels ?? {}) };
         if (!Object.entries(labels).every(([k, v]) => l[k] === v)) continue;
         rows.push({
@@ -328,22 +408,30 @@ export function createProvider(env = process.env, deps = {}) {
           state: rec.status ?? '', status: STATUS[rec.status] ?? (rec.startFailedAt ? 'failed' : 'stopped'),
           startedAt: Date.parse(l.startedAt) || Date.parse(rec.createdAt) || 0,
           deleteAt: new Date(deleteAt).toISOString(),
+          ...(deleteError && { deleteError }),
         });
       }
       return rows;
     },
 
+    // Ownership state is dropped only after the API confirms the delete (or says 404). A failed delete
+    // keeps the record, marked with the error, so the box stays listed and the next sweep retries.
     async delete(id, { retries = 2, log } = {}) {
-      try { setState(id, null); } catch { /* state cleanup must not block a delete */ }
-      for (let attempt = 0; ; attempt++) {
-        try { await ctl('DELETE', `/sandbox/${encodeURIComponent(id)}`, { archiveBeforeDestroy: false }); return; }
-        catch (e) {
-          if (e.code === 'not_found') return;
-          if (attempt >= retries || e.code !== 'transient' && e.code !== 'rate_limited') throw e;
-          log?.(`delete ${id} failed (${e.message}); retrying`);
-          await sleep(500 * (attempt + 1));
+      try {
+        for (let attempt = 0; ; attempt++) {
+          try { await ctl('DELETE', `/sandbox/${encodeURIComponent(id)}`, { archiveBeforeDestroy: false }); break; }
+          catch (e) {
+            if (e.code === 'not_found') break;
+            if (attempt >= retries || (e.code !== 'transient' && e.code !== 'rate_limited')) throw e;
+            log?.(`delete ${id} failed (${e.message}); retrying`);
+            await sleep(500 * (attempt + 1));
+          }
         }
+      } catch (e) {
+        try { setState(id, (prev) => ({ ...(prev ?? {}), deleteError: `delete failed: ${e.message}` })); } catch { /* still visible by name */ }
+        throw e;
       }
+      try { setState(id, null); } catch { /* state cleanup must not block a confirmed delete */ }
     },
 
     async snapshot() { throw new Error('zipbox does not support snapshots'); },
@@ -353,23 +441,26 @@ export function createProvider(env = process.env, deps = {}) {
     // public share path. `cloudy-cloud open` refuses earlier because caps.hasPortForward is false.
     async forwardPort() { throw new Error('zipbox has no private port tunnel for `cloudy-cloud open`; use --share for a public preview link.'); },
     async publishPort(id, port) {
-      const p = String(port);
-      if (!/^\d+$/.test(p)) throw new Error(`port must be a number, not "${port}"`);
+      const p = portOf(port);
       const sb = await api.connect(id);
       // previews run through the box's own caddy: tribes-caddy add <label>.<box host> 127.0.0.1:<port> --no-wait;
-      // exit 75 means the wildcard certificate is still being issued — retry briefly, the URL is fixed either way.
+      // exit 75 means the wildcard certificate is still being issued — retry briefly.
       const label = `p${p}`;
-      for (let n = 0; n < 4; n++) {
-        const r = await sb.commands.run(`tribes-caddy add ${label}.${sb.name}.zbox.sh 127.0.0.1:${p} --no-wait`, { timeoutMs: 30_000 }).catch((e) => e);
-        if (r.exitCode === 0) break;
-        if (r.exitCode !== 75 || n === 3) break; // a real failure still yields the deterministic URL below
-        await sleep(Number(r.stderr?.match(/retryAfterMs\D*(\d+)/i)?.[1]) || 3000);
+      for (let n = 0; ; n++) {
+        try {
+          await sb.commands.run(`tribes-caddy add ${label}.${sb.name}.zbox.sh 127.0.0.1:${p} --no-wait`, { timeoutMs: 30_000 });
+          return { url: `https://${label}.${sb.name}.zbox.sh` };
+        } catch (e) {
+          // A URL is only returned after the route actually took: the last failure propagates.
+          if (e.exitCode !== 75 || n === 3) throw e;
+          await sleep(Number(e.stderr?.match(/retryAfterMs\D*(\d+)/i)?.[1]) || 3000);
+        }
       }
-      return { url: `https://${label}.${sb.name}.zbox.sh` };
     },
     async unpublishPort(id, port) {
+      const p = portOf(port);
       const sb = await api.connect(id);
-      const r = await sb.commands.run(`tribes-caddy rm p${port}.${sb.name}.zbox.sh`, { timeoutMs: 30_000 }).catch((e) => e);
+      const r = await sb.commands.run(`tribes-caddy rm p${p}.${sb.name}.zbox.sh`, { timeoutMs: 30_000 }).catch((e) => e);
       return r.exitCode ?? 1;
     },
 
@@ -386,9 +477,10 @@ export function createProvider(env = process.env, deps = {}) {
 
     text: {
       ssh: (machine, cmd) => `the box terminal at https://zipbox.ai (box: ${machine})${cmd ? `, then run: ${cmd}` : ''}`,
-      listMachines: 'curl -s https://api.tribes.xyz/sandbox -H "Authorization: Bearer $ZIPBOX_API_KEY"',
+      // The header is piped to curl on stdin (-K -), so the key never sits in the command's argv.
+      listMachines: `printf 'header = "Authorization: Bearer %s"\\n' "$ZIPBOX_API_KEY" | curl -s -K - https://api.tribes.xyz/sandbox`,
       noKeyFix: `ZIPBOX_API_KEY is not set.\nCreate a key at https://zipbox.ai (Settings -> API keys), then add\nZIPBOX_API_KEY=<the key> to ~/.config/cloudy-cloud/env.`,
-      apiFix: 'Check that the Zipbox API answers:\n  curl -s https://api.tribes.xyz/sandbox -H "Authorization: Bearer $ZIPBOX_API_KEY"',
+      apiFix: `Check that the Zipbox API answers:\n  printf 'header = "Authorization: Bearer %s"\\n' "$ZIPBOX_API_KEY" | curl -s -K - https://api.tribes.xyz/sandbox`,
       githubTokenHelp: `Zipbox has no proxy secrets, so GH_TOKEN is written onto the box in plaintext.\nAdd GH_TOKEN=<a token with write access> and ${CONSENT}=yes to ~/.config/cloudy-cloud/env.`,
       hostLabel: 'a Zipbox box',
       coordinatorRefusal: 'Coordinators are not supported on the zipbox provider (a box has no Docker socket for sibling workers). Start workers directly from your own session with cloud_agent.',

@@ -189,16 +189,18 @@ Subagents can also run on [Zipbox](https://zipbox.ai) boxes (hosted Firecracker 
 ```sh
 CLOUDY_CLOUD_PROVIDER=zipbox
 ZIPBOX_API_KEY=<a key from zipbox.ai Settings -> API keys>
-CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes   # required consent, see below
+# required consent, see below — the value must be exactly `yes`
+CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes
 GH_TOKEN=<a token with write access>
 CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
 ```
 
-`cloudy-cloud setup` does not configure this provider; like microsandbox it prints a pointer here and exits. `cloudy-cloud setup --check-only` checks only that `ZIPBOX_API_KEY` is present, that the token-on-box consent is set, and that `GH_TOKEN` and a Claude credential have values — it never prints them.
+`cloudy-cloud setup` does not configure this provider; like microsandbox it prints a pointer here and exits. `cloudy-cloud setup --check-only` checks that `ZIPBOX_API_KEY` is present, that the token-on-box consent is set, that `GH_TOKEN` and a Claude credential have values, and that no `CLOUDY_CLOUD_EGRESS_ALLOW` is configured (zipbox cannot enforce one — the runtime refuses it) — it never prints the values.
 
 - **Token-on-box consent is required.** Zipbox has no proxy secrets, so `GH_TOKEN`, the Claude credential and any profile keys are written onto each box in plaintext (`/root/.cloudy-cloud-env`, mode 600), where anything running on the box could read them. Without `CLOUDY_CLOUD_ZIPBOX_TOKEN_ON_BOX=yes`, `cloud_agent` refuses before any call and tells you what to add. Values are never logged.
 - **No server-side deadline.** Zipbox deletes nothing on a clock, so Cloudy Cloud enforces the deadline itself: each box is named `cc-<deadline>-<id>`, any Cloudy Cloud process that lists boxes deletes the expired ones, and a machine past its deadline refuses work and is removed. If every process dies, a leftover box keeps billing until the next `cloudy-cloud` command sweeps it — watch `cloudy-cloud machines` on a busy day.
 - **Public previews.** `cloudy-cloud open <id> <port> --share` (and `cloud_agent preview_port`) publishes a public, unauthenticated `https://p<port>.<box>.zbox.sh` preview URL — anyone with the link can reach the app until the box is deleted. Plain `cloudy-cloud open` (a private port forward) is not supported: Zipbox has no tunnel API.
+- **The 250-name limit is permanent.** A Zipbox account holds 250 machine names, and a name is never freed — a deleted box keeps it (that is what lets a `getOrCreate` call bring a deleted box back under the same name). This adapter claims a fresh `cc-<deadline>-<id>` name for every box, because the deadline has to live in the name for any process to read it back; the two requirements are incompatible with name reuse. Heavy use can therefore exhaust the account for good: a create then fails with `machine_limit_reached`, which is final — no retry helps. If you hit it, switch `ZIPBOX_API_KEY` to another Zipbox account or use another `CLOUDY_CLOUD_PROVIDER`.
 - **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — a box has no Docker socket for sibling workers), no `CLOUDY_CLOUD_EGRESS_ALLOW` (the usual refusal applies), no snapshots, display, metrics, shell (`cloudy-cloud shell`), or machine kinds other than `linux`. Each box is provisioned at create time (the worker tools are installed by script, a few minutes on first use — there is no image API).
 - **Status:** covered by unit tests only; it has not been run against the live API (there is no key on this machine), and Zipbox is young — its API may change. See [STATUS.md](docs/STATUS.md) and [docs/research/sandbox-providers.md](docs/research/sandbox-providers.md).
 
