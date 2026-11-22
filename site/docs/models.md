@@ -98,7 +98,7 @@ The `codex`, `codex-chatgpt` and `codex-openrouter` profiles run the [Codex CLI]
 
 Codex only speaks the Responses API, and Particle.ai does not offer it, so there is no `codex-glm`. Set up the credential for the profile you use:
 
-**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup` asks for it when you choose codex, and stores it as an Instabox secret. To do it by hand on Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
+**`codex` (OpenAI API key).** Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). `cloudy-cloud setup --more` asks for it when codex is chosen or installed (plain setup asks when codex is chosen and no other worker credential is saved), and stores it as an Instabox secret. To do it by hand on Instabox, store it as a proxy secret limited to OpenAI, then add the name to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`:
 
 ```
 printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com
@@ -119,7 +119,7 @@ install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json
 
 ### The opencode profiles
 
-The `opencode-*` profiles run [opencode](https://opencode.ai) in the worker. Cloudy Cloud installs the pinned `opencode-ai@1.18.31` with npm under `~/.local` and runs `opencode run --format json --model worker/MODEL`. A follow-up passes `--session ses_...`. The configuration is `~/opencode-agent/opencode.json` (mode 600). It holds key names such as `{env:PARTICLE_API_KEY}`, never key values, and the servers from `cloudy-cloud mcp add`. Keys: `opencode-glm`, `opencode-deepseek` and `opencode-particle` use `PARTICLE_API_KEY`, and `opencode-openrouter` uses `OPENROUTER_API_KEY` and needs `model`. Both are set up with `cloudy-cloud setup` (see OpenRouter for the second).
+The `opencode-*` profiles run [opencode](https://opencode.ai) in the worker. Cloudy Cloud installs the pinned `opencode-ai@1.18.31` with npm under `~/.local` and runs `opencode run --format json --model worker/MODEL`. A follow-up passes `--session ses_...`. The configuration is `~/opencode-agent/opencode.json` (mode 600). It holds key names such as `{env:PARTICLE_API_KEY}` for the model provider — never the model key itself — plus the servers from `cloudy-cloud mcp add`; an MCP header or env value you consented to copy with `--allow-literal` is written into this file as a real value. Keys: `opencode-glm`, `opencode-deepseek` and `opencode-particle` use `PARTICLE_API_KEY`, and `opencode-openrouter` uses `OPENROUTER_API_KEY` and needs `model`. Both are set up with `cloudy-cloud setup --more` (see OpenRouter for the second).
 
 No profile uses opencode's own login, because that would copy a login to the machine.
 
@@ -130,7 +130,7 @@ No profile uses opencode's own login, because that would copy a login to the mac
 To use OpenRouter:
 
 1. Create a key at [openrouter.ai/keys](https://openrouter.ai/keys).
-2. Run `cloudy-cloud setup` and paste it at the OpenRouter step. It is saved as `OPENROUTER_API_KEY`.
+2. Run `cloudy-cloud setup --more` and paste it at the OpenRouter step. It is saved as `OPENROUTER_API_KEY`.
 3. Start a subagent with `profile: "openrouter"` (Claude Code), `"codex-openrouter"` (Codex) or `"opencode-openrouter"` (opencode), and pass the OpenRouter model id in `model`. These are the cases where `model` goes with a non-Claude model, because the profiles have no built-in model.
 
 If you pass no model, the call fails with "needs a model". To avoid passing it every time, set a `model` for `openrouter` in `profiles.json` (below).
@@ -165,7 +165,7 @@ Two more optional fields on any profile:
 
 ## Adding or changing keys later
 
-- Run `cloudy-cloud setup` again. It shows each saved key masked and asks before replacing it. The Particle.ai and OpenRouter steps are optional: press Enter to skip. Setup asks for `OPENAI_API_KEY` when you choose codex, and does not set up the Codex login file: see The codex profiles.
+- Run `cloudy-cloud setup` again (`--more` for the Particle.ai and OpenRouter steps). It shows each saved key masked and asks before replacing it. The optional steps can be skipped with Enter. `setup --more` asks for `OPENAI_API_KEY` when codex is chosen or installed; plain setup asks for it when codex is chosen and no other worker credential is saved. Setup does not set up the Codex login file: see The codex profiles.
 - Or edit `~/.config/cloudy-cloud/env` directly. Keep the file private. To remove all saved keys, delete it.
 - Restart `cloudy-cloud` afterwards. It reads keys once at start, so a running session keeps the old ones.
 
