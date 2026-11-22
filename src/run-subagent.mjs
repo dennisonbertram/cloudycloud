@@ -275,7 +275,7 @@ function mcpFooter(a, t) {
 }
 
 // Self-hosted: the user allowed the GitHub token on their own machine, so every reply says where it is.
-const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: on your machine ${a.tokenOnBox} (you allowed it)` : '';
+const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: stored on ${a.tokenOnBox} (you allowed it)` : '';
 const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${tokenLine(a)}${mcpFooter(a, t)}`;
 
 // Raw stream of every turn, kept on the machine (tee) next to meta.json; the laptop keeps a redacted copy (createLocalStream).

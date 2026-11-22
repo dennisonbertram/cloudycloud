@@ -1333,7 +1333,7 @@ test('a provider without proxy secrets but with consent runs, and every reply sa
   provider.text.hostLabel = 'box1';
   const x = await setup({ provider });
   const r = await x.wait([await x.start({})]);
-  assert.match(r, /\nGitHub token: on your machine box1 \(you allowed it\)/);
+  assert.match(r, /\nGitHub token: stored on box1 \(you allowed it\)/);
 });
 
 test('with proxy secrets the reply has no token line', async () => {
