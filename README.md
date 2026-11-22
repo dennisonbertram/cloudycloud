@@ -133,7 +133,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted` or `microsandbox`. A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox` or `boat`. A provider must keep the GitHub token behind proxy secrets or, on a machine you answer for, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
 
 ## Run on your own machine
 
@@ -181,6 +181,23 @@ Credential values stay in that file on this computer — no `CLOUDY_CLOUD_PROXY_
 - **Egress:** `CLOUDY_CLOUD_EGRESS_ALLOW` limits where workers connect (see below). With no allowlist, or the explicit opt-out `off`, microsandbox's default policy applies (public internet only; private and metadata addresses are blocked).
 - **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — start workers directly, or use Instabox for coordinators), no MCP server tokens yet (`cloudy-cloud mcp add` writes the reference but calls using that server are refused until supported), no `CLOUDY_CLOUD_APT_PACKAGES` and no display; at most `CLOUDY_CLOUD_MSB_SLOTS` (default 2) sandboxes at once.
 - **Status:** the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) passed on an Apple Silicon Mac with microsandbox 0.7.16: a secret's real value reaches its configured host while the guest sees only a placeholder, and the value was not found in files under `~/.microsandbox` after use; the egress allowlist blocks another host, and the default policy blocks the metadata address and a private address (msb's proxy answers with HTTP 403 `network_policy_denied`); files, commands, the delete deadline and port forwarding work. See [STATUS.md](docs/STATUS.md).
+
+### Run on boat.dev VMs
+
+[boat](https://boat.dev) runs persistent Ubuntu 24.04 VMs (x86_64, `user` with passwordless sudo, Node/Python/Docker preinstalled) behind an HTTP API — one call to create, run commands, serve ports and delete.
+
+```sh
+cloudy-cloud setup --provider boat
+```
+
+Setup asks for the API key (`boat_…` from the boat dashboard), checks it with one read-only `GET /sandboxes?limit=1`, asks whether credential values may go on the VMs, and asks for `GH_TOKEN` and the model keys — saved as plain values in `~/.config/cloudy-cloud/env` with mode 600, because boat has no proxy-secret service.
+
+- **Consent (required):** boat has no request-level secret substitution, so real credential values are written to `/home/user/.cloudy-cloud-env` (mode 600) on each worker. Setup asks once and saves `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes`; without it `cloud_agent` refuses before any API call. It is read at each start, so removing it stops new machines from getting credentials — machines already running keep what they have (`cloudy-cloud stop --all` deletes them).
+- **Ownership:** every worker is labelled `purpose=cloudy-cloud` plus a per-run `ccid`. An organization key lists other people's sandboxes, so `list` filters by the label server-side *and* re-checks every result; `delete`, `connect` and `open` refuse anything without the label as `not_found`. Foreign machines are never touched.
+- **Lifetime:** the worker's deadline goes in as boat's `ttlSeconds` (server-side auto-stop) plus a `deleteAt` label swept on every `list`. `cloudy-cloud stop` permanently deletes the sandbox — it is not merely stopped and kept.
+- **Private by default:** sandboxes are created `visibility: private` with `noEnv` (account secrets are not inherited) and `snapshots: false`. `cloudy-cloud open` publishes a port through boat's `host` endpoint; the URL is token-gated by boat, not world-readable.
+- **Not supported:** `CLOUDY_CLOUD_EGRESS_ALLOW` (refused at start — boat has no outbound firewall API), coordinators, `cloudy-cloud shell`, `cloudy-cloud forward`, display, `size`, and machine kinds other than `linux`.
+- **Status:** built and unit-tested against a fake API (create shape, labels, TTL, consent gate, ownership refusals, retries, pagination, command polling). Not yet run against the live boat API — see [STATUS.md](docs/STATUS.md).
 
 ## Dashboard
 
@@ -299,7 +316,7 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud opencode [args]` | Starts opencode as the main session with the cloud tools (`npm install -g opencode-ai` first). Tools are named `cloud_cloud_agent` and so on. |
 | `cloudy-cloud pi [args]` | Starts pi as the main session with the cloud tools. Runs a pinned copy through `npx` if `pi` is not installed. |
 | `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start and refuses to replace a `cloudy-cloud` entry it did not write. Your own `cloud` entry is not touched. |
-| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
+| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox\|boat]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`; on boat: the API key, the credential consent and local keys), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud machines` \| `machines stop <id-or-name\|--all>` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |

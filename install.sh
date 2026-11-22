@@ -258,6 +258,15 @@ http_code() {
   printf '%s' "${code:-000}"
 }
 
+# Prints the HTTP status of GET /sandboxes?limit=1 on boat for a key. The key is a bearer
+# token piped to curl on stdin (-K -), so it never sits in the command's argv.
+boat_http_code() {
+  local code
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$1" |
+    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "${BOAT_API_BASE:-https://boat.dev/api/v1}/sandboxes?limit=1" 2>/dev/null) || true
+  printf '%s' "${code:-000}"
+}
+
 api_get() { printf 'header = "X-API-Key: %s"\n' "$1" | curl -sS --max-time 15 -K - "$API$2" 2>/dev/null; }
 
 # Discards anything waiting on the terminal, so a leftover fragment cannot answer a question.
@@ -414,7 +423,7 @@ check_setup() {
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
   provider=$(eff CLOUDY_CLOUD_PROVIDER)
-  [ "$provider" = self-hosted ] && prov=" --provider self-hosted"
+  case $provider in self-hosted|boat) prov=" --provider $provider" ;; esac
   step 2 "Provider"
   if [ "$provider" = microsandbox ]; then
     msb=$(msb_bin)
@@ -437,6 +446,25 @@ check_setup() {
         hint "with microsandbox\" in the README."
       fi
     fi
+  elif [ "$provider" = boat ]; then
+    key=$(eff BOAT_API_KEY)
+    if [ -z "$key" ]; then bad "No Boat API key is saved"; fails=1; setupfix=1
+      hint "Create a key at https://boat.dev (Settings -> API keys), then"
+      hint "add BOAT_API_KEY=<the key> to $(cfg)."
+    else
+      code=$(boat_http_code "$key")
+      case $code in
+        200) ok "Boat API key works" ;;
+        401|403) bad "Boat rejected the saved key (HTTP $code)"; fails=1; setupfix=1 ;;
+        *) warn "Could not check the Boat key" "no answer from the Boat API" ;;
+      esac
+    fi
+    if [ "$(eff CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" != yes ]; then
+      bad "Credential values are not allowed on boat sandboxes"; fails=1; setupfix=1
+      hint "boat has no proxy secrets, so tokens are written"
+      hint "onto the sandbox. To allow that, add"
+      hint "CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes to $(cfg)."
+    else ok "Credential values are allowed on boat sandboxes"; fi
   elif [ "$provider" = self-hosted ]; then
     host=$(eff CLOUDY_CLOUD_SSH_HOST)
     if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine"; fails=1; setupfix=1; fi
@@ -473,6 +501,21 @@ check_setup() {
       fi
     elif [ -n "$cname" ] || [ -n "$any" ]; then ok "A worker credential is saved" "the value stays on this computer"
     elif [ -f "$(codex_auth_file)" ]; then ok "A Codex sign-in is saved" "it is copied onto each machine"
+    else bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1
+      hint "Add a key to $(cfg): OPENAI_API_KEY, PARTICLE_API_KEY or"
+      hint "OPENROUTER_API_KEY (or a Claude token)."
+    fi
+  elif [ "$provider" = boat ]; then
+    # boat has no proxy secrets: with the consent every credential is written onto the sandbox as a value.
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do [ -z "$cname" ] && [ -n "$(eff $n)" ] && cname=$n; done
+    for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do [ -n "$(eff $n)" ] && any=1; done
+    if agents_has claude; then
+      if [ -n "$cname" ]; then ok "A Claude credential is saved" "the value is written onto each sandbox"
+      else bad "No Claude token is saved, so subagents cannot sign in"; fails=1
+        hint "Add CLAUDE_CODE_OAUTH_TOKEN=<your Claude token> to $(cfg)."
+      fi
+    elif [ -n "$cname" ] || [ -n "$any" ]; then ok "A worker credential is saved" "the value is written onto each sandbox"
+    elif [ -f "$(codex_auth_file)" ]; then ok "A Codex sign-in is saved" "it is copied onto each sandbox"
     else bad "No worker credential is saved, so cloud_agent has no profile it can use"; fails=1
       hint "Add a key to $(cfg): OPENAI_API_KEY, PARTICLE_API_KEY or"
       hint "OPENROUTER_API_KEY (or a Claude token)."
@@ -558,6 +601,41 @@ check_setup() {
         fi ;;
       esac
     else ok "No egress allow list is set" "workers get microsandbox's default network policy"; fi
+  elif [ "$provider" = boat ]; then
+    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1
+      hint "Add GH_TOKEN=<a token with write access> to $(cfg)."
+    elif [ "$(eff CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" != yes ]; then
+      bad "GH_TOKEN is not allowed on boat sandboxes, so subagents cannot push"; fails=1
+      hint "Add CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes to $(cfg)."
+    else ok "GH_TOKEN is saved and allowed on boat sandboxes"; fi
+    # boat has no egress policy, so a configured allow list is a refusal, not a warning: the runtime
+    # refuses every worker while it is set, and this check must say the same.
+    if [ -n "$(eff CLOUDY_CLOUD_EGRESS_ALLOW)" ] || grep -q '^CLOUDY_CLOUD_EGRESS_ALLOW=' "$(cfg)" 2>/dev/null; then
+      egv=$(eff CLOUDY_CLOUD_EGRESS_ALLOW | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      case $egv in \"*\") egv=${egv#\"}; egv=${egv%\"} ;; \'*\') egv=${egv#\'}; egv=${egv%\'} ;; esac
+      case $(printf '%s' "$egv" | tr 'A-Z' 'a-z') in
+      off|none) ok "No egress allow list (turned off)" ;;
+      *)
+        if ! command -v node >/dev/null 2>&1; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node is missing"
+        else
+          # Parse with src/config.mjs like the runtime refusal does: a set list is a failure on boat,
+          # and so is a value that does not parse.
+          egerr=$(CLOUDY_CLOUD_EGRESS_CHECK=$(eff CLOUDY_CLOUD_EGRESS_ALLOW) node --input-type=module -e '
+            const { egressAllow } = await import(process.argv[1]);
+            const r = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: process.env.CLOUDY_CLOUD_EGRESS_CHECK });
+            if (r.error) { console.log(r.error); process.exit(3); }
+            if (r.list.length) process.exit(4);' "file://$root/src/config.mjs") && rc=0 || rc=$?
+          if [ "$rc" = 4 ]; then bad "CLOUDY_CLOUD_EGRESS_ALLOW is set, but boat cannot limit where a sandbox connects"; fails=1
+            hint "cloud_agent refuses every worker while it is set. Remove it"
+            hint "from $(cfg) — or set it to off — or use"
+            hint "CLOUDY_CLOUD_PROVIDER=microsandbox, which enforces it."
+          elif [ "$rc" = 3 ]; then bad "CLOUDY_CLOUD_EGRESS_ALLOW does not parse"; fails=1
+            while IFS= read -r l; do hint "$l"; done <<<"$egerr"
+          elif [ "$rc" != 0 ]; then warn "Could not check CLOUDY_CLOUD_EGRESS_ALLOW" "node failed"
+          else ok "No effective egress allow list"; fi
+        fi ;;
+      esac
+    else ok "No egress allow list is set" "boat does not support one"; fi
   elif [ "$provider" = self-hosted ]; then
     if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
     elif [ "$(eff CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX)" != yes ]; then
@@ -778,7 +856,7 @@ link_command() { # link_command ROOT
 
 KEYLEN=56   # length of an Instabox key: ibk_ plus 52 characters
 TOKLEN=108  # usual length of a token from claude setup-token
-STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked"; STATUS_COORD="not set up"
+STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked"; STATUS_COORD="not set up"; STATUS_BOAT="not set up"; STATUS_BOAT_CONSENT="not set up"
 INCOMPLETE=""
 LOCAL_ACCOUNT=""
 
@@ -795,7 +873,7 @@ more_key() { case $1 in PARTICLE_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CLOUD
 # coordinators_offered: false where a local coordinator image cannot run here: self-hosted has its own
 # coordinator flow, microsandbox has no coordinator support, and local coordinators use docker, not podman.
 coordinators_offered() {
-  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox) return 1 ;; esac
+  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox|boat) return 1 ;; esac
   [ "$(eff CLOUDY_CLOUD_CONTAINER_RUNTIME)" != podman ] || return 1
   command -v docker >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1
 }
@@ -837,6 +915,18 @@ parse_ibk() {
     bad "That does not look like an Instabox API key." "It should start with ibk_. Create one at $DASH."
   fi
   hint "The dashboard shows a key only once, when you create it. If you lost it, create a new one at $DASH."
+  return 1
+}
+
+# parse_boat RAW: sets PARSED to the boat key found in what was pasted, or prints why not and returns 1.
+# Boat keys start with boat_ (older keys with box_ still work, per the docs); the rest is opaque.
+parse_boat() {
+  local raw
+  PARSED=""
+  raw=$(clean_paste "$1")
+  if [[ $raw =~ (boat|box)_[A-Za-z0-9_-]{8,} ]]; then PARSED=${BASH_REMATCH[0]}; return 0; fi
+  bad "That does not look like a Boat API key." "It should start with boat_. Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create <name>"
+  hint "The dashboard shows a key only once, when you create it. If you lost it, create a new one."
   return 1
 }
 
@@ -996,6 +1086,102 @@ setup_instabox() {
   else warn "Stopped the Instabox step after 3 tries. Nothing is saved. Run $(rerun_cmd) again to retry."; fi
 }
 
+# setup_boat: the boat API key, checked once against GET /sandboxes?limit=1 (a read-only call).
+setup_boat() {
+  local saved code key tries=0
+  saved=$(get_saved BOAT_API_KEY)
+  if [ -n "$saved" ]; then
+    spin_start "Checking the saved Boat key"
+    code=$(boat_http_code "$saved")
+    spin_stop
+    if [ "$code" = 200 ]; then
+      STATUS_BOAT="OK ($(mask boat_ "$saved"))"
+      ok "Boat key saved and working" "$(mask boat_ "$saved")${SPIN_T:+, $SPIN_T}"
+      yn "Replace it?" || return 0
+    else
+      warn "Boat key saved ($(mask boat_ "$saved")) but the check failed" "HTTP $code"
+    fi
+  fi
+  while [ "$tries" -lt 3 ]; do
+    drain_tty
+    ask "Boat API key" "Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create <name>" "It starts with boat_."
+    ask_line "Paste it (nothing shows as you paste${saved:+; Enter keeps the saved key}):"
+    read_secret key
+    if [ -z "$key" ]; then
+      [ -n "$saved" ] || stop_empty
+      ok "Kept the saved key"; return 0
+    fi
+    if ! parse_boat "$key"; then tries=$((tries + 1)); continue; fi
+    key=$PARSED
+    spin_start "Checking the key with Boat"
+    code=$(boat_http_code "$key")
+    spin_stop
+    case $code in
+      200) ok "Boat key works" "$SPIN_T" ;;
+      401|403) bad "Boat rejected this key." "Create a new one at https://boat.dev (Settings -> API keys)"; tries=$((tries + 1)); continue ;;
+      *) yn "Could not check the key (HTTP $code). Save it anyway?" || { tries=$((tries + 1)); continue; } ;;
+    esac
+    write_env BOAT_API_KEY "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+    STATUS_BOAT="OK ($(mask boat_ "$key"))"
+    ok "Saved the Boat key" "$(mask boat_ "$key")"
+    return
+  done
+  if [ -n "$saved" ]; then warn "Stopped the Boat step after 3 tries. Your saved key is unchanged. Run $(rerun_cmd) again to retry."
+  else warn "Stopped the Boat step after 3 tries. Nothing is saved. Run $(rerun_cmd) again to retry."; fi
+}
+
+# setup_boat_consent: boat has no proxy secrets, so every credential a worker needs is written onto the
+# sandbox as a real value. That needs an explicit yes; a saved yes is reported and kept as is.
+setup_boat_consent() {
+  if [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" = yes ]; then
+    STATUS_BOAT_CONSENT="OK (CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes)"
+    ok "Credential values are allowed on boat sandboxes" "delete the CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX line in $(cfg) to revoke"
+    return 0
+  fi
+  ask "Credential values on boat sandboxes" \
+    "boat has no proxy secrets, so a real credential value (the Claude token, GH_TOKEN" \
+    "and any other model key) is written onto each worker sandbox that needs it," \
+    "where anything running on the sandbox could read it." \
+    "Saying no means cloud_agent refuses every boat worker."
+  if yn_strict "Allow credential values on boat sandboxes?"; then
+    write_env CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX yes || { bad "Could not write $(cfg)." >&2; exit 1; }
+    STATUS_BOAT_CONSENT="OK (CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes)"
+    ok "Credential values are allowed on boat sandboxes"
+  else
+    del_env CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX
+    STATUS_BOAT_CONSENT="declined"
+    warn "Not allowed: cloud_agent refuses every boat worker until it is" "add CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes to $(cfg), or rerun $(rerun_cmd)"
+    return 1
+  fi
+}
+
+# setup_github_boat: GH_TOKEN goes into the env file as a plain value (the consent just given covers it
+# landing on each worker), not into a provider secret store — boat has none.
+setup_github_boat() {
+  local saved key
+  saved=$(get_saved GH_TOKEN)
+  if [ -n "$saved" ]; then
+    GH_RESULT="OK (GH_TOKEN saved)"
+    ok "GitHub token saved" "$(preview "$saved")"
+    yn "Replace it?" || return 0
+  fi
+  drain_tty
+  ask "GitHub token" "Subagents push their branches with it. Boat has no proxy secrets," \
+    "so the value is written onto each worker sandbox (the consent above covers it)." \
+    "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new" \
+    "Repository access: only the repos you will use with cloudy-cloud." "Permissions: Contents, Pull requests and Workflows read and write; Actions read." \
+    "(Workflows lets a subagent push .github/workflows; Actions lets it see CI.)" \
+    "Nothing shows as you paste. Enter skips — subagents cannot push without it."
+  ask_line "Paste it:"
+  read_secret key
+  key=$(clean_paste "$key")
+  if [ -z "$key" ]; then GH_RESULT="not confirmed"; hint "Skipped. Add GH_TOKEN=<a token with write access> to $(cfg) later."; return 0; fi
+  write_env GH_TOKEN "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+  GH_RESULT="OK (GH_TOKEN saved)"
+  ok "Saved the GitHub token" "$(preview "$key")"
+  hint "With CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes the value is written onto each worker sandbox."
+}
+
 setup_claude() {
   local saved key tries=0 auto=1 acct marker result reason shown
   migrate_key CLAUDE_CODE_OAUTH_TOKEN || true
@@ -1104,7 +1290,7 @@ setup_coordinators() {
 }
 
 # Cloud coordinators are for Instabox only. They work from a clone or an npm install alike.
-offer_coordinators() { [ "$PROVIDER" = self-hosted ] || setup_coordinators "$1"; }
+offer_coordinators() { case $PROVIDER in self-hosted|boat) return 0 ;; esac; setup_coordinators "$1"; }
 
 # Prints the JSON list of the org's secrets (nothing if the org lookup fails).
 secrets_list() { # optional $1: the key to use (default: the saved one)
@@ -1253,21 +1439,21 @@ summary_row() {
   esac
 }
 
-# choose_provider [NAME [DEFAULT]]: sets PROVIDER to instabox or self-hosted, asking unless NAME is given. Enter means DEFAULT (instabox).
+# choose_provider [NAME [DEFAULT]]: sets PROVIDER to instabox, self-hosted or boat, asking unless NAME is given. Enter means DEFAULT (instabox).
 # Nothing is saved here; a changed provider is written once its own step has what it needs.
 choose_provider() {
-  local a def=${2:-instabox} d1="" d2=""
+  local a def=${2:-instabox} d1="" d2="" d3="" defnum=1
   case ${1:-} in
-    instabox|self-hosted) PROVIDER=$1; return 0 ;;
+    instabox|self-hosted|boat) PROVIDER=$1; return 0 ;;
     "") ;;
-    *) bad "Unknown provider \"$1\"" "use --provider instabox or --provider self-hosted" >&2; exit 1 ;;
+    *) bad "Unknown provider \"$1\"" "use --provider instabox, --provider self-hosted or --provider boat" >&2; exit 1 ;;
   esac
-  if [ "$def" = self-hosted ]; then d2=" (saved, Enter keeps it)"; else d1=" (default)"; fi
+  case $def in self-hosted) d2=" (saved, Enter keeps it)"; defnum=2 ;; boat) d3=" (saved, Enter keeps it)"; defnum=3 ;; *) d1=" (default)" ;; esac
   drain_tty
-  ask "Where should subagents run?" "1  Instabox cloud$d1" "2  your own machine over SSH (a Mac or Linux box you control)$d2"
-  ask_line "Type 1 or 2 (Enter for $([ "$def" = self-hosted ] && echo 2 || echo 1)):"
+  ask "Where should subagents run?" "1  Instabox cloud$d1" "2  your own machine over SSH (a Mac or Linux box you control)$d2" "3  boat.dev cloud (a persistent Ubuntu VM)$d3"
+  ask_line "Type 1, 2 or 3 (Enter for $defnum):"
   IFS= read -r a </dev/tty || a=""
-  case $a in 1) PROVIDER=instabox ;; 2) PROVIDER=self-hosted ;; *) PROVIDER=$def ;; esac
+  case $a in 1) PROVIDER=instabox ;; 2) PROVIDER=self-hosted ;; 3) PROVIDER=boat ;; *) PROVIDER=$def ;; esac
 }
 
 # choose_agents: sets AGENTS without asking when it can: the saved choice, else claude if found, else the agents found on PATH.
@@ -1324,13 +1510,15 @@ setup_self_hosted() {
 # worker_usable: some credential can start a first worker on this provider (Instabox needs a proxy secret; a self-hosted box takes a saved value).
 worker_usable() {
   local n
+  # A boat worker writes credentials onto the sandbox, so without the consent nothing is usable.
+  if [ "$PROVIDER" = boat ] && [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" != yes ]; then return 1; fi
   # With claude among the agents, the Claude step above already handled the Claude credential (saved, or declined by you).
   if agents_has claude; then
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || is_proxied $n; } && return 0; done
   fi
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
     is_proxied $n && return 0
-    [ "$PROVIDER" != self-hosted ] || [ -z "$(get_saved $n)" ] || return 0
+    case $PROVIDER in self-hosted|boat) [ -n "$(get_saved $n)" ] && return 0 ;; esac
   done
   [ -f "$(codex_auth_file)" ]
 }
@@ -1341,7 +1529,7 @@ incomplete() { INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$1"; }
 next_setup_cmd() {
   local c; c=$(rerun_cmd)
   case $INCOMPLETE in *"coordinator image"*) c="$c --more" ;; esac
-  [ "${PROVIDER:-}" = self-hosted ] && c="$c --provider self-hosted"
+  case ${PROVIDER:-} in self-hosted|boat) c="$c --provider $PROVIDER" ;; esac
   printf '%s' "$c"
 }
 
@@ -1352,7 +1540,7 @@ ask_worker_keys() {
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 }
 
-usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox] [--check-only]" >&2; }
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat] [--check-only]" >&2; }
 
 main() {
   local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
@@ -1364,7 +1552,7 @@ main() {
       *) usage; exit 2 ;;
     esac
   done
-  case $provider_arg in ""|instabox|self-hosted|microsandbox) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted or microsandbox" >&2; exit 2 ;; esac
+  case $provider_arg in ""|instabox|self-hosted|microsandbox|boat) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox or boat" >&2; exit 2 ;; esac
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
   root=$(cd "$(dirname "$0")" && pwd)
@@ -1412,8 +1600,8 @@ main() {
   link_command "$root"
   link_skill "$root"
 
-  # Instabox is the default; the question appears only when a self-hosted choice is saved and no --provider is given. Enter keeps the saved one.
-  if [ -z "$provider_arg" ] && [ "$saved_provider" != self-hosted ]; then provider_arg=instabox; fi
+  # Instabox is the default; the question appears only when a non-default choice is saved and no --provider is given. Enter keeps the saved one.
+  case $saved_provider in self-hosted|boat) ;; *) [ -n "$provider_arg" ] || provider_arg=instabox ;; esac
   choose_provider "$provider_arg" "$saved_provider"
   choose_agents
   if agents_has claude; then
@@ -1422,9 +1610,17 @@ main() {
     warn_shell_env CLAUDE_CODE_OAUTH_TOKEN
   fi
   warn_shell_env INSTABOX_API_KEY
+  warn_shell_env BOAT_API_KEY
   if [ "$PROVIDER" = self-hosted ]; then
     step 2 "Your own machine"
     setup_self_hosted "$root"
+  elif [ "$PROVIDER" = boat ]; then
+    step 2 "Boat key"
+    setup_boat
+    [ -n "$(get_saved BOAT_API_KEY)" ] || { bad "No Boat key is saved, so setup cannot continue. Run $(rerun_cmd) --provider boat again."; exit 1; }
+    setup_boat_consent || true # a no is recorded by the missing line; the check and the summary report it
+    # Unlike Instabox (the default), boat must save the provider line or the launcher falls back to instabox.
+    [ "$saved_provider" = boat ] || write_env CLOUDY_CLOUD_PROVIDER boat || { bad "Could not write $(cfg)." >&2; exit 1; }
   else
     step 2 "Instabox key"
     setup_instabox
@@ -1436,20 +1632,21 @@ main() {
     step 3 "Claude token"; setup_claude
     case $STATUS_CLAUDE in OK*) ;; *) incomplete "no Claude token is saved" ;; esac
   else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
-  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; else step 4 "GitHub token"; setup_github; fi
+  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; elif [ "$PROVIDER" = boat ]; then step 4 "GitHub token"; setup_github_boat; else step 4 "GitHub token"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
-  [ "$PROVIDER" = self-hosted ] || case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac
+  case $PROVIDER in self-hosted|boat) ;; *) case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac ;; esac
+  [ "$PROVIDER" != boat ] || [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" = yes ] || incomplete "credentials are not allowed on boat sandboxes"
   if [ "$more" = 1 ]; then
-    [ "$PROVIDER" = self-hosted ] || setup_alerts
+    case $PROVIDER in self-hosted|boat) ;; *) setup_alerts ;; esac
     # The OpenAI key is offered when codex is chosen or installed, even if claude was chosen too.
     if ! agents_has codex && command -v codex >/dev/null; then
       setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
     fi
     ask_worker_keys
-    if [ "$PROVIDER" != self-hosted ]; then
+    case $PROVIDER in self-hosted|boat) ;; *)
       store_coordinator_key || true # the coordinator copy of your Instabox key; nested coordinators need it even if you build no image now
       offer_coordinators "$root"
-    fi
+    ;; esac
     case $STATUS_COORD in failed*) incomplete "the coordinator image was not saved" ;; esac
   elif ! worker_usable; then
     # A first worker needs some credential. Ask for the keys the chosen agents use.
@@ -1468,6 +1665,11 @@ main() {
   if [ "$PROVIDER" = self-hosted ]; then
     summary_row "Your machine" "$STATUS_SH"
     ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
+  elif [ "$PROVIDER" = boat ]; then
+    summary_row "Boat key" "$STATUS_BOAT"
+    summary_row "Values on sandboxes" "$STATUS_BOAT_CONSENT"
+    ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
+    summary_row "GitHub token" "$STATUS_GH"
   else
     summary_row "Instabox key" "$STATUS_INSTABOX"
     ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
@@ -1483,7 +1685,7 @@ main() {
     hint "It is on branch $branch at $sha."
     hint "To update, run this in that folder: git pull && npm install"
   fi
-  local prov=""; [ "$PROVIDER" = self-hosted ] && prov=" --provider self-hosted"
+  local prov=""; case $PROVIDER in self-hosted|boat) prov=" --provider $PROVIDER" ;; esac
   hint "To change a key later, run: $(rerun_cmd)$prov"
   hint "Restart any open cloudy-cloud session to use the new keys."
   if [ -n "$INCOMPLETE" ]; then
@@ -1505,12 +1707,13 @@ main() {
   hint "Recommended: block direct pushes to your main branch. In a repo, run: cloudy-cloud protect"
   echo
   printf '  %s\n' "Setup complete."
-  if [ "$PROVIDER" = self-hosted ]; then
-    printf '  %s\n' "Other model keys: $(rerun_cmd) --more --provider self-hosted."
-  else
+  case $PROVIDER in self-hosted|boat)
+    printf '  %s\n' "Other model keys: $(rerun_cmd) --more --provider $PROVIDER."
+  ;;
+  *)
     case $STATUS_COORD in ready*|declined) ;; *) coordinators_offered && printf '  %s\n' "Coordinators: $(rerun_cmd) --more." ;; esac
     printf '  %s\n' "Usage alerts and other model keys: $(rerun_cmd) --more."
-  fi
+  ;; esac
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"

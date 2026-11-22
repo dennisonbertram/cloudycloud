@@ -693,17 +693,19 @@ test('link_command (npm mode): an old cloudy-cloud link is replaced only with a 
 });
 
 // ---- provider question ----
-test('choose_provider: --provider skips the question; Enter and 1 mean Instabox; 2 means self-hosted; anything unknown is refused', () => {
+test('choose_provider: --provider skips the question; Enter and 1 mean Instabox; 2 means self-hosted; 3 means boat; anything unknown is refused', () => {
   assert.equal(fn('choose_provider self-hosted; echo $PROVIDER').stdout, 'self-hosted\n');
   assert.equal(fn('choose_provider instabox; echo $PROVIDER').stdout, 'instabox\n');
+  assert.equal(fn('choose_provider boat; echo $PROVIDER').stdout, 'boat\n');
   const r = fn('choose_provider other');
   assert.equal(r.status, 1);
   assert.match(r.stdout + r.stderr, /Unknown provider "other"/);
-  for (const [ans, want] of [['\n', 'instabox'], ['1\n', 'instabox'], ['2\n', 'self-hosted']]) {
-    const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1' }, steps: [['Type 1 or 2', ans]] });
+  for (const [ans, want] of [['\n', 'instabox'], ['1\n', 'instabox'], ['2\n', 'self-hosted'], ['3\n', 'boat']]) {
+    const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1' }, steps: [['Type 1, 2 or 3', ans]] });
     assert.match(p.text, /Where should subagents run\?/);
     assert.match(p.text, /1  Instabox cloud \(default\)/);
     assert.match(p.text, /2  your own machine over SSH/);
+    assert.match(p.text, /3  boat\.dev cloud/);
     assert.match(p.text, new RegExp(`PROVIDER=${want}`));
   }
 });
@@ -1301,7 +1303,7 @@ test('arguments: unknown ones print usage and exit 2 before any work, in any ord
   for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
     const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
     assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
-    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\] \[--check-only\]/);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\|boat\] \[--check-only\]/);
     assert.doesNotMatch(r.stdout, /\[1\/4\]/);
   }
 });
@@ -1314,7 +1316,7 @@ test('--check-only honours --provider (self-hosted on a fresh config checks the 
 
 test('choose_provider: Enter keeps the saved provider and writes nothing', () => {
   const cfg = join(tmp(), 'env');
-  const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider "" self-hosted; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1', CLOUDY_CLOUD_CONFIG: cfg }, steps: [['Type 1 or 2', '\n']] });
+  const p = pty({ cmd: ['/bin/bash', '-c', `. "${script}"; choose_provider "" self-hosted; echo PROVIDER=$PROVIDER`], env: { PATH: process.env.PATH, HOME: tmp(), NO_COLOR: '1', CLOUDY_CLOUD_CONFIG: cfg }, steps: [['Type 1, 2 or 3', '\n']] });
   assert.match(p.text, /Enter for 2/);
   assert.match(p.text, /PROVIDER=self-hosted/);
   assert.ok(!existsSync(cfg));
@@ -1527,4 +1529,122 @@ test('setup --provider instabox from a saved microsandbox provider writes the sw
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Setup complete\./);
   assert.match(readFileSync(g.cfg, 'utf8'), /^CLOUDY_CLOUD_PROVIDER=instabox$/m);
+});
+
+// ---- boat ----
+test('parse_boat accepts boat_ and legacy box_ keys, and never echoes a rejected value', () => {
+  assert.equal(out1(fn('parse_boat "$1" >/dev/null && printf %s "$PARSED"', ['boat_abcdefgh12345678'])), 'boat_abcdefgh12345678');
+  assert.equal(out1(fn('parse_boat "$1" >/dev/null && printf %s "$PARSED"', ['box_abcdefgh12345678'])), 'box_abcdefgh12345678');
+  assert.equal(out1(fn('parse_boat "$1" >/dev/null && printf %s "$PARSED"', [`"boat_abcdefgh12345678"`])), 'boat_abcdefgh12345678');
+  const bad = fn('parse_boat "$1"', ['ibk_SECRETSECRETSECRETSECRET']);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /should start with boat_/);
+  assert.ok(!bad.stdout.includes('SECRET'));
+});
+
+test('boat_http_code maps curl results and keeps the key out of argv', () => {
+  for (const code of ['200', '401', '000']) {
+    const dir = tmp();
+    const log = join(dir, 'argv');
+    const bin = stubDir(['curl'], { curl: `#!/bin/sh\necho "$@" >> "${log}"\ncat > "${dir}/stdin"\nprintf ${code}\n` });
+    const r = fn('boat_http_code "$1"', ['boat_testkey123'], { PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(r.stdout, code);
+    assert.ok(!readFileSync(log, 'utf8').includes('boat_testkey123'), 'key in argv');
+    assert.ok(readFileSync(join(dir, 'stdin'), 'utf8').includes('Bearer boat_testkey123'), 'bearer header sent on stdin');
+  }
+});
+
+// Boat check-only: `node` stubs to the real binary so the egress check can actually parse, and `curl`
+// stubs print the status boat_http_code would see (the key reaches it on stdin, like the real call).
+const boatCheck = (cfgText, { curlOut = '200', env = {} } = {}) => {
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `CLOUDY_CLOUD_PROVIDER=boat\n${cfgText}`, { mode: 0o600 });
+  const path = stubDir(all, {
+    node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n`,
+    curl: `#!/bin/sh\ncat >/dev/null\nprintf %s "${curlOut}"\n`,
+  });
+  return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${path}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, ...env } });
+};
+const boatKeys = 'BOAT_API_KEY=boat_test\nCLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+
+test('check-only on boat passes with key, consent and GH_TOKEN', () => {
+  const r = boatCheck(boatKeys);
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /Boat API key works/);
+  assert.match(r.stdout, /Credential values are allowed on boat sandboxes/);
+  assert.match(r.stdout, /GH_TOKEN is saved and allowed on boat sandboxes/);
+  assert.match(r.stdout, /Check passed/);
+});
+
+test('check-only on boat fails without a key and without the consent', () => {
+  const noKey = boatCheck('CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n');
+  assert.equal(noKey.status, 1);
+  assert.match(noKey.stdout, /No Boat API key is saved/);
+  const noConsent = boatCheck('BOAT_API_KEY=boat_test\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n');
+  assert.equal(noConsent.status, 1);
+  assert.match(noConsent.stdout, /Credential values are not allowed on boat sandboxes/);
+  assert.match(noConsent.stdout, /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
+});
+
+test('check-only on boat warns, not fails, when the key check cannot run', () => {
+  const r = boatCheck(boatKeys, { curlOut: '000' });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /Could not check the Boat key/);
+});
+
+test('check-only on boat fails an egress allow list the runtime would refuse', () => {
+  const r = boatCheck(`${boatKeys}CLOUDY_CLOUD_EGRESS_ALLOW=api.example.com\n`);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /CLOUDY_CLOUD_EGRESS_ALLOW/);
+  assert.match(r.stdout, /boat cannot limit/i);
+});
+
+test('check-only on boat passes with egress off or unset', () => {
+  const off = boatCheck(`${boatKeys}CLOUDY_CLOUD_EGRESS_ALLOW=off\n`);
+  assert.equal(off.status, 0, off.stdout);
+  assert.match(off.stdout, /No egress allow list \(turned off\)/);
+  const none = boatCheck(boatKeys);
+  assert.equal(none.status, 0, none.stdout);
+  assert.match(none.stdout, /No egress allow list is set/);
+});
+
+test('pty: --provider boat asks for the key, the consent and the tokens, and saves them all', () => {
+  const g = rig();
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'boat'], env: g.env, steps: [
+    ['Paste it \\(nothing shows', 'boat_testkey123456\n'],   // the Boat API key prompt
+    ['Allow credential values', 'y\n'],                      // the consent (exact y needed)
+    ['Enter, or paste', TOKEN + '\n'],                       // the Claude token
+    ['Paste it:', 'ghp_boatpush123\n'],                      // the GitHub token
+  ] });
+  assert.equal(r.code, 0, r.text);
+  const cfg = readFileSync(g.cfg, 'utf8');
+  assert.match(cfg, /BOAT_API_KEY=boat_testkey123456\n/);
+  assert.match(cfg, /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\n/);
+  assert.match(cfg, /CLOUDY_CLOUD_PROVIDER=boat\n/); // not the default, so it must be saved
+  assert.match(cfg, new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}\\n`)); // a plain value — boat has no proxy secrets
+  assert.match(cfg, /GH_TOKEN=ghp_boatpush123\n/);
+  assert.ok(!cfg.includes('CLOUDY_CLOUD_PROXY_SECRETS'));
+  assert.match(r.text, /Boat key works/);
+  assert.match(r.text, /Credential values are allowed on boat sandboxes/);
+  assert.match(r.text, /Summary[\s\S]*Boat key\s+OK[\s\S]*Values on sandboxes\s+OK[\s\S]*Claude token\s+OK/);
+  assert.ok(!r.text.includes(TOKEN) && !r.text.includes('ghp_boatpush123')); // nothing secret on screen
+});
+
+test('pty: --provider boat with the consent declined ends incomplete and saves no consent', () => {
+  const g = rig();
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'boat'], env: g.env, steps: [
+    ['Paste it \\(nothing shows', 'boat_testkey123456\n'],
+    ['Allow credential values', 'n\n'],
+    ['Enter, or paste', TOKEN + '\n'],
+    ['Paste it:', '\n'],                                     // skip the GitHub token
+    ['Paste it \\(nothing shows as you paste; Enter to skip\\):', '\n'], // worker keys offered after a refusal
+    ['Paste it \\(nothing shows as you paste; Enter to skip\\):', '\n'],
+    ['Paste it \\(nothing shows as you paste; Enter to skip\\):', '\n'],
+  ] });
+  assert.equal(r.code, 1, r.text);
+  assert.match(r.text, /refuses every boat worker/);
+  assert.match(r.text, /Setup incomplete:[\s\S]*credentials are not allowed on boat sandboxes/);
+  const cfg = readFileSync(g.cfg, 'utf8');
+  assert.ok(!cfg.includes('CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes'));
+  assert.match(cfg, /BOAT_API_KEY=boat_testkey123456\n/);
 });
