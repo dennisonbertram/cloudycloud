@@ -1542,15 +1542,21 @@ test('parse_boat accepts boat_ and legacy box_ keys, and never echoes a rejected
   assert.ok(!bad.stdout.includes('SECRET'));
 });
 
-test('boat_http_code maps curl results and keeps the key out of argv', () => {
+test('boat_http_code maps curl results, keeps the key out of argv and sends it only to boat.dev', () => {
   for (const code of ['200', '401', '000']) {
     const dir = tmp();
     const log = join(dir, 'argv');
     const bin = stubDir(['curl'], { curl: `#!/bin/sh\necho "$@" >> "${log}"\ncat > "${dir}/stdin"\nprintf ${code}\n` });
-    const r = fn('boat_http_code "$1"', ['boat_testkey123'], { PATH: `${bin}:${process.env.PATH}` });
+    const r = fn('boat_http_code "$1"', ['boat_testkey123'], { PATH: `${bin}:${process.env.PATH}`, BOAT_API_BASE: 'http://evil.example/api/v1' });
     assert.equal(r.stdout, code);
-    assert.ok(!readFileSync(log, 'utf8').includes('boat_testkey123'), 'key in argv');
+    const argv = readFileSync(log, 'utf8');
+    assert.ok(!argv.includes('boat_testkey123'), 'key in argv');
     assert.ok(readFileSync(join(dir, 'stdin'), 'utf8').includes('Bearer boat_testkey123'), 'bearer header sent on stdin');
+    // A BOAT_API_BASE in the environment must not redirect the key, and the check filters to our
+    // own sandboxes so an organization key never touches (or prints) a teammate's row.
+    assert.ok(argv.includes('https://boat.dev/api/v1/sandboxes?'), argv);
+    assert.ok(argv.includes('label=purpose%3Dcloudy-cloud'), argv);
+    assert.ok(!argv.includes('evil.example'), argv);
   }
 });
 
@@ -1608,6 +1614,32 @@ test('check-only on boat passes with egress off or unset', () => {
   assert.match(none.stdout, /No egress allow list is set/);
 });
 
+test('worker_usable on boat counts only local credentials — a proxy-secret name does not qualify', () => {
+  const usable = (cfgText, agents) => {
+    const cfg = join(tmp(), 'env');
+    writeFileSync(cfg, `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\n${cfgText}`, { mode: 0o600 });
+    return fn(`PROVIDER=boat AGENTS=${agents}; worker_usable && echo USABLE || echo UNUSABLE`, [], { CLOUDY_CLOUD_CONFIG: cfg }).stdout.trim();
+  };
+  // A bare Instabox secret name has no value on this machine; boat writes values, so it cannot resolve one.
+  assert.equal(usable('CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n', 'claude'), 'UNUSABLE');
+  assert.equal(usable('CLOUDY_CLOUD_PROXY_SECRETS=OPENROUTER_API_KEY\n', 'codex'), 'UNUSABLE');
+  // A value saved in the env file is what boat writes onto the sandbox — that one counts.
+  assert.equal(usable('OPENROUTER_API_KEY=or_x\n', 'codex'), 'USABLE');
+  assert.equal(usable('CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n', 'claude'), 'USABLE');
+});
+
+test('worker_usable on instabox still counts a proxy-secret name', () => {
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, 'CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n', { mode: 0o600 });
+  const r = fn('PROVIDER=instabox AGENTS=claude; worker_usable && echo USABLE || echo UNUSABLE', [], { CLOUDY_CLOUD_CONFIG: cfg });
+  assert.equal(r.stdout.trim(), 'USABLE');
+});
+
+test('the boat key hint names the working api-key command', () => {
+  const bad = fn('parse_boat "$1"', ['not-a-key']);
+  assert.match(bad.stdout, /boat api-key create cloudy-cloud --preset ci/);
+});
+
 test('pty: --provider boat asks for the key, the consent and the tokens, and saves them all', () => {
   const g = rig();
   const r = pty({ cmd: ['/bin/bash', script, '--provider', 'boat'], env: g.env, steps: [
@@ -1625,9 +1657,22 @@ test('pty: --provider boat asks for the key, the consent and the tokens, and sav
   assert.match(cfg, /GH_TOKEN=ghp_boatpush123\n/);
   assert.ok(!cfg.includes('CLOUDY_CLOUD_PROXY_SECRETS'));
   assert.match(r.text, /Boat key works/);
+  assert.match(r.text, /boat api-key create cloudy-cloud --preset ci/); // the hint names a command that works
   assert.match(r.text, /Credential values are allowed on boat sandboxes/);
   assert.match(r.text, /Summary[\s\S]*Boat key\s+OK[\s\S]*Values on sandboxes\s+OK[\s\S]*Claude token\s+OK/);
   assert.ok(!r.text.includes(TOKEN) && !r.text.includes('ghp_boatpush123')); // nothing secret on screen
+});
+
+test('pty: --provider boat without a GitHub token ends incomplete — a worker cannot push without it', () => {
+  const g = rig();
+  const r = pty({ cmd: ['/bin/bash', script, '--provider', 'boat'], env: g.env, steps: [
+    ['Paste it \\(nothing shows', 'boat_testkey123456\n'],
+    ['Allow credential values', 'y\n'],
+    ['Enter, or paste', TOKEN + '\n'],
+    ['Paste it:', '\n'],                                     // skip the GitHub token
+  ] });
+  assert.equal(r.code, 1, r.text);
+  assert.match(r.text, /Setup incomplete:[\s\S]*GitHub token/);
 });
 
 test('pty: --provider boat with the consent declined ends incomplete and saves no consent', () => {

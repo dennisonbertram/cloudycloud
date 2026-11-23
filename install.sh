@@ -258,12 +258,14 @@ http_code() {
   printf '%s' "${code:-000}"
 }
 
-# Prints the HTTP status of GET /sandboxes?limit=1 on boat for a key. The key is a bearer
-# token piped to curl on stdin (-K -), so it never sits in the command's argv.
+# Prints the HTTP status of GET /sandboxes?label=purpose%3Dcloudy-cloud&limit=1 on boat for a
+# key. The key is a bearer token piped to curl on stdin (-K -), so it never sits in the
+# command's argv; the fixed URL means it can never be redirected, and the label filter means
+# the check reads only our own sandboxes.
 boat_http_code() {
   local code
   code=$(printf 'header = "Authorization: Bearer %s"\n' "$1" |
-    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "${BOAT_API_BASE:-https://boat.dev/api/v1}/sandboxes?limit=1" 2>/dev/null) || true
+    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "https://boat.dev/api/v1/sandboxes?label=purpose%3Dcloudy-cloud&limit=1" 2>/dev/null) || true
   printf '%s' "${code:-000}"
 }
 
@@ -925,7 +927,7 @@ parse_boat() {
   PARSED=""
   raw=$(clean_paste "$1")
   if [[ $raw =~ (boat|box)_[A-Za-z0-9_-]{8,} ]]; then PARSED=${BASH_REMATCH[0]}; return 0; fi
-  bad "That does not look like a Boat API key." "It should start with boat_. Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create <name>"
+  bad "That does not look like a Boat API key." "It should start with boat_. Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create cloudy-cloud --preset ci"
   hint "The dashboard shows a key only once, when you create it. If you lost it, create a new one."
   return 1
 }
@@ -1104,7 +1106,7 @@ setup_boat() {
   fi
   while [ "$tries" -lt 3 ]; do
     drain_tty
-    ask "Boat API key" "Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create <name>" "It starts with boat_."
+    ask "Boat API key" "Create one at https://boat.dev (Settings -> API keys), or run: boat api-key create cloudy-cloud --preset ci" "It starts with boat_."
     ask_line "Paste it (nothing shows as you paste${saved:+; Enter keeps the saved key}):"
     read_secret key
     if [ -z "$key" ]; then
@@ -1507,17 +1509,19 @@ setup_self_hosted() {
   else bad "Self-hosted setup did not finish. Run $(rerun_cmd) again." >&2; exit 1; fi
 }
 
-# worker_usable: some credential can start a first worker on this provider (Instabox needs a proxy secret; a self-hosted box takes a saved value).
+# worker_usable: some credential can start a first worker on this provider (Instabox needs a proxy secret; a self-hosted box or boat sandbox takes a saved value).
 worker_usable() {
   local n
   # A boat worker writes credentials onto the sandbox, so without the consent nothing is usable.
   if [ "$PROVIDER" = boat ] && [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" != yes ]; then return 1; fi
   # With claude among the agents, the Claude step above already handled the Claude credential (saved, or declined by you).
   if agents_has claude; then
-    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || is_proxied $n; } && return 0; done
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || { [ "$PROVIDER" = instabox ] && is_proxied $n; }; } && return 0; done
   fi
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-    is_proxied $n && return 0
+    # A proxy-secret name resolves only on Instabox: boat and self-hosted write real values and
+    # have nothing to substitute a bare name with, so only a saved value counts for them.
+    [ "$PROVIDER" = instabox ] && is_proxied $n && return 0
     case $PROVIDER in self-hosted|boat) [ -n "$(get_saved $n)" ] && return 0 ;; esac
   done
   [ -f "$(codex_auth_file)" ]
@@ -1634,7 +1638,8 @@ main() {
   else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
   if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; elif [ "$PROVIDER" = boat ]; then step 4 "GitHub token"; setup_github_boat; else step 4 "GitHub token"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
-  case $PROVIDER in self-hosted|boat) ;; *) case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac ;; esac
+  # A boat worker cannot push without GH_TOKEN — like Instabox it is required, not optional.
+  case $PROVIDER in self-hosted) ;; *) case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac ;; esac
   [ "$PROVIDER" != boat ] || [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" = yes ] || incomplete "credentials are not allowed on boat sandboxes"
   if [ "$more" = 1 ]; then
     case $PROVIDER in self-hosted|boat) ;; *) setup_alerts ;; esac
