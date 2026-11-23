@@ -271,12 +271,44 @@
         "cmd": "tmux capture-pane -t claude -p"
       },
       {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
         "sdk": "getInfo",
         "id": "m_new"
       }
     ],
     "out": [
-      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\".\n  - Terminal: cloudy-cloud coordinator attach boss\n    (runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude)\n\nStop it earlier with: cloudy-cloud coordinator stop boss"
+      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\" (the link is not ready yet; get it with: cloudy-cloud coordinator status boss)\n  - Terminal: cloudy-cloud coordinator attach boss\n\nStop it earlier with: cloudy-cloud coordinator stop boss"
     ]
   },
   "start --json": {
@@ -409,12 +441,44 @@
         "cmd": "tmux capture-pane -t claude -p"
       },
       {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
         "sdk": "getInfo",
         "id": "m_new"
       }
     ],
     "out": [
-      "{\"name\":\"boss\",\"machine\":\"coord-boss\",\"remoteControlName\":\"boss\",\"attach\":\"npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude\",\"started\":true}"
+      "{\"name\":\"boss\",\"machine\":\"coord-boss\",\"remoteControlName\":\"boss\",\"attach\":\"cloudy-cloud coordinator attach boss\",\"started\":true}"
     ]
   },
   "ls": {
@@ -461,7 +525,7 @@
       }
     ],
     "out": [
-      "npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude"
+      "cloudy-cloud coordinator attach boss"
     ]
   },
   "stop": {
