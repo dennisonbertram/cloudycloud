@@ -233,6 +233,22 @@ test('e2b: consent revoked while a create retries stops the next credential-bear
     'the retried POST was refused before credentials went out again');
 });
 
+test('e2b: consent revoked while a create waits on the provider limiter stops the credential POST', async () => {
+  const z = fakeE2b();
+  const cfg = cfgFile('E2B_API_KEY=x\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  // A saturated limiter: every call queues behind the gate, so the create POST waits inside run().
+  const limiter = { run: (fn) => gate.then(() => fn()) };
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { limiter });
+  const pend = create(p).then(() => { throw new Error('should refuse'); }, (x) => x);
+  writeFileSync(cfg, 'E2B_API_KEY=x\n', { mode: 0o600 }); // consent pulled while the create sat in the queue
+  release();
+  const e = await pend;
+  assert.match(e.message, /revoked|CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes/);
+  assert.ok(!z.log.some((l) => l.method === 'POST' && l.path === '/v2/sandboxes'), 'no credential-bearing POST was sent');
+});
+
 test('e2b: a real environment value consents, and an exported no beats a saved yes', async () => {
   const z = fakeE2b();
   const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgFile('E2B_API_KEY=x\n') }, { baseEnv: { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'yes' } });
@@ -327,13 +343,36 @@ test('e2b: a plan TTL cap walks the timeout ladder down', async () => {
   } finally { await s.kill(); }
 });
 
-test('e2b: the Hobby lifetime cap is one hour until a wider timeout is accepted', async () => {
+test('e2b: caps.maxTtlSeconds is the largest plan limit and never clamps the request', async () => {
   const z = fakeE2b();
   const p = mk(z);
-  assert.equal(p.caps.maxTtlSeconds, 3600, 'the default E2B plan allows one continuous hour, never six');
+  assert.equal(p.caps.maxTtlSeconds, 86400, 'Pro\'s 24 h is the advertised ceiling — the Hobby hour is learned from the answer, not promised up front');
   const s = await create(p, { ttlSeconds: 7200 });
   try {
-    assert.equal(p.caps.maxTtlSeconds, 7200, 'a timeout the plan accepted widens the known cap');
+    assert.equal(z.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes').body.timeout, 7200,
+      'the requested timeout reaches E2B unclamped, so a wider plan limit can be discovered');
+  } finally { await s.kill(); }
+});
+
+test('e2b: the real accepted deadline is stamped into metadata and returned on the handle', async () => {
+  const z = fakeE2b();
+  let calls = 0;
+  z.fail.set('/v2/sandboxes', (m) => {
+    if (m !== 'POST') return;
+    calls++;
+    return calls === 1 ? z.respond(400, { code: 400, message: 'Timeout cannot be greater than 1 hours' }) : undefined;
+  });
+  const p = mk(z);
+  const s = await create(p, { ttlSeconds: 86400 });
+  try {
+    const posts = z.log.filter((l) => l.method === 'POST' && l.path === '/v2/sandboxes');
+    assert.equal(posts.length, 2, 'the ladder fell back one rung');
+    assert.equal(posts[1].body.timeout, 3600);
+    const meta = z.store.get(s.id).metadata;
+    assert.equal(meta.deleteAt, posts[1].body.metadata.deleteAt, 'the accepted POST stamped the real deadline, not the requested one');
+    assert.notEqual(meta.deleteAt, posts[0].body.metadata.deleteAt, 'the refused request asked for the requested deadline');
+    assert.equal(s.deleteAt, Date.parse(meta.deleteAt), 'the handle reports the same real deadline in epoch ms');
+    assert.ok(Math.abs(s.deleteAt - (Date.now() + 3_600_000)) < 60_000, 'about an hour out, not the requested day');
   } finally { await s.kill(); }
 });
 
@@ -557,6 +596,48 @@ test('e2b: a create cancelled during provisioning deletes the sandbox', async ()
   assert.match(e.message, /cancelled|aborted/i);
   assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/')), 'the half-created sandbox was deleted');
   assert.equal(z.store.size, 0);
+});
+
+test('e2b: a create aborted after the POST landed recovers the sandbox by ccIdem and deletes it', async () => {
+  const z = fakeE2b();
+  const realFetch = z.fetch;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      await realFetch(url, init); // E2B accepted the create — the sandbox exists
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' }); // but the caller hung up before the answer
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const e = await create(p).then(() => { throw new Error('should abort'); }, (x) => x);
+  assert.equal(e.name, 'AbortError');
+  assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/')), 'cleanup ran without the aborted signal');
+  assert.equal(z.store.size, 0, 'the orphaned sandbox was recovered by ccIdem and deleted, not left running');
+});
+
+test('e2b: a UTF-8 character split across output events decodes whole', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    // é is C3 A9 in UTF-8; envd event boundaries do not respect character boundaries.
+    z.execState = {
+      raw: stream([
+        { start: { pid: 1234 } },
+        { data: { stdout: Buffer.from([0x68, 0x69, 0x20, 0xc3]).toString('base64') } },
+        { data: { stdout: Buffer.from([0xa9, 0x0a]).toString('base64') } },
+        { data: { stderr: Buffer.from([0xc3]).toString('base64') } },
+        { data: { stderr: Buffer.from([0xa9]).toString('base64') } },
+        { end: { exited: true, status: 'exited' } },
+      ]),
+    };
+    let streamed = '';
+    const r = await s.commands.run('x', { onStdout: (c) => { streamed += c; } });
+    assert.equal(r.stdout, 'hi é\n', 'the accumulated output joins the split character');
+    assert.equal(r.stderr, 'é');
+    assert.equal(streamed, 'hi é\n', 'the concatenated stdout callbacks carry no replacement characters');
+  } finally { await s.kill(); }
 });
 
 test('e2b: a dropped command stream reattaches and recovers the complete transcript from the io files', async () => {

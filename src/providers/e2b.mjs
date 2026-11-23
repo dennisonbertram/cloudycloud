@@ -12,9 +12,10 @@
 //   refuse (not_found) a sandbox that is not ours — a teammate installation's sandboxes are
 //   never touched. The per-session `owner` metadata only scopes what the reaper may delete.
 // - Server TTL: E2B deletes the sandbox when its timeout expires, so a lost client still ends it
-//   (caps.hasServerTTL). The Hobby plan caps continuous lifetime at one hour, so that is
-//   caps.maxTtlSeconds until a create the plan accepts teaches the real ceiling; create() walks a
-//   ladder (requested -> 3600 -> 300 s) and a refresher keeps posting
+//   (caps.hasServerTTL). caps.maxTtlSeconds advertises the largest plan limit E2B documents (Pro:
+//   24 h); create() asks for the requested timeout and walks a ladder (requested -> 3600 -> 300 s)
+//   when the plan caps it, so the accepted rung sets the real deadline — stamped into metadata and
+//   returned on the handle as deleteAt. A refresher keeps posting
 //   POST /sandboxes/{id}/timeout to reach, never exceed, the recorded deadline.
 // - Credential values go into the sandbox (create envVars plus a mode-600 env file sourced by
 //   every command) only after CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes, re-read from the env file right
@@ -26,8 +27,9 @@
 //   abort signals the process by tag (POST /process.Process/SendSignal). Output is also teed to a
 //   per-tag file inside the sandbox, because a dropped stream re-attaches through
 //   POST /process.Process/Connect, which only sends NEW data — the file is the whole transcript.
-// - Files go through envd's /files upload/download; previews are PUBLIC https://<port>-<id>.e2b.app
-//   URLs — anyone with the link can open them until the sandbox is deleted.
+// - Files go through envd's /files upload/download; ANY listening port of a running sandbox is
+//   publicly reachable at https://<port>-<id>.e2b.app — anyone with the link can open it, before
+//   and after sharing (sharing only hands out the URL; there is no per-port unpublish).
 // Coordinators are refused: a sandbox has no Docker socket for sibling workers.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createLimiter } from '../limits.mjs';
@@ -40,9 +42,12 @@ const ENVFILE = '/home/user/.cloudy-cloud-env'; // consented credential values l
 const API = 'https://api.e2b.app'; // fixed: a configurable base could redirect the API key and consented values
 const ENVD_HOST = 'https://sandbox.e2b.app';
 const ENVD_PORT = 49983;
+// The largest sandbox timeout any E2B plan documents — Pro allows a 24 h continuous lifetime,
+// Enterprise more. It is the advertised cap (caps.maxTtlSeconds): the request itself is never
+// clamped to a learned plan limit up front; the create ladder finds what the plan accepts.
 const MAX_TTL_SECONDS = 86400;
 // The one-hour continuous lifetime the E2B Hobby plan enforces; a create the plan answers with a
-// wider timeout teaches the adapter the real ceiling (learnedMax below), never promised up front.
+// wider timeout teaches the adapter the real ceiling (learnedMax below) for resume/refresh budgets.
 const DEFAULT_MAX_TTL_SECONDS = 3600;
 const TTL_LADDER = [3600, 300]; // fallbacks when the plan caps the requested timeout
 // Hosts a non-base template may still need for provisioning (apt, gh, node, uv, the claude npm
@@ -104,7 +109,7 @@ export function createProvider(env = process.env, deps = {}) {
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const limiter = deps.limiter ?? createLimiter(8);
   // The widest sandbox timeout this account has accepted, starting at the Hobby plan's one-hour
-  // continuous-lifetime cap — the caller's deadline and turn limit must match the real plan.
+  // continuous-lifetime cap — it budgets resume/refresh asks, never the advertised cap or the request.
   let learnedMax = DEFAULT_MAX_TTL_SECONDS;
   // The real environment (injectable in tests). Consent is re-read at every create — a value
   // exported here consents and an explicit one wins over the file, but the env OBJECT this
@@ -165,20 +170,23 @@ export function createProvider(env = process.env, deps = {}) {
     const key = apiKey();
     sensitive.add(key);
     for (let n = 1; ; n++) {
-      before?.(); // re-verified on every attempt, including a 429 sleep-and-retry of this same call
-      let res;
-      try {
-        res = await limiter.run(() => fetchFn(`${API}${path}`, {
-          method,
-          signal,
-          redirect: 'error', // never follow a redirect while a credential header is attached
-          headers: { 'X-API-Key': key, ...(body !== undefined && { 'Content-Type': 'application/json' }), ...headers },
-          ...(body !== undefined && { body: JSON.stringify(body) }),
-        }));
-      } catch (e) {
-        if (e?.name === 'AbortError') throw e;
-        throw fail('transient', `The E2B API could not be reached (${scrub(e?.message ?? e).replaceAll('\n', ' ')})`);
-      }
+      // `before` runs inside the slot: a consent revoked while the call waited on the limiter
+      // stops the credential-bearing POST itself — on every attempt, retries included.
+      const res = await limiter.run(async () => {
+        before?.();
+        try {
+          return await fetchFn(`${API}${path}`, {
+            method,
+            signal,
+            redirect: 'error', // never follow a redirect while a credential header is attached
+            headers: { 'X-API-Key': key, ...(body !== undefined && { 'Content-Type': 'application/json' }), ...headers },
+            ...(body !== undefined && { body: JSON.stringify(body) }),
+          });
+        } catch (e) {
+          if (e?.name === 'AbortError') throw e;
+          throw fail('transient', `The E2B API could not be reached (${scrub(e?.message ?? e).replaceAll('\n', ' ')})`);
+        }
+      });
       if (res.ok) { const t = await res.text().catch(() => ''); try { return { data: JSON.parse(t), res }; } catch { return { data: {}, res }; } }
       const e = await parseErrorBody(res);
       if (res.status === 429 && n < tries) { await sleep(Math.max(500, Math.ceil(Number(res.headers?.get?.('retry-after')) || 1) * 1000)); continue; }
@@ -293,6 +301,9 @@ export function createProvider(env = process.env, deps = {}) {
         body: JSON.stringify({ process: { tag }, signal: 'SIGNAL_SIGKILL' }),
       }).then((r) => r.text().catch(() => {})).catch(() => {});
       let stdout = '', stderr = '', exitCode, streamed = false, reattached = false;
+      // envd event boundaries do not respect UTF-8 character boundaries, so each stream gets its
+      // own streaming decoder — a multibyte character split across events decodes whole.
+      const utf8 = { stdout: new TextDecoder(), stderr: new TextDecoder() };
       const onFrame = (j) => {
         const ev = j?.event;
         if (!ev) return;
@@ -300,7 +311,7 @@ export function createProvider(env = process.env, deps = {}) {
         if (ev.data) {
           for (const ch of ['stdout', 'stderr']) {
             if (typeof ev.data[ch] !== 'string') continue;
-            const text = Buffer.from(ev.data[ch], 'base64').toString('utf8');
+            const text = utf8[ch].decode(Buffer.from(ev.data[ch], 'base64'), { stream: true });
             if (ch === 'stdout') { stdout += text; try { onStdout?.(text); } catch { /* a bad callback must not kill the call */ } }
             else stderr += text;
           }
@@ -346,6 +357,11 @@ export function createProvider(env = process.env, deps = {}) {
         } catch (e) {
           throw fail('transient', `the E2B command stream dropped and its output could not be read back (${scrub(e?.message ?? e)})`, { stdout: scrub(stdout), stderr: scrub(stderr) });
         }
+      } else {
+        // Flush the decoders' pending bytes: a character the stream left incomplete still decodes.
+        const tailOut = utf8.stdout.decode(), tailErr = utf8.stderr.decode();
+        if (tailOut) { stdout += tailOut; try { onStdout?.(tailOut); } catch { /* a bad callback must not kill the call */ } }
+        stderr += tailErr;
       }
       if (exitCode === undefined) throw fail('transient', 'the E2B command stream ended without an exit event', { stdout: scrub(stdout), stderr: scrub(stderr) });
       if (secs && exitCode === 124) throw fail('timeout', `timed out after ${secs} s`, { stdout: scrub(stdout), stderr: scrub(stderr), exitCode: 124 });
@@ -353,7 +369,7 @@ export function createProvider(env = process.env, deps = {}) {
       if (exitCode !== 0) throw Object.assign(new Error(scrub(stderr.trim()).slice(-300) || `exit ${exitCode}`), { stdout: scrub(stdout), stderr: scrub(stderr), exitCode });
       return { stdout, stderr, exitCode };
     };
-    return { id, home: HOME, files, commands: { run }, kill: () => api.delete(id), loadName: async () => id };
+    return { id, home: HOME, deleteAt, files, commands: { run }, kill: () => api.delete(id), loadName: async () => id };
   };
 
   // Ownership gate for every destructive or privileged call: our purpose metadata AND this
@@ -394,7 +410,7 @@ export function createProvider(env = process.env, deps = {}) {
       hasServerTTL: true, hasProxySecrets: false, hasSudo: true, get hasConsentedSecrets() { return consented(); }, hasEgressPolicy: true,
       hasSnapshots: false, hasPortForward: false, hasPublish: true, hasSizes: false, hasShell: false,
       hasDisplay: false, hasMetrics: true,
-      maxForegroundMs: Infinity, get maxTtlSeconds() { return learnedMax; }, startsPerMin: 30, maxConcurrentCalls: 8,
+      maxForegroundMs: Infinity, maxTtlSeconds: MAX_TTL_SECONDS, startsPerMin: 30, maxConcurrentCalls: 8,
       uploadMaxBytes: 100 * 1024 * 1024, machineKinds: ['linux'],
     },
 
@@ -407,9 +423,8 @@ export function createProvider(env = process.env, deps = {}) {
 
       const ttl = Math.min(Math.max(1, ttlSeconds || MAX_TTL_SECONDS), MAX_TTL_SECONDS);
       const t0 = now();
-      const deleteAt = t0 + ttl * 1000;
       const idem = randomUUID();
-      const all = { ...labels, purpose: 'cloudy-cloud', install: installId(env), ...(role && { role }), ...(name && !labels.name && { name }), ccIdem: idem, deleteAt: new Date(deleteAt).toISOString(), startedAt: new Date(t0).toISOString() };
+      const all = { ...labels, purpose: 'cloudy-cloud', install: installId(env), ...(role && { role }), ...(name && !labels.name && { name }), ccIdem: idem, startedAt: new Date(t0).toISOString() };
       for (const [k, v] of Object.entries(all)) {
         if (!/^[A-Za-z0-9_.-]+$/.test(k)) throw new Error(`invalid label name "${k}"`);
         if (typeof v === 'string' && /[\r\n]/.test(v)) throw new Error(`invalid label value for "${k}"`);
@@ -453,6 +468,7 @@ export function createProvider(env = process.env, deps = {}) {
       // user pulled while this create waited on a retry or a queue slot stops the dispatch itself.
       const stillConsented = () => { if (!consented()) throw new Error(`Consent for E2B was revoked while this create was queued.\nAdd ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`); };
       for (const want of [ttl, ...TTL_LADDER.filter((s) => s < ttl)]) {
+        all.deleteAt = new Date(t0 + want * 1000).toISOString(); // stamped from the rung, not the request
         for (let attempt = 0; ; attempt++) {
           try {
             created = await ctl('POST', '/v2/sandboxes', {
@@ -464,6 +480,14 @@ export function createProvider(env = process.env, deps = {}) {
             break;
           } catch (e) {
             lastErr = e;
+            if (e?.name === 'AbortError' || signal?.aborted) {
+              // The POST may have landed before its answer was lost: the sandbox our ccIdem labels
+              // can exist. Recover it by that marker (fresh calls, never the aborted signal) and
+              // delete whatever it created — an aborted create must not leave an orphan running.
+              const lostId = await recover().catch(() => undefined);
+              if (lostId) await ctl('DELETE', `/sandboxes/${encodeURIComponent(lostId)}`).catch(() => {});
+              throw e?.name === 'AbortError' ? e : Object.assign(new Error('aborted'), { name: 'AbortError' });
+            }
             if (e.code === 'ttl_capped') break; // plan caps the timeout: try the next rung
             if (e.e2bCode === 'idempotency_in_progress' && attempt < 3) { await sleep(3000); continue; }
             if (e.code === 'transient' || e.code === 'rate_limited' || e.e2bCode === 'idempotency_outcome_unknown') {
@@ -482,6 +506,7 @@ export function createProvider(env = process.env, deps = {}) {
         if (lastErr?.code !== 'ttl_capped') break;
       }
       if (!created) throw lastErr;
+      const deleteAt = t0 + step * 1000; // the deadline the plan actually accepted, not the requested one
       let id = created.data.sandboxID, envdToken = created.data.envdAccessToken;
       if (!id) {
         // The answer was OK on the wire but its body arrived cut (or empty): the sandbox our
@@ -581,13 +606,14 @@ export function createProvider(env = process.env, deps = {}) {
       const p = portOf(port);
       await ownSandbox(id);
       // The preview host is fixed e2b.app: a configurable domain could point a credential-bearing
-      // URL at an attacker's endpoint. Public by default — anyone with the link reaches the app.
+      // URL at an attacker's endpoint. Public by design — anyone with the link reaches a listening
+      // port whether or not it was ever shared, and no per-port unpublish exists.
       return { url: `https://${p}-${id}.e2b.app` };
     },
     // E2B public URLs exist for as long as the sandbox runs; there is no per-port unpublish call.
     async unpublishPort() { throw new Error('e2b public URLs cannot be unpublished one by one — they stop working when the sandbox is deleted (cloudy-cloud machines stop / cloud_agent_stop).'); },
 
-    async forwardPort() { throw new Error('e2b has no private port tunnel for `cloudy-cloud open`; use --share for a public preview link.'); },
+    async forwardPort() { throw new Error('e2b has no private port tunnel for `cloudy-cloud open` — any port the app listens on is already publicly reachable at https://<port>-<id>.e2b.app; use --share to get the link.'); },
 
     async metrics(id, { since } = {}) {
       await ownSandbox(id);

@@ -1011,6 +1011,18 @@ test('check-only on self-hosted requires GH_TOKEN and consent to put it on the m
   assert.doesNotMatch(ok.stdout, /usage alert|coordinator image/i); // self-hosted advertises neither
 });
 
+test('check-only on self-hosted does not count a proxy-secret name as a Claude credential, like the runtime', () => {
+  const base = 'CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=h\nGH_TOKEN=ghp_x\nCLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes\n';
+  // Only the stale name: self-hosted writes real values, so the check must fail like a worker would.
+  const stale = checkOnly(base + 'CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n');
+  assert.equal(stale.status, 1, stale.stdout);
+  assert.match(stale.stdout, /No Claude token is saved/);
+  // Migration regression: the stale name stays, but a saved API key is what the worker would pick.
+  const migrated = checkOnly(base + 'CLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\nANTHROPIC_API_KEY=sk-ant-api03-y\n');
+  assert.equal(migrated.status, 0, migrated.stdout);
+  assert.match(migrated.stdout, /A Claude credential is saved/);
+});
+
 test('check-only: a codex-only user with a plain Claude key gets the manual recipe, not a setup rerun', () => {
   const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
   const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLOUDY_CLOUD_AGENTS=codex\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-plain\n`, {}, { stub: npxStub({ secrets: gh }) });
@@ -1616,6 +1628,18 @@ test('check-only on boat passes with egress off or unset', () => {
   assert.match(none.stdout, /No egress allow list is set/);
 });
 
+test('check-only on boat fails a Claude credential that exists only as an Instabox proxy secret', () => {
+  const r = boatCheck('BOAT_API_KEY=boat_test\nCLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n');
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /No Claude token is saved/);
+});
+
+test('check-only on boat passes on a saved API key when a stale proxied OAuth name is left from Instabox', () => {
+  const r = boatCheck('BOAT_API_KEY=boat_test\nCLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nANTHROPIC_API_KEY=sk-ant-api03-y\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n');
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /A Claude credential is saved/);
+});
+
 test('check-only on boat fails an exported empty CLOUDY_CLOUD_EGRESS_ALLOW, like the runtime', () => {
   // loadEnv keeps an explicitly empty override as "set but lists no hosts", so cloud_agent refuses every
   // worker — with no saved line, and when the empty value overrides a saved off line.
@@ -1791,6 +1815,15 @@ test('check-only on e2b fails a Claude credential that exists only as an Instabo
   const r = e2bCheck(`E2B_API_KEY=${E2B_KEY}\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`);
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stdout, /No Claude token is saved/);
+});
+
+test('check-only on e2b passes on a saved API key when a stale proxied OAuth name is left from Instabox', () => {
+  // Migration regression (#198): the runtime picks the valued credential over the unresolvable
+  // name, so the check must pass the same way instead of blessing the stale name.
+  const r = e2bCheck(`E2B_API_KEY=${E2B_KEY}\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nANTHROPIC_API_KEY=sk-ant-api03-y\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`);
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /A Claude credential is saved/);
+  assert.doesNotMatch(r.stdout, /sk-ant-api03-y/, 'the key value never reaches the output');
 });
 
 test('worker_usable on e2b needs a literal credential and the consent — an Instabox proxy secret does not count', () => {

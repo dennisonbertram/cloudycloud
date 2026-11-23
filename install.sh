@@ -432,7 +432,7 @@ check_setup() {
   local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov="" root msb v egerr egv l rc=0
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
-  provider=$(eff CLOUDY_CLOUD_PROVIDER)
+  provider=$(eff CLOUDY_CLOUD_PROVIDER); provider=${provider:-instabox} # unset means the default
   case $provider in self-hosted|boat|e2b) prov=" --provider $provider" ;; esac
   step 2 "Provider"
   if [ "$provider" = microsandbox ]; then
@@ -554,16 +554,16 @@ check_setup() {
     # Without a Claude token every worker needs a profile, and a profile needs one of these credentials.
     local usable="" plain=""
     for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-      # e2b needs the literal value (it writes values onto the box); a proxy secret stored in
-      # Instabox is not usable there. Instabox needs the proxy secret; self-hosted takes either.
-      if [ "$provider" = e2b ]; then [ -n "$(eff $n)" ] && usable=1
-      elif is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
-      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+      # e2b and self-hosted write the literal value onto the box; a proxy-secret name stored in
+      # Instabox is usable only on instabox, where a plain value is refused instead.
+      if [ "$provider" = instabox ]; then
+        if is_proxied $n; then usable=1; elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+      elif [ -n "$(eff $n)" ]; then usable=1; fi
     done
     [ -f "$(codex_auth_file)" ] && usable=1
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
-      [ -n "$(eff $n)" ] || { [ "$provider" != e2b ] && is_proxied $n; } || continue
-      if [ "$provider" = e2b ] || is_proxied $n || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
+      [ -n "$(eff $n)" ] || { [ "$provider" = instabox ] && is_proxied $n; } || continue
+      if [ "$provider" != instabox ] || is_proxied $n; then usable=1; else plain=${plain:-$n}; fi
       break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
@@ -589,9 +589,9 @@ check_setup() {
       hint "  $(codex_auth_file)"
     fi
   else
-  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
-    # e2b writes the credential VALUE onto the box, so a proxy-secret name alone does not count there.
-    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || { [ "$provider" != e2b ] && is_proxied $n; }; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
+  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or (on instabox) a proxy secret
+    # e2b and self-hosted write the credential VALUE onto the box, so a proxy-secret name alone does not count there.
+    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || { [ "$provider" = instabox ] && is_proxied $n; }; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
   done
   if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in"; fails=1; setupfix=1
   elif [ "$provider" != self-hosted ] && [ "$provider" != e2b ] && [ -n "$lit" ] && ! is_proxied "$name"; then

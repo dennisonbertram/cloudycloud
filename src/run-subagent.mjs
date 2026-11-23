@@ -501,10 +501,11 @@ async function setup(a, ctx) {
     // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
     const named = proxySecrets(env);
     const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
-    // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
+    // On a provider that cannot attach a proxy-secret name (no proxy secrets, or localSecrets where the
+    // name has nothing to substitute) a credential with a local value wins over a bare name in
+    // CLOUDY_CLOUD_PROXY_SECRETS; a valueless name is still picked last (and errors below).
     const keyName = a.profile ? a.profile.keyName
-      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && named.has(n)))
+      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && proxied.has(n)))
         ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
     const keySecrets = [];
     if (keyName && provider.caps.localSecrets) {
@@ -536,6 +537,7 @@ async function setup(a, ctx) {
       throw e;
     }
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
+    if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);

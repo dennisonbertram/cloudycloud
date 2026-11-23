@@ -1564,6 +1564,39 @@ test('a Claude key named only in CLOUDY_CLOUD_PROXY_SECRETS is refused on a prov
   assert.match(all, /cannot attach proxy secrets/);
 });
 
+// An Instabox OAuth proxy-secret name left behind after switching providers must not shadow a
+// credential with a local value: the provider cannot resolve the name, so the value wins (#198).
+for (const pname of ['e2b', 'boat']) {
+  test(`a stale proxy-secret name does not block a credential with a local value (${pname})`, async () => {
+    const { deps, start, wait } = await setup();
+    delete deps.createSandbox;
+    deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
+    deps.provider.name = pname;
+    deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: 'ak-local-value', CLOUDY_CLOUD_PROXY_SECRETS: 'CLAUDE_CODE_OAUTH_TOKEN' };
+    const id = await start();
+    assert.ok(id, `${pname}: the valued credential wins over the stale name`);
+    await wait([id]);
+    const c = deps.provider.log.create[0];
+    assert.equal(c.envs.ANTHROPIC_API_KEY, 'ak-local-value', `${pname}: the local value is what goes onto the sandbox`);
+    assert.ok(!c.secrets?.includes('CLAUDE_CODE_OAUTH_TOKEN'), 'the unresolvable name is not sent as a secret');
+  });
+}
+
+test('a deadline the provider reports replaces the requested one before the machine event', async () => {
+  const events = [];
+  const real = Date.now() + 3_600_000; // the provider accepted an hour, not the requested six
+  const { deps, start, wait, open } = await setup({
+    events: (e) => events.push(e),
+    createSandbox: async () => { const s = await fakeSandbox(); s.deleteAt = real; return s; },
+  });
+  const id = await start();
+  await wait([id]);
+  assert.equal(open.get(id).deleteAt, real, 'a.deleteAt adopts the handle\'s real deadline');
+  assert.equal(events.find((e) => e.type === 'machine').deleteAt, real, 'the machine event reports it');
+  const cmd = open.get(id).sandbox.cmds.find((c) => c.includes('claude -p'));
+  assert.ok(cmd.includes(new Date(real).toISOString()), 'the worker prompt budgets against the real deadline');
+});
+
 test('apt packages are refused at start on a provider without sudo', async () => {
   const { deps } = await setup();
   deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
