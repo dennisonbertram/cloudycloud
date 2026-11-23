@@ -730,6 +730,10 @@ test('e2b: commands.run returns output, streams stdout and rejects on a nonzero 
     assert.equal(streamed, 'hello\n');
     // The wrapper applies the env file and the timeout inside the sandbox.
     const last = z.execs.get(s.id).at(-1);
+    // The command keeps the normal umask; only the transcripts are created private (a global umask 077 made
+    // `sudo npm install -g` leave claude unrunnable for the sandbox user).
+    assert.doesNotMatch(last, /set \+a; umask 077; exec/);
+    assert.match(last, /\(umask 077; : > /);
     assert.match(last, /timeout -k 5 5 bash -o pipefail -c/);
     z.execState = { code: 2, out: 'o', err: 'e' };
     const e = await s.commands.run('exit 2').then(() => { throw new Error('should fail'); }, (x) => x);

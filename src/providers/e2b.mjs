@@ -277,10 +277,11 @@ export function createProvider(env = process.env, deps = {}) {
       // Each stream is also teed to a per-tag file inside the sandbox: envd's Process/Connect only
       // ever sends NEW data, so after a dropped stream the file is the only complete transcript.
       // The fd swap pipes stderr through one tee and stdout through the other, and bash's pipefail
-      // keeps the command's exit code. umask 077 keeps the transcripts private.
+      // keeps the command's exit code. The transcripts are created private in a subshell first, so the
+      // command itself keeps the normal umask (a global umask 077 made `sudo npm install -g` files root-only).
       const ioOut = `${HOME}/.cc-io-${tag}.out`, ioErr = `${HOME}/.cc-io-${tag}.err`;
       const pipeline = `{ sh -c ${q(cmd)} 2>&1 1>&3 | tee ${q(ioErr)} >&2; } 3>&1 | tee ${q(ioOut)}`;
-      const inner = `set -a; [ ! -f ${ENVFILE} ] || . ${ENVFILE}; set +a; umask 077; exec ${secs ? `timeout -k 5 ${secs} ` : ''}bash -o pipefail -c ${q(pipeline)}`;
+      const inner = `set -a; [ ! -f ${ENVFILE} ] || . ${ENVFILE}; set +a; (umask 077; : > ${q(ioOut)}; : > ${q(ioErr)}); exec ${secs ? `timeout -k 5 ${secs} ` : ''}bash -o pipefail -c ${q(pipeline)}`;
       const start = (path, body, sig) => envd(sb, path, {
         body: frame(body), signal: sig,
         headers: { 'Content-Type': 'application/connect+json', 'Connect-Protocol-Version': '1' },
