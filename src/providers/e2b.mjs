@@ -5,37 +5,48 @@
 // `envdAccessToken` (from POST /v2/sandboxes) authenticates envd as X-Access-Token.
 //
 // Guards and mappings the adapter enforces:
-// - Ownership: sandboxes are created with metadata purpose=cloudy-cloud (+ the caller's labels
-//   and deleteAt). list() filters by metadata server-side and re-checks client-side; delete,
-//   connect, metrics and publishPort refuse (not_found) a sandbox that is not ours — foreign
-//   sandboxes are never killed.
+// - Ownership: sandboxes are created with metadata purpose=cloudy-cloud, this installation's
+//   owner id, a per-create ccIdem marker and deleteAt. list() filters by metadata server-side
+//   and re-checks purpose AND owner client-side; delete, connect, metrics and publishPort refuse
+//   (not_found) a sandbox that is not ours — a teammate installation's sandboxes are never touched.
 // - Server TTL: E2B deletes the sandbox when its timeout expires, so a lost client still ends it
-//   (caps.hasServerTTL). The plan caps each timeout call, so create() walks a ladder
-//   (requested -> 3600 -> 300 s) and, while the handle is alive, a refresher keeps posting
-//   POST /sandboxes/{id}/timeout to reach the full deadline.
-// - No proxy secrets: credential VALUES go into the sandbox (create envVars plus an env file
-//   sourced by every command) only after CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes, the same consent
-//   shape as self-hosted/zipbox. create() refuses before any HTTP call without it.
+//   (caps.hasServerTTL). The Hobby plan caps continuous lifetime at one hour, so that is
+//   caps.maxTtlSeconds until a create the plan accepts teaches the real ceiling; create() walks a
+//   ladder (requested -> 3600 -> 300 s) and a refresher keeps posting
+//   POST /sandboxes/{id}/timeout to reach, never exceed, the recorded deadline.
+// - Credential values go into the sandbox (create envVars plus a mode-600 env file sourced by
+//   every command) only after CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes, re-read from the env file right
+//   before each credential-bearing POST — a revoked consent stops the dispatch itself.
 // - Egress: egress.allow maps to E2B's API-enforced network.allowOut (domains, *.suffix wildcards)
-//   with denyOut 0.0.0.0/0, so hasEgressPolicy is true.
+//   with denyOut 0.0.0.0/0, so hasEgressPolicy is true. On a non-base template the provisioning
+//   hosts (apt, gh, node, uv, npm) are added; stock base already carries the tools.
 // - Commands run through envd's Connect-RPC stream (POST /process.Process/Start, Connect framing);
-//   abort signals the process by tag (POST /process.Process/SendSignal) and a dropped stream
-//   re-attaches through POST /process.Process/Connect.
+//   abort signals the process by tag (POST /process.Process/SendSignal). Output is also teed to a
+//   per-tag file inside the sandbox, because a dropped stream re-attaches through
+//   POST /process.Process/Connect, which only sends NEW data — the file is the whole transcript.
 // - Files go through envd's /files upload/download; previews are PUBLIC https://<port>-<id>.e2b.app
 //   URLs — anyone with the link can open them until the sandbox is deleted.
 // Coordinators are refused: a sandbox has no Docker socket for sibling workers.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createLimiter } from '../limits.mjs';
+import { ownerFile, savedEnv } from '../config.mjs';
 
 const KEY_NAME = 'E2B_API_KEY';
 const CONSENT = 'CLOUDY_CLOUD_E2B_TOKEN_ON_BOX';
-const TEMPLATE = 'base';
 const HOME = '/home/user'; // the base template's default user
 const ENVFILE = '/home/user/.cloudy-cloud-env'; // consented credential values live here too (mode 600)
+const API = 'https://api.e2b.app'; // fixed: a configurable base could redirect the API key and consented values
 const ENVD_HOST = 'https://sandbox.e2b.app';
 const ENVD_PORT = 49983;
 const MAX_TTL_SECONDS = 86400;
+// The one-hour continuous lifetime the E2B Hobby plan enforces; a create the plan answers with a
+// wider timeout teaches the adapter the real ceiling (learnedMax below), never promised up front.
+const DEFAULT_MAX_TTL_SECONDS = 3600;
 const TTL_LADDER = [3600, 300]; // fallbacks when the plan caps the requested timeout
+// Hosts a non-base template may still need for provisioning (apt, gh, node, uv, the claude npm
+// package). The stock base template already carries every tool, so they are added only there.
+const PROVISION_HOSTS = ['deb.debian.org', 'security.debian.org', 'cli.github.com', 'deb.nodesource.com', 'astral.sh', 'registry.npmjs.org'];
 const MAX_LEN_RE = /max(imum)? (instance|sandbox).*(length|duration|timeout)|timeout cannot be (greater|longer|more) than/i; // live API: 'Timeout cannot be greater than 1 hours'
 const STATUS = { running: 'running', paused: 'stopped' };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
@@ -91,15 +102,31 @@ export function createProvider(env = process.env, deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const limiter = deps.limiter ?? createLimiter(8);
-  const API = (env.E2B_API_BASE || 'https://api.e2b.app').replace(/\/$/, '');
-  const consented = () => env[CONSENT] === 'yes';
+  // The widest sandbox timeout this account has accepted, starting at the Hobby plan's one-hour
+  // continuous-lifetime cap — the caller's deadline and turn limit must match the real plan.
+  let learnedMax = DEFAULT_MAX_TTL_SECONDS;
+  // The real environment (injectable in tests). Consent is re-read at every create — a value
+  // exported here consents and an explicit one wins over the file, but the env OBJECT this
+  // provider was built with is never trusted: the server shares it and refreshes it from the
+  // file, so only a fresh savedEnv() read sees a revoked line before the credential POST.
+  const baseEnv = deps.baseEnv ?? process.env;
+  const consented = () => (baseEnv[CONSENT] || savedEnv(env)[CONSENT]) === 'yes';
+  // This installation's owner id — the same value the server stamps as the `owner` label.
+  // deps.owner carries it in the server; a CLI process reads the file the server wrote.
+  const readOwner = () => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
+  const ownerId = () => deps.owner ?? readOwner();
+  const createdIds = new Set(); // ids this process created — ours whatever their metadata says now
+  // Ours = our purpose label AND this installation's owner id (or an id we created this run).
+  const ours = (meta, id) => meta?.purpose === 'cloudy-cloud' && (meta.owner === ownerId() || createdIds.has(id));
   const apiKey = () => {
     if (!env[KEY_NAME]) throw fail('no_key', api.text.noKeyFix, { local: true });
     return env[KEY_NAME];
   };
   // Every secret-shaped string that could ride a request or a response: scrubbed from any error
-  // text before it is shown. The API key, the envd token and consented values all register here.
-  const sensitive = new Set();
+  // text before it is shown. Seed from the env's credential-named values now, then add the API key,
+  // the envd token and each consented value as they are written onto a sandbox.
+  const SECRETISH = /(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$/;
+  const sensitive = new Set(Object.entries(env).filter(([k, v]) => SECRETISH.test(k) && typeof v === 'string' && v.length >= 8).map(([, v]) => v));
   const scrub = (s) => [...sensitive].reduce((t, v) => (typeof v === 'string' && v.length >= 8 ? t.split(v).join('<redacted>') : t), String(s));
 
   const parseErrorBody = async (res) => {
@@ -135,19 +162,22 @@ export function createProvider(env = process.env, deps = {}) {
 
   // One control-plane call; body objects go as JSON. 429 is retried after Retry-After (outside the
   // slot it holds), anything else normalizes once. Errors never echo the key or headers.
-  const ctl = async (method, path, body, { headers = {}, tries = 2 } = {}) => {
+  const ctl = async (method, path, body, { headers = {}, tries = 2, signal, before } = {}) => {
     const key = apiKey();
     sensitive.add(key);
     for (let n = 1; ; n++) {
+      before?.(); // re-verified on every attempt, including a 429 sleep-and-retry of this same call
       let res;
       try {
         res = await limiter.run(() => fetchFn(`${API}${path}`, {
           method,
+          signal,
           redirect: 'error', // never follow a redirect while a credential header is attached
           headers: { 'X-API-Key': key, ...(body !== undefined && { 'Content-Type': 'application/json' }), ...headers },
           ...(body !== undefined && { body: JSON.stringify(body) }),
         }));
       } catch (e) {
+        if (e?.name === 'AbortError') throw e;
         throw fail('transient', `The E2B API could not be reached (${scrub(e?.message ?? e).replaceAll('\n', ' ')})`);
       }
       if (res.ok) { const t = await res.text().catch(() => ''); try { return { data: JSON.parse(t), res }; } catch { return { data: {}, res }; } }
@@ -223,11 +253,35 @@ export function createProvider(env = process.env, deps = {}) {
     const sb = { id, envdToken };
     // Past its advertised deadline the sandbox must not serve again: remove it and say not_found.
     const guard = async () => { if (deleteAt && deleteAt <= now()) { await api.delete(id).catch(() => {}); throw fail('not_found', `the E2B sandbox ${id} passed its deleteAt and was removed`); } };
+    const files = {
+      async write(path, data) {
+        await guard();
+        // Raw bytes, octet-stream: no multipart; envd creates the parent directories.
+        const res = await envd(sb, `/files?path=${encodeURIComponent(String(path))}&username=user`, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: typeof data === 'string' ? data : Buffer.from(data),
+        });
+        if (!res.ok) { const e = await parseErrorBody(res); throw httpError(res.status, e); }
+        return true;
+      },
+      async read(path) {
+        await guard();
+        const res = await envd(sb, `/files?path=${encodeURIComponent(String(path))}&username=user`, { method: 'GET' });
+        if (!res.ok) { const e = await parseErrorBody(res); throw httpError(res.status, e); }
+        return Buffer.from(await res.arrayBuffer());
+      },
+    };
     const run = async (cmd, { cwd, timeoutMs, signal, onStdout } = {}) => {
       await guard();
       const secs = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0;
-      const inner = `set -a; [ ! -f ${ENVFILE} ] || . ${ENVFILE}; set +a; exec ${secs ? `timeout -k 5 ${secs} ` : ''}sh -c ${q(cmd)}`;
       const tag = `cc-${randomBytes(6).toString('hex')}`;
+      // Each stream is also teed to a per-tag file inside the sandbox: envd's Process/Connect only
+      // ever sends NEW data, so after a dropped stream the file is the only complete transcript.
+      // The fd swap pipes stderr through one tee and stdout through the other, and bash's pipefail
+      // keeps the command's exit code. umask 077 keeps the transcripts private.
+      const ioOut = `${HOME}/.cc-io-${tag}.out`, ioErr = `${HOME}/.cc-io-${tag}.err`;
+      const pipeline = `{ sh -c ${q(cmd)} 2>&1 1>&3 | tee ${q(ioErr)} >&2; } 3>&1 | tee ${q(ioOut)}`;
+      const inner = `set -a; [ ! -f ${ENVFILE} ] || . ${ENVFILE}; set +a; umask 077; exec ${secs ? `timeout -k 5 ${secs} ` : ''}bash -o pipefail -c ${q(pipeline)}`;
       const start = (path, body, sig) => envd(sb, path, {
         body: frame(body), signal: sig,
         headers: { 'Content-Type': 'application/connect+json', 'Connect-Protocol-Version': '1' },
@@ -238,7 +292,7 @@ export function createProvider(env = process.env, deps = {}) {
         headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' },
         body: JSON.stringify({ process: { tag }, signal: 'SIGNAL_SIGKILL' }),
       }).then((r) => r.text().catch(() => {})).catch(() => {});
-      let stdout = '', stderr = '', exitCode, streamed = false;
+      let stdout = '', stderr = '', exitCode, streamed = false, reattached = false;
       const onFrame = (j) => {
         const ev = j?.event;
         if (!ev) return;
@@ -269,7 +323,7 @@ export function createProvider(env = process.env, deps = {}) {
           if (end?.error) throw connectErr(end.error);
           if (!dropped && end) break; // completed stream
           if (!streamed || attach >= 2) throw fail('transient', 'the E2B command stream ended before the process result arrived');
-          // The stream dropped but the tagged process is still running: re-attach by tag.
+          reattached = true; // the stream dropped: output emitted in the gap never replays on envd
         }
       } catch (e) {
         if (e?.name === 'AbortError' || signal?.aborted) {
@@ -279,44 +333,36 @@ export function createProvider(env = process.env, deps = {}) {
         }
         throw e;
       }
+      if (reattached) {
+        // The reconnect stream reported only events after it: the tee'd files hold the whole run,
+        // so the partial transcript is never returned as complete.
+        try {
+          const [outB, errB] = await Promise.all([files.read(ioOut), files.read(ioErr)]);
+          const full = outB.toString('utf8');
+          const delta = full.startsWith(stdout) ? full.slice(stdout.length) : full;
+          if (delta) { try { onStdout?.(delta); } catch { /* a bad callback must not kill the call */ } }
+          stdout = full;
+          stderr = errB.toString('utf8');
+        } catch (e) {
+          throw fail('transient', `the E2B command stream dropped and its output could not be read back (${scrub(e?.message ?? e)})`, { stdout: scrub(stdout), stderr: scrub(stderr) });
+        }
+      }
       if (exitCode === undefined) throw fail('transient', 'the E2B command stream ended without an exit event', { stdout: scrub(stdout), stderr: scrub(stderr) });
-      const r = { stdout, stderr, exitCode };
       if (secs && exitCode === 124) throw fail('timeout', `timed out after ${secs} s`, { stdout: scrub(stdout), stderr: scrub(stderr), exitCode: 124 });
-      if (exitCode !== 0) throw Object.assign(new Error(scrub(stderr.trim()).slice(-300) || `exit ${exitCode}`), r);
-      return r;
+      // A caller that consumes error.stderr must never receive a raw credential value either.
+      if (exitCode !== 0) throw Object.assign(new Error(scrub(stderr.trim()).slice(-300) || `exit ${exitCode}`), { stdout: scrub(stdout), stderr: scrub(stderr), exitCode });
+      return { stdout, stderr, exitCode };
     };
-    return {
-      id, home: HOME,
-      files: {
-        async write(path, data) {
-          await guard();
-          // Raw bytes, octet-stream: no multipart; envd creates the parent directories.
-          const res = await envd(sb, `/files?path=${encodeURIComponent(String(path))}&username=user`, {
-            headers: { 'Content-Type': 'application/octet-stream' },
-            body: typeof data === 'string' ? data : Buffer.from(data),
-          });
-          if (!res.ok) { const e = await parseErrorBody(res); throw httpError(res.status, e); }
-          return true;
-        },
-        async read(path) {
-          await guard();
-          const res = await envd(sb, `/files?path=${encodeURIComponent(String(path))}&username=user`, { method: 'GET' });
-          if (!res.ok) { const e = await parseErrorBody(res); throw httpError(res.status, e); }
-          return Buffer.from(await res.arrayBuffer());
-        },
-      },
-      commands: { run },
-      kill: () => api.delete(id),
-      loadName: async () => id,
-    };
+    return { id, home: HOME, files, commands: { run }, kill: () => api.delete(id), loadName: async () => id };
   };
 
-  // Ownership gate for every destructive or privileged call: the sandbox must carry
-  // metadata.purpose === 'cloudy-cloud'. Returns the detail record; throws not_found otherwise
-  // (e.foreign marks "exists but not ours" so delete can tell it from a plain 404).
+  // Ownership gate for every destructive or privileged call: our purpose label AND this
+  // installation's owner id — a same-purpose sandbox a teammate's installation runs is foreign.
+  // Returns the detail record; throws not_found otherwise (e.foreign marks "exists but not ours"
+  // so delete can tell it from a plain 404).
   const ownSandbox = async (id) => {
     const { data: d } = await ctl('GET', `/sandboxes/${encodeURIComponent(id)}`);
-    if (d?.metadata?.purpose !== 'cloudy-cloud') throw fail('not_found', `No cloudy-cloud E2B sandbox ${id}`, { foreign: true });
+    if (!ours(d?.metadata, id)) throw fail('not_found', `No cloudy-cloud E2B sandbox ${id} owned by this installation`, { foreign: true });
     if (d?.envdAccessToken) sensitive.add(d.envdAccessToken);
     if (d?.trafficAccessToken) sensitive.add(d.trafficAccessToken);
     return d;
@@ -346,15 +392,16 @@ export function createProvider(env = process.env, deps = {}) {
       hasServerTTL: true, hasProxySecrets: false, get hasConsentedSecrets() { return consented(); }, hasEgressPolicy: true,
       hasSnapshots: false, hasPortForward: false, hasPublish: true, hasSizes: false, hasShell: false,
       hasDisplay: false, hasMetrics: true,
-      maxForegroundMs: Infinity, maxTtlSeconds: MAX_TTL_SECONDS, startsPerMin: 30, maxConcurrentCalls: 8,
+      maxForegroundMs: Infinity, get maxTtlSeconds() { return learnedMax; }, startsPerMin: 30, maxConcurrentCalls: 8,
       uploadMaxBytes: 100 * 1024 * 1024, machineKinds: ['linux'],
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, signal }) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `e2b runs only linux sandboxes, not ${kind.name}. Use machine "linux".`);
       if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
       apiKey(); // no_key before the consent check: the key is required either way
-      if (!consented()) throw new Error(`E2B has no proxy secrets, so every worker credential (GH_TOKEN, the Claude credential, profile keys) would be written into the sandbox environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      if (!consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      signal?.throwIfAborted?.();
 
       const ttl = Math.min(Math.max(1, ttlSeconds || MAX_TTL_SECONDS), MAX_TTL_SECONDS);
       const t0 = now();
@@ -377,27 +424,53 @@ export function createProvider(env = process.env, deps = {}) {
 
       // The Idempotency-Key makes a dropped answer safe to retry (same key replays the original
       // response); the ccIdem metadata lets a list recover the sandbox when every answer was lost.
-      const net = egress?.allow?.length ? { allowOut: egress.allow, denyOut: ['0.0.0.0/0'] } : undefined;
+      const template = env.E2B_TEMPLATE || 'base';
+      // The stock base image already carries git/gh/node/claude/tmux/uv, so its installs are
+      // skipped and it needs no extra egress. A custom template only gets the provisioning hosts.
+      const provisionHosts = template === 'base' ? [] : PROVISION_HOSTS;
+      const net = egress?.allow?.length ? { allowOut: [...new Set([...egress.allow, ...provisionHosts])], denyOut: ['0.0.0.0/0'] } : undefined;
+
+      // A create answer can be lost after the sandbox exists (dropped connection, truncated body).
+      // The ccIdem label identifies OUR copy — ambiguous copies (forks share the labels) are
+      // deleted rather than adopted, and a list that cannot be answered surfaces the first error.
+      const recover = async () => {
+        let found;
+        try {
+          found = await api.list({ ccIdem: idem });
+        } catch { /* the first list often dies with the same blip that ate the answer; retry once */ found = await api.list({ ccIdem: idem }).catch(() => []); }
+        const match = found.filter((r) => ours(r.labels, r.id) && r.labels.ccIdem === idem);
+        if (match.length > 1) {
+          await Promise.allSettled(match.map((r) => ctl('DELETE', `/sandboxes/${encodeURIComponent(r.id)}`)));
+          throw fail('ambiguous', `${match.length} E2B sandboxes share idempotency marker ${idem} (a fork copies every label) — deleted rather than adopted`);
+        }
+        return match[0]?.id;
+      };
+
       let created, step = ttl, lastErr;
+      // The fresh file read runs inside ctl before every credential-bearing POST, so a consent the
+      // user pulled while this create waited on a retry or a queue slot stops the dispatch itself.
+      const stillConsented = () => { if (!consented()) throw new Error(`Consent for E2B was revoked while this create was queued.\nAdd ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`); };
       for (const want of [ttl, ...TTL_LADDER.filter((s) => s < ttl)]) {
         for (let attempt = 0; ; attempt++) {
           try {
             created = await ctl('POST', '/v2/sandboxes', {
-              templateID: TEMPLATE, timeout: want, metadata: all, envVars: vars,
+              templateID: template, timeout: want, metadata: all, envVars: vars,
               ...(net && { network: net }),
-            }, { headers: { 'Idempotency-Key': `${idem}-${want}` }, tries: 4 }); // one key per rung: E2B refuses a reused key with a different body
+            }, { headers: { 'Idempotency-Key': `${idem}-${want}` }, tries: 4, signal, before: stillConsented }); // one key per rung: E2B refuses a reused key with a different body
             step = want;
+            if (want > learnedMax) learnedMax = want; // the plan accepted more than the Hobby hour
             break;
           } catch (e) {
             lastErr = e;
             if (e.code === 'ttl_capped') break; // plan caps the timeout: try the next rung
             if (e.e2bCode === 'idempotency_in_progress' && attempt < 3) { await sleep(3000); continue; }
             if (e.code === 'transient' || e.code === 'rate_limited' || e.e2bCode === 'idempotency_outcome_unknown') {
-              const found = await api.list({ ccIdem: idem }).then((rows) => rows[0]).catch(() => null);
-              if (found) {
+              const lostId = await recover(); // a sandbox OUR ccIdem labels, or none
+              if (lostId) {
                 // The sandbox exists but its create answer was lost: fetch the detail for the envd token.
-                created = await ctl('GET', `/sandboxes/${encodeURIComponent(found.id)}`);
+                created = await ctl('GET', `/sandboxes/${encodeURIComponent(lostId)}`);
                 step = want;
+                if (want > learnedMax) learnedMax = want;
               }
             }
             break;
@@ -407,23 +480,36 @@ export function createProvider(env = process.env, deps = {}) {
         if (lastErr?.code !== 'ttl_capped') break;
       }
       if (!created) throw lastErr;
-      const id = created.data.sandboxID;
-      const envdToken = created.data.envdAccessToken;
-      if (!id || !envdToken) throw fail('transient', 'the E2B create answer carried no sandbox id or envd token');
+      let id = created.data.sandboxID, envdToken = created.data.envdAccessToken;
+      if (!id) {
+        // The answer was OK on the wire but its body arrived cut (or empty): the sandbox our
+        // ccIdem labels may still exist. Recover it by that label before giving up.
+        const lostId = await recover();
+        if (lostId) ({ data: { sandboxID: id, envdAccessToken: envdToken } } = await ctl('GET', `/sandboxes/${encodeURIComponent(lostId)}`));
+        if (!id) throw fail('transient', 'the E2B create answer carried no sandbox id or envd token');
+      }
+      if (!envdToken) { await api.delete(id).catch(() => {}); throw fail('transient', 'the E2B create answer carried no envd access token'); }
+      createdIds.add(id);
       try {
         const sb = sandbox(id, envdToken, deleteAt);
         // envd readiness: the create returns once the VM is up, but envd can still be settling.
         for (const deadline = now() + 90_000; ; ) {
-          const res = await envd(sb, '/health', { method: 'GET' }).catch(() => null);
+          signal?.throwIfAborted?.();
+          const res = await envd(sb, '/health', { method: 'GET', signal }).catch((e) => { if (e?.name === 'AbortError') throw e; return null; });
           if (res?.status === 204 || res?.ok) break;
           await res?.text?.().catch(() => {});
           if (now() >= deadline) throw fail('transient', 'the E2B sandbox envd did not answer within 90 s');
           await sleep(1500);
         }
-        await sb.commands.run(PROVISION, { timeoutMs: 600_000 });
+        await sb.commands.run(PROVISION, { timeoutMs: 600_000, signal });
+        // The env file must exist private BEFORE the values land: create it at mode 600, write
+        // through the still-empty file, then enforce and verify the mode — a sandbox whose umask
+        // or envd made it world-readable fails the create instead of keeping loose credentials.
         const envText = Object.entries(vars).map(([k, v]) => `${k}=${q(v)}\n`).join('');
+        await sb.commands.run(`install -m 600 /dev/null ${q(ENVFILE)}`, { signal });
         await sb.files.write(ENVFILE, envText);
-        await sb.commands.run(`chmod 600 ${ENVFILE}`);
+        const mode = (await sb.commands.run(`chmod 600 ${q(ENVFILE)} && stat -c %a ${q(ENVFILE)}`, { signal })).stdout.trim();
+        if (mode !== '600') throw fail('provision_failed', `${ENVFILE} is mode ${mode}, not 600 — refusing to keep credentials in a readable file`);
         armRefresh(id, deleteAt, step);
         return sb;
       } catch (e) {
@@ -438,14 +524,15 @@ export function createProvider(env = process.env, deps = {}) {
       if (deleteAt && deleteAt <= now()) { await api.delete(id); throw fail('not_found', `the E2B sandbox ${id} passed its deleteAt and was removed`); }
       let envdToken = d.envdAccessToken;
       if (d.state === 'paused') {
-        // Resume and extend toward the recorded deadline (connect never shortens the expiry).
-        const want = Math.min(Math.max(Math.ceil((deleteAt - now()) / 1000), 300), 3600);
+        // Resume with only the life it actually has left: the timeout extends expiry to now+want,
+        // so asking for the floor (300) when deleteAt is sooner would run past the deadline.
+        const want = Math.min(Math.max(Math.ceil((deleteAt - now()) / 1000), 1), learnedMax);
         const { data: c } = await ctl('POST', `/v2/sandboxes/${encodeURIComponent(id)}/connect`, { timeout: want }, { tries: 2 });
         envdToken = c?.envdAccessToken ?? envdToken;
         if (c?.envdAccessToken) sensitive.add(c.envdAccessToken);
       }
       if (!envdToken) throw fail('transient', `the E2B sandbox ${id} has no envd access token (state ${d.state ?? 'unknown'})`);
-      armRefresh(id, deleteAt, 3600);
+      armRefresh(id, deleteAt, learnedMax); // each tick posts min(left, step): never past deleteAt
       return sandbox(id, envdToken, deleteAt);
     },
 
@@ -459,11 +546,11 @@ export function createProvider(env = process.env, deps = {}) {
         for (const m of page) {
           const l = m.metadata ?? {};
           // The server-side filter is a hint: ownership and every requested label are re-checked here.
-          if (l.purpose !== 'cloudy-cloud') continue;
+          if (!ours(l, m.sandboxID)) continue;
           if (!Object.entries(labels).every(([k, v]) => l[k] === v)) continue;
           rows.push({
             id: m.sandboxID, name: l.name ?? m.sandboxID, labels: l, state: m.state, status: STATUS[m.state] ?? 'stopped',
-            startedAt: Date.parse(m.startedAt) || 0, deleteAt: m.endAt,
+            startedAt: Date.parse(m.startedAt) || 0, archiveAt: Date.parse(m.endAt) || 0,
           });
         }
         token = res?.headers?.get?.('x-next-token');
@@ -488,10 +575,10 @@ export function createProvider(env = process.env, deps = {}) {
 
     async publishPort(id, port) {
       const p = portOf(port);
-      const d = await ownSandbox(id);
-      const domain = d.domain || env.E2B_DOMAIN || 'e2b.app';
-      // The URL is public by default: anyone who knows it can reach the app while the sandbox lives.
-      return { url: `https://${p}-${id}.${domain}` };
+      await ownSandbox(id);
+      // The preview host is fixed e2b.app: a configurable domain could point a credential-bearing
+      // URL at an attacker's endpoint. Public by default — anyone with the link reaches the app.
+      return { url: `https://${p}-${id}.e2b.app` };
     },
     // E2B public URLs exist for as long as the sandbox runs; there is no per-port unpublish call.
     async unpublishPort() { throw new Error('e2b public URLs cannot be unpublished one by one — they stop working when the sandbox is deleted (cloudy-cloud machines stop / cloud_agent_stop).'); },
@@ -523,10 +610,10 @@ export function createProvider(env = process.env, deps = {}) {
 
     text: {
       ssh: (machine, cmd) => `the sandbox terminal at https://e2b.dev (sandbox: ${machine})${cmd ? `, then run: ${cmd}` : ''}`,
-      listMachines: `curl -s -H "X-API-Key: $E2B_API_KEY" 'https://api.e2b.app/v2/sandboxes?metadata=purpose%3Dcloudy-cloud'`,
+      listMachines: `echo 'header = "X-API-Key: '"$E2B_API_KEY"'"' | curl -s -K - 'https://api.e2b.app/v2/sandboxes?metadata=purpose%3Dcloudy-cloud'`,
       noKeyFix: `E2B_API_KEY is not set.\nCreate a key at https://e2b.dev (dashboard -> API Keys), then add\nE2B_API_KEY=<the key> to ~/.config/cloudy-cloud/env.`,
-      apiFix: `Check that the E2B API answers:\n  curl -s -H "X-API-Key: $E2B_API_KEY" https://api.e2b.app/v2/sandboxes`,
-      githubTokenHelp: `E2B has no proxy secrets, so GH_TOKEN is written into the sandbox environment in plaintext.\nAdd GH_TOKEN=<a token with write access> and ${CONSENT}=yes to ~/.config/cloudy-cloud/env.`,
+      apiFix: `Check that the E2B API answers:\n  echo 'header = "X-API-Key: '"$E2B_API_KEY"'"' | curl -s -K - https://api.e2b.app/v2/sandboxes\n(the key goes to curl on stdin, never in argv — the expanded value must not reach a process list or log).`,
+      githubTokenHelp: `This adapter writes GH_TOKEN into the sandbox environment in plaintext.\nAdd GH_TOKEN=<a token with write access> and ${CONSENT}=yes to ~/.config/cloudy-cloud/env.`,
       hostLabel: 'an E2B sandbox',
       coordinatorRefusal: 'Coordinators are not supported on the e2b provider (a sandbox has no Docker socket for sibling workers). Start workers directly from your own session with cloud_agent.',
     },

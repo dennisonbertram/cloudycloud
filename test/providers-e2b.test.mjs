@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider } from '../src/providers/e2b.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
@@ -28,6 +28,15 @@ const enc = (obj, flags = 0) => {
 const stream = (events) => {
   const parts = events.map((e) => enc({ event: e }));
   parts.push(enc({}, 2)); // terminal frame, no error
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const body = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { body.set(p, off); off += p.length; }
+  return body;
+};
+// A stream that dies mid-flight: no terminal frame, so the reader sees a dropped connection.
+const partial = (events) => {
+  const parts = events.map((e) => enc({ event: e }));
   const total = parts.reduce((n, p) => n + p.length, 0);
   const body = new Uint8Array(total);
   let off = 0;
@@ -125,8 +134,27 @@ function fakeE2b() {
       if (u.pathname === '/process.Process/Start') {
         const req = body[0].json;
         (execs.get(id) ?? execs.set(id, []).get(id)).push(req.process.args.at(-1));
-        const st = z.execState;
+        if (z.hold) return new Promise((_, rej) => { // hangs until the caller's signal aborts
+          init.signal?.addEventListener('abort', () => rej(Object.assign(new Error('the operation was aborted'), { name: 'AbortError' })));
+        });
+        const cmd = req.process.args.at(-1);
+        // stat -c %a reports the mode the fake keeps for the env file (600 once install -m 600 ran).
+        const st = z.execFn?.(cmd) ?? (cmd.includes('stat -c %a') ? { code: 0, out: `${z.envMode ?? '600'}\n`, err: '' } : z.execState);
+        // The adapter tees every command's output into per-tag io files inside the sandbox; a real
+        // envd writes them too, so the fake seeds the complete transcript for recovery reads.
+        const tag = req.tag; // envd's StartRequest carries the tag as a sibling of `process`
+        if (tag) {
+          const f = files.get(id) ?? files.set(id, new Map()).get(id);
+          f.set(`/home/user/.cc-io-${tag}.out`, st.ioOut ?? st.out ?? '');
+          f.set(`/home/user/.cc-io-${tag}.err`, st.ioErr ?? st.err ?? '');
+        }
         if (st.raw !== undefined) return respond(200, st.raw, { 'Content-Type': 'application/connect+json' });
+        if (st.dropMid) // the connection dies after the start: no end event, no terminal frame
+          return respond(200, partial([
+            { start: { pid: 1234 } },
+            ...(st.out ? [{ data: { stdout: b64(st.out) } }] : []),
+            ...(st.err ? [{ data: { stderr: b64(st.err) } }] : []),
+          ]), { 'Content-Type': 'application/connect+json' });
         return respond(200, stream([
           { start: { pid: 1234 } },
           ...(st.out ? [{ data: { stdout: b64(st.out) } }] : []),
@@ -148,22 +176,68 @@ function fakeE2b() {
   return Object.assign(z, { fetch, log, store, files, execs, fail, row, respond });
 }
 
+// The consent lives in a config file, like a real user's: the adapter re-reads the file at
+// dispatch and does not trust a copy inside the (possibly stale) env object it was built with.
+// baseEnv plays the real process environment (kept empty so the developer's own exports can't leak in).
+const cfgFile = (lines = 'E2B_API_KEY=x\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n') => {
+  const f = join(mkdtempSync(join(tmpdir(), 'cc-e2b-')), 'env');
+  writeFileSync(f, lines, { mode: 0o600 });
+  return f;
+};
+// A config file with this installation's owner id written beside it, like the server leaves it.
+const cfgWithOwner = (owner) => { const f = cfgFile(); writeFileSync(join(dirname(f), 'owner'), `${owner}\n`); return f; };
 const mk = (z, env = {}, deps = {}) => createProvider({
-  E2B_API_KEY: KEY, CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'yes', GH_TOKEN: GH,
-  CLAUDE_CODE_OAUTH_TOKEN: OAT,
+  E2B_API_KEY: KEY, GH_TOKEN: GH,
+  CLAUDE_CODE_OAUTH_TOKEN: OAT, CLOUDY_CLOUD_CONFIG: cfgFile(),
   ...env,
-}, { fetchFn: z.fetch, ...deps });
+}, { fetchFn: z.fetch, sleep: async () => {}, baseEnv: {}, ...deps });
 const create = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 3600, ...extra });
 
 contractSuite('e2b', ({ withKey }) => mk(fakeE2b(), withKey ? {} : { E2B_API_KEY: undefined }));
 
 test('e2b: create without the token-on-box consent refuses with a guided error and no network call', async () => {
   const z = fakeE2b();
-  const p = mk(z, { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: undefined });
+  const p = mk(z, { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_CONFIG: cfgFile('E2B_API_KEY=x\n') });
   const e = await create(p).then(() => { throw new Error('should refuse'); }, (x) => x);
   assert.match(e.message, /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes/);
-  assert.match(e.message, /proxy secrets/i);
+  assert.match(e.message, /written into the sandbox|into each sandbox/i);
   assert.equal(z.log.length, 0, 'no HTTP call may run before the consent exists');
+});
+
+test('e2b: consent is re-read from the file at dispatch — a stale env copy cannot create', async () => {
+  const z = fakeE2b();
+  // The in-memory env still holds a yes the file no longer has (the server's shared object
+  // between env refreshes). The fresh file read at dispatch must not consent.
+  const p = mk(z, { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_CONFIG: cfgFile('E2B_API_KEY=x\n') });
+  await assert.rejects(create(p), /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.length, 0);
+});
+
+test('e2b: consent revoked while a create retries stops the next credential-bearing POST', async () => {
+  const z = fakeE2b();
+  const cfg = cfgFile('E2B_API_KEY=x\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n');
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg });
+  let revoked = false;
+  z.fail.set('/v2/sandboxes', (m) => {
+    if (m !== 'POST' || revoked) return;
+    // The user deleted the consent line while the first POST sat in the rate-limit retry.
+    revoked = true;
+    writeFileSync(cfg, 'E2B_API_KEY=x\n', { mode: 0o600 });
+    return z.respond(429, { code: 429, message: 'Rate limit exceeded' }, { 'Retry-After': '1' });
+  });
+  await assert.rejects(create(p), /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.filter((l) => l.method === 'POST' && l.path === '/v2/sandboxes').length, 1,
+    'the retried POST was refused before credentials went out again');
+});
+
+test('e2b: a real environment value consents, and an exported no beats a saved yes', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgFile('E2B_API_KEY=x\n') }, { baseEnv: { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'yes' } });
+  await (await create(p)).kill();
+  const n = z.log.length;
+  const refused = mk(z, {}, { baseEnv: { CLOUDY_CLOUD_E2B_TOKEN_ON_BOX: 'no' } }); // the file still says yes; the shell says no
+  await assert.rejects(create(refused), /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.length, n, 'the shell override is honoured before the saved line');
 });
 
 test('e2b: create sets server metadata + timeout, sends envVars and writes the env file', async () => {
@@ -182,10 +256,17 @@ test('e2b: create sets server metadata + timeout, sends envVars and writes the e
     assert.equal(post.body.envVars.FOO, 'bar');
     assert.equal(post.body.envVars.GH_TOKEN, GH, 'consented values ride envVars');
     assert.ok(post.headers['Idempotency-Key'], 'create carries an idempotency key');
-    // envd: health poll, then exactly one provision exec, env file write, one chmod exec.
+    // envd: health poll, then provision, a private (600) env-file create, the write, and a
+    // chmod+stat verify — in that order, so the file is never world-readable with values inside.
     const starts = z.log.filter((l) => l.path === '/process.Process/Start');
-    assert.equal(starts.length, 2, `expected provision + chmod, got: ${starts.map((s) => s.body[0].json.process.args.at(-1).slice(0, 40)).join(' | ')}`);
-    assert.match(z.execs.get(s.id)[0], /cc-provisioned-v1/);
+    assert.equal(starts.length, 3, `expected provision + install + verify, got: ${starts.map((s) => s.body[0].json.process.args.at(-1).slice(0, 40)).join(' | ')}`);
+    const cmds = z.execs.get(s.id);
+    assert.match(cmds[0], /cc-provisioned-v1/);
+    const iInstall = cmds.findIndex((c) => c.includes('install -m 600'));
+    const iVerify = cmds.findIndex((c) => c.includes('chmod 600') && c.includes('stat -c %a'));
+    assert.ok(iInstall !== -1 && iVerify !== -1 && iInstall < iVerify, `private create before the write, mode enforced after: ${cmds.join(' | ')}`);
+    const writeAt = z.log.findIndex((l) => l.path.startsWith('/files'));
+    assert.ok(writeAt > z.log.indexOf(starts[iInstall]) && writeAt < z.log.indexOf(starts[iVerify]), 'the write lands between the private create and the verify');
     const envFile = z.files.get(s.id)?.get('/home/user/.cloudy-cloud-env');
     assert.ok(envFile?.includes('GH_TOKEN=') && envFile.includes('FOO=') && envFile.includes('CLAUDE_CODE_OAUTH_TOKEN='));
     // The key, the envd token and the credential values appear only where they must:
@@ -241,6 +322,266 @@ test('e2b: a plan TTL cap walks the timeout ladder down', async () => {
   } finally { await s.kill(); }
 });
 
+test('e2b: the Hobby lifetime cap is one hour until a wider timeout is accepted', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  assert.equal(p.caps.maxTtlSeconds, 3600, 'the default E2B plan allows one continuous hour, never six');
+  const s = await create(p, { ttlSeconds: 7200 });
+  try {
+    assert.equal(p.caps.maxTtlSeconds, 7200, 'a timeout the plan accepted widens the known cap');
+  } finally { await s.kill(); }
+});
+
+test('e2b: E2B_API_BASE and E2B_DOMAIN are ignored — only the fixed E2B hosts are used', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { E2B_API_BASE: 'http://evil.example/api', E2B_DOMAIN: 'evil.example' });
+  const s = await create(p);
+  try {
+    for (const l of z.log) assert.match(l.url, /^https:\/\/(api|sandbox)\.e2b\.app\//, l.url);
+    const r = await p.publishPort(s.id, '8080');
+    assert.equal(r.url, `https://8080-${s.id}.e2b.app`, 'the preview host is fixed e2b.app');
+  } finally { await s.kill(); }
+});
+
+test('e2b: E2B_TEMPLATE picks the sandbox template, defaulting to base', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { E2B_TEMPLATE: 'bigbox' });
+  const s = await create(p);
+  try {
+    const post = z.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes');
+    assert.equal(post.body.templateID, 'bigbox');
+  } finally { await s.kill(); }
+  const z2 = fakeE2b();
+  const s2 = await create(mk(z2));
+  try {
+    assert.equal(z2.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes').body.templateID, 'base');
+  } finally { await s2.kill(); }
+});
+
+test('e2b: an egress list on a custom template also allows the provisioning hosts; base needs none', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { E2B_TEMPLATE: 'custom-min' });
+  const s = await create(p, { egress: { allow: ['github.com', 'api.anthropic.com'] } });
+  try {
+    const post = z.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes');
+    for (const h of ['github.com', 'api.anthropic.com', 'deb.debian.org', 'security.debian.org', 'cli.github.com', 'deb.nodesource.com', 'astral.sh', 'registry.npmjs.org'])
+      assert.ok(post.body.network.allowOut.includes(h), `allowOut misses ${h}`);
+    assert.deepEqual(post.body.network.denyOut, ['0.0.0.0/0']);
+  } finally { await s.kill(); }
+});
+
+test('e2b: a teammate\'s cloudy-cloud sandbox — same purpose, other owner — is never ours', async () => {
+  const z = fakeE2b();
+  const p = mk(z, {}, { owner: 'o1' });
+  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2', deleteAt: new Date(Date.now() + 60_000).toISOString() }));
+  await assert.rejects(p.connect('mate'), (e) => e.code === 'not_found');
+  await assert.rejects(p.delete('mate'), (e) => e.code === 'not_found');
+  await assert.rejects(p.publishPort('mate', '8080'), (e) => e.code === 'not_found');
+  await assert.rejects(p.metrics('mate'), (e) => e.code === 'not_found');
+  for (const rows of [await p.list(), await p.list({ purpose: 'cloudy-cloud' })])
+    assert.ok(!rows.some((r) => r.id === 'mate'), 'another installation\'s sandbox is invisible');
+  assert.ok(z.store.has('mate'), 'the teammate\'s sandbox was not swept or deleted');
+  assert.ok(!z.log.some((l) => l.method === 'DELETE'), 'no delete was ever sent for it');
+});
+
+test('e2b: the owner id is read from the owner file next to the config when deps omit it', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgWithOwner('o1') });
+  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2' }));
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  try {
+    const c = await p.connect(s.id);
+    assert.equal(c.id, s.id, 'our own sandbox still connects');
+    await assert.rejects(p.connect('mate'), (e) => e.code === 'not_found');
+    assert.ok(!(await p.list()).some((r) => r.id === 'mate'));
+  } finally { await s.kill(); }
+});
+
+test('e2b: a lost create answer recovers the sandbox our ccIdem labels — and only that one', async () => {
+  const z = fakeE2b();
+  // Another installation's purpose-labelled sandbox is NOT adoptable even though it would match a purpose-only list.
+  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2', ccIdem: 'not-ours' }));
+  const realFetch = z.fetch;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      await realFetch(url, init); // the create landed (deduped by idempotency); the answer never arrived
+      throw new Error('socket hang up');
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z, {}, { owner: 'o1' });
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  try {
+    assert.notEqual(s.id, 'mate');
+    assert.equal(z.store.get(s.id).metadata.ccIdem, z.store.get(s.id).metadata.ccIdem);
+    assert.equal(z.store.get(s.id).metadata.owner, 'o1');
+    assert.ok(z.store.has('mate'), 'the foreign sandbox was not touched');
+  } finally { await s.kill(); }
+});
+
+test('e2b: a truncated create answer still resolves the created sandbox by ccIdem', async () => {
+  const z = fakeE2b();
+  const realFetch = z.fetch;
+  let once = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (!once && u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      once = true;
+      await realFetch(url, init); // accepted and stored — the sandbox exists
+      return z.respond(200, '{'); // but the body was cut off on the wire
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    assert.ok(s.id, 'the ccIdem recovery found the created sandbox');
+    assert.equal(z.store.size, 1, 'no second sandbox was created');
+  } finally { await s.kill(); }
+});
+
+test('e2b: two sandboxes sharing our idempotency marker are never adopted — both are deleted', async () => {
+  const z = fakeE2b();
+  const realFetch = z.fetch;
+  let once = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (!once && u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      once = true;
+      const r = await realFetch(url, init);
+      // An E2B fork inherits every metadata key, ccIdem included.
+      const made = [...z.store.values()].at(-1);
+      z.store.set('fork1', z.row('fork1', { ...made.metadata }));
+      throw new Error('socket hang up'); // the answer was still lost
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const e = await create(p).then(() => { throw new Error('should not adopt'); }, (x) => x);
+  assert.match(e.message, /idempotency|fork|ambiguous/i);
+  assert.equal(z.store.size, 0, 'the unresolvable copies were deleted, not adopted');
+});
+
+test('e2b: a create answer with an id but no envd token cleans the known sandbox up', async () => {
+  const z = fakeE2b();
+  const realFetch = z.fetch;
+  let once = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (!once && u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      once = true;
+      await realFetch(url, init);
+      const rec = [...z.store.values()].at(-1);
+      delete rec.envdAccessToken; // the stored detail also lacks it
+      return z.respond(200, { sandboxID: rec.sandboxID }); // the answer lost the token field
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  await assert.rejects(create(p), /envd access token|transient/i);
+  assert.equal(z.store.size, 0, 'the unusable sandbox was deleted');
+});
+
+test('e2b: the recovery list is retried when its first call fails', async () => {
+  const z = fakeE2b();
+  const realFetch = z.fetch;
+  let once = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/v2/sandboxes' && init?.method === 'POST') {
+      await realFetch(url, init);
+      throw new Error('socket hang up');
+    }
+    if (!once && u.pathname === '/v2/sandboxes' && (init?.method ?? 'GET') === 'GET') {
+      once = true;
+      throw new Error('socket hang up'); // the first recovery list dies too
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const s = await create(p);
+  try { assert.ok(s.id); } finally { await s.kill(); }
+});
+
+test('e2b: a create cancelled during provisioning deletes the sandbox', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const ac = new AbortController();
+  z.hold = true; // every Process/Start hangs until its signal aborts
+  const pend = create(p, { signal: ac.signal }).then(() => { throw new Error('should cancel'); }, (x) => x);
+  for (let i = 0; i < 50 && !z.log.some((l) => l.path === '/process.Process/Start'); i++) await new Promise((r) => setImmediate(r));
+  ac.abort();
+  const e = await pend;
+  assert.match(e.message, /cancelled|aborted/i);
+  assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/')), 'the half-created sandbox was deleted');
+  assert.equal(z.store.size, 0);
+});
+
+test('e2b: a dropped command stream reattaches and recovers the complete transcript from the io files', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.execState = { code: 0, out: 'part1\n', err: '', dropMid: true, ioOut: 'part1\npart2\n', ioErr: 'warned\n' };
+    let streamed = '';
+    const r = await s.commands.run('work', { onStdout: (c) => { streamed += c; } });
+    assert.equal(r.stdout, 'part1\npart2\n', 'the gap output is recovered from the io file envd cannot replay');
+    assert.equal(r.stderr, 'warned\n');
+    assert.equal(r.exitCode, 0);
+    assert.equal(streamed, 'part1\npart2\n', 'onStdout still receives the full stream');
+    const connects = z.log.filter((l) => l.path === '/process.Process/Connect');
+    assert.equal(connects.length, 1, 'the dropped stream was re-attached once');
+  } finally { await s.kill(); }
+});
+
+test('e2b: a failed command scrubs secrets from the attached stdout and stderr too', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.execState = { code: 2, out: `near ${GH}`, err: `leak ${OAT}` };
+    const e = await s.commands.run('x').then(() => { throw new Error('should fail'); }, (x) => x);
+    assert.equal(e.exitCode, 2);
+    for (const v of [KEY, GH, OAT]) {
+      assert.ok(!e.stdout.includes(v) && !e.stderr.includes(v) && !e.message.includes(v), `leaked ${v.slice(0, 8)}`);
+    }
+    assert.match(e.stdout + e.stderr, /<redacted>/);
+  } finally { await s.kill(); }
+});
+
+test('e2b: the diagnostic curl commands pass the key on stdin, never in argv', () => {
+  const p = mk(fakeE2b());
+  for (const t of [p.text.listMachines, p.text.apiFix]) {
+    assert.match(t, /-K -/, 'curl reads the header config from stdin');
+    assert.doesNotMatch(t, /-H "X-API-Key/, 'the expanded key is not a curl argument');
+  }
+});
+
+test('e2b: resuming a paused sandbox never extends its expiry past the recorded deleteAt', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p, { ttlSeconds: 3600 });
+  try {
+    const rec = z.store.get(s.id);
+    rec.metadata.deleteAt = new Date(Date.now() + 20_000).toISOString(); // 20 s left
+    rec.state = 'paused';
+    await p.connect(s.id);
+    const resume = z.log.filter((l) => l.path.endsWith('/connect')).at(-1);
+    assert.ok(resume.body.timeout >= 1 && resume.body.timeout <= 21, `the resume asked for ${resume.body.timeout}s, past the deadline`);
+  } finally { await s.kill(); }
+});
+
+test('e2b: list rows carry archiveAt in epoch milliseconds for the dashboard', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    const [r] = await p.list({ purpose: 'cloudy-cloud' });
+    assert.equal(r.archiveAt, Date.parse('2026-01-01T06:00:00.000Z'), 'endAt arrives as epoch ms like the other adapters');
+  } finally { await s.kill(); }
+});
+
 test('e2b: list filters server-side and re-checks client-side; foreign sandboxes are never touched', async () => {
   const z = fakeE2b();
   const p = mk(z);
@@ -257,7 +598,7 @@ test('e2b: list filters server-side and re-checks client-side; foreign sandboxes
     assert.ok(decodeURIComponent(q.url).includes('purpose=cloudy-cloud'), q.url);
     const row = (await p.list({ owner: 'o1' }))[0];
     assert.equal(row.status, 'running');
-    assert.ok(row.deleteAt, 'endAt reported as deleteAt');
+    assert.equal(row.archiveAt, Date.parse('2026-01-01T06:00:00.000Z'), 'endAt reported as archiveAt epoch ms');
     assert.ok(z.store.has('foreign'), 'the foreign sandbox was not swept');
   } finally { await a.kill(); await b.kill(); }
 });
@@ -344,7 +685,7 @@ test('e2b: commands.run returns output, streams stdout and rejects on a nonzero 
     assert.equal(streamed, 'hello\n');
     // The wrapper applies the env file and the timeout inside the sandbox.
     const last = z.execs.get(s.id).at(-1);
-    assert.match(last, /timeout -k 5 5 sh -c/);
+    assert.match(last, /timeout -k 5 5 bash -o pipefail -c/);
     z.execState = { code: 2, out: 'o', err: 'e' };
     const e = await s.commands.run('exit 2').then(() => { throw new Error('should fail'); }, (x) => x);
     assert.equal(e.exitCode, 2);

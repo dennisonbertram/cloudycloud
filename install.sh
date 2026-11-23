@@ -262,10 +262,9 @@ api_get() { printf 'header = "X-API-Key: %s"\n' "$1" | curl -sS --max-time 15 -K
 
 # e2b_code KEY: the HTTP status of one read-only GET /v2/sandboxes for the key (the key goes to curl on stdin).
 e2b_code() {
-  local code base
-  base=$(eff E2B_API_BASE); base=${base:-https://api.e2b.app}; base=${base%/}
+  local code
   code=$(printf 'header = "X-API-Key: %s"\n' "$1" |
-    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "$base/v2/sandboxes" 2>/dev/null) || true
+    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "https://api.e2b.app/v2/sandboxes" 2>/dev/null) || true
   printf '%s' "${code:-000}"
 }
 
@@ -464,8 +463,8 @@ check_setup() {
       ok "Credential values may go into E2B sandboxes" "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes"
     else
       bad "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX is not yes, so no sandbox can be created"; fails=1; setupfix=1
-      hint "E2B has no proxy secrets: worker credentials are written into each"
-      hint "sandbox's own environment. Allow it with"
+      hint "This adapter writes worker credentials into each sandbox's"
+      hint "own environment. Allow it with"
       hint "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes in $(cfg)."
     fi
   else
@@ -510,13 +509,16 @@ check_setup() {
     # Without a Claude token every worker needs a profile, and a profile needs one of these credentials.
     local usable="" plain=""
     for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-      if is_proxied $n || { { [ "$provider" = self-hosted ] || [ "$provider" = e2b ]; } && [ -n "$(eff $n)" ]; }; then usable=1
+      # e2b needs the literal value (it writes values onto the box); a proxy secret stored in
+      # Instabox is not usable there. Instabox needs the proxy secret; self-hosted takes either.
+      if [ "$provider" = e2b ]; then [ -n "$(eff $n)" ] && usable=1
+      elif is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
       elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
     done
     [ -f "$(codex_auth_file)" ] && usable=1
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
-      [ -n "$(eff $n)" ] || is_proxied $n || continue
-      if is_proxied $n || [ "$provider" = self-hosted ] || [ "$provider" = e2b ]; then usable=1; else plain=${plain:-$n}; fi
+      [ -n "$(eff $n)" ] || { [ "$provider" != e2b ] && is_proxied $n; } || continue
+      if [ "$provider" = e2b ] || is_proxied $n || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
       break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
@@ -543,7 +545,8 @@ check_setup() {
     fi
   else
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
-    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
+    # e2b writes the credential VALUE onto the box, so a proxy-secret name alone does not count there.
+    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || { [ "$provider" != e2b ] && is_proxied $n; }; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
   done
   if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in"; fails=1; setupfix=1
   elif [ "$provider" != self-hosted ] && [ "$provider" != e2b ] && [ -n "$lit" ] && ! is_proxied "$name"; then
@@ -1032,7 +1035,7 @@ setup_instabox() {
   else warn "Stopped the Instabox step after 3 tries. Nothing is saved. Run $(rerun_cmd) again to retry."; fi
 }
 
-# The E2B consent: credential VALUES are written into each sandbox (there is no proxy secret), which
+# The E2B consent: this adapter writes credential VALUES into each sandbox's environment, which
 # needs an explicit yes. Saved as CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes; a no removes any saved yes.
 e2b_consent() {
   if [ "$(get_saved CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" = yes ]; then
@@ -1040,8 +1043,8 @@ e2b_consent() {
     return 0
   fi
   ask "Credential values inside each E2B sandbox" \
-    "E2B has no proxy secrets, so every worker credential (GH_TOKEN, the Claude" \
-    "token, profile keys) is written into the sandbox's own environment, where" \
+    "This adapter writes every worker credential (GH_TOKEN, the Claude" \
+    "token, profile keys) into each sandbox's own environment, where" \
     "anything running inside the sandbox could read it. Sandboxes run in your" \
     "E2B team and are deleted when their timeout ends."
   if yn_strict "Allow credential values inside E2B sandboxes?"; then
@@ -1050,6 +1053,7 @@ e2b_consent() {
   else
     del_env CLOUDY_CLOUD_E2B_TOKEN_ON_BOX || true
     warn "Not allowed: cloud_agent refuses to create E2B sandboxes" "add CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes to $(cfg) to allow it"
+    incomplete "the E2B credential consent was declined"
   fi
 }
 
@@ -1456,10 +1460,13 @@ worker_usable() {
   local n
   # With claude among the agents, the Claude step above already handled the Claude credential (saved, or declined by you).
   if agents_has claude; then
-    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || is_proxied $n; } && return 0; done
+    for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do
+      # e2b writes the value itself: a proxy secret stored in Instabox cannot reach its box.
+      { [ -n "$(get_saved $n)" ] || { [ "$PROVIDER" != e2b ] && is_proxied $n; }; } && return 0
+    done
   fi
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-    is_proxied $n && return 0
+    [ "$PROVIDER" = e2b ] || { is_proxied $n && return 0; }
     case $PROVIDER in self-hosted|e2b) [ -z "$(get_saved $n)" ] || return 0 ;; esac
   done
   [ -f "$(codex_auth_file)" ]
