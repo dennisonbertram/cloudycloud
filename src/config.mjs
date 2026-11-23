@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveProfile } from './profiles.mjs';
@@ -8,7 +8,7 @@ import { resolveProfile } from './profiles.mjs';
 // The key of the default provider (Instabox), which a coordinator's machine loads: it is sent no CLOUDY_CLOUD_PROVIDER.
 export const DEFAULT_PROVIDER_KEY = 'INSTABOX_API_KEY';
 export const PROVIDER_KEY = /^[A-Z][A-Z0-9_]{2,63}_API_KEY$/;
-const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_TURN_MINUTES', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS', 'CLOUDY_CLOUD_PROFILE_MAX', 'CLOUDY_CLOUD_PROVIDER_RETRIES', 'CLOUDY_CLOUD_EGRESS_ALLOW', 'CLOUDY_CLOUD_MSB_BIN', 'CLOUDY_CLOUD_MSB_SLOTS', 'CLOUDY_CLOUD_E2B_TOKEN_ON_BOX', 'E2B_TEMPLATE'];
+const KEYS = ['CLOUDY_CLOUD_AGENTS', 'CLOUDY_CLOUD_PROVIDER', 'CLOUDY_CLOUD_SSH_HOST', 'CLOUDY_CLOUD_SSH_KEY', 'CLOUDY_CLOUD_SSH_PORT', 'CLOUDY_CLOUD_CONTAINER_RUNTIME', 'CLOUDY_CLOUD_CONTAINER_BIN', 'CLOUDY_CLOUD_SELF_HOSTED_SLOTS', 'CLOUDY_CLOUD_SELF_HOSTED_CPUS', 'CLOUDY_CLOUD_SELF_HOSTED_MEMORY', 'CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX', 'CLOUDY_CLOUD_SELF_HOSTED_COORDINATORS', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL', 'CLOUDY_CLOUD_SELF_HOSTED_CONSENT_HOST', 'CLOUDY_CLOUD_DOCKER_SOCKET', 'GH_TOKEN', 'CLOUDY_CLOUD_STARTS_PER_MIN', 'CLOUDY_CLOUD_MAX_INSTABOX_CALLS', 'INSTABOX_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT', 'CLOUDY_CLOUD_TOKEN_ACCOUNT', 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_WORKER_HOURS', 'CLOUDY_CLOUD_TURN_MINUTES', 'CLOUDY_CLOUD_DEPTH', 'CLOUDY_CLOUD_MAX_DEPTH', 'CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION', 'CLOUDY_CLOUD_PROXY_SECRETS', 'CLOUDY_CLOUD_APT_PACKAGES', 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS', 'CLOUDY_CLOUD_PROFILE_MAX', 'CLOUDY_CLOUD_PROVIDER_RETRIES', 'CLOUDY_CLOUD_EGRESS_ALLOW', 'CLOUDY_CLOUD_MSB_BIN', 'CLOUDY_CLOUD_MSB_SLOTS', 'BOAT_API_KEY', 'CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX', 'CLOUDY_CLOUD_E2B_TOKEN_ON_BOX', 'E2B_TEMPLATE'];
 
 // Names of the Instabox secrets that hold the Claude token and provider keys (comma-separated). Names only, never values.
 export const proxySecrets = (env = process.env) => new Set(String(env.CLOUDY_CLOUD_PROXY_SECRETS ?? '').split(/[\s,]+/).filter(Boolean));
@@ -108,6 +108,28 @@ export function envRefresher(env, base = process.env) {
 // The server writes its owner id here, so `coordinator finish` can tell which running machines are its workers.
 export const ownerFile = (env = process.env) => join(dirname(env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env')), 'owner');
 
+// This installation's stable id: 16 random hex chars in <config dir>/install-id (the folder ownerFile names),
+// created once — dir 0700, file 0600, written atomically — and never rewritten. Providers stamp it as the
+// `install` label so every session of this installation owns the same workers; the per-session owner id
+// only scopes which machines a reaper may delete.
+export function installId(env = process.env) {
+  const file = join(dirname(ownerFile(env)), 'install-id');
+  const read = () => { try { return readFileSync(file, 'utf8').trim(); } catch { return ''; } };
+  let id = read();
+  if (id) return id;
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    // Exclusive create: two first-run processes must agree on one id, so the loser reads the winner's.
+    writeFileSync(file, `${randomBytes(8).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
+  } catch (e) {
+    if (e?.code !== 'EEXIST') throw Object.assign(new Error(`cannot save the install id at ${file} (${e?.code ?? e?.message}); machines would be untracked after this process exits`), { code: 'install_id_unwritable' });
+  }
+  // Only an id read back from the file is returned: an unstored id would orphan the machines it labels.
+  for (let i = 0; i < 50 && !(id = read()); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); // a racing writer's file can be empty for a moment
+  if (!id) throw Object.assign(new Error(`the install id file ${file} is empty`), { code: 'install_id_unwritable' });
+  return id;
+}
+
 // Workers run the Claude harness unless cloud_agent gets a profile. A host session for another agent (codex, opencode, pi) starts
 // without a Claude token, so this says what to pass instead. '' when a Claude credential exists. env is the result of loadEnv().
 // It names only a profile that resolveProfile accepts under the provider's rules: on Instabox a key must be a proxy secret.
@@ -115,10 +137,9 @@ export function defaultWorkerNote(env) {
   const proxied = proxySecrets(env);
   const has = (k) => env[k] || proxied.has(k);
   if (has('CLAUDE_CODE_OAUTH_TOKEN') || has('ANTHROPIC_API_KEY')) return '';
-  // self-hosted keeps consented values on the machine, e2b writes them into the sandbox after the same
-  // consent, and microsandbox substitutes local values into matching requests (caps.localSecrets), so a
-  // plain key is usable on all three; everywhere else it must be a proxy secret.
-  const proxyOnly = !['self-hosted', 'microsandbox', 'e2b'].includes(env.CLOUDY_CLOUD_PROVIDER || 'instabox');
+  // self-hosted, boat and e2b keep consented values on the machine and microsandbox substitutes local values
+  // into matching requests (caps.localSecrets), so a plain key is usable on all four; everywhere else it must be a proxy secret.
+  const proxyOnly = !['self-hosted', 'microsandbox', 'boat', 'e2b'].includes(env.CLOUDY_CLOUD_PROVIDER || 'instabox');
   const profile = [['codex'], ['codex-chatgpt'], ['pi-glm'], ['openrouter', ' (also pass model, an OpenRouter model id)']].find(([n]) => resolveProfile(n, 'x', env, { proxyOnly }).ok);
   const head = 'No Claude token is saved, so a cloud_agent call without a profile is refused.';
   const step = proxyOnly

@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { contractSuite } from './provider-contract.mjs';
@@ -97,7 +97,10 @@ function fakeE2b() {
       if (u.pathname === '/v2/sandboxes' && method === 'GET') {
         // Server-side metadata filter: "k=v&k2=v2" inside one URL-encoded param.
         const want = new URLSearchParams(u.searchParams.get('metadata') ?? '');
-        const rows = [...store.values()].filter((r) => [...want.entries()].every(([k, v]) => r.metadata?.[k] === v));
+        // serverMetaFilter: false simulates an API that ignores the filter, so the adapter's own
+        // client-side ownership re-check is what the test proves.
+        const rows = z.serverMetaFilter === false ? [...store.values()]
+          : [...store.values()].filter((r) => [...want.entries()].every(([k, v]) => r.metadata?.[k] === v));
         return respond(200, rows);
       }
       const v2c = u.pathname.match(/^\/v2\/sandboxes\/([^/]+?)\/connect$/);
@@ -184,8 +187,8 @@ const cfgFile = (lines = 'E2B_API_KEY=x\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n') =
   writeFileSync(f, lines, { mode: 0o600 });
   return f;
 };
-// A config file with this installation's owner id written beside it, like the server leaves it.
-const cfgWithOwner = (owner) => { const f = cfgFile(); writeFileSync(join(dirname(f), 'owner'), `${owner}\n`); return f; };
+// A config file with a known installation id in the install-id file beside it (installId reads it back).
+const cfgWithInstall = (id) => { const f = cfgFile(); writeFileSync(join(dirname(f), 'install-id'), `${id}\n`); return f; };
 const mk = (z, env = {}, deps = {}) => createProvider({
   E2B_API_KEY: KEY, GH_TOKEN: GH,
   CLAUDE_CODE_OAUTH_TOKEN: OAT, CLOUDY_CLOUD_CONFIG: cfgFile(),
@@ -242,7 +245,8 @@ test('e2b: a real environment value consents, and an exported no beats a saved y
 
 test('e2b: create sets server metadata + timeout, sends envVars and writes the env file', async () => {
   const z = fakeE2b();
-  const p = mk(z);
+  const cfg = cfgFile();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg });
   const s = await create(p, { envs: { FOO: 'bar', CLAUDE_CODE_OAUTH_TOKEN: OAT }, labels: { purpose: 'cloudy-cloud', owner: 'o1', name: 'bold-fox' }, ttlSeconds: 7200 });
   try {
     const post = z.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes');
@@ -251,6 +255,7 @@ test('e2b: create sets server metadata + timeout, sends envVars and writes the e
     assert.equal(post.body.timeout, 7200);
     assert.equal(post.body.metadata.purpose, 'cloudy-cloud');
     assert.equal(post.body.metadata.owner, 'o1');
+    assert.equal(post.body.metadata.install, readFileSync(join(dirname(cfg), 'install-id'), 'utf8').trim(), 'the stable installation id is stamped as metadata');
     assert.equal(post.body.metadata.name, 'bold-fox');
     assert.equal(post.body.metadata.agent, undefined); // labels only, no invented fields
     assert.equal(post.body.envVars.FOO, 'bar');
@@ -370,37 +375,69 @@ test('e2b: an egress list on a custom template also allows the provisioning host
   } finally { await s.kill(); }
 });
 
-test('e2b: a teammate\'s cloudy-cloud sandbox — same purpose, other owner — is never ours', async () => {
+test('e2b: a teammate\'s cloudy-cloud sandbox — same purpose, no shared install — is never ours', async () => {
   const z = fakeE2b();
+  z.serverMetaFilter = false; // the server returns everything; only the client-side re-check protects us
   const p = mk(z, {}, { owner: 'o1' });
-  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2', deleteAt: new Date(Date.now() + 60_000).toISOString() }));
-  await assert.rejects(p.connect('mate'), (e) => e.code === 'not_found');
-  await assert.rejects(p.delete('mate'), (e) => e.code === 'not_found');
-  await assert.rejects(p.publishPort('mate', '8080'), (e) => e.code === 'not_found');
-  await assert.rejects(p.metrics('mate'), (e) => e.code === 'not_found');
-  for (const rows of [await p.list(), await p.list({ purpose: 'cloudy-cloud' })])
-    assert.ok(!rows.some((r) => r.id === 'mate'), 'another installation\'s sandbox is invisible');
-  assert.ok(z.store.has('mate'), 'the teammate\'s sandbox was not swept or deleted');
-  assert.ok(!z.log.some((l) => l.method === 'DELETE'), 'no delete was ever sent for it');
+  // Another installation's worker: same purpose, and even the same session owner — without our
+  // install id it is foreign. A row with a DIFFERENT install id is foreign the same way.
+  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o1', deleteAt: new Date(Date.now() + 60_000).toISOString() }));
+  z.store.set('other-install', z.row('other-install', { purpose: 'cloudy-cloud', owner: 'o1', install: 'ffffeeee11112222', deleteAt: new Date(Date.now() + 60_000).toISOString() }));
+  for (const id of ['mate', 'other-install']) {
+    await assert.rejects(p.connect(id), (e) => e.code === 'not_found');
+    await assert.rejects(p.delete(id), (e) => e.code === 'not_found');
+    await assert.rejects(p.publishPort(id, '8080'), (e) => e.code === 'not_found');
+    await assert.rejects(p.metrics(id), (e) => e.code === 'not_found');
+  }
+  for (const rows of [await p.list(), await p.list({ purpose: 'cloudy-cloud' })]) {
+    assert.ok(!rows.some((r) => r.id === 'mate'), 'a matching owner alone does not make a sandbox ours');
+    assert.ok(!rows.some((r) => r.id === 'other-install'), 'another installation\'s sandbox is invisible');
+  }
+  assert.ok(z.store.has('mate') && z.store.has('other-install'), 'the foreign sandboxes were not swept or deleted');
+  assert.ok(!z.log.some((l) => l.method === 'DELETE'), 'no delete was ever sent for them');
 });
 
-test('e2b: the owner id is read from the owner file next to the config when deps omit it', async () => {
+test('e2b: create stamps the shared install id, and another session of this installation owns the worker', async () => {
   const z = fakeE2b();
-  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgWithOwner('o1') });
-  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2' }));
-  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  const cfg = cfgFile();
+  // Two providers = two server sessions of the same installation: same config dir, different per-session owners.
+  const p1 = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'sess-a' });
+  const p2 = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'sess-b' });
+  const s = await create(p1, { labels: { purpose: 'cloudy-cloud', owner: 'sess-a' } });
   try {
-    const c = await p.connect(s.id);
-    assert.equal(c.id, s.id, 'our own sandbox still connects');
-    await assert.rejects(p.connect('mate'), (e) => e.code === 'not_found');
-    assert.ok(!(await p.list()).some((r) => r.id === 'mate'));
-  } finally { await s.kill(); }
+    const install = readFileSync(join(dirname(cfg), 'install-id'), 'utf8').trim();
+    assert.match(install, /^[0-9a-f]{16}$/);
+    assert.equal(z.store.get(s.id).metadata.install, install, 'the install metadata is the installation id, not a session id');
+    assert.equal(z.store.get(s.id).metadata.owner, 'sess-a', 'the per-session owner metadata still rides for the reaper');
+    const ids = (await p2.list({ purpose: 'cloudy-cloud' })).map((r) => r.id);
+    assert.ok(ids.includes(s.id), 'a new session of this installation lists the first session\'s worker');
+    assert.equal((await p2.connect(s.id)).id, s.id, 'and connects to it');
+    // An explicit owner filter still scopes to one session — the reaper deletes only its own workers.
+    assert.deepEqual((await p2.list({ owner: 'sess-b' })).map((r) => r.id), []);
+    assert.deepEqual((await p2.list({ owner: 'sess-a' })).map((r) => r.id), [s.id]);
+    await p2.delete(s.id);
+    assert.ok(!z.store.has(s.id), 'a new session can stop the first session\'s worker');
+  } finally { await p1.delete(s.id).catch(() => {}); }
+});
+
+test('e2b: a sandbox stamped our install id is ours even from an earlier session', async () => {
+  const z = fakeE2b();
+  const cfg = cfgWithInstall('aaaabbbbccccdddd');
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'sess-b' });
+  // Planted directly, as if an earlier session created it: same install id, a foreign session owner.
+  z.store.set('older', z.row('older', { purpose: 'cloudy-cloud', owner: 'sess-a', install: 'aaaabbbbccccdddd', deleteAt: new Date(Date.now() + 60_000).toISOString() }));
+  assert.deepEqual((await p.list({ purpose: 'cloudy-cloud' })).map((r) => r.id), ['older']);
+  assert.equal((await p.connect('older')).id, 'older');
+  await p.delete('older');
+  assert.ok(!z.store.has('older'));
 });
 
 test('e2b: a lost create answer recovers the sandbox our ccIdem labels — and only that one', async () => {
   const z = fakeE2b();
-  // Another installation's purpose-labelled sandbox is NOT adoptable even though it would match a purpose-only list.
-  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o2', ccIdem: 'not-ours' }));
+  z.serverMetaFilter = false; // the recovery list sees every row; only the client-side re-check protects it
+  // Another installation's purpose-labelled sandbox is NOT adoptable: same purpose AND same owner
+  // metadata, but a different install id — it would match a purpose- or owner-only filter.
+  z.store.set('mate', z.row('mate', { purpose: 'cloudy-cloud', owner: 'o1', install: 'ffffeeee11112222', ccIdem: 'not-ours' }));
   const realFetch = z.fetch;
   z.fetch = async (url, init) => {
     const u = new URL(String(url));
@@ -414,9 +451,13 @@ test('e2b: a lost create answer recovers the sandbox our ccIdem labels — and o
   const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
   try {
     assert.notEqual(s.id, 'mate');
-    assert.equal(z.store.get(s.id).metadata.ccIdem, z.store.get(s.id).metadata.ccIdem);
-    assert.equal(z.store.get(s.id).metadata.owner, 'o1');
+    const meta = z.store.get(s.id).metadata;
+    assert.ok(meta.ccIdem, 'the recovered sandbox is the one our ccIdem labels');
+    assert.equal(meta.owner, 'o1');
+    assert.ok(meta.install && meta.install !== 'ffffeeee11112222', 'it carries OUR install id');
     assert.ok(z.store.has('mate'), 'the foreign sandbox was not touched');
+    const mutations = z.log.filter((l) => l.method !== 'GET' && l.path.includes('mate'));
+    assert.deepEqual(mutations, [], 'no delete or mutation ever touched the foreign sandbox');
   } finally { await s.kill(); }
 });
 
@@ -584,22 +625,26 @@ test('e2b: list rows carry archiveAt in epoch milliseconds for the dashboard', a
 
 test('e2b: list filters server-side and re-checks client-side; foreign sandboxes are never touched', async () => {
   const z = fakeE2b();
+  z.serverMetaFilter = false; // every planted row reaches the client-side ownership re-check
   const p = mk(z);
   const a = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
   const b = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o2' } });
   try {
     z.store.set('foreign', z.row('foreign', { purpose: 'other-app', owner: 'someone' }));
     z.store.set('lax', z.row('lax', { owner: 'o1' })); // no purpose: fails the client-side recheck
+    z.store.set('noinst', z.row('noinst', { purpose: 'cloudy-cloud', owner: 'o1' })); // purpose+owner but no install
+    z.store.set('otherinst', z.row('otherinst', { purpose: 'cloudy-cloud', owner: 'o1', install: 'ffffeeee11112222' }));
     const ids = async (l) => (await p.list(l)).map((r) => r.id);
-    assert.deepEqual(await ids({ owner: 'o1' }), [a.id]);
+    assert.deepEqual(await ids({ owner: 'o1' }), [a.id], 'the owner filter narrows, but install still gates ownership');
     assert.deepEqual((await ids({ purpose: 'cloudy-cloud' })).sort(), [a.id, b.id].sort());
-    // The server saw the purpose filter: the request URL carries it.
+    // The server saw the purpose AND install filters: the request URL carries both.
     const q = z.log.filter((l) => l.path.startsWith('/v2/sandboxes?')).at(-1);
-    assert.ok(decodeURIComponent(q.url).includes('purpose=cloudy-cloud'), q.url);
+    const query = decodeURIComponent(q.url);
+    assert.ok(query.includes('purpose=cloudy-cloud') && query.includes('install='), query);
     const row = (await p.list({ owner: 'o1' }))[0];
     assert.equal(row.status, 'running');
     assert.equal(row.archiveAt, Date.parse('2026-01-01T06:00:00.000Z'), 'endAt reported as archiveAt epoch ms');
-    assert.ok(z.store.has('foreign'), 'the foreign sandbox was not swept');
+    assert.ok(z.store.has('foreign') && z.store.has('noinst') && z.store.has('otherinst'), 'the foreign sandboxes were not swept');
   } finally { await a.kill(); await b.kill(); }
 });
 

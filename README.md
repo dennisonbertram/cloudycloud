@@ -38,18 +38,18 @@ Run setup once, in a terminal:
 npx -y cloudycloud setup
 ```
 
-(`-y` skips npm's "Ok to proceed?" question. If `npm install -g cloudycloud` fails with `EEXIST`, the old `cloudy-cloud` package left a link in npm's global `bin` folder: remove the file named in the error with `rm <that path>`, then run `npm install -g cloudycloud` again. Setup offers to remove it for you.) Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`), copies the Cloudy Cloud skills into `~/.claude/skills/`, uses the agents it finds on your PATH (it asks only if it finds none), and asks for the keys the first agent run needs, with a note on where to get each one:
+(`-y` skips npm's "Ok to proceed?" question. If `npm install -g cloudycloud` fails with `EEXIST`, the old `cloudy-cloud` package left a link in npm's global `bin` folder: remove the file named in the error with `rm <that path>`, then run `npm install -g cloudycloud` again. Setup offers to remove it for you.) Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`), copies the Cloudy Cloud skills into `~/.claude/skills/`, uses the saved agent list or the agents it finds on your PATH (on a fresh install it picks `claude` alone when it finds it; it asks only when it finds none, and `--more` asks anyway), and asks for the keys the first agent run needs, with a note on where to get each one:
 
 | Key | Where to get it |
 | --- | --- |
 | Instabox API key (`ibk_...`) | [dashboard.instabox.sh](https://dashboard.instabox.sh/dashboard/api-keys). Setup checks it with Instabox before saving. |
 | Claude token (`sk-ant-oat01-...`), only if you chose claude or want Claude workers | `claude setup-token`, or press Enter at that step and let setup get it. Your own `claude` login is not changed. |
-| OpenAI key (`OPENAI_API_KEY`), only if codex is one of your agents; asked in `setup --more` | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
+| OpenAI key (`OPENAI_API_KEY`), for codex workers; `setup --more` asks when codex is chosen or installed, plain setup only when codex is chosen and no other worker credential is saved | [platform.openai.com](https://platform.openai.com/api-keys), or use the ChatGPT login file instead; see [Models and keys](#models-and-keys). |
 | GitHub token | A [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repos you will use, with Contents, Pull requests and Workflows set to read and write (Workflows lets a subagent push `.github/workflows`), and Actions and Commit statuses set to read (so it can see CI). It is stored in Instabox as the secret `GH_TOKEN`. |
 
-`cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (Particle.ai, OpenRouter). Plain setup never asks about them. It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
+`cloudy-cloud setup --more` adds the extras: cloud coordinators (it signs you in to Claude once and saves an image; 10 to 20 minutes), Instabox usage alert emails, and keys for other models (OpenAI for codex workers, Particle.ai, OpenRouter). Plain setup asks for them only when no saved credential could start a first worker (a saved Codex login file counts as one, even one a worker would later reject). It does not set up the Codex ChatGPT login file; see [Models and keys](#models-and-keys).
 
-The Claude step runs only if claude is one of your agents or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass (for example `codex`, which needs `OPENAI_API_KEY` or the ChatGPT login file) and prints the same next step on start. Setup warns at the end if no worker credential is saved at all. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
+The Claude step runs only if claude is one of your agents or you want Claude workers. A Codex, opencode or pi user is not asked for a Claude token, and the `claude` command is not required. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so a host session with no Claude token tells the agent which profile to pass (for example `codex`, which needs `OPENAI_API_KEY` or the ChatGPT login file) and prints the same next step on start. Setup ends with "Setup incomplete" and exit status 1 if no worker credential is saved at all. The other route is to skip setup: add `INSTABOX_API_KEY=ibk_...` to `~/.config/cloudy-cloud/env`, store the GitHub token with `npx --yes instabox@latest secrets set GH_TOKEN --host github.com --host api.github.com`, then run `cloudy-cloud setup --check-only`. The by-hand route has not been tested end to end.
  The Instabox key is saved in `~/.config/cloudy-cloud/env` (setup creates the folder with mode 700 and writes the file with mode 600) and stays on your computer. The Claude token and the provider keys are stored as Instabox proxy secrets, so worker machines see a placeholder; setup asks before moving keys that are already in the env file. Run `cloudy-cloud setup` (`setup --more` for the extra keys) again from any folder to change a key.
 
 ![Terminal showing npx cloudycloud setup: the tools check, the skills copied, and the Instabox key prompt](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/setup.jpg)
@@ -133,7 +133,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox` or `e2b` (experimental). A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox`, `boat` or `e2b` (experimental). A provider must keep the GitHub token behind proxy secrets or, on a machine you answer for, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
 
 ## Run on your own machine
 
@@ -182,6 +182,23 @@ Credential values stay in that file on this computer — no `CLOUDY_CLOUD_PROXY_
 - **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — start workers directly, or use Instabox for coordinators), no MCP server tokens yet (`cloudy-cloud mcp add` writes the reference but calls using that server are refused until supported), no `CLOUDY_CLOUD_APT_PACKAGES` and no display; at most `CLOUDY_CLOUD_MSB_SLOTS` (default 2) sandboxes at once.
 - **Status:** the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) passed on an Apple Silicon Mac with microsandbox 0.7.16: a secret's real value reaches its configured host while the guest sees only a placeholder, and the value was not found in files under `~/.microsandbox` after use; the egress allowlist blocks another host, and the default policy blocks the metadata address and a private address (msb's proxy answers with HTTP 403 `network_policy_denied`); files, commands, the delete deadline and port forwarding work. See [STATUS.md](docs/STATUS.md).
 
+### Run on boat.dev VMs
+
+[boat](https://boat.dev) runs persistent Ubuntu 24.04 VMs (x86_64, `user` with passwordless sudo, Node/Python/Docker preinstalled) behind an HTTP API — one call to create, run commands, serve ports and delete.
+
+```sh
+cloudy-cloud setup --provider boat
+```
+
+Setup asks for the API key (`boat_…` from the boat dashboard), checks it with one read-only `GET /sandboxes?limit=1`, asks whether credential values may go on the VMs, and asks for `GH_TOKEN` and the model keys — saved as plain values in `~/.config/cloudy-cloud/env` with mode 600, because boat has no proxy-secret service.
+
+- **Consent (required):** boat has no request-level secret substitution, so real credential values are written to `/home/user/.cloudy-cloud-env` (mode 600) on each worker. Setup asks once and saves `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes`; without it `cloud_agent` refuses before any API call. It is read at each start, so removing it stops new machines from getting credentials — machines already running keep what they have (`cloudy-cloud stop --all` deletes them).
+- **Ownership:** every worker is labelled `purpose=cloudy-cloud`, `install=<this installation's id>` (the stable id in `~/.config/cloudy-cloud/install-id`) plus a per-run `ccid`. An organization key lists other people's sandboxes, so `list` filters by the labels server-side *and* re-checks every result; `delete`, `connect` and `open` refuse anything without a matching `install` as `not_found`. The per-session `owner` label only scopes the reaper. Foreign machines are never touched.
+- **Lifetime:** the worker's deadline goes in as boat's `ttlSeconds` (server-side auto-stop) plus a `deleteAt` label swept on every `list`. `cloudy-cloud stop` permanently deletes the sandbox — it is not merely stopped and kept.
+- **Private by default:** sandboxes are created `visibility: private` with `noEnv` (account secrets are not inherited) and `snapshots: false`. `cloudy-cloud open` publishes a port through boat's `host` endpoint; the URL is token-gated by boat, not world-readable.
+- **Not supported:** `CLOUDY_CLOUD_EGRESS_ALLOW` (refused at start — boat has no outbound firewall API), coordinators, `cloudy-cloud shell`, `cloudy-cloud forward`, display, `size`, and machine kinds other than `linux`.
+- **Status:** experimental. Unit-tested against a fake API and live-tested on 2026-11-22 with fake worker tokens (start, commands, files, preview, delete, setup, and a full `cloud_agent` run up to the model call). Not yet run with a real agent task — see [STATUS.md](docs/STATUS.md).
+
 ### Run on E2B (experimental)
 
 Subagents can also run on [E2B](https://e2b.dev) sandboxes (hosted Firecracker microVMs), using your own E2B API key:
@@ -204,10 +221,11 @@ CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
 `cloudy-cloud setup --check-only` checks the key with one read-only `GET /v2/sandboxes`, the consent, `GH_TOKEN` and a Claude credential — never printing a value.
 
 - **Token-on-box consent is required.** This adapter writes the actual values — `GH_TOKEN`, the Claude credential and any profile keys — into each sandbox (create-time `envVars`, plus `/home/user/.cloudy-cloud-env`, created mode 600 and verified), where anything running in the sandbox could read them. Without `CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes`, `cloud_agent` refuses before any call and says what to add; the consent is re-read from the env file at every create, so removing the line stops new sandboxes right away. Values are never logged.
+- **Ownership:** every sandbox is created with metadata `purpose=cloudy-cloud` and `install=<this installation's id>` (the stable id in `~/.config/cloudy-cloud/install-id`). A team key lists other people's sandboxes, so `list` filters on the metadata server-side *and* re-checks every result; `delete`, `connect`, `metrics` and `publishPort` refuse anything without a matching `install` as `not_found`. The per-session `owner` metadata only scopes the reaper. Foreign sandboxes are never touched.
 - **Server-side deadline.** Each sandbox is created with E2B's own `timeout`. The E2B Hobby plan caps a sandbox's continuous lifetime at one hour, so that is the worker deadline unless your plan accepts a wider timeout (the adapter learns it from the create answer); if a plan caps a request, the adapter retries 3600 then 300 seconds. A refresher re-arms the timeout while the worker runs, so a lost client still ends the sandbox when the timeout lapses, and a resume never asks for more life than the recorded deadline. Kill = delete. Paused sandboxes resume through `POST /v2/sandboxes/{id}/connect`, which rotates the sandbox's access token.
 - **Public previews.** `cloudy-cloud open <id> <port> --share` (and `cloud_agent preview_port`) returns E2B's public URL `https://<port>-<sandboxID>.e2b.app` — anyone with the link can reach the app until the sandbox is deleted; E2B cannot unpublish one port alone. Plain `cloudy-cloud open` (a private port forward) is refused: E2B has no tunnel API.
 - **Egress:** `CLOUDY_CLOUD_EGRESS_ALLOW` maps to E2B's create-time `network.allowOut` with `denyOut: 0.0.0.0/0` added. On a custom `E2B_TEMPLATE` the package hosts provisioning may need (`deb.debian.org`, `security.debian.org`, `cli.github.com`, `deb.nodesource.com`, `astral.sh`, `registry.npmjs.org`) are added automatically; the stock `base` template already carries every worker tool, so it installs nothing and needs no extra hosts.
-- **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — a sandbox has no Docker socket for sibling workers), no snapshots, display or `cloudy-cloud shell`, and no machine kinds other than `linux`. Each sandbox starts from a template and is provisioned by an idempotent script for whatever worker tools are missing.
+- **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — a sandbox has no Docker socket for sibling workers), no snapshots, display or `cloudy-cloud shell`, and no machine kinds other than `linux`. Each sandbox starts from a template and is provisioned by an idempotent script for whatever worker tools are missing. The sandbox user has passwordless sudo, so `CLOUDY_CLOUD_APT_PACKAGES` can install apt packages.
 - **Template:** `E2B_TEMPLATE` in `~/.config/cloudy-cloud/env` picks the sandbox template (name or id; default `base`). The stock `base` template is small — about 0.5 GiB RAM — so a bigger worker needs a custom template built with the [E2B template tooling](https://e2b.dev/docs). Custom templates also need `bash` and the provisioning hosts above.
 - **Status:** covered by unit tests with a fake E2B transport only; it has not been run against the live API. See [STATUS.md](docs/STATUS.md).
 
@@ -231,9 +249,9 @@ Both screenshots show demo data (`--demo`). Each box shows the harness that runs
 
 | `machine` | What it is | Price | Consent needed | Display |
 | --- | --- | --- | --- | --- |
-| `linux` (default) | Standard machine | Your plan | no | no |
+| `linux` (default) | Standard machine | Your plan | no | yes |
 | `android` | Android emulator with `adb`, for running or testing an Android app | Not checked | no | yes |
-| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 4 (Instabox's limit for an L4)) for training, inference and CUDA builds | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
+| `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` | NVIDIA GPU machine (one L4 by default; COUNT is 1 to 4 for any GPU type) for training, inference and CUDA builds | $0.765 per GPU-hour (NVIDIA L4) | yes | yes |
 | `omarchy` | Omarchy Linux (Hyprland desktop) | Not checked | no | no (see below) |
 | `macos`, `macos:MODEL` | Mac (`m2`, `m2pro`, `m4`, `m4pro`) for Xcode builds. Experimental, not yet run live | $0.45 to $1.25 per hour by model, 24-hour minimum lease | yes | not verified |
 
@@ -243,12 +261,12 @@ Prices are Instabox's, from [instabox.sh/docs/account/pricing.md](https://instab
 
 `cloudy-cloud shell <agent-id-or-machine>` opens an interactive shell on the machine. `cloudy-cloud shell <agent-id-or-machine> -- <command>` runs one command, streams its output and exits with the command's exit code. Each argument after `--` reaches the machine unchanged. Do not put secrets in the command.
 
-`cloudy-cloud display <agent-id-or-machine>` prints a link to the machine's desktop (`android`, `gpu`, `macos`) and nothing else on stdout. The link is view-only and lasts 1 hour by default.
+`cloudy-cloud display <agent-id-or-machine>` prints a link to the machine's desktop (`linux`, `android`, `gpu`, `macos`; the `macos` desktop is not verified) and nothing else on stdout. The link is view-only. It stops working for new viewers after 1 hour by default; a viewer already connected can stay, and `--unshare` cuts everyone off.
 
 | Flag | Meaning |
 | --- | --- |
 | `--control` | Let the viewer click and type. |
-| `--ttl SECONDS` | Link lifetime, 60 to 86400. |
+| `--ttl SECONDS` | Seconds until the link stops taking new viewers, 60 to 86400. |
 | `--screenshot FILE` | Write a PNG of the screen to a new file and print its path. Use it when there is no browser tool. |
 | `--unshare` | Cut off every display link for the machine, including viewers already connected. |
 
@@ -328,15 +346,17 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud opencode [args]` | Starts opencode as the main session with the cloud tools (`npm install -g opencode-ai` first). Tools are named `cloud_cloud_agent` and so on. |
 | `cloudy-cloud pi [args]` | Starts pi as the main session with the cloud tools. Runs a pinned copy through `npx` if `pi` is not installed. |
 | `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start and refuses to replace a `cloudy-cloud` entry it did not write. Your own `cloud` entry is not touched. |
-| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox\|e2b]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`; on e2b: the E2B key, the token-on-box consent, `GH_TOKEN` and a Claude credential), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
+| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox\|boat\|e2b]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`; on boat: the API key, the credential consent and local keys; on e2b: the E2B key, the token-on-box consent, `GH_TOKEN` and a Claude credential), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
-| `cloudy-cloud machines` \| `machines stop <id-or-name\|--all>` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |
+| `cloudy-cloud machines` \| `machines stop <id-or-name\|--all> [--yes]` | Lists your Cloudy Cloud machines (label `purpose=cloudy-cloud`, or the older `purpose=claude-cloud`), or deletes them. `stop <id-or-name>` deletes at once without asking; `stop --all` asks first unless you pass `--yes`. On microsandbox, listing also removes expired microVMs. |
+| `cloudy-cloud protect [owner/repo] [--yes]` | Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the default branch: changes need a pull request, force pushes and deletion are refused, and the ruleset has no bypass actors, so nobody it covers can push around it — including you and the cloud agents, which push as you. A repo admin can still edit or disable the ruleset, and the command changes nothing when an equivalent ruleset or classic branch protection already covers the branch. Asks first unless you pass `--yes`; needs `gh` signed in and repo admin. |
 | `cloudy-cloud branches prune [--yes] [--dry-run]` | Deletes empty or merged `cloudy-cloud/<id>` and `cloudy-cloud/issue-<n>-<id>` branches on origin. A dry run unless you pass `--yes`. |
 | `cloudy-cloud open <agent> <port> [--share\|--unshare]` | Reaches an app running on a cloud machine. |
 | `cloudy-cloud shell <agent> [-- command]` | Opens a shell on a cloud machine, or runs one command there. |
 | `cloudy-cloud display <agent> [--control] [--ttl S] [--screenshot FILE] [--unshare]` | Prints a link to a machine's desktop, or saves a screenshot. |
 | `cloudy-cloud mcp add <name> [--allow-literal]` \| `ls` \| `rm <name>` | Chooses which of your MCP servers cloud subagents get. |
+| `cloudy-cloud mcp-server` | Runs the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts. |
 | `cloudy-cloud coordinator ...` | Manages cloud coordinators: `image`, `start` (`--repo`, `--branch`, `--task`, `--task-file`, `--max-hours`, `--model`, `--json`), `attach`, `ls`, `status NAME [--json]`, `stop`, `finish`. |
 | `cloudy-cloud --version` | Prints the version. |
 

@@ -1062,7 +1062,9 @@ test('workers get a 6 hour delete deadline by default, CLOUDY_CLOUD_WORKER_HOURS
   const t0 = Date.now();
   const id = await x.start();
   await x.wait([id]);
-  assert.deepEqual(seen[0], { deleteAfterSeconds: 21600 });
+  const { signal: sig0, ...seen0 } = seen[0];
+  assert.ok(sig0 instanceof AbortSignal, 'create carries the agent-scoped abort signal');
+  assert.deepEqual(seen0, { deleteAfterSeconds: 21600 });
   const iso = new Date(x.deps.open.get(id).deleteAt).toISOString();
   assert.ok(Math.abs(x.deps.open.get(id).deleteAt - (t0 + 21600_000)) < 60_000);
   assert.match(await x.text(await listAgents({}, x.deps)), new RegExp(`deleted at ${iso}`));
@@ -1115,7 +1117,9 @@ test('a plain worker without mcp.json runs the same claude command (now inside t
   assert.equal(inner.replace(/--append-system-prompt '[^']*'/, "--append-system-prompt 'HINT'").replace(/CLOUDY_CLOUD_TURN_DEADLINE=\S+ /, ''),
     MERGE + ' CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 BASH_DEFAULT_TIMEOUT_MS=1680000 BASH_MAX_TIMEOUT_MS=1680000 claude -p --dangerously-skip-permissions --output-format stream-json --verbose --mcp-config $D/mcp.json --strict-mcp-config --append-system-prompt \'HINT\' < /home/user/prompt.txt');
   assert.ok(!sbx.writes.some((p) => p.endsWith('mcp.json')));
-  assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
+  const { signal, ...opts0 } = opts[0];
+  assert.ok(signal instanceof AbortSignal, 'create carries the agent-scoped abort signal');
+  assert.deepEqual(opts0, { deleteAfterSeconds: 21600 });
 });
 
 test('a worker with an mcp.json server gets the file, the flags, the secret, the footer and the event', async () => {
@@ -1232,7 +1236,9 @@ test('with no mcp.json at all the footer has no MCP line and no secrets are pass
   const r = await wait([await start({})]);
   assert.doesNotMatch(r, /MCP/);
   assert.match(claudeCmd(sandboxes[0]), /--mcp-config \$D\/mcp\.json --strict-mcp-config/);
-  assert.deepEqual(opts[0], { deleteAfterSeconds: 21600 });
+  const { signal, ...opts0 } = opts[0];
+  assert.ok(signal instanceof AbortSignal, 'create carries the agent-scoped abort signal');
+  assert.deepEqual(opts0, { deleteAfterSeconds: 21600 });
 });
 
 test('a coordinator gets mcp.json next to its env file and passes it to the launcher after the launcher-bound flags', async () => {
@@ -1313,7 +1319,8 @@ test('the core creates machines through provider.create, with names only in envs
   const id = await x.start();
   assert.match(await x.wait([id]), /status: idle/);
   assert.equal(provider.log.create.length, 1);
-  const { envs, ...rest } = provider.log.create[0];
+  const { envs, signal, ...rest } = provider.log.create[0];
+  assert.ok(signal instanceof AbortSignal, 'provider.create carries the agent-scoped abort signal');
   assert.deepEqual(rest, { image: 'agent-browser', kind: { name: 'linux', label: 'linux' }, labels: { purpose: 'cloudy-cloud', owner: 'o1', role: 'worker', profile: 'claude', parent: 'o1', agent: id, description: 'd' }, ttlSeconds: 21600, secrets: ['ANTHROPIC_API_KEY'] });
   assert.deepEqual(Object.keys(envs), []); // the key goes as a secret name, never as a value
 });
@@ -1333,7 +1340,7 @@ test('a provider without proxy secrets but with consent runs, and every reply sa
   provider.text.hostLabel = 'box1';
   const x = await setup({ provider });
   const r = await x.wait([await x.start({})]);
-  assert.match(r, /\nGitHub token: on your machine box1 \(you allowed it\)/);
+  assert.match(r, /\nGitHub token: stored on box1 \(you allowed it\)/);
 });
 
 test('with proxy secrets the reply has no token line', async () => {
@@ -1562,6 +1569,26 @@ test('apt packages are refused at start on a provider without sudo', async () =>
   deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true });
   deps.provider.name = 'self-hosted';
   deps.env = { CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
+test('apt packages install on a provider with sudo but no proxy secrets (boat)', async () => {
+  const cmds = [];
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true, hasSudo: true });
+  provider.name = 'boat';
+  const { deps, start, wait } = await setup({ provider, createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; } });
+  deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  await wait([await start()]);
+  assert.match(cmds.find((c) => /apt-get/.test(c)) ?? '', /sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg/, 'hasSudo, not hasProxySecrets, allows the install');
+});
+
+test('an explicit hasSudo false refuses apt even on a provider with proxy secrets', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSudo: false });
+  deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY', CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
   const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);

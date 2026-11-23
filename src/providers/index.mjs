@@ -5,6 +5,7 @@
  * @typedef {object} Caps
  * @property {boolean} hasServerTTL      the server deletes a machine at its deadline
  * @property {boolean} hasProxySecrets   secrets reach the machine as placeholders, never as values
+ * @property {boolean} [hasSudo]         the worker user can run passwordless sudo (apt installs); absent means hasProxySecrets
  * @property {boolean} hasEgressPolicy   create accepts an egress allowlist and the provider enforces it
  * @property {boolean} hasSizes          create accepts a size option
  * @property {boolean} hasSnapshots
@@ -67,6 +68,7 @@ const REGISTRY = {
   instabox: () => import('./instabox.mjs'),
   'self-hosted': () => import('./self-hosted.mjs'),
   microsandbox: () => import('./microsandbox.mjs'),
+  boat: () => import('./boat.mjs'),
   e2b: () => import('./e2b.mjs'),
 };
 

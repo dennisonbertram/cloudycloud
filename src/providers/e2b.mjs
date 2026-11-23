@@ -6,9 +6,11 @@
 //
 // Guards and mappings the adapter enforces:
 // - Ownership: sandboxes are created with metadata purpose=cloudy-cloud, this installation's
-//   owner id, a per-create ccIdem marker and deleteAt. list() filters by metadata server-side
-//   and re-checks purpose AND owner client-side; delete, connect, metrics and publishPort refuse
-//   (not_found) a sandbox that is not ours — a teammate installation's sandboxes are never touched.
+//   stable install id (installId() — <config>/install-id, shared by every session on this
+//   machine), a per-create ccIdem marker and deleteAt. list() filters by metadata server-side
+//   and re-checks purpose AND install client-side; delete, connect, metrics and publishPort
+//   refuse (not_found) a sandbox that is not ours — a teammate installation's sandboxes are
+//   never touched. The per-session `owner` metadata only scopes what the reaper may delete.
 // - Server TTL: E2B deletes the sandbox when its timeout expires, so a lost client still ends it
 //   (caps.hasServerTTL). The Hobby plan caps continuous lifetime at one hour, so that is
 //   caps.maxTtlSeconds until a create the plan accepts teaches the real ceiling; create() walks a
@@ -28,9 +30,8 @@
 //   URLs — anyone with the link can open them until the sandbox is deleted.
 // Coordinators are refused: a sandbox has no Docker socket for sibling workers.
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createLimiter } from '../limits.mjs';
-import { ownerFile, savedEnv } from '../config.mjs';
+import { installId, savedEnv } from '../config.mjs';
 
 const KEY_NAME = 'E2B_API_KEY';
 const CONSENT = 'CLOUDY_CLOUD_E2B_TOKEN_ON_BOX';
@@ -111,13 +112,11 @@ export function createProvider(env = process.env, deps = {}) {
   // file, so only a fresh savedEnv() read sees a revoked line before the credential POST.
   const baseEnv = deps.baseEnv ?? process.env;
   const consented = () => (baseEnv[CONSENT] || savedEnv(env)[CONSENT]) === 'yes';
-  // This installation's owner id — the same value the server stamps as the `owner` label.
-  // deps.owner carries it in the server; a CLI process reads the file the server wrote.
-  const readOwner = () => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
-  const ownerId = () => deps.owner ?? readOwner();
   const createdIds = new Set(); // ids this process created — ours whatever their metadata says now
-  // Ours = our purpose label AND this installation's owner id (or an id we created this run).
-  const ours = (meta, id) => meta?.purpose === 'cloudy-cloud' && (meta.owner === ownerId() || createdIds.has(id));
+  // Ours = our purpose metadata AND this installation's id (or an id we created this run). The
+  // per-session owner metadata is NOT an ownership proof: a second session must still see the
+  // first session's workers, and only the reaper scopes deletions by it.
+  const ours = (meta, id) => meta?.purpose === 'cloudy-cloud' && (meta.install === installId(env) || createdIds.has(id));
   const apiKey = () => {
     if (!env[KEY_NAME]) throw fail('no_key', api.text.noKeyFix, { local: true });
     return env[KEY_NAME];
@@ -356,10 +355,10 @@ export function createProvider(env = process.env, deps = {}) {
     return { id, home: HOME, files, commands: { run }, kill: () => api.delete(id), loadName: async () => id };
   };
 
-  // Ownership gate for every destructive or privileged call: our purpose label AND this
-  // installation's owner id — a same-purpose sandbox a teammate's installation runs is foreign.
-  // Returns the detail record; throws not_found otherwise (e.foreign marks "exists but not ours"
-  // so delete can tell it from a plain 404).
+  // Ownership gate for every destructive or privileged call: our purpose metadata AND this
+  // installation's stable install id — a same-purpose sandbox a teammate's installation runs is
+  // foreign. Returns the detail record; throws not_found otherwise (e.foreign marks "exists but
+  // not ours" so delete can tell it from a plain 404).
   const ownSandbox = async (id) => {
     const { data: d } = await ctl('GET', `/sandboxes/${encodeURIComponent(id)}`);
     if (!ours(d?.metadata, id)) throw fail('not_found', `No cloudy-cloud E2B sandbox ${id} owned by this installation`, { foreign: true });
@@ -389,7 +388,9 @@ export function createProvider(env = process.env, deps = {}) {
     caps: {
       // hasServerTTL: E2B deletes the sandbox when its timeout expires; the refresher only extends it.
       // hasConsentedSecrets is a getter: consent added to the env file applies to the next create.
-      hasServerTTL: true, hasProxySecrets: false, get hasConsentedSecrets() { return consented(); }, hasEgressPolicy: true,
+      // hasSudo: the base template's user has passwordless sudo (the provisioning script relies
+      // on `sudo -n`), so CLOUDY_CLOUD_APT_PACKAGES can install on the stock image.
+      hasServerTTL: true, hasProxySecrets: false, hasSudo: true, get hasConsentedSecrets() { return consented(); }, hasEgressPolicy: true,
       hasSnapshots: false, hasPortForward: false, hasPublish: true, hasSizes: false, hasShell: false,
       hasDisplay: false, hasMetrics: true,
       maxForegroundMs: Infinity, get maxTtlSeconds() { return learnedMax; }, startsPerMin: 30, maxConcurrentCalls: 8,
@@ -407,7 +408,7 @@ export function createProvider(env = process.env, deps = {}) {
       const t0 = now();
       const deleteAt = t0 + ttl * 1000;
       const idem = randomUUID();
-      const all = { ...labels, purpose: 'cloudy-cloud', ...(role && { role }), ...(name && !labels.name && { name }), ccIdem: idem, deleteAt: new Date(deleteAt).toISOString(), startedAt: new Date(t0).toISOString() };
+      const all = { ...labels, purpose: 'cloudy-cloud', install: installId(env), ...(role && { role }), ...(name && !labels.name && { name }), ccIdem: idem, deleteAt: new Date(deleteAt).toISOString(), startedAt: new Date(t0).toISOString() };
       for (const [k, v] of Object.entries(all)) {
         if (!/^[A-Za-z0-9_.-]+$/.test(k)) throw new Error(`invalid label name "${k}"`);
         if (typeof v === 'string' && /[\r\n]/.test(v)) throw new Error(`invalid label value for "${k}"`);
@@ -537,7 +538,9 @@ export function createProvider(env = process.env, deps = {}) {
     },
 
     async list(labels = {}, { onError } = {}) {
-      const filter = { purpose: 'cloudy-cloud', ...labels };
+      // The server-side filter asks for purpose + this installation's id (an explicit caller
+      // label like the reaper's owner narrows it further); ownership is re-checked below anyway.
+      const filter = { purpose: 'cloudy-cloud', install: installId(env), ...labels };
       const meta = Object.entries(filter).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
       const rows = [];
       for (let token; ;) {

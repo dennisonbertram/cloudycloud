@@ -255,6 +255,19 @@ test('self-hosted provider needs the SSH host, not the Instabox key (#41)', () =
   assert.match(ib.stderr, /Instabox API key/);
 });
 
+test('boat provider needs BOAT_API_KEY, not the Instabox key', () => {
+  const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+  const ok = run({ config: `CLOUDY_CLOUD_PROVIDER=boat\nBOAT_API_KEY=boat_test\n${claude}`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.started, true);
+  const noKey = run({ config: `CLOUDY_CLOUD_PROVIDER=boat\nINSTABOX_API_KEY=${IBK}\n${claude}` });
+  assert.equal(noKey.status, 1);
+  assert.match(noKey.stderr, /Boat API key/);
+  assert.equal(noKey.started, false);
+  const codex = runHost('codex', `CLOUDY_CLOUD_PROVIDER=boat\nBOAT_API_KEY=boat_test\n`);
+  assert.equal(codex.status, 0, codex.stderr);
+});
+
 test('e2b provider needs E2B_API_KEY, not the Instabox key', () => {
   const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
   const ok = run({ config: `CLOUDY_CLOUD_PROVIDER=e2b\nE2B_API_KEY=e2b_test\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n${claude}`, cwd: repo('https://github.com/test/repo.git') });
@@ -299,6 +312,12 @@ test('proxy secret names may have spaces after commas', () => {
 
 test('proxy secret names do not count as a Claude token on the self-hosted provider', () => {
   const r = run({ config: `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SSH_HOST=h\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Claude token/);
+});
+
+test('proxy secret names do not count as a Claude token on the boat provider', () => {
+  const r = run({ config: `CLOUDY_CLOUD_PROVIDER=boat\nBOAT_API_KEY=boat_test\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, cwd: repo('https://github.com/test/repo.git') });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Claude token/);
 });
