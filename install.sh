@@ -1046,7 +1046,7 @@ mask_token() {
 link_skill() {
   local root=$1 name dest
   mkdir -p "$HOME/.claude/skills" || return 0
-  for name in cloud-fleet cloudy-cloud-setup; do
+  for name in cloud-fleet cloudy-cloud-setup cloud-dev; do
     dest="$HOME/.claude/skills/$name"
     if from_npm "$root"; then
       if [ -L "$dest" ]; then warn "Skill $name not copied: $dest is a link"; continue; fi

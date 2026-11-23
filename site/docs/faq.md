@@ -62,7 +62,7 @@ Not from a laptop session: subagents stop when the session ends. For work that m
 
 ### How do I uninstall it?
 
-Delete leftover machines first. If you installed with `npx cloudycloud setup`, run `npm uninstall -g cloudycloud`, then delete `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet` and `~/.claude/skills/cloudy-cloud-setup`. The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
+Delete leftover machines first. If you installed with `npx cloudycloud setup`, run `npm uninstall -g cloudycloud`, then delete `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet`, `~/.claude/skills/cloudy-cloud-setup` and `~/.claude/skills/cloud-dev` (only those setup installed; keep any skill folder you made yourself). The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
 
 ### Is there a hosted version?
 

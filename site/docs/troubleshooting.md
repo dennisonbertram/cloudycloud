@@ -230,8 +230,10 @@ Delete leftover machines first (see above). If you installed with `npx cloudyclo
 
 ```
 npm uninstall -g cloudycloud
-rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup
+rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup ~/.claude/skills/cloud-dev
 ```
+
+Remove a skill folder only if setup installed it (a copy it made); keep one you made yourself.
 
 If you installed from a git clone, run `npm unlink -g cloudycloud` instead (also `npm unlink -g cloudy-cloud` for a clone from before the package was renamed), then delete the clone.
 
