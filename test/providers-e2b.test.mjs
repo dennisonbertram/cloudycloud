@@ -228,7 +228,7 @@ test('e2b: a plan TTL cap walks the timeout ladder down', async () => {
   z.fail.set('/v2/sandboxes', (m) => {
     if (m !== 'POST') return;
     calls++;
-    return calls === 1 ? z.respond(400, { code: 400, message: 'Max instance length exceeded for this plan' }) : undefined;
+    return calls === 1 ? z.respond(400, { code: 400, message: 'Timeout cannot be greater than 1 hours' }) : undefined; // the live API's wording
   });
   const p = mk(z);
   const s = await create(p, { ttlSeconds: 7200 });
@@ -237,6 +237,7 @@ test('e2b: a plan TTL cap walks the timeout ladder down', async () => {
     assert.equal(posts.length, 2);
     assert.equal(posts[0].body.timeout, 7200);
     assert.equal(posts[1].body.timeout, 3600, 'second rung of the ladder');
+    assert.notEqual(posts[0].headers['Idempotency-Key'], posts[1].headers['Idempotency-Key'], 'E2B refuses a reused key with a different body');
   } finally { await s.kill(); }
 });
 

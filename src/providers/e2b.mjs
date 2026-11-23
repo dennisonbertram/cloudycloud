@@ -36,7 +36,7 @@ const ENVD_HOST = 'https://sandbox.e2b.app';
 const ENVD_PORT = 49983;
 const MAX_TTL_SECONDS = 86400;
 const TTL_LADDER = [3600, 300]; // fallbacks when the plan caps the requested timeout
-const MAX_LEN_RE = /max(imum)? (instance|sandbox).*(length|duration|timeout)/i;
+const MAX_LEN_RE = /max(imum)? (instance|sandbox).*(length|duration|timeout)|timeout cannot be (greater|longer|more) than/i; // live API: 'Timeout cannot be greater than 1 hours'
 const STATUS = { running: 'running', paused: 'stopped' };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, inside the sandbox's sh -c
@@ -385,7 +385,7 @@ export function createProvider(env = process.env, deps = {}) {
             created = await ctl('POST', '/v2/sandboxes', {
               templateID: TEMPLATE, timeout: want, metadata: all, envVars: vars,
               ...(net && { network: net }),
-            }, { headers: { 'Idempotency-Key': idem }, tries: 4 });
+            }, { headers: { 'Idempotency-Key': `${idem}-${want}` }, tries: 4 }); // one key per rung: E2B refuses a reused key with a different body
             step = want;
             break;
           } catch (e) {
