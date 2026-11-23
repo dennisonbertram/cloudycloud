@@ -197,7 +197,7 @@ Setup asks for the API key (`boat_…` from the boat dashboard), checks it with 
 - **Lifetime:** the worker's deadline goes in as boat's `ttlSeconds` (server-side auto-stop) plus a `deleteAt` label swept on every `list`. `cloudy-cloud stop` permanently deletes the sandbox — it is not merely stopped and kept.
 - **Private by default:** sandboxes are created `visibility: private` with `noEnv` (account secrets are not inherited) and `snapshots: false`. `cloudy-cloud open` publishes a port through boat's `host` endpoint; the URL is token-gated by boat, not world-readable.
 - **Not supported:** `CLOUDY_CLOUD_EGRESS_ALLOW` (refused at start — boat has no outbound firewall API), coordinators, `cloudy-cloud shell`, `cloudy-cloud forward`, display, `size`, and machine kinds other than `linux`.
-- **Status:** built and unit-tested against a fake API (create shape, labels, TTL, consent gate, ownership refusals, retries, pagination, command polling). Not yet run against the live boat API — see [STATUS.md](docs/STATUS.md).
+- **Status:** experimental. Unit-tested against a fake API and live-tested on 2026-11-22 with fake worker tokens (start, commands, files, preview, delete, setup, and a full `cloud_agent` run up to the model call). Not yet run with a real agent task — see [STATUS.md](docs/STATUS.md).
 
 ## Dashboard
 
