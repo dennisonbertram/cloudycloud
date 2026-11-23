@@ -715,11 +715,11 @@ async function stop(c, args) {
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   c.progress('Deleting the coordinator machine...');
   await c.provider.delete(m.id, { sdk: true });
-  // A terminal names our own command (listMachinesUi); piped output keeps the provider CLI line scripts had.
+  // Both name our own command when the provider has one (listMachinesUi), so the provider stays behind cloudy-cloud.
   if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
     hintFit(c.ui, `List machines: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`)].join('\n'));
-  c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
+  c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`);
 }
 
 // Run ON a coordinator machine by the coordinator itself: checks that nothing is lost, then deletes this machine.

@@ -286,7 +286,7 @@ test('stop deletes only the named coordinator', async () => {
   assert.deepEqual(f.log.killed, ['m2']);
   assert.match(f.log.out.join('\n'), /cleanup process/);
   // piped output keeps the provider CLI line scripts saw on origin/main (#185: terminal wording only in fields)
-  assert.match(f.log.out.join('\n'), /Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud/);
+  assert.match(f.log.out.join('\n'), /Check with: cloudy-cloud machines/);
   await assert.rejects(main(['stop', 'zzz'], f.deps), /No coordinator named zzz/);
 });
 
