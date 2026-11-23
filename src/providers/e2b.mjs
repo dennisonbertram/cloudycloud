@@ -252,7 +252,8 @@ export function createProvider(env = process.env, deps = {}) {
           }
           return;
         }
-        if (ev.end && typeof ev.end.exitCode === 'number') exitCode = ev.end.exitCode;
+        // proto3 JSON omits zero values, so a clean exit arrives as end: { exited: true } with no exitCode.
+        if (ev.end) exitCode = typeof ev.end.exitCode === 'number' ? ev.end.exitCode : 0;
       };
       try {
         for (let attach = 0; ; attach++) {

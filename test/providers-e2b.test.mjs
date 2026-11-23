@@ -131,13 +131,14 @@ function fakeE2b() {
           { start: { pid: 1234 } },
           ...(st.out ? [{ data: { stdout: b64(st.out) } }] : []),
           ...(st.err ? [{ data: { stderr: b64(st.err) } }] : []),
-          { end: { exitCode: st.code, exited: true, status: 'exited' } },
+          // Like real envd (proto3 JSON), a zero exit code is omitted.
+          { end: { ...(st.code ? { exitCode: st.code } : {}), exited: true, status: 'exited' } },
         ]), { 'Content-Type': 'application/connect+json' });
       }
       if (u.pathname === '/process.Process/Connect') {
         const sel = body[0].json.process;
         if (!sel?.tag?.startsWith('cc-')) return respond(200, enc({ error: { code: 'not_found', message: 'process not found' } }, 2), { 'Content-Type': 'application/connect+json' });
-        return respond(200, stream([{ end: { exitCode: z.execState.code, exited: true, status: 'exited' } }]), { 'Content-Type': 'application/connect+json' });
+        return respond(200, stream([{ end: { ...(z.execState.code ? { exitCode: z.execState.code } : {}), exited: true, status: 'exited' } }]), { 'Content-Type': 'application/connect+json' });
       }
       if (u.pathname === '/process.Process/SendSignal') return respond(200, {});
       return respond(404, { code: 404, message: 'unknown route' });
