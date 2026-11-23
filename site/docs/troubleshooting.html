@@ -246,7 +246,8 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <h3 id="faq-uninstall">How do I uninstall it?</h3>
 <p>Delete leftover machines first (see above). If you installed with <code>npx cloudycloud setup</code>, run:</p>
 <pre><code>npm uninstall -g cloudycloud
-rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup</code></pre>
+rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup ~/.claude/skills/cloud-dev</code></pre>
+<p>Remove a skill folder only if setup installed it (a copy it made); keep one you made yourself.</p>
 <p>If you installed from a git clone, run <code>npm unlink -g cloudycloud</code> instead (also <code>npm unlink -g cloudy-cloud</code> for a clone from before the package was renamed), then delete the clone.</p>
 <p>To delete only the empty or merged subagent branches on GitHub, run <code>cloudy-cloud branches prune</code> in your repo (a dry run), then <code>cloudy-cloud branches prune --yes</code>. To delete all of them, run this in your repo:</p>
 <pre><code>git ls-remote --heads origin 'cloudy-cloud/*' | awk '{print $2}' | xargs -n 50 git push origin --delete</code></pre>

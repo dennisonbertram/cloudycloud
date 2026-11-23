@@ -93,7 +93,7 @@
 <h3 id="install-with-the-skill">Or add the skill and ask Claude Code</h3>
 <pre><code>npx skills add dennisonbertram/cloudycloud</code></pre>
 <p>Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run <code>npx -y cloudycloud setup</code> yourself, because setup asks for secret keys that Claude should not see.</p>
-<p>This route is for Claude Code: <code>npx skills add</code> installs the skill for Claude Code, and setup copies the <code>cloud-fleet</code> and <code>cloudy-cloud-setup</code> skills into <code>~/.claude/skills/</code>, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run <code>npx -y cloudycloud setup</code> yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.</p>
+<p>This route is for Claude Code: <code>npx skills add</code> installs the skill for Claude Code, and setup copies (npm install) or links (git clone) the <code>cloud-fleet</code>, <code>cloudy-cloud-setup</code> and <code>cloud-dev</code> skills into <code>~/.claude/skills/</code>, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run <code>npx -y cloudycloud setup</code> yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.</p>
 <h3 id="from-source">From source</h3>
 <pre><code>git clone https://github.com/dennisonbertram/cloudycloud.git
 cd cloudycloud

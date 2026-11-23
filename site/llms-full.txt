@@ -214,7 +214,7 @@ npx skills add dennisonbertram/cloudycloud
 
 Then ask Claude to "set up Cloudy Cloud". Claude checks your tools and asks you to run `npx -y cloudycloud setup` yourself, because setup asks for secret keys that Claude should not see.
 
-This route is for Claude Code: `npx skills add` installs the skill for Claude Code, and setup copies the `cloud-fleet` and `cloudy-cloud-setup` skills into `~/.claude/skills/`, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run `npx -y cloudycloud setup` yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.
+This route is for Claude Code: `npx skills add` installs the skill for Claude Code, and setup copies (npm install) or links (git clone) the `cloud-fleet`, `cloudy-cloud-setup` and `cloud-dev` skills into `~/.claude/skills/`, which only Claude Code reads. Nothing installs them for Codex, opencode, pi or free-pi, and whether those agents can use them has not been checked. If your main session is one of them, run `npx -y cloudycloud setup` yourself in a terminal (above). The session still gets the cloud tools and Cloudy Cloud's built-in instructions for them.
 
 ### From source
 
@@ -1903,8 +1903,10 @@ Delete leftover machines first (see above). If you installed with `npx cloudyclo
 
 ```
 npm uninstall -g cloudycloud
-rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup
+rm -rf ~/.config/cloudy-cloud ~/.claude/skills/cloud-fleet ~/.claude/skills/cloudy-cloud-setup ~/.claude/skills/cloud-dev
 ```
+
+Remove a skill folder only if setup installed it (a copy it made); keep one you made yourself.
 
 If you installed from a git clone, run `npm unlink -g cloudycloud` instead (also `npm unlink -g cloudy-cloud` for a clone from before the package was renamed), then delete the clone.
 
@@ -2052,7 +2054,7 @@ Not from a laptop session: subagents stop when the session ends. For work that m
 
 ### How do I uninstall it?
 
-Delete leftover machines first. If you installed with `npx cloudycloud setup`, run `npm uninstall -g cloudycloud`, then delete `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet` and `~/.claude/skills/cloudy-cloud-setup`. The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
+Delete leftover machines first. If you installed with `npx cloudycloud setup`, run `npm uninstall -g cloudycloud`, then delete `~/.config/cloudy-cloud`, `~/.claude/skills/cloud-fleet`, `~/.claude/skills/cloudy-cloud-setup` and `~/.claude/skills/cloud-dev` (only those setup installed; keep any skill folder you made yourself). The full steps, including the install-from-clone case and deleting the subagent branches on GitHub, are in [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html#faq-uninstall).
 
 ### Is there a hosted version?
 

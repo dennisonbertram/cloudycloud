@@ -18,13 +18,13 @@ sysctl -n vm.loadavg hw.ncpu        # macOS; on Linux: cat /proc/loadavg; nproc
 memory_pressure | tail -1           # macOS
 ```
 
-A 15-minute load average well above the core count means CPU is saturated: move the heavy commands. Plenty of free memory means a lighter-weight harness (for example a rewrite in another language) will not help.
+A 15-minute load average well above the core count suggests CPU is saturated (on Linux it also counts processes waiting on disk, so check CPU use with `top` too): move the heavy commands. Plenty of free memory means a lighter-weight harness (for example a rewrite in another language) will not help.
 
 ## Before the first cloud machine on a repo
 
 1. Do the cloud-fleet skill's "Before using a repo" checks: a github.com origin, a protected default branch, and the user confirming the repo is in the Cloudy Cloud GitHub token.
 2. **Check what a push can trigger.** Read the repo's CI and release workflows (for example `.github/workflows/`). A worker pushes its `cloudy-cloud/<id>` branch automatically once it has commits (on 0.2.0, every worker pushed at start, before it read its brief). If any workflow that publishes, deploys or releases runs on pushes to all branches or to `cloudy-cloud/*`, stop and ask the user; a brief cannot prevent the push.
-3. **Starting a machine copies the repo's full git history.** If that history holds personal data or secrets, ask the user before the first start, and keep asking each time until they give standing approval.
+3. **Starting a machine copies the git history reachable from the snapshot or `base` ref.** If that history holds personal data or secrets, ask the user before the first start, and keep asking each time until they give standing approval.
 4. **Each machine is billed until it stops.** Before starting machines, confirm the count, the time limit and that they are billed, unless the user already asked for exactly this.
 
 ## Choose a mode
@@ -56,25 +56,26 @@ Never copy production credentials to a cloud machine to make a task fit. Run tha
 
 One-time setup per account, done by the user because it needs a browser sign-in:
 
-1. `cloudy-cloud coordinator image` creates a sign-in machine and prints its name.
-2. The user runs `npx --yes instabox@latest ssh <machine>`, then `claude auth login` there, finishes the browser sign-in and leaves the shell.
-3. The user runs `cloudy-cloud coordinator image --save`. It can take several minutes and prints nothing until done.
+In a terminal, the user runs `cloudy-cloud coordinator image`. It opens `claude auth login` on a new machine, saves the image after sign-in (10 to 20 minutes) and deletes the machine. If sign-in does not finish, it prints the fallback below. When not run in a terminal, it prints the machine name instead:
+
+1. The user runs `npx --yes instabox@latest ssh <machine>`, then `claude auth login` there, finishes the browser sign-in and leaves the shell.
+2. The user runs `cloudy-cloud coordinator image --save`. It can take several minutes.
 
 Start, connect and stop:
 
 ```sh
 cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO \
   --branch BRANCH --max-hours N --model MODEL --task-file task.md --json
-cloudy-cloud coordinator attach NAME      # prints the SSH command; run it to join the session
+cloudy-cloud coordinator attach NAME      # in a terminal joins the session; piped, prints the SSH command
 cloudy-cloud shell MACHINE -- CMD         # one command on the machine (~3 s each)
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator stop NAME        # deletes the machine at once
 ```
 
 - `MACHINE` is the `machine` field in the `start --json` output (for example `coord-NAME`).
-- Read the `skippedKeys` field in the start output. A key listed there was not sent, because it is still a plain value in `~/.config/cloudy-cloud/env`, so any worker profile that needs it will fail. The user fixes this with `cloudy-cloud setup`.
+- Read the `skippedKeys` field in the start output. The field appears only when a key was skipped. A listed key was not sent because it is held only as a plain value (in `~/.config/cloudy-cloud/env` or the shell environment), not as a proxy secret, so any worker profile that needs it will fail. For a built-in key the user runs `cloudy-cloud setup --more`; for a custom key, follow the `note` in the start output.
 - The coordinator always runs Claude Code. Remote Control also works, so the user can talk to it from a phone or claude.ai.
-- `--max-hours` (at most 24) limits the coordinator's machine only. Workers have their own deadline (`CLOUDY_CLOUD_WORKER_HOURS`, 6 hours by default) and a session may start up to `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (200 by default). Set both to the approved budget in the environment of the session that starts workers; a number written only in the brief is not enforced.
+- `--max-hours` (at most 24) limits the coordinator's machine only. Workers have their own deadline (`CLOUDY_CLOUD_WORKER_HOURS`, 6 hours by default) and a session may start up to `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (200 by default). These two variables set on the laptop are not forwarded to a cloud coordinator, so it runs with the defaults, and a number written in the brief is not enforced. Keep the budget low through the worker cap in the task file, and check `cloud_agent_list` with `all: true` afterwards. In a local session that starts workers directly (Mode 1), set both in that session's environment.
 - `coordinator stop` deletes the machine immediately, without checking for unpushed work. Make sure the work you need is pushed first.
 
 ### Workers under a coordinator
@@ -92,7 +93,7 @@ Put these rules in every coordinator task file:
 - No production hosts, plus anything the repo adds.
 - Give workers no untrusted content to follow (web pages, issue text, user data); they run with permission checks off.
 - Check each worker's answer yourself before relying on it. A worker saying "done" is not evidence.
-- Before stopping a worker, check that its work is on its branch if you need it (`git ls-remote --heads origin cloudy-cloud/<id>`). Then stop it with `cloud_agent_stop` and confirm with `cloud_agent_list` that none is running.
+- Before stopping a worker, read its latest result: it says whether the push worked and lists "Uncommitted changes left"; if work is unpushed, message the worker to commit and push. Then check the branch has the commit you expect (`git ls-remote --heads origin cloudy-cloud/<id>` and compare the SHA; empty output means no branch). Stop it with `cloud_agent_stop` and confirm with `cloud_agent_list` using `all: true` that none of this task's machines remains; the default list only shows agents the session still tracks.
 - Do not run `cloudy-cloud coordinator finish` if the operator will run more commands on the machine.
 
 ## Mode 1: cloud subagent from a local session
@@ -106,10 +107,10 @@ cloudy-cloud -p --model sonnet \
 ```
 
 - Put `--` before the prompt. `--allowedTools` takes several values and otherwise swallows the prompt, which fails with "Input must be provided either through stdin or as a prompt argument when using --print".
-- `--allowedTools` only adds permissions; it does not remove tools the session already has. Do not add `--dangerously-skip-permissions`; permission classifiers block it, and it is not needed.
+- `--allowedTools` only adds permissions; it does not remove tools the session already has. Do not add `--dangerously-skip-permissions`; it is not needed, and the calling environment's permission classifier may block it.
 - Run it from a clean worktree (see "What a machine sees").
 - In the brief, cap the number of workers and tell the session to stop each one when done. An idle worker bills until its 60-minute idle timeout.
-- Prove the work ran in the cloud: the worker's `hostname` starts with `instabox-sbx-`.
+- Prove the work ran in the cloud: on Instabox (the default provider) the worker's `hostname` starts with `instabox-sbx-`. Other providers differ: a self-hosted worker is a container on your own machine (`cc-` hostname), Boat and E2B have no `cloudy-cloud shell` or coordinator image, and an Instabox Mac worker has a 24-hour minimum lease.
 
 ## Mode 2: local agent, cloud test runner
 
@@ -120,10 +121,12 @@ set -e
 SHA=$(git rev-parse HEAD)
 git push --no-follow-tags origin "HEAD:refs/heads/BRANCH"      # BRANCH is a fleet/* branch
 cloudy-cloud shell MACHINE -- bash -lc "set -e; cd ~/repo; git fetch -q origin $SHA;
-  D=\$(mktemp -d ~/testrun.XXXXXX); git worktree add -q --detach \"\$D\" $SHA; cd \"\$D\";
-  INSTALL && TEST_COMMAND; cd ~/repo; git worktree remove --force \"\$D\""
+  D=\$(mktemp -d ~/testrun.XXXXXX); git worktree add -q --detach \"\$D\" $SHA;
+  rc=0; { cd \"\$D\" && INSTALL && TEST_COMMAND; } || rc=\$?;
+  cd ~/repo; git worktree remove --force \"\$D\"; exit \$rc"
 ```
 
+- A failed install or test makes the command exit non-zero, and the worktree is removed either way.
 - `INSTALL` is the frozen-lockfile install the repo's CI uses (a new worktree has no dependencies).
 - Fetching by SHA tests the exact commit, even if the branch moves.
 - Each call costs about 3 s of overhead. Use it for full-suite runs, not every small edit.
@@ -134,8 +137,8 @@ cloudy-cloud shell MACHINE -- bash -lc "set -e; cd ~/repo; git fetch -q origin $
 Cloudy Cloud stores most keys as Instabox secrets tied to hosts. The machine sees only a placeholder, and the Instabox proxy swaps in the real key on HTTPS requests to those hosts, so an agent can use a key but cannot read it.
 
 - `cloudy-cloud setup` stores the built-in keys this way (Claude token, GitHub token, provider keys).
-- A custom key needs both the secret and Cloudy Cloud configuration that passes it to machines; follow the `note` printed by `coordinator start`, or `cloudy-cloud mcp add` for an MCP server token. The user runs these in their own terminal and pastes the key there.
-- Exceptions where the real value is on the machine: the `codex-chatgpt` profile (copies a login file) and MCP tokens stored with `--allow-literal`.
+- A custom key needs both the secret and Cloudy Cloud configuration that passes it to machines; follow the `note` printed by `coordinator start`, or `cloudy-cloud mcp add NAME` for an MCP server token (NAME is a server already in the user's Claude Code config). The user runs these in their own terminal and pastes the key there.
+- Exceptions where the real value is on the machine: the `codex-chatgpt` profile (copies a login file), MCP tokens stored with `--allow-literal`, the coordinator image (it holds the full Claude browser login), and Boat or E2B machines, which receive the GitHub token, Claude credential and profile keys when the user consents.
 - Host-bound secrets do not work for values the code computes with (webhook signing secrets, HMAC keys), SSH keys, or database passwords. Do not move those to a machine. Use test values generated on the machine, or keep the task local.
 - Never ask for a key in chat, put one in a brief, or print one.
 - Most test suites need no real keys: they use stubs and their own local services. Prefer that to moving secrets.
@@ -157,6 +160,6 @@ Check the installed version with `cloudy-cloud --version` and the published one 
 After each run:
 
 1. Stop only machines this task started. Leave a coordinator you borrowed (for example for Mode 2) running unless the user says to stop it.
-2. `cloud_agent_list` shows no running workers from this task.
+2. `cloud_agent_list` with `all: true` shows no machines from this task.
 3. Handle empty `cloudy-cloud/*` branches as above.
 4. Report: mode used, machine count and run time, the results you checked yourself, anything left running or undeleted, and the exact command for any step the user must run.
