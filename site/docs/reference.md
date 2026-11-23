@@ -10,7 +10,7 @@ These commands and tools apply to every main session: Claude Code (`cloudy-cloud
 
 ## Command line
 
-These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `help`, `codex`, `opencode`, `pi`, `free-pi`, `dashboard`, `open`, `shell`, `display`, `coordinator`, `setup`, `--setup`, `doctor`, `protect`, `machines`, `branches` or `mcp-server`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal`, `mcp rm NAME` and bare `mcp` (which prints that command's usage) run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Any other arguments start a Claude Code session. One bare word that is not a command and not a Claude Code subcommand (for example `cloudy-cloud ls`) is treated as a typo and fails with "is not a command", exit status 2.
+These commands run on your computer. `cloudy-cloud` checks the first argument. If it is `help`, `codex`, `opencode`, `pi`, `free-pi`, `dashboard`, `open`, `shell`, `display`, `coordinator`, `cloud`, `setup`, `--setup`, `doctor`, `protect`, `machines`, `branches` or `mcp-server`, it runs that command. `mcp ls`, `mcp add NAME`, `mcp add NAME --allow-literal`, `mcp rm NAME` and bare `mcp` (which prints that command's usage) run cloudy-cloud mcp; any other `mcp` arguments go to Claude Code. Any other arguments start a Claude Code session. One bare word that is not a command and not a Claude Code subcommand (for example `cloudy-cloud ls`) is treated as a typo and fails with "is not a command", exit status 2.
 
 ### cloudy-cloud (Claude Code as the main session)
 
@@ -219,7 +219,7 @@ Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the
 
 ```
 cloudy-cloud coordinator image [--save]
-cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]
+cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator status NAME [--json]
@@ -250,6 +250,7 @@ Starts a coordinator named NAME on a new machine from the saved image. It sends 
 | `--task-file PATH` | none | Read the task from a local file instead. Same limits. |
 | `--max-hours N` | 24 | Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended. |
 | `--model NAME` | Claude Code's default | Model for the coordinator's Claude Code session, such as `opus` or `claude-opus-5-5`. Rejected before any machine is created if it has characters other than letters, digits and `._:[]-`. |
+| `--env FILE` | none (repeatable) | Bridge variables from a dotenv-style file to the machine; may be given several times. See Bridged env variables. |
 | `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. |
 
 About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or a login problem, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.
@@ -259,6 +260,16 @@ Example:
 ```
 cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO --task-file task.md --max-hours 8
 ```
+
+#### cloudy-cloud cloud
+
+`cloudy-cloud cloud [--name N] [--branch B] [--max-hours H] [--model M] [--env FILE]... [--no-attach] [--json]` is the one-command form of `coordinator start` plus `coordinator attach`: run inside a git clone whose origin is on github.com, it takes the repo from the origin URL, the branch from the checkout, and names the coordinator a `<repo>-<branch>` slug (`--name` overrides). If the branch has commits origin does not, or tracked files have uncommitted edits, it warns that the cloud clone comes from GitHub and will not have them — on a terminal it asks `Start anyway? [y/N]`; off one it refuses and names the push command. It never pushes for you. An already-running coordinator of that name is reattached to (`Reattaching to NAME`) instead of restarted. Otherwise it starts the coordinator exactly like `coordinator start` and, on a terminal, attaches; `--no-attach`, `--json` or a pipe prints the start output only, which includes the attach command.
+
+#### Bridged env variables
+
+`coordinator start --env FILE` and `cloud --env FILE` copy variables from a dotenv-style file to the machine (repeatable; the `CLOUDY_CLOUD_ENV_FILES` comma list in `~/.config/cloudy-cloud/env` adds more). A variable bound to a host — a known key name, or `NAME=host` in `CLOUDY_CLOUD_ENV_HOSTS` (exact host names only, no `*.` wildcards) — is stored as an Instabox proxy secret bound to that host and attached by name; the value goes on stdin only. Any other variable needs per-repo consent (`y` for once, `a` remembered per origin in `env-consent.json`, which stores names only) and is then written `NAME='value'` into `~/.config/cloudy-cloud/env.local` (mode 600, uploaded through the file route, never a command line) and sourced into the session's environment when tmux starts Claude. On a provider without proxy secrets every variable needs consent. Variables cloudy-cloud already sends are always skipped. The summary names the proxied, copied and skipped variables with reasons, never values; without a terminal unconsented variables are skipped.
+
+A coordinator machine also runs a deadline watchdog in a detached tmux session `cc-watchdog` (script `~/watchdog.sh`, log `~/watchdog.log`). It warns the Claude session 30 and 10 minutes before the server deletes the machine (typed into the session with `tmux send-keys`), and 5 minutes before it commits leftover work in `~/repo` (`WIP: automatic save before the machine is deleted`, skipped when the tree is clean) and pushes the current branch — to `cloudy-cloud/wip-<timestamp>` instead when that branch is the repo's default or a `release*` branch. It never force-pushes and never deletes anything. On the machine, the coordinator session may also use the built-in `Agent` tool for small tasks on its own machine; parallel or heavy work still goes to `cloud_agent`.
 
 #### coordinator attach
 

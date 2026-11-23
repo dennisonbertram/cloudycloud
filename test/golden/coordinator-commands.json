@@ -267,6 +267,14 @@
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
       },
       {
+        "sdk": "files.write",
+        "path": "/data/home/watchdog.sh"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
+      },
+      {
         "sdk": "commands.run",
         "cmd": "tmux capture-pane -t claude -p"
       },
@@ -435,6 +443,14 @@
       {
         "sdk": "commands.run",
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/watchdog.sh"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
       },
       {
         "sdk": "commands.run",

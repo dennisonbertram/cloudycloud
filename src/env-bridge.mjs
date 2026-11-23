@@ -49,8 +49,9 @@ const OWN_KEYS = [DEFAULT_PROVIDER_KEY, COORDINATOR_KEY_SECRET, 'GH_TOKEN', 'CLA
 const sentByCloudyCloud = (env) => new Set([...OWN_KEYS, ...profileKeyNames(env).filter((k) => k !== 'OPENAI_API_KEY' || env[k] || proxySecrets(env).has(k))]);
 
 // User host bindings for proxy secrets: CLOUDY_CLOUD_ENV_HOSTS="NAME=host,NAME2=host2" in
-// ~/.config/cloudy-cloud/env. Hosts are validated exactly like CLOUDY_CLOUD_EGRESS_ALLOW entries — through
-// egressAllow, so the wildcard and label rules (and the "name the position, never the content" errors) match.
+// ~/.config/cloudy-cloud/env. Hosts are validated like CLOUDY_CLOUD_EGRESS_ALLOW entries — through
+// egressAllow, so the label rules (and the "name the position, never the content" errors) match — except
+// that only exact host names are allowed: `instabox secrets set --host` is not confirmed to take wildcards.
 // Returns { map } (lowercased hosts) or { error }.
 export function envHosts(env = process.env) {
   const raw = env.CLOUDY_CLOUD_ENV_HOSTS;
@@ -58,14 +59,14 @@ export function envHosts(env = process.env) {
   const value = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2');
   if (!value) return { map: new Map() }; // an empty setting is unset (loadEnv already drops empties)
   const parts = value.split(/[\s,]+/).filter(Boolean);
-  const how = 'Use entries such as MY_KEY=api.example.com or MY_KEY=*.example.com, separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.';
+  const how = 'Use entries such as MY_KEY=api.example.com (an exact host name, no wildcards), separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.';
   if (!parts.length) return { error: `CLOUDY_CLOUD_ENV_HOSTS is set but lists no NAME=host pairs. ${how}` };
   const map = new Map();
   for (const [i, part] of parts.entries()) {
     const eq = part.indexOf('='), name = eq > 0 ? part.slice(0, eq) : '', host = eq > 0 ? part.slice(eq + 1) : '';
     if (!NAME_RE.test(name)) return { error: `CLOUDY_CLOUD_ENV_HOSTS entry ${i + 1} is not NAME=host. ${how}` };
     const check = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: host });
-    if (check.error) return { error: `CLOUDY_CLOUD_ENV_HOSTS entry ${i + 1} (${name}) is not a host name. ${how}` };
+    if (check.error || !check.list[0] || check.list[0].includes('*')) return { error: `CLOUDY_CLOUD_ENV_HOSTS entry ${i + 1} (${name}) is not an exact host name. ${how}` };
     map.set(name, check.list[0]);
   }
   return { map };
@@ -97,8 +98,9 @@ export function writeConsent(path, data) {
 // `skipped` reports merge in). `ask(name)` returns 'y' | 'n' | 'a' and is only called for a variable that
 // cannot be proxied and has no stored consent; pass null when there is no terminal — an unconsented variable
 // is then skipped, never sent. 'a' is remembered per repo (origin URL) in the mode-600 consent file.
+// `proxy` is false on a provider without proxy secrets: host-bound variables then need consent like any other.
 // The result names variables and hosts only: a value is never in the report or in an error.
-export async function planEnv({ vars, env = process.env, origin, consentPath, ask }) {
+export async function planEnv({ vars, env = process.env, origin, consentPath, ask, proxy = true }) {
   const hosts = envHosts(env);
   if (hosts.error) throw new Error(hosts.error);
   const sent = sentByCloudyCloud(env);
@@ -109,7 +111,7 @@ export async function planEnv({ vars, env = process.env, origin, consentPath, as
   for (const name of vars.keys()) {
     if (!NAME_RE.test(name)) { skipped.push({ name, reason: 'not a valid variable name' }); continue; }
     if (sent.has(name)) { skipped.push({ name, reason: 'sent by cloudy-cloud already' }); continue; }
-    const host = hosts.map.get(name) ?? SECRET_HOSTS[name];
+    const host = proxy ? hosts.map.get(name) ?? SECRET_HOSTS[name] : undefined;
     if (host) { proxied.push({ name, host }); continue; }
     if (consentNames.has(name)) { literal.push(name); continue; }
     if (!ask) { skipped.push({ name, reason: 'needs consent; no terminal to ask' }); continue; }

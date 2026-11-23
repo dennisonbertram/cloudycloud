@@ -8,8 +8,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
+import { WATCHDOG_SCRIPT } from './watchdog.mjs';
+import { parseEnvFile, planEnv, consentFile } from './env-bridge.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { loadProvider } from './providers/index.mjs';
+import { loadProvider, writeSecretFile } from './providers/index.mjs';
 import { makeUi, cellWidth, fitCells } from './ui.mjs';
 import { coordinatorHelp, coordinatorUsage } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
@@ -35,7 +37,7 @@ const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw Object.assign(new Error(msg), { local: true }); };
 // Coordinators run unrestricted machines: a configured worker egress policy refuses them outright (same text as runSubagent's role refusal).
-const refuseEgress = (env, cmd) => { const e = egressAllow(env); if (e.error) guided(e.error, { short: e.short, details: e.details, next: e.next }); if (e.list.length) guided(`CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker".`, { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: `start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker"` }); };
+const refuseEgress = (env, cmd) => { const e = egressAllow(env); if (e.error) guided(e.error, { short: e.short, details: e.details, next: e.next }); const again = cmd === 'cloud' ? 'cloudy-cloud cloud' : `cloudy-cloud coordinator ${cmd}`; if (e.list.length) guided(`CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off ${again} — or call cloud_agent with role "worker".`, { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: `start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off ${again} — or call cloud_agent with role "worker"` }); };
 // A "not found" or refusal is a normal answer, not a failure. The message stays one paragraph for scripts
 // (plain stderr, --json); a terminal renders the fields: ✖ short, dim details and reason, → Next.
 // `local` marks an error our own code created (this file, a provider, config): only such an error may carry
@@ -142,7 +144,7 @@ async function context(deps) {
   const spawn = deps.spawn ?? spawnSync;
   const now = deps.now ?? Date.now;
   const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask };
+  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, cwd: deps.cwd };
 }
 
 // The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
@@ -382,6 +384,47 @@ async function image(c, args) {
 }
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+// A repeatable option: every value after an occurrence, in order (`--env` may appear several times).
+const flags = (args, name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
+// Every env file to bridge: --env FILE arguments plus the comma list in ~/.config/cloudy-cloud/env.
+const envFileArgs = (args, env) => [...flags(args, '--env'), ...String(env.CLOUDY_CLOUD_ENV_FILES ?? '').split(/[\s,]+/).filter(Boolean)];
+
+// The env-bridge half of start (env-bridge.mjs): parse each --env file, let planEnv sort names into proxied,
+// consented-literal and skipped, store each proxied variable as an org secret bound to its host (the value goes
+// on stdin, only the name is ever kept or printed) and build the sourced file text for the literal ones.
+async function bridgeEnv(c, files, origin) {
+  const vars = new Map();
+  vars.skipped = [];
+  for (const f of files) {
+    let text;
+    try { text = readFileSync(f, 'utf8'); }
+    catch { usageError(`Cannot read the --env file ${f}.`, 'start', `Cannot read the --env file ${f}.`); }
+    const parsed = parseEnvFile(text);
+    for (const [k, v] of parsed) vars.set(k, v);
+    vars.skipped.push(...parsed.skipped.map((s) => ({ ...s, file: f })));
+  }
+  const plan = await planEnv({
+    vars, env: c.env, origin, consentPath: consentFile(c.env),
+    // No proxy secrets on this provider: a host-bound variable then needs consent like any other.
+    proxy: !!(c.provider.caps.hasProxySecrets && typeof c.provider.storeSecret === 'function'),
+    ask: c.tty ? (name) => c.ask(`Copy the real value of ${name} to the cloud machine? [y/N/a] `) : null,
+  });
+  const secrets = [], skipped = [...plan.skipped];
+  for (const p of plan.proxied) {
+    try { await c.provider.storeSecret(p.name, vars.get(p.name), p.host); secrets.push(p.name); }
+    catch { skipped.push({ name: p.name, reason: 'could not be stored as a proxy secret' }); }
+  }
+  const lines = [], literal = [];
+  for (const name of plan.literal) {
+    const v = String(vars.get(name));
+    if (/[\r\n\0]/.test(v)) { skipped.push({ name, reason: 'the value contains a line break' }); continue; }
+    lines.push(`${name}='${v.replaceAll("'", "'\\''")}'`);
+    literal.push(name);
+  }
+  const shown = (s) => s.name ?? `line ${s.line}`;
+  const summary = [secrets.length && `proxied: ${secrets.join(', ')}`, literal.length && `copied literally: ${literal.join(', ')}`, ...skipped.map((s) => `skipped ${shown(s)}: ${s.reason}`)].filter(Boolean);
+  return { secrets, literal, skipped, summary, text: lines.length ? `${lines.join('\n')}\n` : '' };
+}
 
 const customHost = (env, key) => { try { const p = Object.values(loadProfiles(env)).find((x) => x?.keyName === key); return URL.canParse(p?.baseUrl) ? new URL(p.baseUrl).host : undefined; } catch { return undefined; } };
 
@@ -428,8 +471,13 @@ async function start(c, args) {
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
   const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
+  // --env FILE variables (and the CLOUDY_CLOUD_ENV_FILES list): proxy secrets are stored before create so their
+  // names can attach to the machine; the summary names names only, never values.
+  const envFiles = envFileArgs(args, c.env);
+  const bridged = envFiles.length ? await bridgeEnv(c, envFiles, repo) : { secrets: [], literal: [], skipped: [], summary: [], text: '' };
+  for (const line of bridged.summary) c.note(`Environment: ${line}`);
   c.progress('Creating the coordinator machine...');
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root);
@@ -437,6 +485,13 @@ async function start(c, args) {
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
+    // Consented literal values go in env.local: an empty mode-600 file first (the upload could briefly be 644),
+    // the secret file route for the body, a chmod after. tmux sources it into Claude's environment below.
+    if (bridged.text) {
+      await sbx.commands.run(`umask 077 && : > ${q(`${dir}/env.local`)}`);
+      await writeSecretFile(sbx, `${dir}/env.local`, bridged.text);
+      await sbx.commands.run(`chmod 600 ${q(`${dir}/env.local`)}`);
+    }
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
     c.progress('Starting the Claude session...');
@@ -451,7 +506,11 @@ async function start(c, args) {
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
     // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
     // a setup-token cannot start Remote Control and an env token beats the saved full login (code.claude.com/docs/en/remote-control).
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // env.local holds the consented literal --env variables; sourcing it here exports them to Claude's environment.
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // The deadline watchdog runs in its own tmux session so a Claude restart never stops it.
+    await sbx.files.write(`${home}/watchdog.sh`, WATCHDOG_SCRIPT);
+    await sbx.commands.run(`tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog ${q(`env CLOUDY_CLOUD_DELETE_AT=${deleteAt} sh ${home}/watchdog.sh`)}`);
     // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
     await c.sleep(5000);
     let pane = '';
@@ -690,9 +749,25 @@ async function finish(c, args, deps) {
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
-const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model', '--env'];
+const CLOUD_OPTIONS = ['--name', '--branch', '--max-hours', '--model', '--env'];
+const CLOUD_FLAGS = ['--no-attach', '--json'];
 function validateArgs(cmd, args) {
   const bad = (message, short = message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, short);
+  if (cmd === 'cloud') {
+    const seen = new Set();
+    const badCloud = (message) => guided(`${message}\nUsage: cloudy-cloud cloud [--name N] [--branch B] [--max-hours H] [--model M] [--env FILE]... [--no-attach] [--json]`, { short: message, next: 'cloudy-cloud cloud --help', wrapShort: true });
+    for (let i = 0; i < args.length; i++) {
+      const option = args[i];
+      if (CLOUD_FLAGS.includes(option)) { if (seen.has(option)) badCloud(`Repeated option: ${option}`); seen.add(option); continue; }
+      if (!CLOUD_OPTIONS.includes(option)) badCloud(`Unknown argument: ${option}`);
+      if (seen.has(option)) badCloud(`Repeated option: ${option}`);
+      if (args[i + 1] === undefined || args[i + 1].startsWith('--')) badCloud(`Missing value for ${option}.`);
+      seen.add(option);
+      i++;
+    }
+    return;
+  }
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
   if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
@@ -705,30 +780,79 @@ function validateArgs(cmd, args) {
     const option = args[i];
     if (option === '--json') { if (seen.has(option)) bad('Repeated option: --json'); seen.add(option); continue; }
     if (!START_OPTIONS.includes(option)) bad(`Unknown argument: ${option}`);
-    if (seen.has(option)) bad(`Repeated option: ${option}`);
+    if (seen.has(option)) bad(`Repeated option: ${option}`); // --env is repeatable: it is not kept in `seen`
+    if (option === '--env') { if (args[i + 1] === undefined || args[i + 1].startsWith('--')) bad(`Missing value for ${option}.`); i++; continue; }
     if (args[i + 1] === undefined || (option !== '--task' && args[i + 1].startsWith('--'))) bad(`Missing value for ${option}.`);
     seen.add(option);
     i++;
   }
 }
 
+// `cloudy-cloud cloud`: inside a clone whose origin is on github.com, one step to a coordinator for this
+// branch — local work that is not on GitHub is flagged first (the cloud copy is cloned from GitHub, so it
+// would not have it), an already-running coordinator of the same name is reattached to instead of restarted.
+async function cloud(c, args) {
+  refuseEgress(c.env, 'cloud');
+  const dir = c.cwd ?? process.cwd();
+  const git = (...a) => { const r = c.spawn('git', ['-C', dir, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); return !r?.error && r.status === 0 ? (r.stdout ?? '').trim() : null; };
+  if (git('rev-parse', '--is-inside-work-tree') !== 'true') guided('cloudy-cloud cloud runs inside a git repository whose origin is on github.com. Run it inside a clone, or start a coordinator the general way: cloudy-cloud coordinator start NAME --repo URL', { short: 'Not inside a git repository.', next: 'cd into a clone, then run cloudy-cloud cloud again' });
+  const remote = git('remote', 'get-url', 'origin') ?? '';
+  // The URL itself is never echoed back: an https remote can carry a credential. Only owner/repo is extracted.
+  const m = remote.match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
+  const repo = m && REPO_RE.test(`https://github.com/${m[1]}`) ? `https://github.com/${m[1]}` : '';
+  if (!repo) guided('cloudy-cloud cloud needs an origin that is a github.com repository (https or ssh). Start a coordinator the general way: cloudy-cloud coordinator start NAME --repo URL', { short: 'The origin is not a github.com URL.', next: 'cloudy-cloud coordinator start NAME --repo URL' });
+  const branch = flag(args, '--branch') ?? git('branch', '--show-current');
+  if (!branch) guided('There is no current branch (HEAD is detached). Check out a branch or pass --branch.', { short: 'No current branch (detached HEAD).', next: 'check out a branch, or pass --branch' });
+  if (!/^[\w./-]+$/.test(branch)) guided('--branch has characters that are not allowed.', { short: '--branch has characters that are not allowed.', next: 'cloudy-cloud cloud --help' });
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+  const name = flag(args, '--name') ?? slug(`${repo.split('/').pop()}-${branch}`).slice(0, 40).replace(/-+$/g, '');
+  if (!NAME_RE.test(name)) guided(`The coordinator name "${safeText(name)}" is not valid. Pass one with --name: lowercase letters, digits and hyphens (1 to 40 characters).`, { short: 'The coordinator name must use lowercase letters, digits and hyphens (1 to 40 characters).', next: 'cloudy-cloud cloud --help' });
+  // What the GitHub clone would not have: commits the branch has not pushed, and edits to tracked files.
+  const dirty = git('status', '--porcelain', '--untracked-files=no') ?? '';
+  let ahead;
+  if (git('rev-parse', '--verify', '--quiet', `${branch}@{u}`) !== null) ahead = Number(git('rev-list', '--count', `${branch}@{u}..HEAD`));
+  else if (git('rev-parse', '--verify', '--quiet', `origin/${branch}`) !== null) ahead = Number(git('rev-list', '--count', `origin/${branch}..HEAD`));
+  else ahead = -1; // the branch is not on origin at all
+  const problems = [ahead === -1 && `the branch ${branch} is not on origin at all`, ahead > 0 && `${ahead} commit(s) on ${branch} are not pushed to origin`, dirty && 'uncommitted changes to tracked files'].filter(Boolean);
+  if (problems.length) {
+    const push = `git push${ahead === -1 ? ` -u origin ${branch}` : ''}`;
+    const why = `The cloud clone comes from GitHub, so it will not have:\n- ${problems.join('\n- ')}`;
+    if (!c.tty) guided(`${why}\nPush first (${push}), then run cloudy-cloud cloud again.`, { short: 'Local work is not on GitHub.', details: problems.map((p) => `- ${p}`), next: `${push}, then run cloudy-cloud cloud again` });
+    c.out(why);
+    const answer = (await c.ask('Start anyway? [y/N] '))?.trim() ?? 'n';
+    if (!/^y/i.test(answer)) return c.out('Not started.');
+  }
+  if ((await find(c.provider, 'coordinator', name)).length) {
+    c.out(`Reattaching to ${name}`);
+    return attach(c, [name]);
+  }
+  // Same start path as `coordinator start`; the flags that exist on both are passed straight through.
+  const startArgs = [name, '--repo', repo, '--branch', branch,
+    ...['--max-hours', '--model'].flatMap((f) => (flag(args, f) !== undefined ? [f, flag(args, f)] : [])),
+    ...flags(args, '--env').flatMap((f) => ['--env', f]),
+    ...(args.includes('--json') ? ['--json'] : [])];
+  await start(c, startArgs);
+  if (args.includes('--no-attach') || args.includes('--json') || !c.tty) return undefined;
+  return attach(c, [name]);
+}
+
 async function run(argv, deps) {
   const [cmd, ...args] = argv;
-  const commands = { image, start, attach, ls, status, stop, finish: (c, a) => finish(c, a, deps) };
+  const commands = { image, start, attach, ls, status, stop, finish: (c, a) => finish(c, a, deps), cloud };
   const isHelp = (a) => a === '--help' || a === '-h';
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
+  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
   validateArgs(cmd, args);
   const c = await context(deps);
   // A provider that cannot run coordinators at all says so in its own words first (it may name a working alternative);
   // only then does the generic snapshots check apply. The first sentence is the problem; it wraps, never truncates.
-  if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) {
+  if (['image', 'start', 'cloud'].includes(cmd) && c.provider.text?.coordinatorRefusal) {
     const s = c.provider.text.coordinatorRefusal.split(/(?<=\.) +/); // a second sentence is the action
     guided(c.provider.text.coordinatorRefusal, { short: s[0], details: s.slice(1, -1), next: s.length > 1 ? s.at(-1) : 'cloudy-cloud coordinator --help', wrapShort: true });
   }
-  if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
+  if (['image', 'start', 'cloud'].includes(cmd) && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
   try { return await commands[cmd](c, args); } catch (e) {
     // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
     // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
@@ -742,7 +866,7 @@ async function run(argv, deps) {
 // secret values; --json also prints it as one error object.
 export async function main(argv, deps = {}) {
   try { return await run(argv, deps); } catch (e) {
-    if (argv[0] !== 'start') throw e;
+    if (argv[0] !== 'start' && argv[0] !== 'cloud') throw e;
     const env = deps.env ?? loadEnv();
     const secrets = Object.entries(env).filter(([k, v]) => /KEY|TOKEN|SECRET/i.test(k) && String(v ?? '').length >= 8).map(([, v]) => String(v));
     const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));

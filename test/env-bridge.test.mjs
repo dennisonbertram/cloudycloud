@@ -65,10 +65,31 @@ test('built-in keys cloudy-cloud sends itself are skipped, never asked and never
 test('a variable with a configured host is proxied; everything else needs consent', async () => {
   const consentPath = consentAt();
   const vars = parseEnvFile(`STRIPE_KEY=s\nOTHER=o\nWILDCARD=w\n`);
-  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'STRIPE_KEY=API.STRIPE.COM, WILDCARD=*.svc.example.com' }), origin: ORIGIN, consentPath, ask: null });
-  assert.deepEqual(plan.proxied, [{ name: 'STRIPE_KEY', host: 'api.stripe.com' }, { name: 'WILDCARD', host: '*.svc.example.com' }], 'hosts are lowercased');
+  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'STRIPE_KEY=API.STRIPE.COM, WILDCARD=svc.example.com' }), origin: ORIGIN, consentPath, ask: null });
+  assert.deepEqual(plan.proxied, [{ name: 'STRIPE_KEY', host: 'api.stripe.com' }, { name: 'WILDCARD', host: 'svc.example.com' }], 'hosts are lowercased');
   assert.deepEqual(plan.literal, []);
   assert.deepEqual(plan.skipped, [{ name: 'OTHER', reason: 'needs consent; no terminal to ask' }]);
+});
+
+test('a wildcard host is rejected: instabox secrets set --host is not confirmed to take one', async () => {
+  for (const bad of ['WILDCARD=*.svc.example.com', 'WILDCARD=*', 'WILDCARD=x*y.example.com']) {
+    const r = envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: bad }));
+    assert.ok(r.error, bad);
+    assert.match(r.error, /entry 1 \(WILDCARD\) is not an exact host name/);
+  }
+  const vars = parseEnvFile('WILDCARD=w\n');
+  await assert.rejects(planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'WILDCARD=*.svc.example.com' }), origin: ORIGIN, consentPath: consentAt(), ask: null }), /not an exact host name/);
+});
+
+test('proxy:false treats host-bound variables as literal, needing consent like any other', async () => {
+  const consentPath = consentAt();
+  const vars = parseEnvFile(`STRIPE_KEY=s\nMYSTERY=m\n`);
+  const asks = [];
+  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'STRIPE_KEY=api.stripe.com' }), origin: ORIGIN, consentPath, proxy: false, ask: async (n) => { asks.push(n); return 'y'; } });
+  assert.deepEqual(plan.proxied, []);
+  assert.deepEqual(plan.literal.sort(), ['MYSTERY', 'STRIPE_KEY']);
+  assert.deepEqual(asks.sort(), ['MYSTERY', 'STRIPE_KEY']);
+  assert.deepEqual(plan.skipped, []);
 });
 
 test('non-interactive never sends an unconsented literal and never calls ask', async () => {
@@ -164,13 +185,13 @@ test('parse-level skips merge into the plan report; an invalid name in a plain m
 
 test('envHosts parses NAME=host pairs, reuses egress host rules and reports position not content', () => {
   assert.deepEqual([...envHosts(env()).map.entries()], []);
-  assert.deepEqual(envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: 'A=api.example.com, B=*.svc.example.org C=h.example.net' })).map, new Map([['A', 'api.example.com'], ['B', '*.svc.example.org'], ['C', 'h.example.net']]));
+  assert.deepEqual(envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: 'A=api.example.com, B=svc.example.org C=h.example.net' })).map, new Map([['A', 'api.example.com'], ['B', 'svc.example.org'], ['C', 'h.example.net']]));
   for (const [bad, msg] of [
-    [`A=https://u:${SENTINEL}@h.example.com/p`, /entry 1 \(A\) is not a host name/],
+    [`A=https://u:${SENTINEL}@h.example.com/p`, /entry 1 \(A\) is not an exact host name/],
     ['1X=h.example.com', /entry 1 is not NAME=host/],
     ['A', /entry 1 is not NAME=host/],
     [' , , ', /lists no NAME=host pairs/],
-    [`A=ok.example.com,B=${SENTINEL}`, /entry 2 \(B\) is not a host name/],
+    [`A=ok.example.com,B=${SENTINEL}`, /entry 2 \(B\) is not an exact host name/],
   ]) {
     const r = envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: bad }));
     assert.ok(r.error, bad);

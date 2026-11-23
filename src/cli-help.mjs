@@ -37,6 +37,15 @@ export function render({ desc, usages, rows = [], note }) {
 const ID = '<agent-id-or-machine>';
 const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
 const cmds = {
+  cloud: { desc: 'Start a cloud coordinator for this repository and attach to its Claude session, in one command. Run inside a git clone whose origin is on github.com.', usages: [['cloud', '[--name N]', '[--branch B]', '[--max-hours H]', '[--model M]', '[--env FILE]...', '[--no-attach]', '[--json]']], rows: [
+    ['--name N', 'Coordinator name (default: <repo>-<branch> as a slug)'],
+    ['--branch B', 'Branch to clone (default: the current branch)'],
+    ['--max-hours H', 'Delete the machine after H hours (up to 24, the default)'],
+    ['--model M', 'Claude Code model for the session'],
+    ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
+    ['--no-attach', 'Start the coordinator without attaching'],
+    ['--json', 'Print the start result as JSON'],
+  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. An already-running coordinator of the same name is reattached to instead of restarted. Run coordinator image once first.' },
   setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
@@ -96,7 +105,7 @@ const guides = {
     ['image', 'Create a machine, sign in to Claude in your browser, save it and delete the machine'],
     ['image --save', 'Save a machine you signed in on by hand (when image ran without a terminal)'],
   ], 'Run image on a terminal: you only do the browser sign-in. The machine is deleted 2 hours after it is created.'],
-  start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json]', [
+  start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json]', [
     ['NAME', 'Lowercase letters, digits and hyphens, up to 40'],
     ['--repo URL', 'Required GitHub https URL'],
     ['--branch BRANCH', 'Branch to clone (default: the repo default)'],
@@ -104,6 +113,7 @@ const guides = {
     ['--task-file PATH', 'Same, read from a file'],
     ['--max-hours N', 'Delete the machine after N hours (up to 24, the default)'],
     ['--model NAME', 'Claude Code model for the session (for example opus or claude-opus-5-5)'],
+    ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
     ['--json', 'Print the result as JSON (includes started: true)'],
   ], 'Run coordinator image once first. Stop the coordinator when you are done.'],
   attach: ['Open a coordinator\'s Claude session.', 'attach NAME', [], 'On a terminal it opens the session. When piped, it prints cloudy-cloud coordinator attach NAME instead; run that in your own terminal.'],

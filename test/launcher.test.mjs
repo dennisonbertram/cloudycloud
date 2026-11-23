@@ -336,14 +336,16 @@ test('--strict-mcp-config is passed only on a coordinator, so a repo .mcp.json c
   assert.match(r.argv, /^--strict-mcp-config$/m);
 });
 
-test('a coordinator runs Claude with permission checks off and keeps the deny list; a laptop session does not (#88)', () => {
+test('a coordinator runs Claude with permission checks off, keeps the Workflow deny and gains Agent; a laptop session does not (#88)', () => {
   const d = repo('https://github.com/test/repo.git');
   const laptop = run({ config: full, cwd: d });
   assert.doesNotMatch(laptop.argv, /--dangerously-skip-permissions|--permission-mode/);
+  assert.match(laptop.argv, /"deny":\["Agent","Workflow"\]/);
   const r = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: '1' } });
   assert.match(r.argv, /^--dangerously-skip-permissions$/m);
-  assert.match(r.argv, /"deny":\["Agent","Workflow"\]/);
+  assert.match(r.argv, /"deny":\["Workflow"\]/);
   assert.match(r.argv, /permission checks are off/);
+  assert.match(r.argv, /built-in Agent tool is enabled/);
 });
 
 test('shell subcommand runs src/shell.mjs and help lists it', () => {
