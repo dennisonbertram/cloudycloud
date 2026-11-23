@@ -78,7 +78,8 @@ const normalise = (v) => JSON.parse(JSON.stringify(v)
   .replace(/deleted at \d\d:\d\d/g, 'deleted at <HH:MM>')
   .replace(/coordinator-\d{14}/g, 'coordinator-<STAMP>')
   .replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, (s) => (s === started.toISOString() ? s : '<TIME>'))
-  .replace(/"Idempotency-Key":"[0-9a-f-]{36}"/g, '"Idempotency-Key":"<UUID>"'));
+  .replace(/"Idempotency-Key":"[0-9a-f-]{36}"/g, '"Idempotency-Key":"<UUID>"')
+  .replace(/"install":"[0-9a-f]{16}"/g, '"install":"<INSTALL>"'));
 
 test('coordinator calls are unchanged', async () => {
   const record = {};

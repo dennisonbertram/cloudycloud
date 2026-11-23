@@ -6,7 +6,8 @@
 # so the reminder reaches the session as context — never by typing into tmux.
 # Coordinator machines only (CLOUDY_CLOUD_COORDINATOR exactly "1"), cheap, and always exit 0.
 #
-# stdin: the hook event JSON Claude Code sends (we echo its hook_event_name back in the output).
+# argv: the event name (the launcher's hook command passes it: "deadline-hook.sh PostToolUse"),
+# so the hook never parses stdin. Claude Code still sends the event JSON there; it is ignored.
 
 [ "${CLOUDY_CLOUD_COORDINATOR:-}" = "1" ] || exit 0
 delete_at=${CLOUDY_CLOUD_DELETE_AT:-}
@@ -34,8 +35,8 @@ left=$(( deadline - now ))
 mins=$(( left / 60 ))
 
 # The event name is echoed back: hookSpecificOutput requires it to match the event that fired.
-input=$(cat 2>/dev/null)
-event=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+# It is an argument ($1), never parsed from stdin: stdin is untrusted remote text on a coordinator.
+event=${1:-}
 case $event in
   UserPromptSubmit|PostToolUse|PreToolUse|Notification|Stop|SubagentStop|SessionStart|SessionEnd|PreCompact) ;;
   *) event=UserPromptSubmit ;;

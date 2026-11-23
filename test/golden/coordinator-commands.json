@@ -173,6 +173,7 @@
             "role": "coordinator",
             "name": "boss",
             "repo": "o/r",
+            "install": "<INSTALL>",
             "branch": "main"
           }
         }
@@ -365,7 +366,8 @@
             "purpose": "cloudy-cloud",
             "role": "coordinator",
             "name": "boss",
-            "repo": "o/r"
+            "repo": "o/r",
+            "install": "<INSTALL>"
           }
         }
       },

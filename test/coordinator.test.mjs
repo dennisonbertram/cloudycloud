@@ -8,6 +8,7 @@ import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { main, toolRepoUrl, FIRST_RUN_SCRIPT, errorScreen } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
+import { installId } from '../src/config.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
@@ -184,8 +185,8 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const { template, opts } = f.log.create[0];
   assert.equal(template, 'sn_1');
   assert.equal(opts.autoSuspendMs, 0);
-  // The repo and branch labels are what `cloud` verifies on reattach.
-  assert.deepEqual(opts.metadata, { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', branch: 'main' });
+  // The repo, branch and install labels are what `cloud` verifies on reattach.
+  assert.deepEqual(opts.metadata, { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(f.deps.env), branch: 'main' });
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN')));
   const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
   assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY$/m);
@@ -424,8 +425,9 @@ test('start asks the provider for a never-suspending machine from the snapshot w
       commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
   };
   const out = [];
-  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, root: resolve('.'), out: (x) => out.push(x) });
-  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r' }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), out: (x) => out.push(x) });
+  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   assert.match(out.join('\n'), /Terminal: cloudy-cloud coordinator attach boss/);
   assert.doesNotMatch(out.join('\n'), /fake ssh|runs:|tmux/);
 });
@@ -977,6 +979,26 @@ test('ls and status remove an exact configured key value from the pane text (#88
   await main(['status', 'a', '--json'], f.deps);
   assert.doesNotMatch(f.log.out.join('\n'), /opaque-secret-9876543210/);
   assert.match(f.log.out.join('\n'), /\[redacted\]/);
+});
+
+test('status and ls never read env.local, print only known prompt lines, and key-shaped text in one is redacted', async () => {
+  // A pane holding arbitrary text — including a literal --env value status cannot know — is not a prompt:
+  // nothing of it is printed. Only the recognised waiting/blocked lines ever reach the screen or --json.
+  const arbitrary = fixture({ pane: `work continues\nMY_LIT=envl1t_S3NTINEL-must-not-leak\nmore output`, machines: [machine] });
+  await main(['ls'], arbitrary.deps);
+  assert.ok(arbitrary.log.out[1].endsWith('\t-'), arbitrary.log.out[1]);
+  await main(['status', 'a', '--json'], arbitrary.deps);
+  const j = JSON.parse(arbitrary.log.out.at(-1));
+  assert.equal(j.waiting, undefined);
+  assert.equal(j.screenRead, true);
+  // A recognised prompt line carrying a key-shaped value is printed with the value removed.
+  const shaped = fixture({ pane: `│ Do you want to read ${IBK}?\n❯ 1. Yes`, machines: [machine] });
+  await main(['status', 'a', '--json'], shaped.deps);
+  const text = shaped.log.out.join('\n');
+  assert.doesNotMatch(text, /ibk_REALKEY_0123456789/);
+  assert.match(text, /\[redacted\]/);
+  // No command the screen read issues ever touches the env.local file.
+  for (const c of [...arbitrary.log.cmds, ...shaped.log.cmds]) assert.doesNotMatch(c, /env\.local/);
 });
 
 test('ls reads at most four panes at a time, one per coordinator (#88)', async () => {
@@ -2391,13 +2413,14 @@ test('cloud inside a clean github clone starts the coordinator and prints the no
   assert.ok(!spawned.some((a) => a.includes('attach')), 'no TTY: no attach exec');
 });
 
-test('cloud derives the coordinator name from <owner>-<repo>-<branch>; an overlong slug gets a hash tail', async () => {
+test('cloud derives the coordinator name from <owner>-<repo>-<branch>-<hash>; the hash always rides along', async () => {
   const f = fixture();
   const repo = ghRepo();
   gitIn(repo, 'checkout', '-q', '-b', 'Feat/My_Thing');
   gitIn(repo, 'update-ref', 'refs/remotes/origin/Feat/My_Thing', 'HEAD'); // as if pushed (origin URL is fake)
   await main(['cloud'], { ...f.deps, cwd: repo });
-  assert.equal(f.log.create[0].opts.metadata.name, 'owner-cloudrepo-feat-my-thing');
+  const tail2 = createHash('sha1').update('owner/cloudrepo@Feat/My_Thing').digest('hex').slice(0, 7);
+  assert.equal(f.log.create[0].opts.metadata.name, `owner-cloudrepo-feat-my-thing-${tail2}`);
 
   // A slug over 40 characters is truncated with a sha1 tail of owner/repo@branch, so two different
   // repos whose slugs share the first 32 characters still cannot collide on the name.
@@ -2464,9 +2487,12 @@ test('cloud warns about uncommitted tracked edits but not untracked files', asyn
   await assert.rejects(main(['cloud'], { ...dirty.deps, cwd: repo }), /uncommitted changes to tracked files/);
 });
 
-test('cloud reattaches to a running coordinator whose repo and branch labels match, instead of starting', async () => {
-  const labels = { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main' };
-  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: labels }] });
+// A running coordinator of this installation on this repo and branch.
+const own = (f, name = 'boss', extra = {}) => ({ sandboxId: 'm1', name: `coord-${name}`, state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: 'owner/cloudrepo', branch: 'main', install: installId(f.deps.env), ...extra } });
+
+test('cloud reattaches to a running coordinator whose repo, branch and install labels match, instead of starting', async () => {
+  const f = fixture({ machines: [] });
+  f.machines.push(own(f));
   const spawned = [];
   await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn(spawned) });
   assert.equal(f.log.create.length, 0);
@@ -2474,20 +2500,23 @@ test('cloud reattaches to a running coordinator whose repo and branch labels mat
   assert.match(f.log.out.join('\n'), /coordinator attach boss/); // non-TTY attach prints the command
 
   // --json on reattach stays machine-readable; --no-attach on a TTY prints the command instead of exec'ing.
-  const j = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: labels }] });
+  const j = fixture();
+  j.machines.push(own(j));
   await main(['cloud', '--name', 'boss', '--json'], { ...j.deps, cwd: ghRepo(), spawn: localSpawn([]) });
   const row = JSON.parse(j.log.out.join('\n'));
   assert.equal(row.reattached, true);
   assert.equal(row.name, 'boss');
   assert.equal(row.machine, 'coord-boss');
-  const n = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: labels }] });
+  const n = fixture();
+  n.machines.push(own(n));
   const spawned2 = [];
   await main(['cloud', '--name', 'boss', '--no-attach'], { ...n.deps, cwd: ghRepo(), tty: true, spawn: localSpawn(spawned2) });
   assert.ok(!spawned2.some((a) => a.includes('attach')), '--no-attach on reattach does not exec attach');
   assert.match(n.log.out.join('\n'), /coordinator attach boss/);
 
   // --env on a reattach applies nowhere: the coordinator is already running, so it says so by name.
-  const e = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: labels }] });
+  const e = fixture();
+  e.machines.push(own(e));
   const notes = [];
   const envFile = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
   writeFileSync(envFile, 'K=v\n');
@@ -2498,17 +2527,67 @@ test('cloud reattaches to a running coordinator whose repo and branch labels mat
 
 test('cloud refuses to reattach when the same name is another repo, another branch or not running', async () => {
   for (const [meta, pattern, state] of [
-    [{ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'other/repo', branch: 'main' }, /belongs to other\/repo, not owner\/cloudrepo/],
-    [{ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'dev' }, /on branch dev, not main/],
-    [{ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, /belongs to a different repository/], // a machine from before labels existed cannot be verified
-    [{ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main' }, /it is stopped/, 'stopped'],
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'other/repo', branch: 'main', install: id }), /belongs to other\/repo, not owner\/cloudrepo/],
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'dev', install: id }), /on branch dev, not main/],
+    [() => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: 'otherinstall1234' }), /belongs to a different cloudy-cloud installation/], // a teammate's coordinator of the same name, repo and branch
+    [() => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }), /no installation label/], // a machine from before install labels existed cannot be verified by cloud
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: id }), /it is stopped/, 'stopped'],
   ]) {
-    const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: state ?? 'running', metadata: meta }] });
+    const f = fixture();
+    f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: state ?? 'running', metadata: meta(installId(f.deps.env)) });
     const e = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn([]) }).then(() => { throw new Error('started anyway'); }, (x) => x);
-    assert.match(e.message, pattern, JSON.stringify(meta));
-    assert.match(e.message, /--name|coordinator stop boss/);
+    assert.match(e.message, pattern, JSON.stringify(meta('x')));
+    assert.match(e.message, /--name|coordinator stop boss|coordinator attach boss/);
     assert.equal(f.log.create.length, 0);
   }
+});
+
+test('cloud reattach attaches the machine it validated, not a same-named one created beside it', async () => {
+  // Two coordinators named boss: a teammate's (foreign install) listed first, this installation's second.
+  // A reattach that looked the name up again would hit the foreign row; the validated machine is carried through.
+  const f = fixture();
+  f.machines.push(
+    { sandboxId: 'm_foreign', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: 'otherinstall1234' } },
+    own(f),
+  );
+  const spawned = [];
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn(spawned) });
+  assert.equal(f.log.create.length, 0);
+  assert.match(f.log.out.join('\n'), /Reattaching to boss/);
+  assert.match(f.log.out.join('\n'), /cloudy-cloud coordinator attach boss/);
+});
+
+test('coordinator attach refuses a same-named coordinator of a different installation; a legacy one still attaches by name', async () => {
+  const foreign = { sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: 'otherinstall1234' } };
+  const f = fixture({ machines: [foreign] });
+  await assert.rejects(main(['attach', 'boss'], f.deps), /belongs to a different cloudy-cloud installation/);
+  // Machines without an install label predate labelling: explicit `attach NAME` remains the way to reach one.
+  const g = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
+  await main(['attach', 'boss'], g.deps);
+  assert.equal(g.log.out[0], 'cloudy-cloud coordinator attach boss');
+  // And one of this installation's own attaches fine.
+  const h = fixture();
+  h.machines.push(own(h));
+  await main(['attach', 'boss'], h.deps);
+  assert.equal(h.log.out[0], 'cloudy-cloud coordinator attach boss');
+});
+
+test('cloud --branch B counts unpushed commits on local B, not on HEAD; a missing local B skips the check', async () => {
+  // main is checked out and clean; local dev has one commit origin does not. The old origin/dev..HEAD
+  // compare saw 0 and let the cloud clone start without the commit.
+  const repo = ghRepo();
+  gitIn(repo, 'checkout', '-q', '-b', 'dev');
+  gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'dev only');
+  gitIn(repo, 'update-ref', 'refs/remotes/origin/dev', 'HEAD~1');
+  gitIn(repo, 'checkout', '-q', 'main');
+  const f = fixture();
+  await assert.rejects(main(['cloud', '--branch', 'dev'], { ...f.deps, cwd: repo, spawn: localSpawn([]) }), /commit\(s\) on dev are not pushed to origin\/dev/);
+  assert.equal(f.log.create.length, 0);
+  // A branch that exists only on origin has nothing local to miss: the check is skipped and the clone gets it.
+  const g = fixture();
+  gitIn(repo, 'update-ref', 'refs/remotes/origin/ghost', 'HEAD');
+  await main(['cloud', '--branch', 'ghost'], { ...g.deps, cwd: repo, spawn: localSpawn([]) });
+  assert.equal(g.log.create.length, 1);
 });
 
 test('cloud --no-attach on a TTY starts without the attach exec', async () => {

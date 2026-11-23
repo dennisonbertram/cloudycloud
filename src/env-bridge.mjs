@@ -4,7 +4,7 @@
 // secret. Anything else needs the real value on the machine, which requires per-repo consent. Values never
 // appear in plans, errors or the consent file — only names are reported (the caller shows the actual prompt
 // and handles values).
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,27 +17,29 @@ const LINE = /^([^\s=]+)\s*=\s*(.*)$/;
 
 // Parses a dotenv-style file into a Map of NAME -> value. Supports `export KEY=value`, single and double
 // quotes (stripped, contents verbatim — no variable or escape expansion), # comments and blank lines.
-// Lines that are not assignments, have an invalid name, or end inside a quote are skipped; each is reported
-// in the returned map's `skipped` list as { line, name?, reason } — a name is reported only when it passed
-// the name check (for an unterminated quote), since the rest of a bad line could be a secret.
+// Lines that are not assignments or have an invalid name are skipped and reported as { line, reason } in the
+// returned map's `skipped` list — never with the line's text or a name from it, which could be credential
+// material. An unterminated quote is different: everything after it may be inside the string (a later
+// "NAME=value" line could be quoted text, not a variable), so parsing stops there; the entry reports the
+// line number only and nothing from that line onward is sent.
 export function parseEnvFile(text) {
   const vars = new Map();
   vars.skipped = [];
-  String(text).split(/\r?\n/).forEach((raw, i) => {
+  for (const [i, raw] of String(text).split(/\r?\n/).entries()) {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) return;
+    if (!line || line.startsWith('#')) continue;
     const m = LINE.exec(line.replace(/^export\s+/, ''));
-    if (!m) { vars.skipped.push({ line: i + 1, reason: 'not a NAME=value line' }); return; }
+    if (!m) { vars.skipped.push({ line: i + 1, reason: 'not a NAME=value line' }); continue; }
     const [, name, rest] = m;
-    if (!NAME_RE.test(name)) { vars.skipped.push({ line: i + 1, reason: 'not a valid variable name' }); return; }
+    if (!NAME_RE.test(name)) { vars.skipped.push({ line: i + 1, reason: 'not a valid variable name' }); continue; }
     const v = rest.trim(), q = v[0];
     if (q === '"' || q === "'") {
-      if (v.length < 2 || v[v.length - 1] !== q) { vars.skipped.push({ line: i + 1, name, reason: 'unterminated quote' }); return; }
+      if (v.length < 2 || v[v.length - 1] !== q) { vars.skipped.push({ line: i + 1, reason: 'unterminated quote; the rest of the file is ignored' }); break; }
       vars.set(name, v.slice(1, -1));
-      return;
+      continue;
     }
     vars.set(name, v.replace(/\s+#.*$/, '')); // an unquoted value ends at whitespace + #
-  });
+  }
   return vars;
 }
 
@@ -50,22 +52,37 @@ const OWN_KEYS = [DEFAULT_PROVIDER_KEY, COORDINATOR_KEY_SECRET, 'GH_TOKEN', 'CLA
 const sentByCloudyCloud = (env) => new Set([...OWN_KEYS, ...profileKeyNames(env).filter((k) => k !== 'OPENAI_API_KEY' || env[k] || proxySecrets(env).has(k))]);
 
 // Names a bridged variable may never take: the machine's shell and tooling read them, so a dotenv file could
-// change how Claude and its launcher run (PATH picks executables, NODE_OPTIONS reaches every node process,
-// GIT_* the watchdog's save, CLOUDY_CLOUD_* the launcher's own flags, PROMPT_COMMAND runs on each prompt).
+// change how Claude and its launcher run. PATH picks executables; XDG_* changes where git, npm and friends
+// load configuration (XDG_CONFIG_HOME can point git's global config — credential helpers included — at repo
+// content); INSTABOX_* repoints the SDK's API endpoint; npm_config_*/NPM_CONFIG_* and NODE_* reach every node
+// or npm process; PYTHON*/RUBY*/PERL5* and JAVA_TOOL_OPTIONS/_JAVA_OPTIONS preload code; the proxy variables
+// redirect HTTPS traffic (any case); CURL_*/SSL_CERT_*/REQUESTS_CA_BUNDLE weaken TLS checks; EDITOR/VISUAL/
+// PAGER/BROWSER and PROMPT_COMMAND run commands; TERM* changes terminal behaviour; TMPDIR relocates temp
+// files. LANG and the LC_* family stay allowed: they only localise output.
 // The built-in names above are checked first, so they keep their "sent by cloudy-cloud already" reason.
-const DENIED_EXACT = new Set(['PATH', 'HOME', 'USER', 'SHELL', 'IFS', 'ENV', 'BASH_ENV', 'CDPATH', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'NODE_PATH']);
-const DENIED_PREFIX = ['TMUX', 'LD_', 'DYLD_', 'NODE_', 'GIT_', 'SSH_', 'CLOUDY_CLOUD_', 'CLAUDE_', 'ANTHROPIC_'];
-const deniedName = (name) => DENIED_EXACT.has(name) || DENIED_PREFIX.some((p) => name.startsWith(p));
+const DENIED_EXACT = new Set(['PATH', 'HOME', 'USER', 'SHELL', 'IFS', 'ENV', 'BASH_ENV', 'CDPATH', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'NODE_PATH',
+  'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'REQUESTS_CA_BUNDLE', 'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'TMPDIR']);
+const DENIED_PREFIX = ['TMUX', 'LD_', 'DYLD_', 'NODE_', 'GIT_', 'SSH_', 'CLOUDY_CLOUD_', 'CLAUDE_', 'ANTHROPIC_',
+  'XDG_', 'INSTABOX_', 'npm_config_', 'NPM_CONFIG_', 'PYTHON', 'RUBY', 'PERL5', 'CURL_', 'SSL_CERT_', 'TERM'];
+// The proxy variables in any letter case: HTTP_PROXY, http_proxy, Https_Proxy, ...
+const DENIED_CASELESS = new Set(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']);
+const deniedName = (name) => DENIED_EXACT.has(name) || DENIED_CASELESS.has(name.toUpperCase()) || DENIED_PREFIX.some((p) => name.startsWith(p));
 
-// The consent file: { origins: { <origin url>: [NAME, ...] } } — names only, never values.
+// The consent file: { origins: { <origin url>: { NAME: <sha256 of the consented value> } } } — a name is
+// remembered together with a hash of the value it was consented for, never the value itself; a changed
+// value asks again. Files written before hashes existed keep the old shape ([NAME, ...]) — their entries
+// carry no hash, so they are asked about once more rather than trusted blindly.
 export const consentFile = (env = process.env) => env.CLOUDY_CLOUD_ENV_CONSENT || join(dirname(env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env')), 'env-consent.json');
 
-// Missing, unreadable or corrupt files all mean "nothing consented yet" — never a crash.
+// Missing, unreadable or corrupt files all mean "nothing consented yet" — never a crash. Each origin's
+// value is returned as { NAME: hash | null } — null marks a legacy (hash-less) entry: it needs consent again.
 export function readConsent(path) {
   try {
     const j = JSON.parse(readFileSync(path, 'utf8'));
     const origins = j && typeof j === 'object' && j.origins && typeof j.origins === 'object' ? j.origins : {};
-    return { origins: Object.fromEntries(Object.entries(origins).map(([o, n]) => [o, Array.isArray(n) ? n.filter((x) => typeof x === 'string') : []])) };
+    return { origins: Object.fromEntries(Object.entries(origins).map(([o, n]) => [o, Array.isArray(n)
+      ? Object.fromEntries(n.filter((x) => typeof x === 'string').map((x) => [x, null]))
+      : Object.fromEntries(Object.entries(n && typeof n === 'object' ? n : {}).filter(([, v]) => typeof v === 'string' || v === null))])) };
   } catch { return { origins: {} }; }
 }
 
@@ -83,14 +100,17 @@ export function writeConsent(path, data) {
 // reason). `vars` is a Map from parseEnvFile (its own `skipped` reports merge in). `ask(name)` returns
 // 'y' | 'n' | 'a' and is only called for a variable that cannot be proxied and has no stored consent; pass
 // null when there is no terminal — an unconsented variable is then skipped, never sent. 'a' is remembered
-// per repo (origin URL) in the mode-600 consent file. `proxy` is false on a provider without proxy secrets:
-// a proxy-secret name then needs consent like any other variable. The result names variables only: a value
-// is never in the report or in an error.
+// per repo (origin URL) in the mode-600 consent file: the file stores the name with a SHA-256 of the value
+// it was consented for — a same-named variable whose value changed is asked about again (and a legacy
+// hash-less entry once more), since a silent value change would smuggle a new secret past consent.
+// `proxy` is false on a provider without proxy secrets: a proxy-secret name then needs consent like any
+// other variable. The result names variables only: a value is never in the report or in an error.
 export async function planEnv({ vars, env = process.env, origin, consentPath, ask, proxy = true }) {
   const sent = sentByCloudyCloud(env);
   const proxiedNames = proxySecrets(env);
   const consent = consentPath && origin ? readConsent(consentPath) : { origins: {} };
-  const consentNames = new Set(consent.origins[origin] ?? []);
+  const consented = new Map(Object.entries(consent.origins[origin] ?? {})); // NAME -> sha256 hex | null
+  const hash = (v) => createHash('sha256').update(String(v)).digest('hex');
   const proxied = [], literal = [], skipped = [...(vars.skipped ?? [])];
   let dirty = false;
   for (const name of vars.keys()) {
@@ -98,17 +118,17 @@ export async function planEnv({ vars, env = process.env, origin, consentPath, as
     if (sent.has(name)) { skipped.push({ name, reason: 'sent by cloudy-cloud already' }); continue; }
     if (deniedName(name)) { skipped.push({ name, reason: 'a reserved variable name' }); continue; }
     if (proxy && proxiedNames.has(name)) { proxied.push({ name }); continue; }
-    if (consentNames.has(name)) { literal.push(name); continue; }
+    if (consented.has(name) && consented.get(name) === hash(vars.get(name))) { literal.push(name); continue; }
     if (!ask) { skipped.push({ name, reason: 'needs consent; no terminal to ask' }); continue; }
     const a = String(await ask(name)).trim().toLowerCase();
     if (a === 'a' || a === 'always') {
       literal.push(name);
-      if (origin && consentPath) { consentNames.add(name); dirty = true; }
+      if (origin && consentPath) { consented.set(name, hash(vars.get(name))); dirty = true; }
     } else if (a === 'y' || a === 'yes') literal.push(name);
     else skipped.push({ name, reason: 'declined' });
   }
   if (dirty) {
-    consent.origins[origin] = [...consentNames];
+    consent.origins[origin] = Object.fromEntries(consented);
     writeConsent(consentPath, consent);
   }
   return { proxied, literal, skipped };

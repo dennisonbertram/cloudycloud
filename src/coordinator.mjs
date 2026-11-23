@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, installId, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
 import { WATCHDOG_SCRIPT } from './watchdog.mjs';
 import { parseEnvFile, planEnv, consentFile } from './env-bridge.mjs';
@@ -184,7 +184,7 @@ const find = async (provider, role, name) =>
     .filter((m) => OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
-async function installTool(sbx, root) {
+async function installTool(sbx, root, note) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
@@ -192,8 +192,10 @@ async function installTool(sbx, root) {
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
   const ident = (k, d) => { try { return execFileSync('git', [...(ownsRepo(root) ? ['-C', root, 'config'] : ['config', '--global']), k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
-  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
+  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version,
+  // pushed or not. Credential-looking files never ride the bundle; their names are reported back.
   const b = toolBundle(root);
+  if (b.dropped?.length) note?.(`The tool bundle left out ${b.dropped.join(', ')}: file names like these can hold credentials and are never sent to a machine.`);
   await sbx.files.write(`${home}/cloudy-cloud.bundle`, b.data);
   await run(`${toolInstallCmd(b, `${home}/cloudy-cloud.bundle`, toolRepoUrl(root))} && npm install --no-audit --no-fund`, { cwd: home });
   return home;
@@ -419,7 +421,7 @@ async function bridgeEnv(c, files, origin) {
     if (/[\r\n\0]/.test(v)) { skipped.push({ name, reason: 'the value contains a line break' }); continue; }
     lines.push(`${name}='${v.replaceAll("'", "'\\''")}'`);
     literal.push(name);
-    values.push(v); // kept for pane and error scrubbing only — never logged or summarised
+    if (v.length >= 4) values.push(v); // kept for pane and error scrubbing only — a shorter value would over-redact
   }
   // A malformed line reports only its line number and file: the text itself could be a secret.
   const shown = (s) => s.name ?? `line ${s.line}${s.file ? ` of ${s.file}` : ''}`;
@@ -480,15 +482,19 @@ async function start(c, args) {
   for (const line of bridged.summary) c.note(`Environment: ${line}`);
   c.progress('Creating the coordinator machine...');
   // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
+  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name.
+  const t0 = Date.now(); // the create timestamp, for the deadline fallback below
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   // The deadline comes from the machine's own deletion time once the provider reports it — the consent
-  // prompts above could otherwise eat into a deadline computed before them. The requested ttl is the
-  // fallback for a provider whose list row carries no deleteAt.
-  const row = await find(c.provider, 'coordinator', name).then((rows) => rows.find((m) => m.id === sbx.id) ?? rows[0]).catch(() => null);
-  const deleteAt = row?.deleteAt && Number.isFinite(new Date(row.deleteAt).getTime()) ? new Date(row.deleteAt).toISOString() : new Date(Date.now() + seconds * 1000).toISOString();
+  // prompts above could otherwise eat into a deadline computed before them. Only the list row of THIS
+  // machine counts (another coordinator's deadline is wrong), so the fallback is the requested ttl from
+  // the timestamp taken just before create — never rows[0].
+  const row = await find(c.provider, 'coordinator', name).then((rows) => rows.find((m) => m.id === sbx.id)).catch(() => null);
+  const deleteAt = row?.deleteAt && Number.isFinite(new Date(row.deleteAt).getTime()) ? new Date(row.deleteAt).toISOString() : new Date(t0 + seconds * 1000).toISOString();
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
-    const home = await installTool(sbx, c.root);
+    const home = await installTool(sbx, c.root, c.note);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
@@ -595,9 +601,15 @@ async function start(c, args) {
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
 }
 
-async function attach(c, args, { noAttach = false } = {}) {
-  const [m] = await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.'));
+async function attach(c, args, { noAttach = false, machine = null } = {}) {
+  // `cloud` passes the machine it already validated (`machine`): a same-named machine created after the
+  // lookup is not what this attach reaches. Without it the default lookup by name stands.
+  const m = machine ?? (await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.')))[0];
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
+  // A coordinator made by a different installation is not ours to attach to. A machine without an install
+  // label predates labelling: an explicit `attach NAME` is still how one of those is reached (only `cloud`
+  // reattach refuses those).
+  if (m.labels?.install && m.labels.install !== installId(c.env)) guided(`Coordinator ${args[0]} belongs to a different cloudy-cloud installation, so it was not attached.\nNext step: list this installation's coordinators with cloudy-cloud coordinator ls`, { short: `Coordinator ${args[0]} belongs to a different cloudy-cloud installation.`, next: 'cloudy-cloud coordinator ls' });
   if (c.tty && !noAttach) { // on a terminal, open the session here
     const argv = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
     const r = c.spawn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() }, ...c.provider.shellSpawnOpts?.(argv) });
@@ -816,30 +828,36 @@ async function cloud(c, args) {
   if (!/^[\w./-]+$/.test(branch)) guided('--branch has characters that are not allowed.', { short: '--branch has characters that are not allowed.', next: 'cloudy-cloud cloud --help' });
   const path = repoPath(repo); // owner/repo — the value the machine's repo label stores
   const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
-  // The default name is <owner>-<repo>-<branch>. A slug that would not fit gets a short hash of
-  // owner/repo/branch appended, so two different repos can never truncate to the same name.
+  // The default name is <owner>-<repo>-<branch>-<hash>: the short hash of owner/repo/branch always rides
+  // along, so two different repos — or the same repo on two branches — can never collide on the name.
   const wanted = slug(`${path.replace('/', '-')}-${branch}`);
-  const auto = wanted.length <= 40 ? wanted : `${wanted.slice(0, 32).replace(/-+$/g, '')}-${createHash('sha1').update(`${path}@${branch}`).digest('hex').slice(0, 7)}`;
+  const auto = `${wanted.slice(0, 32).replace(/-+$/g, '')}-${createHash('sha1').update(`${path}@${branch}`).digest('hex').slice(0, 7)}`;
   const name = flag(args, '--name') ?? auto;
   if (!NAME_RE.test(name)) guided(`The coordinator name "${safeText(name)}" is not valid. Pass one with --name: lowercase letters, digits and hyphens (1 to 40 characters).`, { short: 'The coordinator name must use lowercase letters, digits and hyphens (1 to 40 characters).', next: 'cloudy-cloud cloud --help' });
   const json = args.includes('--json');
-  // Reattach only to a RUNNING coordinator whose repo and branch labels match this checkout — a bare name
-  // match could otherwise hand the session of a different project (or a stale machine) to this repo.
+  // Reattach only to a RUNNING coordinator THIS installation made (install label) whose repo and branch
+  // labels match this checkout — a bare name match could otherwise hand the session of a teammate's
+  // coordinator, a different project, or a stale machine to this repo.
   const existing = await find(c.provider, 'coordinator', name);
-  const match = existing.find((m) => m.state === 'running' && m.labels?.repo === path && m.labels?.branch === branch);
+  const mine = installId(c.env);
+  const match = existing.find((m) => m.state === 'running' && m.labels?.install === mine && m.labels?.repo === path && m.labels?.branch === branch);
   if (match || existing.length) {
     if (!match) {
       const m0 = existing[0], labels = m0.labels ?? {};
       const conflict = m0.state !== 'running' ? `it is ${safeText(m0.state ?? '') || 'not running'}`
+        : !labels.install ? 'it has no installation label (it was made before coordinators carried one), so cloud cannot verify it is yours'
+        : labels.install !== mine ? 'it belongs to a different cloudy-cloud installation'
         : labels.repo !== path ? `it belongs to ${safeText(labels.repo ?? '') || 'a different repository'}, not ${path}`
         : `it is on branch ${safeText(labels.branch ?? '') || 'another branch'}, not ${branch}`;
-      guided(`A coordinator named ${name} already exists, but ${conflict}.\nNext step: pick a different name with --name, or stop it first: cloudy-cloud coordinator stop ${name}`, { short: `The name ${name} is taken by a different coordinator.`, reason: conflict, next: `cloudy-cloud cloud --name OTHER` });
+      // A legacy coordinator (no install label) can still be attached to by name; a foreign one cannot.
+      const next = labels.install ? 'pick a different name with --name, or stop it first' : 'attach to it by name, or pick a different name with --name';
+      guided(`A coordinator named ${name} already exists, but ${conflict}.\nNext step: ${next}: cloudy-cloud ${labels.install ? `coordinator stop ${name}` : `coordinator attach ${name}`} — or: cloudy-cloud cloud --name OTHER`, { short: `The name ${name} is taken by a different coordinator.`, reason: conflict, next: 'cloudy-cloud cloud --name OTHER' });
     }
     // --env on a reattach would silently do nothing: say so instead (env files apply at start only).
     if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
     if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
     c.out(`Reattaching to ${name}`);
-    return attach(c, [name], { noAttach: args.includes('--no-attach') });
+    return attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
   }
   // A fresh start only: what the GitHub clone would not have — commits the branch has not pushed to
   // origin/<branch> (fetched first), plus edits to tracked files. Untracked files warn but never block.
@@ -847,7 +865,10 @@ async function cloud(c, args) {
   if (untracked) c.note(`${untracked} untracked file(s) are not committed; the cloud clone will not have them.`);
   git('fetch', '-q', 'origin', branch); // best effort: an offline laptop compares against the last fetched ref
   const dirty = git('status', '--porcelain', '--untracked-files=no') ?? '';
-  const ahead = git('rev-parse', '--verify', '--quiet', `origin/${branch}`) !== null ? Number(git('rev-list', '--count', `origin/${branch}..HEAD`)) : -1;
+  // Local <branch> is compared, not HEAD: --branch may point at a branch that is not checked out. A local
+  // branch that does not exist skips the unpushed check (there is nothing local to miss).
+  const ahead = git('rev-parse', '--verify', '--quiet', `refs/heads/${branch}`) === null ? 0
+    : git('rev-parse', '--verify', '--quiet', `origin/${branch}`) !== null ? Number(git('rev-list', '--count', `origin/${branch}..${branch}`)) : -1;
   const problems = [ahead === -1 && `the branch ${branch} is not on origin at all`, ahead > 0 && `${ahead} commit(s) on ${branch} are not pushed to origin/${branch}`, dirty && 'uncommitted changes to tracked files'].filter(Boolean);
   if (problems.length) {
     const push = `git push${ahead === -1 ? ` -u origin ${branch}` : ''}`;

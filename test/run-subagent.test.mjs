@@ -14,7 +14,7 @@ import { createStartQueue } from '../src/limits.mjs';
 import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
-import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask } from '../src/run-subagent.mjs';
+import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask, secretValues } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -79,6 +79,13 @@ test('an agent writes its events (task, machine, reply, status) with keys redact
   assert.ok(!JSON.stringify(events).includes(SECRET));
   assert.equal(events.find((e) => e.type === 'agent').branch, `cloudy-cloud/${id}`);
   assert.equal(events.at(-1).status, 'stopped');
+});
+
+test('secretValues drops empty and shorter-than-4 values, so exact scrubbing cannot mangle the text', () => {
+  const vals = secretValues({ ANTHROPIC_API_KEY: 'x', MCP_X_TOKEN: 'ab', GH_TOKEN: 'real-token-1' }, 'FAKE_API_KEY', ['', 'ab', 'literal-value-1']);
+  assert.ok(vals.includes('real-token-1'));
+  assert.ok(vals.includes('literal-value-1'));
+  for (const v of vals) assert.ok(v.length >= 4, JSON.stringify(v));
 });
 
 test('an agent description containing a secret is logged scrubbed', async () => {
@@ -859,7 +866,7 @@ test('an unknown or invalid profile is rejected', async () => {
 async function withTool(x) {
   const tool = await mkdtemp(join(tmpdir(), 'cc-tool-'));
   await sh(tool, 'git init -q -b main && git config user.name t && git config user.email t@t && mkdir bin');
-  await writeFile(join(tool, 'bin', 'cloudy-cloud'), '#!/bin/sh\necho "LAUNCHER $* EXTRA=$CLOUDY_CLOUD_EXTRA_PROMPT" >> ../launcher.log\nexec claude "$@"\n');
+  await writeFile(join(tool, 'bin', 'cloudy-cloud'), '#!/bin/sh\necho "LAUNCHER $* EXTRA=$CLOUDY_CLOUD_EXTRA_PROMPT COORD=$CLOUDY_CLOUD_COORDINATOR DEL=$CLOUDY_CLOUD_DELETE_AT" >> ../launcher.log\nexec claude "$@"\n');
   await chmod(join(tool, 'bin', 'cloudy-cloud'), 0o755);
   await sh(tool, 'git add -A && git commit -qm tool && git remote add origin https://github.com/test/tool.git');
   await mkdir(join(x.github, 'test', 'tool.git'));
@@ -897,6 +904,10 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   const launched = await readFile(join(home, 'launcher.log'), 'utf8');
   assert.doesNotMatch(launched, /--append-system-prompt/); // the launcher adds its own; a second flag could replace it
   assert.match(launched, /^LAUNCHER -p --dangerously-skip-permissions --output-format stream-json --verbose .*EXTRA=.*You are on branch cloudy-cloud\/.*You are a coordinator\. You can start your own cloud subagents.*No human is watching in real time\..*QUESTION: line, answer it with cloud_agent_message\. Your workers are deleted as soon as your reply ends.*call cloud_agent_wait on every worker you started/);
+  // A nested coordinator gets the same marks as a top-level one: COORDINATOR=1 turns on the built-in Agent
+  // tool and the deadline hook in bin/cloudy-cloud; DELETE_AT gives them the machine's real deadline.
+  assert.match(launched, /COORD=1/);
+  assert.match(launched, /DEL=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });

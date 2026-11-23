@@ -45,11 +45,20 @@ test('parseEnvFile does not expand variables and reports invalid names, non-assi
   }
   assert.match(m.skipped[0].reason, /not a valid variable name/);
   assert.match(m.skipped[2].reason, /not a NAME=value line/);
-  // An unterminated quote keeps its name (it passed the name check; no value text is reported).
-  assert.equal(m.skipped[3].name, 'UNTERMINATED');
+  // An unterminated quote reports only its line number — even the name could be part of the secret.
+  assert.equal(m.skipped[3].name, undefined);
   assert.equal(m.skipped[3].line, 6);
   assert.match(m.skipped[3].reason, /unterminated quote/);
   assert.ok(m.skipped.every((s) => typeof s.line === 'number' && s.reason));
+});
+
+test('an unterminated quote stops the parse: nothing from that line onward is read or reported', () => {
+  // Lines after the quote may be inside the string, so a fake "NAME=..." there is never seen, and a
+  // valid-looking line is never reached either. The skipped entry carries the line number only.
+  const m = parseEnvFile(`GOOD=ok\nSECRET_AKIAIOSFODNN7EXAMPLE="not closed\nBASE64LOOKINGNAME=Zm9vYmFy\nGOOD2=also\n`);
+  assert.deepEqual([...m.keys()], ['GOOD'], 'parsing stopped at the quote');
+  assert.deepEqual(m.skipped, [{ line: 2, reason: 'unterminated quote; the rest of the file is ignored' }]);
+  assert.doesNotMatch(JSON.stringify(m.skipped), /SECRET_AKIA|BASE64LOOKINGNAME|GOOD2|not closed|Zm9v/, 'no text from the bad line onward is reported');
 });
 
 test('built-in keys cloudy-cloud sends itself are skipped, never asked and never proxied, even as proxy secrets', async () => {
@@ -101,6 +110,13 @@ test('dangerous names are rejected with a reason, never asked, never proxied', a
     'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
     'GIT_DIR', 'GIT_SSH_COMMAND', 'SSH_AUTH_SOCK', 'SSH_ASKPASS',
     'CLOUDY_CLOUD_EXTRA_PROMPT', 'CLOUDY_CLOUD_DELETE_AT', 'CLAUDE_CODE_FOO', 'ANTHROPIC_BASE_URL',
+    // Names that retarget trusted tooling or preload code (#P1-4).
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'INSTABOX_API_URL', 'INSTABOX_ANYTHING',
+    'npm_config_registry', 'NPM_CONFIG_REGISTRY', 'npm_config_cache',
+    'PYTHONPATH', 'PYTHONSTARTUP', 'RUBYOPT', 'RUBYLIB', 'PERL5LIB', 'PERL5OPT',
+    'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'HTTP_PROXY', 'http_proxy', 'Https_Proxy', 'ALL_PROXY', 'no_proxy',
+    'CURL_CA_BUNDLE', 'CURL_HOME', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE',
+    'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'TERM', 'TERMINFO', 'TMPDIR',
   ];
   for (const name of denied) {
     const vars = parseEnvFile(`${name}=x\n`);
@@ -113,6 +129,14 @@ test('dangerous names are rejected with a reason, never asked, never proxied', a
     assert.match(plan.skipped[0].reason, /reserved/, name);
     assert.deepEqual(asks, [], `${name} is never asked about`);
   }
+});
+
+test('LANG and the LC_* family stay allowed: they only localise output', async () => {
+  const vars = parseEnvFile('LANG=en_US.UTF-8\nLC_ALL=en_US.UTF-8\nLC_TIME=de_DE.UTF-8\n');
+  const asks = [];
+  const plan = await planEnv({ vars, env: env(), origin: ORIGIN, consentPath: consentAt(), ask: async (n) => { asks.push(n); return 'y'; } });
+  assert.deepEqual(plan.literal.sort(), ['LANG', 'LC_ALL', 'LC_TIME']);
+  assert.deepEqual(plan.skipped, []);
 });
 
 test('non-interactive never sends an unconsented literal and never calls ask', async () => {
@@ -147,12 +171,13 @@ test("'a' persists consent for the origin and reuses it; another origin still as
   const plan = await planEnv({ vars: vars(), env: env(), origin: ORIGIN, consentPath, ask: async (n) => (n === 'STRIPE_KEY' ? 'a' : 'n') });
   assert.deepEqual(plan.literal, ['STRIPE_KEY']);
   assert.deepEqual(plan.skipped, [{ name: 'DB_PASS', reason: 'declined' }]);
-  // Consent file: mode 600 in a mode-700 directory, no temp files, and only names + origins inside.
+  // Consent file: mode 600 in a mode-700 directory, no temp files, and only names + origins + hashes inside.
   assert.equal(statSync(consentPath).mode & 0o777, 0o600);
   assert.equal(statSync(dirname(consentPath)).mode & 0o777, 0o700);
   assert.ok(readdirSync(dirname(consentPath)).every((n) => !n.includes('.tmp')), 'no temp file left behind');
   const stored = JSON.parse(readFileSync(consentPath, 'utf8'));
-  assert.deepEqual(stored.origins[ORIGIN], ['STRIPE_KEY']);
+  assert.deepEqual(Object.keys(stored.origins[ORIGIN]), ['STRIPE_KEY']);
+  assert.match(stored.origins[ORIGIN].STRIPE_KEY, /^[0-9a-f]{64}$/, 'the name is stored with a sha256 of the value, never the value');
   // Same origin: reused without asking. Declined names are asked again (still no consent for DB_PASS).
   const asks = [];
   const plan2 = await planEnv({ vars: vars(), env: env(), origin: ORIGIN, consentPath, ask: async (n) => { asks.push(n); return 'n'; } });
@@ -164,6 +189,27 @@ test("'a' persists consent for the origin and reuses it; another origin still as
   assert.deepEqual(plan3.skipped.map((s) => s.name), ['STRIPE_KEY', 'DB_PASS']);
 });
 
+test('a changed value is asked about again even though the name was consented before', async () => {
+  const consentPath = consentAt();
+  await planEnv({ vars: parseEnvFile('STRIPE_KEY=old-value\n'), env: env(), origin: ORIGIN, consentPath, ask: async () => 'a' });
+  const asks = [];
+  const plan = await planEnv({ vars: parseEnvFile('STRIPE_KEY=new-value\n'), env: env(), origin: ORIGIN, consentPath, ask: async (n) => { asks.push(n); return 'n'; } });
+  assert.deepEqual(asks, ['STRIPE_KEY'], 'the same name with a different value is not covered by the old consent');
+  assert.deepEqual(plan.literal, []);
+  // The same value again is still covered.
+  const asks2 = [];
+  await planEnv({ vars: parseEnvFile('STRIPE_KEY=old-value\n'), env: env(), origin: ORIGIN, consentPath, ask: async (n) => { asks2.push(n); return 'n'; } });
+  assert.deepEqual(asks2, [], 'the originally consented value stays remembered');
+  // A legacy consent file (names only) is asked about once, then upgraded to a hash.
+  writeFileSync(consentPath, JSON.stringify({ origins: { [ORIGIN]: ['STRIPE_KEY'] } }));
+  const asks3 = [];
+  await planEnv({ vars: parseEnvFile('STRIPE_KEY=old-value\n'), env: env(), origin: ORIGIN, consentPath, ask: async (n) => { asks3.push(n); return 'a'; } });
+  assert.deepEqual(asks3, ['STRIPE_KEY'], 'a hash-less legacy entry is not trusted');
+  const asks4 = [];
+  await planEnv({ vars: parseEnvFile('STRIPE_KEY=old-value\n'), env: env(), origin: ORIGIN, consentPath, ask: async (n) => { asks4.push(n); return 'n'; } });
+  assert.deepEqual(asks4, [], 'after re-consent the name is remembered with its hash');
+});
+
 test('a corrupt or missing consent file means no consent, not a crash', async () => {
   const consentPath = consentAt();
   writeFileSync(consentPath, 'not json {{{');
@@ -171,7 +217,7 @@ test('a corrupt or missing consent file means no consent, not a crash', async ()
   const plan = await planEnv({ vars, env: env(), origin: ORIGIN, consentPath, ask: async () => 'a' });
   assert.deepEqual(plan.literal, ['MYSTERY']);
   const stored = JSON.parse(readFileSync(consentPath, 'utf8')); // recovered: a fresh file was written
-  assert.deepEqual(stored.origins[ORIGIN], ['MYSTERY']);
+  assert.deepEqual(Object.keys(stored.origins[ORIGIN]), ['MYSTERY']);
   for (const junk of ['[1,2]', '"x"', '{"origins":{"o":"notalist"}}']) {
     writeFileSync(consentPath, junk);
     const p = await planEnv({ vars: parseEnvFile('MYSTERY=x\n'), env: env(), origin: ORIGIN, consentPath, ask: null });
@@ -204,8 +250,11 @@ test('readConsent and writeConsent round-trip through an atomic mode-600 file', 
   const dir = mkdtempSync(join(tmpdir(), 'consent-'));
   const path = join(dir, 'sub', 'env-consent.json'); // parent does not exist yet
   assert.deepEqual(readConsent(path), { origins: {} });
+  writeConsent(path, { origins: { [ORIGIN]: { A: 'ab12', B: 'cd34' } } });
+  assert.deepEqual(readConsent(path), { origins: { [ORIGIN]: { A: 'ab12', B: 'cd34' } } });
+  // The legacy names-only shape is read as hash-less entries (they will be asked about once more).
   writeConsent(path, { origins: { [ORIGIN]: ['A', 'B'] } });
-  assert.deepEqual(readConsent(path), { origins: { [ORIGIN]: ['A', 'B'] } });
+  assert.deepEqual(readConsent(path), { origins: { [ORIGIN]: { A: null, B: null } } });
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
   assert.ok(readdirSync(dirname(path)).every((n) => !n.includes('.tmp')));

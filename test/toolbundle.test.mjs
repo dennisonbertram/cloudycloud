@@ -26,6 +26,43 @@ test('the tool bundle carries an uncommitted tracked edit, leaves no ref behind,
   assert.equal(sh(join(home, 'cloudy-cloud'), 'git rev-parse HEAD'), b.sha);
 });
 
+test('the tool bundle never carries a credential file — staged, untracked, ignored or committed', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'cc-tb-'));
+  sh(repo, 'git init -q -b main && git config user.name t && git config user.email t@t');
+  writeFileSync(join(repo, 'a.txt'), 'one\n');
+  writeFileSync(join(repo, '.gitignore'), 'ignored.env\n');
+  sh(repo, 'git add -A && git commit -qm one');
+  const clone = (b) => {
+    const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
+    writeFileSync(join(home, 'x.bundle'), b.data);
+    sh(home, toolInstallCmd(b, join(home, 'x.bundle')));
+    return join(home, 'cloudy-cloud');
+  };
+  // A new credential file staged in the index is untracked to the snapshot; untracked and ignored files are never read.
+  writeFileSync(join(repo, 'vars.env'), 'SECRET=staged\n');
+  sh(repo, 'git add vars.env');
+  writeFileSync(join(repo, 'untracked.env'), 'SECRET=untracked\n');
+  writeFileSync(join(repo, 'ignored.env'), 'SECRET=ignored\n');
+  writeFileSync(join(repo, 'a.txt'), 'edited\n');
+  let b = toolBundle(repo);
+  assert.deepEqual(b.dropped, []);
+  let dest = clone(b);
+  assert.equal(readFileSync(join(dest, 'a.txt'), 'utf8'), 'edited\n', 'uncommitted tracked edits still ride the bundle');
+  assert.equal(existsSync(join(dest, 'vars.env')), false, 'a staged .env never enters the bundle');
+  assert.equal(existsSync(join(dest, 'untracked.env')), false);
+  assert.equal(existsSync(join(dest, 'ignored.env')), false);
+  assert.equal(sh(repo, 'git status --porcelain | wc -l').replace(/\s/g, '') !== '0', true, 'the user index and worktree are untouched');
+  // A credential file that was committed into the checkout is dropped too, named in `dropped`, and its blob
+  // cannot hide in history: the snapshot commit is a parentless root.
+  sh(repo, 'git reset -q && git add vars.env && git commit -qm local-secret');
+  b = toolBundle(repo);
+  assert.deepEqual(b.dropped, ['vars.env']);
+  assert.equal(sh(repo, `git rev-list --parents -n 1 ${b.sha} | wc -w`), '1', 'the snapshot is a root commit: HEAD history — and the blob — stays out');
+  dest = clone(b);
+  assert.equal(existsSync(join(dest, 'vars.env')), false);
+  assert.equal(readFileSync(join(dest, 'a.txt'), 'utf8'), 'edited\n');
+});
+
 test('retryIndexLock retries a locked index, and rethrows anything else', async () => {
   const { retryIndexLock } = await import('../src/toolbundle.mjs');
   let n = 0;
