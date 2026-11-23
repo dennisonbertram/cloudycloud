@@ -1301,7 +1301,7 @@ test('arguments: unknown ones print usage and exit 2 before any work, in any ord
   for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
     const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
     assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
-    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\] \[--check-only\]/);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\|e2b\] \[--check-only\]/);
     assert.doesNotMatch(r.stdout, /\[1\/4\]/);
   }
 });
@@ -1527,4 +1527,74 @@ test('setup --provider instabox from a saved microsandbox provider writes the sw
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Setup complete\./);
   assert.match(readFileSync(g.cfg, 'utf8'), /^CLOUDY_CLOUD_PROVIDER=instabox$/m);
+});
+
+// ---- e2b provider ----
+const E2B_KEY = 'e2b_testkey0000000000000000';
+// An e2b check-only run: stub curl answers 200 to the read-only GET /v2/sandboxes probe.
+const e2bCheck = (cfgText, env = {}) => {
+  const dir = stubDir(all, {
+    node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n`,
+    curl: `#!/bin/sh\ncat >/dev/null\ncase "$*" in *"-w"*) printf 200 ;; *) echo '[]' ;; esac\n`,
+  });
+  const cfg = join(tmp(), 'env');
+  writeFileSync(cfg, `CLOUDY_CLOUD_PROVIDER=e2b\n${cfgText}`, { mode: 0o600 });
+  return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: `${dir}:/usr/bin:/bin`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, ...env } });
+};
+const e2bKeys = `E2B_API_KEY=${E2B_KEY}\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n`;
+
+test('check-only on e2b needs the key and the token-on-box consent; a full config passes', () => {
+  const none = e2bCheck('');
+  assert.equal(none.status, 1, none.stdout);
+  assert.match(none.stdout, /E2B_API_KEY/);
+  assert.match(none.stdout, /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX/);
+  const noConsent = e2bCheck(`E2B_API_KEY=${E2B_KEY}\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n`);
+  assert.equal(noConsent.status, 1, noConsent.stdout);
+  assert.match(noConsent.stdout, /CLOUDY_CLOUD_E2B_TOKEN_ON_BOX is not yes/);
+  const ok = e2bCheck(e2bKeys);
+  assert.equal(ok.status, 0, ok.stdout);
+  assert.doesNotMatch(ok.stdout, new RegExp(E2B_KEY), 'the key never appears in output');
+});
+
+test('check-only on e2b accepts a plain Claude token and GH_TOKEN, like self-hosted', () => {
+  const r = e2bCheck(e2bKeys);
+  assert.match(r.stdout, /A Claude credential is saved/);
+  assert.match(r.stdout, /GH_TOKEN is saved[^\n]*into each sandbox/);
+  assert.doesNotMatch(r.stdout, /proxy secret|Instabox/);
+});
+
+test('pty: setup_e2b asks the consent question with its explanation and saves yes or no', () => {
+  const cfg = join(tmp(), 'env');
+  const env = { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, NO_COLOR: '1' };
+  const r = pty({
+    cmd: ['/bin/bash', '-c', `. "${script}"; e2b_consent`], env,
+    steps: [['Allow credential values inside E2B sandboxes\\? \\[y/N\\]', 'y\n']],
+  });
+  assert.match(r.text, /E2B has no proxy secrets/);
+  assert.match(readFileSync(cfg, 'utf8'), /^CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes$/m);
+  const cfg2 = join(tmp(), 'env');
+  const r2 = pty({
+    cmd: ['/bin/bash', '-c', `. "${script}"; e2b_consent`],
+    env: { ...env, CLOUDY_CLOUD_CONFIG: cfg2 },
+    steps: [['Allow credential values inside E2B sandboxes\\? \\[y/N\\]', 'n\n']],
+  });
+  assert.equal(r2.code, 0, r2.text);
+  assert.ok(!existsSync(cfg2) || !readFileSync(cfg2, 'utf8').includes('CLOUDY_CLOUD_E2B_TOKEN_ON_BOX'), 'a no saves no consent');
+});
+
+test('pty: setup_e2b saves a pasted key with hidden input and never echoes it', () => {
+  const dir = stubDir(all, {
+    curl: `#!/bin/sh\ncat >/dev/null\ncase "$*" in *"-w"*) printf 200 ;; *) echo '[]' ;; esac\n`,
+  });
+  const cfg = join(tmp(), 'env');
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, NO_COLOR: '1' };
+  const r = pty({
+    cmd: ['/bin/bash', '-c', `. "${script}"; setup_e2b`], env,
+    steps: [['Paste it', `${E2B_KEY}\n`], ['Allow credential values inside E2B sandboxes\\? \\[y/N\\]', 'y\n']],
+  });
+  assert.equal(r.code, 0, r.text);
+  assert.doesNotMatch(r.text, new RegExp(`${E2B_KEY.slice(0, 12)}`), 'the key is never echoed');
+  const saved = readFileSync(cfg, 'utf8');
+  assert.match(saved, new RegExp(`^E2B_API_KEY=${E2B_KEY}$`, 'm'));
+  assert.match(saved, /^CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes$/m);
 });

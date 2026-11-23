@@ -133,7 +133,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted` or `microsandbox`. A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox` or `e2b` (experimental). A provider must keep the GitHub token behind proxy secrets or, on your own machine, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
 
 ## Run on your own machine
 
@@ -181,6 +181,34 @@ Credential values stay in that file on this computer — no `CLOUDY_CLOUD_PROXY_
 - **Egress:** `CLOUDY_CLOUD_EGRESS_ALLOW` limits where workers connect (see below). With no allowlist, or the explicit opt-out `off`, microsandbox's default policy applies (public internet only; private and metadata addresses are blocked).
 - **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — start workers directly, or use Instabox for coordinators), no MCP server tokens yet (`cloudy-cloud mcp add` writes the reference but calls using that server are refused until supported), no `CLOUDY_CLOUD_APT_PACKAGES` and no display; at most `CLOUDY_CLOUD_MSB_SLOTS` (default 2) sandboxes at once.
 - **Status:** the opt-in live test (`CLOUDY_CLOUD_IT_MSB=1 node --test test/it-microsandbox.test.mjs`) passed on an Apple Silicon Mac with microsandbox 0.7.16: a secret's real value reaches its configured host while the guest sees only a placeholder, and the value was not found in files under `~/.microsandbox` after use; the egress allowlist blocks another host, and the default policy blocks the metadata address and a private address (msb's proxy answers with HTTP 403 `network_policy_denied`); files, commands, the delete deadline and port forwarding work. See [STATUS.md](docs/STATUS.md).
+
+### Run on E2B (experimental)
+
+Subagents can also run on [E2B](https://e2b.dev) sandboxes (hosted Firecracker microVMs), using your own E2B API key:
+
+```sh
+cloudy-cloud setup --provider e2b
+```
+
+Setup asks for the E2B key (`e2b_...`, checked against the E2B API before saving when the API answers), asks the consent question below, and asks for `GH_TOKEN`, which workers need for pushes. Or by hand in `~/.config/cloudy-cloud/env`:
+
+```sh
+CLOUDY_CLOUD_PROVIDER=e2b
+E2B_API_KEY=e2b_...
+# required consent, see below — the value must be exactly `yes`
+CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes
+GH_TOKEN=<a token with write access>
+CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
+```
+
+`cloudy-cloud setup --check-only` checks the key with one read-only `GET /v2/sandboxes`, the consent, `GH_TOKEN` and a Claude credential — never printing a value.
+
+- **Token-on-box consent is required.** E2B has no proxy secrets, so `GH_TOKEN`, the Claude credential and any profile keys are written into each sandbox (create-time `envVars`, plus `/home/user/.cloudy-cloud-env` mode 600), where anything running in the sandbox could read them. Without `CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes`, `cloud_agent` refuses before any call and says what to add. Values are never logged.
+- **Server-side deadline.** Each sandbox is created with E2B's own `timeout` (if a plan caps it, the adapter retries 3600 then 300 seconds) and re-armed by a refresher while the worker runs, so a lost client still ends the sandbox when the timeout lapses. Kill = delete. Paused sandboxes resume through `POST /v2/sandboxes/{id}/connect`, which rotates the sandbox's access token.
+- **Public previews.** `cloudy-cloud open <id> <port> --share` (and `cloud_agent preview_port`) returns E2B's public URL `https://<port>-<sandboxID>.e2b.app` — anyone with the link can reach the app until the sandbox is deleted; E2B cannot unpublish one port alone. Plain `cloudy-cloud open` (a private port forward) is refused: E2B has no tunnel API.
+- **Egress:** `CLOUDY_CLOUD_EGRESS_ALLOW` maps to E2B's create-time `network.allowOut` with `denyOut: 0.0.0.0/0` added.
+- **Limits:** no coordinators (`cloud_agent` with `role: "coordinator"` is refused — a sandbox has no Docker socket for sibling workers), no snapshots, display or `cloudy-cloud shell`, and no machine kinds other than `linux`. Each sandbox starts from the public `base` template and is provisioned by an idempotent script (the worker tools, about a minute on first use).
+- **Status:** covered by unit tests with a fake E2B transport only; it has not been run against the live API. See [STATUS.md](docs/STATUS.md).
 
 ## Dashboard
 
@@ -299,7 +327,7 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud opencode [args]` | Starts opencode as the main session with the cloud tools (`npm install -g opencode-ai` first). Tools are named `cloud_cloud_agent` and so on. |
 | `cloudy-cloud pi [args]` | Starts pi as the main session with the cloud tools. Runs a pinned copy through `npx` if `pi` is not installed. |
 | `cloudy-cloud free-pi [args]` | Starts free-pi as the main session. It writes a `cloudy-cloud` entry into `~/.free-pi/agent/mcp.json` on each start and refuses to replace a `cloudy-cloud` entry it did not write. Your own `cloud` entry is not touched. |
-| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
+| `cloudy-cloud setup [--more] [--check-only] [--provider instabox\|self-hosted\|microsandbox\|e2b]` | Checks your tools and saves your keys. `--more` adds coordinators, usage alert emails and other model keys. `--check-only` checks tools, keys and your Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, local keys and `CLOUDY_CLOUD_EGRESS_ALLOW`; on e2b: the E2B key, the token-on-box consent, `GH_TOKEN` and a Claude credential), and changes nothing. `--provider` picks where subagents run without asking; on microsandbox, plain `setup` points at the README and exits — that provider is configured by hand in the env file. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
 | `cloudy-cloud machines` \| `machines stop <id-or-name\|--all>` | Lists your Cloudy Cloud machines, or deletes them. Only machines with the `purpose=cloudy-cloud` label are touched. |
@@ -345,7 +373,7 @@ In a terminal session, `/tasks` lists each subagent with a progress line. Select
 - **MCP server tokens:** for servers you add with `cloudy-cloud mcp add`, the token stays in Instabox as the secret `MCP_<NAME>_TOKEN`. The machine sees a placeholder that Instabox replaces in request headers to the host you named, so a subagent can use the token against that host but cannot read it. Create the secret with `--host`; without it, a prompt injection could send the token to any host. With `--allow-literal` the real token is on the machine instead (a coordinator's session, not its workers), and you confirm that at the prompt.
 - **Coordinators:** a coordinator starts machines itself, so it needs the Instabox key, your Claude credential and the provider keys that profiles use. On Instabox it gets all of them as placeholders: the Instabox key is stored as the secret `CLOUDY_CLOUD_INSTABOX_API_KEY` (host `api.instabox.sh`), and its config file on the machine holds only the secret names. Other `*_API_KEY` variables in your shell are not sent. A coordinator can still use those keys against their hosts, for example to start machines, so use keys you can revoke.
 - **Dashboard:** local only. It listens on `127.0.0.1`, needs a random per-run token in the link, accepts only GET and HEAD requests, and never sends keys to the browser. The event log it reads (`~/.config/cloudy-cloud/events.jsonl`, created with mode 600) can contain your prompts and code, so treat it as private.
-- **Network (egress):** `CLOUDY_CLOUD_EGRESS_ALLOW` in `~/.config/cloudy-cloud/env` limits the hosts a worker machine may connect to: host names separated by commas or spaces, where `*.example.com` covers the domain and its subdomains. `github.com`, `api.github.com`, the model host and each shared MCP server's `https` host are always allowed, so pushes, the model and your MCP servers keep working. Only the `microsandbox` provider enforces the list (it runs workers in local microVMs); on any other provider `cloud_agent` refuses to start instead of silently ignoring the setting. Workers only — a coordinator start is refused — and only Claude Code workers that reach their model host directly: pi, omp, codex, opencode and LiteLLM-gateway profiles install their agent or gateway from the internet at start, which the limit would block, so they are refused too. For the same reason `npx`/`uvx` MCP servers and `CLOUDY_CLOUD_APT_PACKAGES` are refused while the list is set — the refusal names the package-registry or apt-mirror hosts to add. `off` (or `none`) means no policy on purpose — the opt-out for one command is `CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start`. A value that is set but names nothing is an error, so a blank line cannot silently switch a saved policy off.
+- **Network (egress):** `CLOUDY_CLOUD_EGRESS_ALLOW` in `~/.config/cloudy-cloud/env` limits the hosts a worker machine may connect to: host names separated by commas or spaces, where `*.example.com` covers the domain and its subdomains. `github.com`, `api.github.com`, the model host and each shared MCP server's `https` host are always allowed, so pushes, the model and your MCP servers keep working. Only the `microsandbox` and `e2b` providers enforce the list (microsandbox in local microVMs; e2b through the sandbox's create-time `network.allowOut`); on any other provider `cloud_agent` refuses to start instead of silently ignoring the setting. Workers only — a coordinator start is refused — and only Claude Code workers that reach their model host directly: pi, omp, codex, opencode and LiteLLM-gateway profiles install their agent or gateway from the internet at start, which the limit would block, so they are refused too. For the same reason `npx`/`uvx` MCP servers and `CLOUDY_CLOUD_APT_PACKAGES` are refused while the list is set — the refusal names the package-registry or apt-mirror hosts to add. `off` (or `none`) means no policy on purpose — the opt-out for one command is `CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start`. A value that is set but names nothing is an error, so a blank line cannot silently switch a saved policy off.
 
 See [Troubleshooting, security and FAQ](https://cloudycloud.tech/docs/troubleshooting.html).
 

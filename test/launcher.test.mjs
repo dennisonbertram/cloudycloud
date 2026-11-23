@@ -255,6 +255,26 @@ test('self-hosted provider needs the SSH host, not the Instabox key (#41)', () =
   assert.match(ib.stderr, /Instabox API key/);
 });
 
+test('e2b provider needs E2B_API_KEY, not the Instabox key', () => {
+  const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
+  const ok = run({ config: `CLOUDY_CLOUD_PROVIDER=e2b\nE2B_API_KEY=e2b_test\nCLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes\n${claude}`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.started, true);
+  const mcp = JSON.parse(ok.argv.slice(ok.argv.indexOf('--mcp-config\n') + '--mcp-config\n'.length).split('\n')[0]).mcpServers.cloud.env;
+  assert.equal(mcp.E2B_API_KEY, '${E2B_API_KEY:-}');
+  assert.equal(mcp.CLOUDY_CLOUD_E2B_TOKEN_ON_BOX, '${CLOUDY_CLOUD_E2B_TOKEN_ON_BOX:-}');
+  const noKey = run({ config: `CLOUDY_CLOUD_PROVIDER=e2b\nINSTABOX_API_KEY=${IBK}\n${claude}` });
+  assert.equal(noKey.status, 1);
+  assert.match(noKey.stderr, /E2B API key/);
+  assert.equal(noKey.started, false);
+});
+
+test('proxy secret names do not count as a Claude token on the e2b provider', () => {
+  const r = run({ config: `CLOUDY_CLOUD_PROVIDER=e2b\nE2B_API_KEY=e2b_test\nCLOUDY_CLOUD_PROXY_SECRETS=CLAUDE_CODE_OAUTH_TOKEN\n`, cwd: repo('https://github.com/test/repo.git') });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Claude token/);
+});
+
 test('self-hosted local mode (a coordinator) needs the Docker socket setting and the socket, not the SSH host (#41)', () => {
   const claude = `CLAUDE_CODE_OAUTH_TOKEN=${TOK}\n`;
   const sock = join(mkdtempSync(join(tmpdir(), 'cc-sock-')), 'docker.sock');

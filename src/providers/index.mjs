@@ -67,6 +67,7 @@ const REGISTRY = {
   instabox: () => import('./instabox.mjs'),
   'self-hosted': () => import('./self-hosted.mjs'),
   microsandbox: () => import('./microsandbox.mjs'),
+  e2b: () => import('./e2b.mjs'),
 };
 
 /**
