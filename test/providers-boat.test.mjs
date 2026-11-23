@@ -1,6 +1,9 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider } from '../src/providers/boat.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
@@ -81,6 +84,7 @@ function fakeBoat({ serverLabelFilter = true } = {}) {
         if (!p) return err(404, 'not_found', 'no such process');
         if (method === 'DELETE') { p.killed = true; p.running = false; return respond(200, { ok: true, type: 'command.stopped', running: false }); }
         if (method === 'GET' && !cm[2]) {
+          if (z.statusPages?.length) return respond(200, { ok: true, type: 'command.status', processId: Number(cm[1]), ...z.statusPages.shift() });
           const so = Number(u.searchParams.get('stdoutOffset')) || 0;
           const eo = Number(u.searchParams.get('stderrOffset')) || 0;
           return respond(200, { ok: true, type: 'command.status', success: !p.killed && !p.running && p.code === 0, processId: Number(cm[1]),
@@ -116,36 +120,64 @@ function fakeBoat({ serverLabelFilter = true } = {}) {
   return Object.assign(z, { fetch, log, boxes, files, procs, hosted, idem, fail, row, respond, err });
 }
 
+// The consent lives in a config file, like a real user's: the adapter re-reads the file at
+// every create and does not trust a copy inside the (possibly stale) env object it was built with.
+// baseEnv plays the real process environment (kept empty so the developer's own exports can't leak in).
+const cfgFile = (lines = 'CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\n') => {
+  const f = join(mkdtempSync(join(tmpdir(), 'cc-boat-')), 'env');
+  writeFileSync(f, lines, { mode: 0o600 });
+  return f;
+};
 const mk = (z, env = {}, deps = {}) => createProvider({
-  BOAT_API_KEY: KEY, CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: 'yes', GH_TOKEN: GH,
-  CLAUDE_CODE_OAUTH_TOKEN: OAT, BOAT_API_BASE: 'http://boat.test/api/v1', ...env,
-}, { fetchFn: z.fetch, sleep: async () => {}, ...deps });
+  BOAT_API_KEY: KEY, GH_TOKEN: GH,
+  CLAUDE_CODE_OAUTH_TOKEN: OAT, CLOUDY_CLOUD_CONFIG: cfgFile(), ...env,
+}, { fetchFn: z.fetch, sleep: async () => {}, baseEnv: {}, ...deps });
 const create = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud' }, ttlSeconds: 3600, ...extra });
 
 contractSuite('boat', ({ withKey }) => mk(fakeBoat(), withKey ? {} : { BOAT_API_KEY: undefined }));
 
 test('boat: create without the token-on-box consent refuses with a guided error and no network call', async () => {
   const z = fakeBoat();
-  const p = mk(z, { CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: undefined });
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgFile('BOAT_API_KEY=x\n') });
   const e = await create(p).then(() => { throw new Error('should refuse'); }, (x) => x);
   assert.match(e.message, /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
   assert.match(e.message, /proxy secrets/i);
   assert.equal(z.log.length, 0, 'no HTTP call may run before the consent exists');
 });
 
-test('boat: consent is read at each create — revoking it stops new machines', async () => {
+test('boat: a consent value inside the env object alone does not count — the file is authoritative', async () => {
   const z = fakeBoat();
-  const env = { BOAT_API_KEY: KEY, CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: 'yes', GH_TOKEN: GH, BOAT_API_BASE: 'http://boat.test/api/v1' };
-  const p = createProvider(env, { fetchFn: z.fetch, sleep: async () => {} });
-  const s = await create(p);
-  await s.kill();
-  env.CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX = 'no';
-  const n = z.log.length;
-  await assert.rejects(create(p), /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
-  assert.equal(z.log.length, n, 'no HTTP call after consent was revoked');
+  // The in-memory env still holds a yes the file no longer has (the server's shared object
+  // between install.sh refreshes). The fresh file read must not consent.
+  const p = mk(z, { CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: 'yes', CLOUDY_CLOUD_CONFIG: cfgFile('BOAT_API_KEY=x\n') });
+  const e = await create(p).then(() => { throw new Error('should refuse'); }, (x) => x);
+  assert.match(e.message, /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.length, 0);
 });
 
-test('boat: create sends labels, TTL, noEnv, private visibility, the env file and an Idempotency-Key', async () => {
+test('boat: consent is re-read from the file at each create — revoking it stops the next queued worker', async () => {
+  const z = fakeBoat();
+  const cfg = cfgFile('CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes\n');
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg });
+  await (await create(p)).kill();
+  // The setup flow removed the line while a worker waited in the queue.
+  writeFileSync(cfg, 'BOAT_API_KEY=x\n', { mode: 0o600 });
+  const n = z.log.length;
+  await assert.rejects(create(p), /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.length, n, 'no HTTP call is made once consent is revoked');
+});
+
+test('boat: a real environment value consents, and an exported no beats a saved yes', async () => {
+  const z = fakeBoat();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgFile('BOAT_API_KEY=x\n') }, { baseEnv: { CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: 'yes' } });
+  await (await create(p)).kill();
+  const n = z.log.length;
+  const refused = mk(z, {}, { baseEnv: { CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX: 'no' } }); // the file still says yes; the shell says no
+  await assert.rejects(create(refused), /CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes/);
+  assert.equal(z.log.length, n, 'the shell override is honoured before the saved line');
+});
+
+test('boat: create sends labels, TTL, noEnv, private visibility, monitoring off and an Idempotency-Key', async () => {
   const z = fakeBoat();
   const p = mk(z);
   const s = await create(p, { envs: { FOO: 'bar', CLAUDE_CODE_OAUTH_TOKEN: OAT }, labels: { purpose: 'cloudy-cloud', owner: 'o1', name: 'bold-fox' }, ttlSeconds: 1800 });
@@ -159,19 +191,37 @@ test('boat: create sends labels, TTL, noEnv, private visibility, the env file an
     assert.equal(post.body.noEnv, true, 'workers never carry the account secrets');
     assert.equal(post.body.visibility, 'private', 'other organization members cannot use the sandbox');
     assert.equal(post.body.snapshots, false, 'the disk is erased on stop');
-    // The consented credential values reach the box only inside the env file — never in a URL or other body field.
-    const envFile = post.body.files?.find((f) => f.path === '/home/user/.cloudy-cloud-env');
-    assert.ok(envFile?.content.includes('GH_TOKEN=') && envFile.content.includes('FOO=') && envFile.content.includes('CLAUDE_CODE_OAUTH_TOKEN='));
+    assert.equal(post.body.monitoring, false, 'the Boat agent never streams process output home');
+    assert.equal(post.body.files, undefined, 'no credential value travels in the create body');
+    // The env file exists at mode 600 before any credential value lands, and the mode is verified after the write.
+    const cmds = z.log.filter((l) => l.method === 'POST' && l.path === `/sandboxes/${s.id}/commands`);
+    const install = cmds.findIndex((l) => l.body.command.includes('install -m 600'));
+    const verify = cmds.findIndex((l) => l.body.command.includes('chmod 600') && l.body.command.includes('stat -c %a'));
+    const put = z.log.findIndex((l) => l.method === 'PUT' && l.path === `/sandboxes/${s.id}/files`);
+    assert.ok(install !== -1 && put !== -1 && verify !== -1, 'install, write and verify all ran');
+    const cmdI = z.log.indexOf(cmds[install]);
+    const cmdV = z.log.indexOf(cmds[verify]);
+    assert.ok(cmdI < put && put < cmdV, 'the file is 600 before values land; mode is enforced after');
+    // The consented credential values reach the box only inside the env file — never in a URL or a plain body field.
+    const envBody = Buffer.from(z.log[put].body.content, 'base64').toString('utf8');
+    assert.ok(envBody.includes('GH_TOKEN=') && envBody.includes('FOO=') && envBody.includes('CLAUDE_CODE_OAUTH_TOKEN='));
     for (const l of z.log) {
       assert.ok(!l.url.includes(KEY) && !l.url.includes(GH) && !l.url.includes(OAT), l.url);
-      const text = l.path === '/sandboxes' && l.method === 'POST' ? '' : JSON.stringify(l.body ?? '');
+      const text = JSON.stringify(l.body ?? '');
       for (const v of [KEY, GH, OAT]) assert.ok(!text.includes(v), `${l.method} ${l.path}`);
     }
-    // provisioning ran exactly once on this box
-    const runs = z.log.filter((l) => l.path === `/sandboxes/${s.id}/commands` && l.method === 'POST');
-    assert.equal(runs.length, 1, 'one provisioning command ran');
-    assert.match(runs[0].body.command, /apt-get|claude-code|chmod/);
+    // provisioning ran once on this box, after the env file was in place
+    const provision = cmds.findIndex((l) => /apt-get|claude-code/.test(l.body.command));
+    assert.ok(provision !== -1 && z.log.indexOf(cmds[provision]) > cmdV);
   } finally { await s.kill(); }
+});
+
+test('boat: create fails and deletes the sandbox when the env file cannot be locked to 600', async () => {
+  const z = fakeBoat();
+  z.exec = (cmd) => (cmd.includes('stat -c %a') ? { code: 1, out: '', err: 'operation not permitted' } : { code: 0, out: '', err: '' });
+  const p = mk(z);
+  await assert.rejects(create(p), /600|env file|permission/i);
+  assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/bx_')), 'the half-created sandbox was deleted');
 });
 
 test('boat: an egress allow list, a coordinator, another kind and an explicit size are refused before any HTTP call', async () => {
@@ -213,6 +263,86 @@ test('boat: delete and connect refuse a foreign sandbox with not_found and never
   await assert.rejects(p.publishPort('alien', '8080'), (e) => e.code === 'not_found');
   assert.ok(!z.log.some((l) => l.method === 'DELETE'), 'no delete was ever sent for a foreign sandbox');
   assert.ok(z.boxes.has('alien') && z.boxes.has('alien2'));
+});
+
+test('boat: a teammate\'s cloudy-cloud sandbox is not ours — wrong owner label blocks every op', async () => {
+  const z = fakeBoat({ serverLabelFilter: false });
+  const p = mk(z, {}, { owner: 'o1' });
+  // Same org, same purpose label, different installation owner: must be invisible to us.
+  z.boxes.set('mate', z.row('mate', { name: 'cc-teammate', labels: { purpose: 'cloudy-cloud', owner: 'o2', deleteAt: new Date(Date.now() - 60_000).toISOString() } }));
+  await assert.rejects(p.connect('mate'), (e) => e.code === 'not_found');
+  await assert.rejects(p.delete('mate'), (e) => e.code === 'not_found');
+  await assert.rejects(p.publishPort('mate', '8080'), (e) => e.code === 'not_found');
+  const ids = (await p.list({ purpose: 'cloudy-cloud' })).map((r) => r.id);
+  assert.ok(!ids.includes('mate'), 'list never returns another installation\'s sandbox');
+  assert.ok(z.boxes.has('mate'), 'the teammate\'s expired sandbox was not swept or deleted');
+  assert.ok(!z.log.some((l) => l.method !== 'GET'), 'no mutation was ever attempted');
+});
+
+test('boat: a sandbox carrying our owner id is ours to connect, publish and delete', async () => {
+  const z = fakeBoat();
+  const p = mk(z, {}, { owner: 'o1' });
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  const c = await p.connect(s.id);
+  assert.equal(c.id, s.id);
+  const r = await p.publishPort(s.id, '8080');
+  assert.ok(r.url);
+  await s.kill();
+});
+
+test('boat: a lost create answer recovers only the sandbox labelled with our ccid and owner', async () => {
+  const z = fakeBoat({ serverLabelFilter: false });
+  // A teammate's ready, expired, purpose-labelled sandbox sorts first in the org list;
+  // trusting sandboxes[0] would adopt (and provision) it.
+  z.boxes.set('mate-first', z.row('mate-first', { name: 'cc-ready', labels: { purpose: 'cloudy-cloud', owner: 'o2' }, state: 'ready' }));
+  const realFetch = z.fetch;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/api/v1/sandboxes' && init?.method === 'POST') {
+      await realFetch(url, init); // the create landed (deduped by idempotency); every answer is lost
+      throw new Error('socket hang up');
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z, {}, { owner: 'o1' });
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  try {
+    assert.notEqual(s.id, 'mate-first');
+    assert.ok(z.boxes.get(s.id).labels.ccid, 'the recovered box is the one our ccid labels');
+    assert.equal(z.boxes.get(s.id).labels.owner, 'o1');
+    const mutations = z.log.filter((l) => l.method !== 'GET' && l.path.includes('mate-first'));
+    assert.deepEqual(mutations, [], 'no file, command, port or delete ever touched the foreign sandbox');
+  } finally { await s.kill(); }
+});
+
+test('boat: a create answer with no sandbox in the body recovers the created box by ccid', async () => {
+  const z = fakeBoat();
+  const realFetch = z.fetch;
+  let once = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (!once && u.pathname === '/api/v1/sandboxes' && init?.method === 'POST') {
+      once = true;
+      await realFetch(url, init); // accepted and stored — the sandbox exists
+      return z.respond(202, {});  // but the body was lost on the wire
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  try {
+    assert.ok(s.id, 'the ccid recovery found the created sandbox');
+    assert.equal(z.boxes.size, 1, 'no second sandbox was created');
+  } finally { await s.kill(); }
+});
+
+test('boat: BOAT_API_BASE is ignored — the bearer key only ever goes to boat.dev', async () => {
+  const z = fakeBoat();
+  const p = mk(z, { BOAT_API_BASE: 'http://evil.example/api/v1' });
+  const s = await create(p);
+  try {
+    for (const l of z.log) assert.ok(l.url.startsWith('https://boat.dev/api/v1'), l.url);
+  } finally { await s.kill(); }
 });
 
 test('boat: delete sends the X-Ascii-Confirm-Delete header and a 404 counts as deleted', async () => {
@@ -296,9 +426,9 @@ test('boat: pagination follows pageInfo.nextCursor', async () => {
   assert.ok(calls >= 2);
 });
 
-test('boat: the list sweep deletes a sandbox whose deleteAt label has passed', async () => {
+test('boat: the list sweep deletes one of our sandboxes whose deleteAt label has passed', async () => {
   const z = fakeBoat();
-  const p = mk(z);
+  const p = mk(z, {}, { owner: 'o1' });
   const past = new Date(Date.now() - 60_000).toISOString();
   z.boxes.set('bx_expired', z.row('bx_expired', { labels: { purpose: 'cloudy-cloud', owner: 'o1', deleteAt: past } }));
   const rows = await p.list({ purpose: 'cloudy-cloud' });
@@ -328,6 +458,47 @@ test('boat: commands.run streams stdout, returns output and rejects on a nonzero
     const e2 = await s.commands.run('exit 2', { timeoutMs: 5000 }).then(() => { throw new Error('should fail'); }, (x) => x);
     assert.equal(e2.stderr, 'leak <redacted>', 'a credential value in output is redacted on the error');
     assert.ok(!e2.message.includes(OAT), 'the thrown message is scrubbed');
+  } finally { await s.kill(); }
+});
+
+test('boat: a finished command with `more` buffered output is drained before finishing', async () => {
+  const z = fakeBoat();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.statusPages = [
+      { status: 'exited', running: false, success: true, exitCode: 0, stdout: 'part1\n', stderr: '', stdoutNextOffset: 6, stderrNextOffset: 0, more: true },
+      { status: 'exited', running: false, success: true, exitCode: 0, stdout: 'part2\n', stderr: '', stdoutNextOffset: 12, stderrNextOffset: 0, more: false },
+    ];
+    const r = await s.commands.run('echo hello', { timeoutMs: 10_000 });
+    assert.equal(r.stdout, 'part1\npart2\n', 'the buffered page after the finished flag is read too');
+    assert.equal(r.exitCode, 0);
+  } finally { await s.kill(); }
+});
+
+test('boat: an abort raised mid-poll still kills the detached process', async () => {
+  const z = fakeBoat();
+  const realFetch = z.fetch;
+  let armed = false;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (armed && /\/commands\/\d+$/.test(u.pathname) && (init?.method ?? 'GET') === 'GET') {
+      const e = new Error('the operation was aborted');
+      e.name = 'AbortError'; // the signal landed while the status GET was in flight
+      throw e;
+    }
+    return realFetch(url, init);
+  };
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    const ac = new AbortController();
+    z.exec = () => ({ code: 0, out: '', err: '', running: true });
+    armed = true;
+    const e = await s.commands.run('sleep 99', { timeoutMs: 60_000, signal: ac.signal }).then(() => { throw new Error('should abort'); }, (x) => x);
+    assert.equal(e.name, 'AbortError');
+    assert.ok(z.log.some((l) => l.method === 'DELETE' && /\/commands\/\d+$/.test(l.path)), 'the detached process was still killed');
+    assert.ok([...z.procs.values()].some((p) => p.killed), 'the fake records the stop');
   } finally { await s.kill(); }
 });
 
@@ -382,6 +553,38 @@ test('boat: plan maps GET /limits into a plan row', async () => {
   assert.equal(plan.startsPerMinute, 10);
   assert.equal(plan.maxMachines, 100);
   assert.equal(plan.maxRunning, 100);
+  assert.deepEqual(plan.specs, [], 'the contract\'s specs field is present');
+});
+
+test('boat: caps tell the truth about TTL, and list returns archiveAt in epoch ms', async () => {
+  const z = fakeBoat();
+  const p = mk(z);
+  assert.equal(p.caps.hasServerTTL, false, 'Boat archives at the deadline — cloudy-cloud sweeps and deletes');
+  const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
+  try {
+    const [r] = await p.list({ owner: 'o1' });
+    assert.equal(r.archiveAt, Date.parse('2027-01-01T00:00:00.000Z'), 'archiveAfter arrives as epoch ms like the other adapters');
+  } finally { await s.kill(); }
+});
+
+test('boat: a sandbox that fails while starting reports a scrubbed error and is deleted', async () => {
+  const z = fakeBoat();
+  const realFetch = z.fetch;
+  z.fetch = async (url, init) => {
+    const r = await realFetch(url, init);
+    const u = new URL(String(url));
+    if (u.pathname === '/api/v1/sandboxes' && init?.method === 'POST') {
+      const rec = z.boxes.get('bx_fake001');
+      rec.state = 'error';
+      rec.error = `provisioning died near ${GH} and ${KEY}`;
+    }
+    return r;
+  };
+  const p = mk(z);
+  const e = await create(p).then(() => { throw new Error('should fail'); }, (x) => x);
+  assert.ok(!e.message.includes(GH) && !e.message.includes(KEY), 'rec.error is scrubbed before it reaches the caller');
+  assert.match(e.message, /<redacted>/);
+  assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/bx_')), 'the failed sandbox was deleted');
 });
 
 test('loadProvider knows boat', async () => {

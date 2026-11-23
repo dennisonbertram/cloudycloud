@@ -1,24 +1,28 @@
 // Boat provider: one persistent Ubuntu VM per sandbox on Boat (https://boat.dev), driven
 // over the REST API at https://boat.dev/api/v1 (docs: https://docs.boat.dev — plain fetch,
-// no SDK). BOAT_API_KEY (boat_...) is a bearer token on every call; BOAT_API_BASE overrides
-// the base URL (tests only).
+// no SDK). BOAT_API_KEY (boat_...) is a bearer token on every call; the base URL is fixed so
+// the key can never be redirected to another host (tests inject deps.fetchFn instead).
 //
 // Guards the adapter enforces:
-// - Ownership: an organization key lists OTHER people's sandboxes too, so every sandbox is
-//   created with label purpose=cloudy-cloud, list() asks the server for that label AND
-//   re-checks it client-side on every row, and connect/delete/publishPort refuse (code
-//   not_found) any sandbox whose labels lack it. A foreign sandbox is never touched.
-// - Lifetime: ttlSeconds is Boat's server-side auto-stop, so caps.hasServerTTL is true and
-//   a lost client still stops the machine. snapshots:false erases the disk on stop instead
-//   of keeping it 14 days; kill()/delete() permanently deletes the sandbox (DELETE +
-//   X-Ascii-Confirm-Delete header), it never merely stops it.
+// - Ownership: an organization key lists OTHER people's sandboxes too, so a sandbox is ours
+//   only when labels.purpose === 'cloudy-cloud' AND labels.owner is this installation's owner
+//   id (the same value Instabox/self-hosted stamp; deps.owner in the server, the owner file a
+//   CLI reads). list() asks the server for the purpose label AND re-checks purpose+owner on
+//   every row; connect/delete/publishPort refuse (code not_found) anything that fails the
+//   check, and the deleteAt sweep deletes only what it owns. A teammate's cloudy-cloud worker
+//   shares the purpose label but carries a different owner, so it is never touched.
+// - Lifetime: ttlSeconds is Boat's server-side auto-stop — a lost client still stops the
+//   machine — but the deadline ARCHIVES (and snapshots:false erases the disk) rather than
+//   deletes, so caps.hasServerTTL is false: the deleteAt label is swept on list() and
+//   kill()/delete() permanently deletes the sandbox (DELETE + X-Ascii-Confirm-Delete header),
+//   never merely stops it.
 // - Credentials: real token VALUES go on the VM — the env file /home/user/.cloudy-cloud-env
-//   (mode 600, written through the create `files` field so it lands before `ready`, sourced
-//   by every command) — only after the user opts in with
-//   CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes, the same consent shape as self-hosted. create()
-//   refuses before any HTTP call without it, and consent is read again on every create.
-//   noEnv:true also keeps the account's own secrets off the worker, and
-//   visibility:private keeps other organization members out.
+//   (created mode 600 before any value lands, sourced by every command) — only after the user
+//   opts in with CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes, the same consent shape as self-hosted.
+//   create() refuses before any HTTP call without it, and consent is re-read from the config
+//   file on every create so revoking it mid-queue takes effect. monitoring:false tells the
+//   Boat agent not to stream output home; noEnv:true keeps the account's own secrets off the
+//   worker; visibility:private keeps other organization members out.
 // - No egress API: egress allow lists are refused (egress_unsupported). Coordinators are
 //   refused: a Boat worker is not expected to start sibling machines for a session.
 // - No server shell/private tunnel: hasShell and hasPortForward are false; previews
@@ -27,7 +31,9 @@
 // so long-running work is not bound by the 600 s synchronous cap and abort/timeout kills
 // the process with DELETE .../commands/{processId} (SIGTERM, then SIGKILL after 5 s).
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createLimiter } from '../limits.mjs';
+import { ownerFile, savedEnv } from '../config.mjs';
 
 const API = 'https://boat.dev/api/v1';
 const KEY_NAME = 'BOAT_API_KEY';
@@ -74,7 +80,6 @@ if ! have node; then
 fi
 have uv || curl -fsSL "https://astral.sh/uv/0.5.14/install.sh" | $SUDO env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 have claude || $SUDO npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.322
-chmod 600 "$HOME/.cloudy-cloud-env" 2>/dev/null || true
 touch "$MARK"`;
 
 export function createProvider(env = process.env, deps = {}) {
@@ -82,9 +87,21 @@ export function createProvider(env = process.env, deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const limiter = deps.limiter ?? createLimiter(8);
-  const base = String(env.BOAT_API_BASE || API).replace(/\/+$/, '');
+  const base = API; // fixed: a configurable base could redirect the bearer key to another host
   const maxTtlSeconds = 86400;
-  const consented = () => env[CONSENT] === 'yes';
+  // The real environment (injectable in tests). Consent is re-read at every create — a value
+  // exported here consents and an explicit one wins over the file, but the env OBJECT this
+  // provider was built with is never trusted: the server shares it and refreshes it from the
+  // file, so only a fresh savedEnv() read sees a revoked line.
+  const baseEnv = deps.baseEnv ?? process.env;
+  const consented = () => (baseEnv[CONSENT] || savedEnv(env)[CONSENT]) === 'yes';
+  // This installation's owner id — the same value the server stamps as the `owner` label.
+  // deps.owner carries it in the server; a CLI process reads the file the server wrote.
+  const readOwner = () => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
+  const ownerId = () => deps.owner ?? readOwner();
+  const createdIds = new Set(); // ids this process created — ours whatever their labels say now
+  // Ours = our purpose label AND this installation's owner id (or an id we created this run).
+  const ours = (rec) => rec?.labels?.purpose === 'cloudy-cloud' && (rec.labels.owner === ownerId() || createdIds.has(rec.id));
   const apiKey = () => {
     if (!env[KEY_NAME]) throw fail('no_key', api.text.noKeyFix);
     return env[KEY_NAME];
@@ -167,10 +184,11 @@ export function createProvider(env = process.env, deps = {}) {
   };
 
   const getSandbox = (id) => ctl('GET', `/sandboxes/${encodeURIComponent(id)}`);
-  // Fetch + ownership check in one: a sandbox without our label is not ours, whatever the id.
+  // Fetch + ownership check in one: a sandbox without our purpose label and owner id is not
+  // ours, whatever the id — a teammate's cloudy-cloud worker must never be entered or mutated.
   const owned = async (id) => {
     const rec = (await getSandbox(id))?.sandbox;
-    if (rec?.labels?.purpose !== 'cloudy-cloud') throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
+    if (!ours(rec)) throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
     return rec;
   };
 
@@ -213,6 +231,7 @@ export function createProvider(env = process.env, deps = {}) {
             st = await ctl('GET', `${statusUrl}${useOffsets ? `?stdoutOffset=${outOff}&stderrOffset=${errOff}` : ''}`, undefined, { signal });
           } catch (e) {
             if (useOffsets && e.code === 'agent_outdated') return poll(false); // agent too old for offsets: take whole tails instead
+            if (e?.name === 'AbortError') { await stop(); throw aborted(); } // an abort mid-poll still kills the detached process
             throw e;
           }
           const so = typeof st.stdout === 'string' ? st.stdout : '';
@@ -225,6 +244,12 @@ export function createProvider(env = process.env, deps = {}) {
           } else { // no offsets: the answer is the tail of each log — deliver only the new tail
             if (so.length > stdout.length) { const add = so.slice(stdout.length); stdout = so; if (add) try { onStdout?.(add); } catch { /* a bad callback must not kill the call */ } }
             if (se.length > stderr.length) stderr = se;
+          }
+          // `more` says the agent still holds buffered output — drain it before deciding
+          // finished or timed out, or the tail of a finished command would be dropped.
+          if (st.more === true) {
+            if (now() >= deadline) { await stop(); throw fail('timeout', `timed out after ${Math.ceil(timeoutMs / 1000)} s`, out()); }
+            continue;
           }
           if (st.running === false || ['exited', 'lost'].includes(st.status)) return finish(st);
           if (now() >= deadline) { await stop(); throw fail('timeout', `timed out after ${Math.ceil(timeoutMs / 1000)} s`, out()); }
@@ -254,12 +279,13 @@ export function createProvider(env = process.env, deps = {}) {
     name: 'boat',
     keyName: KEY_NAME,
     caps: {
-      // hasServerTTL: ttlSeconds is Boat's server-side auto-stop — a lost client still stops the
-      // machine. It archives rather than deletes, which is why delete() permanently deletes and
-      // snapshots:false erases the disk on stop.
+      // hasServerTTL: ttlSeconds is Boat's server-side auto-stop — a lost client still stops
+      // the machine — but the deadline ARCHIVES rather than deletes (snapshots:false erases the
+      // disk on stop), so cloudy-cloud owns deletion: the deleteAt label is swept on list() and
+      // delete() permanently removes the record.
       // hasProxySecrets: Boat has no edge secret injection for a worker it did not prompt itself,
       // so values go on the VM, but only with consent.
-      hasServerTTL: true, hasProxySecrets: false, hasEgressPolicy: false,
+      hasServerTTL: false, hasProxySecrets: false, hasEgressPolicy: false,
       hasSnapshots: false, hasPortForward: false, hasPublish: true, hasSizes: false, hasShell: false,
       hasDisplay: false, hasMetrics: false,
       maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 8, maxConcurrentCalls: 8, uploadMaxBytes: 5 * 1024 * 1024,
@@ -300,36 +326,45 @@ export function createProvider(env = process.env, deps = {}) {
       const boxName = `cc-${String(all.agent ?? all.name ?? 'worker').replace(/[^A-Za-z0-9-]+/g, '-').slice(0, 40) || 'worker'}-${randomBytes(3).toString('hex')}`;
       const body = {
         type: 'default', ttlSeconds: ttl, name: boxName.slice(0, 120), labels: all,
-        noEnv: true, visibility: 'private', snapshots: false,
-        ...(envText.length <= 250_000 && { files: [{ path: ENVFILE, content: envText, encoding: 'utf8' }] }),
+        noEnv: true, visibility: 'private', snapshots: false, monitoring: false,
       };
-      // Everything after the create is covered by cleanup: a failure deletes the sandbox.
+      // The create may still have landed though every answer was lost (or carried no sandbox):
+      // our ccid and owner labels identify the sandbox exactly, so a retry never bills a second
+      // one and a foreign sandbox — even one the server filter returned first — is never adopted.
+      const recover = async () => {
+        const rows = await ctl('GET', `/sandboxes?label=${encodeURIComponent('purpose=cloudy-cloud')}&label=${encodeURIComponent(`ccid=${idem}`)}&limit=10`).then((r) => r?.sandboxes ?? []).catch(() => []);
+        return rows.find((f) => f.labels?.purpose === 'cloudy-cloud' && f.labels?.ccid === idem && f.labels?.owner === all.owner);
+      };
       let rec;
       try {
         rec = (await ctl('POST', '/sandboxes', body, { idem }))?.sandbox;
       } catch (e) {
-        // The create may still have landed though every answer was lost: the ccid label lets a
-        // list recover it, so a retry never bills a second sandbox.
-        const found = (await ctl('GET', `/sandboxes?label=${encodeURIComponent(`purpose=cloudy-cloud`)}&label=${encodeURIComponent(`ccid=${idem}`)}&limit=1`).then((r) => r?.sandboxes ?? []).catch(() => []))[0];
-        if (found?.id) rec = found;
-        else throw e;
+        rec = await recover();
+        if (!rec?.id) throw e;
       }
-      const id = rec?.id;
-      if (!id) throw fail('transient', 'the Boat create answer carried no sandbox id');
+      if (!rec?.id) {
+        rec = await recover();
+        if (!rec?.id) throw fail('transient', 'the Boat create answer carried no sandbox id');
+      }
+      const id = rec.id;
+      createdIds.add(id);
+      // Everything after the create is covered by cleanup: a failure deletes the sandbox.
       try {
         for (const deadline = t0 + 240_000; !READY.has(rec?.state); ) {
-          if (['error', 'cancelled'].includes(rec?.state)) throw fail('transient', `the Boat sandbox failed while starting (${rec?.error ?? rec.state})`);
+          if (['error', 'cancelled'].includes(rec?.state)) throw fail('transient', `the Boat sandbox failed while starting (${scrub(rec?.error ?? rec.state)})`);
           if (now() >= deadline) throw fail('transient', 'the Boat sandbox did not become ready within 240 s');
           await sleep(1000);
           rec = (await getSandbox(id))?.sandbox;
         }
         const sb = sandbox(id, rec);
+        // The env file must exist at mode 600 BEFORE any credential value lands — the files API
+        // has no mode field, so install creates it locked, the values are written, then the mode
+        // is re-enforced and verified. A failed check fails the create; the box is deleted.
+        await sb.commands.run(`install -m 600 /dev/null ${ENVFILE}`, { timeoutMs: 30_000 });
+        await sb.files.write(ENVFILE, envText);
+        await sb.commands.run(`chmod 600 ${ENVFILE} && [ "$(stat -c %a ${ENVFILE})" = 600 ]`, { timeoutMs: 30_000 })
+          .catch((e) => { throw fail('transient', `the env file on the Boat sandbox could not be locked to mode 600 (${e.message})`); });
         await sb.commands.run(PROVISION, { timeoutMs: 600_000 });
-        // An env file too big for the create `files` field lands here instead (still before return).
-        if (envText.length > 250_000) {
-          await sb.files.write(ENVFILE, envText);
-          await sb.commands.run(`chmod 600 ${ENVFILE}`, { timeoutMs: 30_000 });
-        }
         return sb;
       } catch (e) {
         await api.delete(id).catch(() => {});
@@ -345,6 +380,10 @@ export function createProvider(env = process.env, deps = {}) {
     },
 
     async list(labels = {}, { onError } = {}) {
+      // An explicit owner filter trusts the caller (the reaper asks for its own owner); without
+      // one only this installation's sandboxes are listed — a teammate's cloudy-cloud worker is
+      // never ours to see, sweep or delete.
+      const want = labels.owner ?? ownerId();
       const rows = [];
       let cursor = '';
       for (let pages = 0; pages < 50; pages++) {
@@ -356,6 +395,7 @@ export function createProvider(env = process.env, deps = {}) {
           // sandboxes, so every row is re-checked, and a caller label must match exactly.
           if (rec?.labels?.purpose !== 'cloudy-cloud') continue;
           if (!Object.entries(labels).every(([k, v]) => rec.labels[k] === v)) continue;
+          if (want === undefined ? (rec.labels.owner !== undefined && !createdIds.has(rec.id)) : rec.labels.owner !== want) continue;
           const deleteAt = Date.parse(rec.labels.deleteAt ?? '');
           if (deleteAt && deleteAt <= now()) {
             // Sweep expired owned sandboxes. A failed delete keeps the row visible (and the next
@@ -376,7 +416,7 @@ export function createProvider(env = process.env, deps = {}) {
     async delete(id, { retries = 2, log } = {}) {
       let rec;
       try { rec = (await getSandbox(id))?.sandbox; } catch (e) { if (e.code === 'not_found') return; throw e; }
-      if (rec?.labels?.purpose !== 'cloudy-cloud') throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
+      if (!ours(rec)) throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
       for (let attempt = 0; ; attempt++) {
         try {
           await ctl('DELETE', `/sandboxes/${encodeURIComponent(id)}`, undefined, { headers: { 'X-Ascii-Confirm-Delete': id } });
@@ -425,7 +465,7 @@ export function createProvider(env = process.env, deps = {}) {
     async plan() {
       try {
         const l = await ctl('GET', '/limits');
-        return { tier: l.sandboxPlanKey ?? (l.sandboxPlanDollars ? `$${l.sandboxPlanDollars}` : undefined), startsPerMinute: l.startLimits?.perMinute ?? 0, maxRunning: l.maxActiveSandboxes ?? 0, maxMachines: l.maxActiveSandboxes ?? 0, fetchedAt: now() };
+        return { tier: l.sandboxPlanKey ?? (l.sandboxPlanDollars ? `$${l.sandboxPlanDollars}` : undefined), specs: [], startsPerMinute: l.startLimits?.perMinute ?? 0, maxRunning: l.maxActiveSandboxes ?? 0, maxMachines: l.maxActiveSandboxes ?? 0, fetchedAt: now() };
       } catch { return null; } // a plan answer is best-effort: an org key may not read /limits
     },
 
@@ -434,7 +474,7 @@ export function createProvider(env = process.env, deps = {}) {
       // The header is piped to curl on stdin (-K -), so the key never sits in the command's argv.
       listMachines: `printf 'header = "Authorization: Bearer %s"\\n' "$BOAT_API_KEY" | curl -s -K - 'https://boat.dev/api/v1/sandboxes?label=purpose%3Dcloudy-cloud'`,
       noKeyFix: `BOAT_API_KEY is not set.\nCreate a key on https://boat.dev (Settings -> API keys), then add\nBOAT_API_KEY=<the key> to ~/.config/cloudy-cloud/env.`,
-      apiFix: `Check that the Boat API answers:\n  printf 'header = "Authorization: Bearer %s"\\n' "$BOAT_API_KEY" | curl -s -K - 'https://boat.dev/api/v1/sandboxes?limit=1'`,
+      apiFix: `Check that the Boat API answers (a status code, not a sandbox record):\n  printf 'header = "Authorization: Bearer %s"\\n' "$BOAT_API_KEY" | curl -s -o /dev/null -w '%{http_code}\\n' -K - 'https://boat.dev/api/v1/sandboxes?label=purpose%3Dcloudy-cloud&limit=1'`,
       githubTokenHelp: `Boat has no proxy secrets, so GH_TOKEN is written onto the sandbox in plaintext.\nAdd GH_TOKEN=<a token with write access> and ${CONSENT}=yes to ~/.config/cloudy-cloud/env.`,
       hostLabel: 'a Boat sandbox',
       coordinatorRefusal: 'Coordinators are not supported on the boat provider. Start workers directly from your own session with cloud_agent.',
@@ -444,7 +484,7 @@ export function createProvider(env = process.env, deps = {}) {
     id: rec.id, name: rec.labels?.name ?? rec.name, machineName: rec.name, labels: rec.labels ?? {},
     state: rec.state ?? '', status: STATUS[rec.state] ?? 'stopped',
     startedAt: Date.parse(rec.labels?.startedAt ?? '') || Date.parse(rec.createdAt) || 0,
-    deleteAt: rec.labels?.deleteAt, archiveAt: rec.archiveAfter, ...extra,
+    deleteAt: rec.labels?.deleteAt, archiveAt: Date.parse(rec.archiveAfter ?? '') || undefined, ...extra,
   });
   function noDisplay() { return fail('display_unsupported', 'boat desktops are not wired into cloudy-cloud yet; use `boat ssh <id>` or the dashboard.'); }
   return api;
