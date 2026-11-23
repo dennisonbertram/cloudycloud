@@ -268,7 +268,19 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
       },
       {
         "sdk": "getInfo",
@@ -276,7 +288,7 @@
       }
     ],
     "out": [
-      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\".\n  - Terminal: cloudy-cloud coordinator attach boss\n    (runs: npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude)\n\nStop it earlier with: cloudy-cloud coordinator stop boss"
+      "Coordinator boss is running on machine coord-boss and has started on the task. It never pauses. The server deletes it at <TIME>.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named \"boss\" (the link is not ready yet; get it with: cloudy-cloud coordinator status boss)\n  - Terminal: cloudy-cloud coordinator attach boss\n\nStop it earlier with: cloudy-cloud coordinator stop boss"
     ]
   },
   "start --json": {
@@ -406,7 +418,19 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
       },
       {
         "sdk": "getInfo",
@@ -414,7 +438,7 @@
       }
     ],
     "out": [
-      "{\"name\":\"boss\",\"machine\":\"coord-boss\",\"remoteControlName\":\"boss\",\"attach\":\"npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude\",\"started\":true}"
+      "{\"name\":\"boss\",\"machine\":\"coord-boss\",\"remoteControlName\":\"boss\",\"attach\":\"cloudy-cloud coordinator attach boss\",\"started\":true}"
     ]
   },
   "ls": {
@@ -436,7 +460,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p",
+        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true",
         "timeoutMs": 15000
       }
     ],
@@ -461,7 +485,7 @@
       }
     ],
     "out": [
-      "npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude"
+      "cloudy-cloud coordinator attach boss"
     ]
   },
   "stop": {

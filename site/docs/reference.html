@@ -260,7 +260,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <pre><code>cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO --task-file task.md --max-hours 8</code></pre>
 
 <h4 id="coordinator-attach">coordinator attach</h4>
-<p>Opens the coordinator's <code>tmux</code> session over SSH. On a terminal it opens the session itself. When the output is piped it prints the command instead, and you run that to connect. On Instabox the command has the form <code>npx --yes instabox@latest ssh &lt;machine&gt; -- tmux attach -t claude</code>; on self-hosted it is <code>ssh</code> plus <code>&lt;runtime&gt; exec -it</code> (inside a coordinator's container, the plain <code>exec</code> without SSH).</p>
+<p>Opens the coordinator's <code>tmux</code> session over SSH. On a terminal it opens the session itself. When the output is piped it prints <code>cloudy-cloud coordinator attach NAME</code> instead, and you run that in your own terminal. <code>coordinator start</code> and <code>coordinator status</code> show this same command, never the provider's own.</p>
 <pre><code>cloudy-cloud coordinator attach docs-fleet</code></pre>
 
 <h4 id="coordinator-ls">coordinator ls</h4>
@@ -269,7 +269,7 @@ cloudy-cloud coordinator finish [--force]</code></pre>
 <p>When the output is piped, it prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES and WAITING.</p>
 
 <h4 id="coordinator-status">coordinator status</h4>
-<p>Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) and the attach command. It reads the screen once. <code>--json</code> prints <code>name</code>, <code>machine</code>, <code>state</code>, <code>screenRead</code>, <code>waiting</code> (only when set) and <code>attach</code>.</p>
+<p>Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command. It reads the screen once. <code>--json</code> prints <code>name</code>, <code>machine</code>, <code>state</code>, <code>screenRead</code>, <code>waiting</code> (only when set), <code>remoteControlUrl</code> (only when known) and <code>attach</code>. <code>coordinator start</code> prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run <code>coordinator status NAME</code> later.</p>
 <pre><code>cloudy-cloud coordinator status NAME [--json]</code></pre>
 <p>Example:</p>
 <pre><code>cloudy-cloud coordinator status docs-fleet</code></pre>

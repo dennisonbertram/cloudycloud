@@ -243,7 +243,7 @@ test('start --task-file reads the file; empty or over 100 KB tasks are refused b
 test('start --json prints name, machine, remoteControlName and attach', async () => {
   const f = fixture();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps);
-  assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true });
+  assert.deepEqual(JSON.parse(f.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true });
 });
 
 test('start --json reports a structured error with guidance when the spend limit is hit', async () => {
@@ -287,10 +287,11 @@ test('stop deletes only the named coordinator', async () => {
   await assert.rejects(main(['stop', 'zzz'], f.deps), /No coordinator named zzz/);
 });
 
-test('attach prints the ssh command', async () => {
+test('attach off a terminal prints the cloudy-cloud attach command', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } }] });
   await main(['attach', 'a'], f.deps);
-  assert.equal(f.log.out[0], 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude');
+  assert.equal(f.log.out[0], 'cloudy-cloud coordinator attach a');
+  assert.doesNotMatch(f.log.out.join('\n'), /instabox|tmux/);
 });
 
 test('terminal control characters and key-shaped text are removed from displayed values', () => {
@@ -423,7 +424,8 @@ test('start asks the provider for a never-suspending machine from the snapshot w
   const out = [];
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, root: resolve('.'), out: (x) => out.push(x) });
   assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
-  assert.match(out.join('\n'), /fake ssh coord-boss -- tmux attach -t claude/);
+  assert.match(out.join('\n'), /Terminal: cloudy-cloud coordinator attach boss/);
+  assert.doesNotMatch(out.join('\n'), /fake ssh|runs:|tmux/);
 });
 
 // ---- how it looks ----
@@ -476,7 +478,7 @@ test('start on a terminal: ok with the deadline detail, a Reach it block with a 
   const g = fixture();
   g.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
-  assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true });
+  assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true });
 });
 
 test('stop and image on a terminal use status lines; piped output has no escapes', async () => {
@@ -587,8 +589,69 @@ test('start keeps the machine when the screen waits on a trust, MCP or Remote Co
     assert.match(text, /cloudy-cloud coordinator attach boss/);
     const g = fixture({ pane });
     await main([...START, '--json'], g.deps);
-    assert.deepEqual(JSON.parse(g.log.out[0]), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'npx --yes instabox@latest ssh coord-boss -- tmux attach -t claude', started: true, waiting: pane });
+    assert.deepEqual(JSON.parse(g.log.out[0]), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true, waiting: pane });
   }
+});
+
+// The fake machine answers every capture-pane command with `pane`; the link section follows the marker the real read prints.
+const LINK_MARK = '@@cc-link@@';
+const SID = 'session_01AbCdEfGh23';
+const URL_ = `https://claude.ai/code/${SID}`;
+const withLink = (...lines) => `Claude Code\n${LINK_MARK}\n${lines.join('\n')}\n`;
+
+test('start --json gives remoteControlUrl read from the session file', async () => {
+  const f = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+  await main([...START, '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, URL_);
+});
+
+test('start falls back to the session URL on the screen', async () => {
+  const f = fixture({ pane: withLink(`${URL_}`, `${URL_}`) });
+  await main([...START, '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, URL_);
+});
+
+test('start prints the link as plain text and, on a terminal, the link and a QR code', async () => {
+  const f = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+  await main(START, f.deps);
+  assert.match(f.log.out.join('\n'), new RegExp(`Remote Control: ${URL_}`));
+  assert.doesNotMatch(f.log.out.join('\n'), /[\u2580\u2584\u2588]/);
+  const g = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+  g.deps.ui = tty();
+  await main(START, g.deps);
+  const out = g.log.out.join('\n');
+  assert.ok(out.includes(URL_), out);
+  assert.match(out, /[\u2580\u2584\u2588]{3}/, 'a QR code is drawn');
+});
+
+test('a link that is not a plain session id is ignored; start still succeeds and points to status', async () => {
+  for (const bad of [`"bridgeSessionId":"session_x y; rm -rf /"`, `"bridgeSessionId":"session_ab;cd"`, 'https://evil.example/code/session_abc123', 'https://claude.ai.evil.example/code/session_abc']) {
+    const f = fixture({ pane: withLink(bad) });
+    await main([...START, '--json'], f.deps);
+    assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, undefined, bad);
+    const g = fixture({ pane: withLink(bad) });
+    await main(START, g.deps);
+    assert.match(g.log.out.join('\n'), /coordinator status boss/, bad);
+    assert.doesNotMatch(g.log.out.join('\n'), /evil|rm -rf/);
+  }
+});
+
+test('status gives the link in json and text; a terminal also draws the QR code', async () => {
+  const m = { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } };
+  const pane = withLink(`"bridgeSessionId":"${SID}"`);
+  const j = fixture({ machines: [m], pane });
+  await main(['status', 'a', '--json'], j.deps);
+  assert.equal(JSON.parse(j.log.out[0]).remoteControlUrl, URL_);
+  const t = fixture({ machines: [m], pane });
+  await main(['status', 'a'], t.deps);
+  assert.match(t.log.out.join('\n'), new RegExp(`Remote Control: ${URL_}`));
+  const u = fixture({ machines: [m], pane });
+  u.deps.ui = tty();
+  await main(['status', 'a'], u.deps);
+  assert.match(u.log.out.join('\n'), /[\u2580\u2584\u2588]{3}/);
+  const n = fixture({ machines: [m], pane: 'Claude Code\n' });
+  await main(['status', 'a', '--json'], n.deps);
+  assert.equal(JSON.parse(n.log.out[0]).remoteControlUrl, undefined);
 });
 
 test('start fails and deletes the machine when the session exits at once (capture-pane fails)', async () => {
@@ -655,7 +718,7 @@ test('a provider error while reading the screen keeps the machine and says the s
     const j = JSON.parse(f.log.out[0]);
     assert.equal(j.started, true);
     assert.equal(j.screenRead, false);
-    assert.match(j.attach, /tmux attach/);
+    assert.equal(j.attach, "cloudy-cloud coordinator attach boss");
   }
 });
 
@@ -845,11 +908,11 @@ test('status NAME prints state, the waiting line and the attach command; --json 
   const text = f.log.out.join('\n');
   assert.match(text, /running/);
   assert.match(text, new RegExp(`waiting on a prompt: ${WAIT_LINE.replace(/[?.]/g, '\\$&')}`));
-  assert.match(text, /tmux attach -t claude/);
+  assert.match(text, /: cloudy-cloud coordinator attach a$/);
   const g = stuck();
   await main(['status', 'a', '--json'], g.deps);
   const j = JSON.parse(g.log.out[0]);
-  assert.deepEqual([j.name, j.state, j.waiting, j.screenRead, j.attach], ['a', 'running', WAIT_LINE, true, 'npx --yes instabox@latest ssh coord-a -- tmux attach -t claude']);
+  assert.deepEqual([j.name, j.state, j.waiting, j.screenRead, j.attach], ['a', 'running', WAIT_LINE, true, 'cloudy-cloud coordinator attach a']);
   assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane/.test(c) && c !== '/data/home'), [], 'only the pane read runs');
   await assert.rejects(main(['status', 'zzz'], f.deps), /No coordinator named zzz/);
   await assert.rejects(main(['status'], f.deps), /cloudy-cloud coordinator status/);
@@ -2005,15 +2068,15 @@ test('status and attach hints fall back to the machine id when the server-report
   const f = fixture({ machines: [m] });
   await main(['status', 'a'], f.deps);
   const text = f.log.out.join('\n');
-  assert.match(text, /npx --yes instabox@latest ssh m1 -- tmux attach -t claude/);
-  assert.doesNotMatch(text, /ssh coord a|rm -rf --/);
+  assert.match(text, /cloudy-cloud coordinator attach a/);
+  assert.doesNotMatch(text, /ssh|tmux/);
   const g = fixture({ machines: [m] });
   await main(['status', 'a', '--json'], g.deps);
   const j = JSON.parse(g.log.out[0]);
-  assert.equal(j.attach, 'npx --yes instabox@latest ssh m1 -- tmux attach -t claude');
+  assert.equal(j.attach, 'cloudy-cloud coordinator attach a');
   const h = fixture({ machines: [m] });
   await main(['attach', 'a'], h.deps);
-  assert.equal(h.log.out[0], 'npx --yes instabox@latest ssh m1 -- tmux attach -t claude');
+  assert.equal(h.log.out[0], 'cloudy-cloud coordinator attach a');
 });
 
 test('start hints use the machine id when the server-reported name is not a plain word', async () => {
@@ -2022,7 +2085,7 @@ test('start hints use the machine id when the server-reported name is not a plai
   f.deps.sdk.Sandbox.create = async (t, o) => { const s = await orig(t, o); s.getInfo = async () => ({ name: 'coord x; rm -rf /' }); return s; };
   await main([...START, '--json'], f.deps);
   const j = JSON.parse(f.log.out[0]);
-  assert.equal(j.attach, 'npx --yes instabox@latest ssh m_new -- tmux attach -t claude');
+  assert.equal(j.attach, "cloudy-cloud coordinator attach boss");
   assert.equal(j.machine, 'coord x; rm -rf /'); // the reported name stays data, never a command word
 });
 
