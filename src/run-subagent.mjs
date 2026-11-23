@@ -456,7 +456,7 @@ async function checkTools(a) {
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress }, labels) => provider.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }) })); // role and egress are options, not labels: Instabox's wire request stays the same
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress, signal }, labels) => provider.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }), ...(signal && { signal }) })); // role and egress are options, not labels: Instabox's wire request stays the same
   if (a.mcpError) throw new Error(a.mcpError);
   const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = a.branch;
@@ -501,10 +501,11 @@ async function setup(a, ctx) {
     // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
     const named = proxySecrets(env);
     const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    // On a localSecrets provider only a local value is usable — a bare name in CLOUDY_CLOUD_PROXY_SECRETS has
-    // nothing to substitute — so a credential with a value wins; a valueless name is still picked (and errors).
+    // On a provider that cannot attach a proxy-secret name (no proxy secrets, or localSecrets where the
+    // name has nothing to substitute) a credential with a local value wins over a bare name in
+    // CLOUDY_CLOUD_PROXY_SECRETS; a valueless name is still picked last (and errors below).
     const keyName = a.profile ? a.profile.keyName
-      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && named.has(n)))
+      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && proxied.has(n)))
         ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
     const keySecrets = [];
     if (keyName && provider.caps.localSecrets) {
@@ -522,14 +523,21 @@ async function setup(a, ctx) {
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [] };
     if (coord.legacy?.length) throw refused(coord.legacy[0]);
-    a.cancelQueue = () => ctx.queue.cancel(a);
-    a.sandbox = await ctx.queue.create(a, () => {
-      const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
-      a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-      const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-      return createSandbox(envs, { deleteAfterSeconds, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
-    });
+    a.createAbort = new AbortController(); // agent-scoped: cancelQueue aborts an in-flight provider create too
+    a.cancelQueue = () => { a.createAbort.abort(); ctx.queue.cancel(a); };
+    try {
+      a.sandbox = await ctx.queue.create(a, () => {
+        const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
+        a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
+        const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
+        return createSandbox(envs, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
+      });
+    } catch (e) {
+      if (a.cancelled) throw new Error('cancelled'); // an abort mid-create reads as a stop, not a provider error
+      throw e;
+    }
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
+    if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);

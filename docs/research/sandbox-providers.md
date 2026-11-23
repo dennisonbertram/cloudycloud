@@ -107,8 +107,19 @@ Notes on the table:
 - **boat** (checked 2026-11; [boat.dev](https://boat.dev), [docs](https://docs.boat.dev)) — **implemented** as `src/providers/boat.mjs` on `feat/boat-provider`:
   - Persistent Ubuntu 24.04 VMs (x86_64) behind a documented REST API (`https://boat.dev/api/v1`, bearer `boat_…` keys): create/get/list/delete sandboxes, run commands (detached, polled with byte offsets), read/write files, publish ports (`POST /sandboxes/{id}/host`, token-gated URLs), `GET /limits`.
   - Fits every hard requirement except proxy secrets: server-side `ttlSeconds` auto-stop, create-time `labels` (and a `label` list filter), permanent `DELETE`, `visibility: private`, `noEnv` and `snapshots: false`, and a `files` entry that places the worker env file at create.
-  - No secret substitution, so credential values sit on the VM after the user's `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes` consent (the self-hosted model). Org keys list other users' sandboxes, so ownership is enforced client-side with the `purpose=cloudy-cloud` label. No outbound firewall API, so `CLOUDY_CLOUD_EGRESS_ALLOW` is refused.
+  - No secret substitution, so credential values sit on the VM after the user's `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes` consent (the self-hosted model). Org keys list other users' sandboxes, so ownership is enforced client-side: `purpose=cloudy-cloud` plus an `install` label matching this installation's stable id (`installId()` in `src/config.mjs`, kept in `install-id` beside the owner file); the per-session `owner` label only scopes the reaper. No outbound firewall API, so `CLOUDY_CLOUD_EGRESS_ALLOW` is refused.
   - Status: unit-tested against a fake fetch; not yet run against the live API.
+
+## E2B (added 2026-11, experimental)
+
+[E2B](https://e2b.dev) hosts Firecracker microVMs for agents. The REST control plane is `https://api.e2b.app` (`X-API-Key` auth, keys `e2b_…`; create `POST /v2/sandboxes`, list `GET /v2/sandboxes`, detail/delete/timeout/metrics under `/sandboxes/{id}`), and commands and files run through envd on the shared host `https://sandbox.e2b.app`, routed by `E2b-Sandbox-Id`/`E2b-Sandbox-Port` headers with a per-sandbox `X-Access-Token` (the `envdAccessToken` on the sandbox detail; `POST /v2/sandboxes/{id}/connect` resumes a paused sandbox and rotates it). The "no way to keep secrets off the machine" verdict above still holds — there is no proxy-secret facility — so the adapter gates plaintext credential values on `CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes` (the self-hosted shape). What makes E2B viable where the earlier note parked it:
+
+- **Server-side timeout** (`timeout` at create, `POST /sandboxes/{id}/timeout` to re-arm) supplies the delete deadline; a refresher keeps it alive while the worker runs and a ladder (requested, 3600, 300) absorbs a plan cap.
+- **Create-time network rules** (`network.allowOut` + `denyOut`) enforce `CLOUDY_CLOUD_EGRESS_ALLOW` provider-side, with `*.suffix` wildcard domains.
+- **Metadata** on create (`purpose=cloudy-cloud` + an `install` id stable across sessions, `ccIdem` idempotency) plus `Idempotency-Key` on the POST; a lost create response is recovered by listing, and `idempotency_in_progress` (409) retries the same request. Ownership is the boat rule: `purpose` + matching `install` (or created by this process); the per-session `owner` only scopes the reaper.
+- **envd's Connect RPC** covers process start/connect-by-tag/signal and binary `/files` I/O with plain `fetch` — no SDK dependency. Process `Connect` reattaches a dropped command stream by tag.
+
+Public previews are `https://<port>-<sandboxID>.e2b.app` (public; a port cannot be unpublished alone), there is no private tunnel (`forwardPort` is refused) and no coordinator path (a sandbox has no Docker socket). Pricing sits at the expensive end of the table above — about $0.166/h for the reference 2 vCPU/4 GiB size, Pro $150/mo. Not yet run live: check the rotated token on resume, the real `timeout` cap behaviour and the `/sandboxes/{id}/metrics` shape first.
 
 ## Recommendation
 

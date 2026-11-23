@@ -243,6 +243,11 @@ find_missing() {
   elif [ "$provider" = boat ]; then
     # The Boat key counts from the environment or the file.
     [ -z "$(printenv BOAT_API_KEY)" ] && ! grep -q '^BOAT_API_KEY=.' "$config" 2>/dev/null && missing='Boat API key'
+  elif [ "$provider" = e2b ]; then
+    # The E2B key counts from the environment or the file; consent is asked at create time.
+    if [ -z "$(printenv E2B_API_KEY)" ] && ! grep -q '^E2B_API_KEY=.' "$config" 2>/dev/null; then
+      missing='E2B API key'
+    fi
   # The Instabox key counts from the environment or the file.
   elif [ -z "$(printenv INSTABOX_API_KEY)" ] && ! grep -q '^INSTABOX_API_KEY=.' "$config" 2>/dev/null; then
     missing='Instabox API key'
@@ -252,7 +257,7 @@ find_missing() {
   # A Claude secret named in CLOUDY_CLOUD_PROXY_SECRETS (stored as an Instabox secret) counts too.
   # A Codex host needs no Claude login; a worker that does needs it is refused with its own next step.
   if [ -z "$missing" ] && [ "$agent" = claude ] && ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.' "$config" 2>/dev/null \
-    && { [ "$provider" = self-hosted ] || [ "$provider" = boat ] || ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | tr -d ' \t' | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; }; then
+    && { [ "$provider" = self-hosted ] || [ "$provider" = boat ] || [ "$provider" = e2b ] || ! sed -n 's/^CLOUDY_CLOUD_PROXY_SECRETS=//p' "$config" 2>/dev/null | tail -n 1 | tr -d ' \t' | grep -qE '(^|,)(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(,|$)'; }; then
     missing='Claude token'
   fi
 }
@@ -280,7 +285,7 @@ case $root in *'"'*|*'\'*) warn "cloudy-cloud: install path contains a quote or 
 export CLOUDY_CLOUD_CONFIG="$config"
 update_notice
 if [ "$agent" = codex ]; then exec node "$root/src/host-codex.mjs" "$@"; fi
-envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","CLOUDY_CLOUD_PROVIDER":"${CLOUDY_CLOUD_PROVIDER:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","BOAT_API_KEY":"${BOAT_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}","CLOUDY_CLOUD_PROXY_SECRETS":"${CLOUDY_CLOUD_PROXY_SECRETS:-}","CLOUDY_CLOUD_APT_PACKAGES":"${CLOUDY_CLOUD_APT_PACKAGES:-}","CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX":"${CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX:-}"'
+envjson='{"CLOUDY_CLOUD_CONFIG":"${CLOUDY_CLOUD_CONFIG:-}","CLOUDY_CLOUD_PROVIDER":"${CLOUDY_CLOUD_PROVIDER:-}","INSTABOX_API_KEY":"${INSTABOX_API_KEY:-}","BOAT_API_KEY":"${BOAT_API_KEY:-}","E2B_API_KEY":"${E2B_API_KEY:-}","ANTHROPIC_API_KEY":"${ANTHROPIC_API_KEY:-}","CLAUDE_CODE_OAUTH_TOKEN":"${CLAUDE_CODE_OAUTH_TOKEN:-}","CLOUDY_CLOUD_PROFILES":"${CLOUDY_CLOUD_PROFILES:-}","CLOUDY_CLOUD_WORKER_HOURS":"${CLOUDY_CLOUD_WORKER_HOURS:-}","CLOUDY_CLOUD_STARTS_PER_MIN":"${CLOUDY_CLOUD_STARTS_PER_MIN:-}","CLOUDY_CLOUD_MAX_INSTABOX_CALLS":"${CLOUDY_CLOUD_MAX_INSTABOX_CALLS:-}","CLOUDY_CLOUD_PROXY_SECRETS":"${CLOUDY_CLOUD_PROXY_SECRETS:-}","CLOUDY_CLOUD_APT_PACKAGES":"${CLOUDY_CLOUD_APT_PACKAGES:-}","CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX":"${CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX:-}","CLOUDY_CLOUD_E2B_TOKEN_ON_BOX":"${CLOUDY_CLOUD_E2B_TOKEN_ON_BOX:-}"}'
 # The egress allowlist reaches the server only when it is set, so a shell value survives modes that restrict
 # inherited MCP variables. A set-but-empty value expands to a space: still set, so the server rejects it instead
 # of silently dropping the policy; unset leaves the variable out entirely.

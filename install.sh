@@ -271,6 +271,14 @@ boat_http_code() {
 
 api_get() { printf 'header = "X-API-Key: %s"\n' "$1" | curl -sS --max-time 15 -K - "$API$2" 2>/dev/null; }
 
+# e2b_code KEY: the HTTP status of one read-only GET /v2/sandboxes for the key (the key goes to curl on stdin).
+e2b_code() {
+  local code
+  code=$(printf 'header = "X-API-Key: %s"\n' "$1" |
+    curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -K - "https://api.e2b.app/v2/sandboxes" 2>/dev/null) || true
+  printf '%s' "${code:-000}"
+}
+
 # Discards anything waiting on the terminal, so a leftover fragment cannot answer a question.
 drain_tty() {
   { : </dev/tty; } 2>/dev/null || return 0
@@ -424,8 +432,8 @@ check_setup() {
   local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov="" root msb v egerr egv l rc=0
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
-  provider=$(eff CLOUDY_CLOUD_PROVIDER)
-  case $provider in self-hosted|boat) prov=" --provider $provider" ;; esac
+  provider=$(eff CLOUDY_CLOUD_PROVIDER); provider=${provider:-instabox} # unset means the default
+  case $provider in self-hosted|boat|e2b) prov=" --provider $provider" ;; esac
   step 2 "Provider"
   if [ "$provider" = microsandbox ]; then
     msb=$(msb_bin)
@@ -470,6 +478,25 @@ check_setup() {
   elif [ "$provider" = self-hosted ]; then
     host=$(eff CLOUDY_CLOUD_SSH_HOST)
     if [ -n "$host" ]; then ok "Your own machine is set to $host"; else bad "No SSH host is saved for your own machine"; fails=1; setupfix=1; fi
+  elif [ "$provider" = e2b ]; then
+    key=$(eff E2B_API_KEY)
+    if [ -z "$key" ]; then bad "No E2B API key is saved (E2B_API_KEY)"; fails=1; setupfix=1
+    else
+      code=$(e2b_code "$key")
+      case $code in
+        200) ok "E2B key works" ;;
+        401|403) bad "E2B rejected the saved key (HTTP $code)"; fails=1; setupfix=1 ;;
+        *) warn "Could not check the E2B key" "no answer from the E2B API" ;;
+      esac
+    fi
+    if [ "$(eff CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" = yes ]; then
+      ok "Credential values may go into E2B sandboxes" "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes"
+    else
+      bad "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX is not yes, so no sandbox can be created"; fails=1; setupfix=1
+      hint "This adapter writes worker credentials into each sandbox's"
+      hint "own environment. Allow it with"
+      hint "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes in $(cfg)."
+    fi
   else
     key=$(eff INSTABOX_API_KEY)
     if [ -z "$key" ]; then bad "No Instabox key is saved"; fails=1; setupfix=1
@@ -527,13 +554,16 @@ check_setup() {
     # Without a Claude token every worker needs a profile, and a profile needs one of these credentials.
     local usable="" plain=""
     for n in OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-      if is_proxied $n || { [ "$provider" = self-hosted ] && [ -n "$(eff $n)" ]; }; then usable=1
-      elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+      # e2b and self-hosted write the literal value onto the box; a proxy-secret name stored in
+      # Instabox is usable only on instabox, where a plain value is refused instead.
+      if [ "$provider" = instabox ]; then
+        if is_proxied $n; then usable=1; elif [ -n "$(eff $n)" ]; then plain=${plain:-$n}; fi
+      elif [ -n "$(eff $n)" ]; then usable=1; fi
     done
     [ -f "$(codex_auth_file)" ] && usable=1
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # an unprofiled Claude worker uses the first Claude credential with a value or a proxy secret, as the runtime does
-      [ -n "$(eff $n)" ] || is_proxied $n || continue
-      if is_proxied $n || [ "$provider" = self-hosted ]; then usable=1; else plain=${plain:-$n}; fi
+      [ -n "$(eff $n)" ] || { [ "$provider" = instabox ] && is_proxied $n; } || continue
+      if [ "$provider" != instabox ] || is_proxied $n; then usable=1; else plain=${plain:-$n}; fi
       break
     done
     if [ -n "$usable" ]; then ok "A worker credential is saved"
@@ -559,11 +589,12 @@ check_setup() {
       hint "  $(codex_auth_file)"
     fi
   else
-  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or a proxy secret
-    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || is_proxied $n; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
+  for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do # the runtime uses the first one that has a value or (on instabox) a proxy secret
+    # e2b and self-hosted write the credential VALUE onto the box, so a proxy-secret name alone does not count there.
+    if [ -z "$name" ] && { [ -n "$(eff $n)" ] || { [ "$provider" = instabox ] && is_proxied $n; }; }; then name=$n; [ -z "$(eff $n)" ] || lit=1; fi
   done
   if [ -z "$name" ]; then bad "No Claude token is saved, so subagents cannot sign in"; fails=1; setupfix=1
-  elif [ "$provider" != self-hosted ] && [ -n "$lit" ] && ! is_proxied "$name"; then
+  elif [ "$provider" != self-hosted ] && [ "$provider" != e2b ] && [ -n "$lit" ] && ! is_proxied "$name"; then
     bad "$name is a plain value, not a proxy secret"; fails=1; setupfix=1
     hint "Instabox refuses to copy a real key to a machine."
     hint "Rerun setup to store it as a proxy secret."
@@ -640,6 +671,14 @@ check_setup() {
       bad "GH_TOKEN is not allowed on your own machine, so subagents cannot push"; fails=1; setupfix=1
       hint "Set CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes to allow it"
     else ok "GH_TOKEN is saved and allowed on your own machine"; fi
+  elif [ "$provider" = e2b ]; then
+    if [ -z "$(eff GH_TOKEN)" ]; then bad "GH_TOKEN is not saved, so subagents cannot push"; fails=1; setupfix=1
+      hint "Add GH_TOKEN=<a token with write access> to $(cfg);"
+      hint "it is written into each sandbox you consented to."
+    elif [ "$(eff CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" != yes ]; then
+      bad "GH_TOKEN is not allowed in an E2B sandbox"; fails=1; setupfix=1
+      hint "Set CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes to allow it"
+    else ok "GH_TOKEN is saved" "the value goes into each sandbox"; fi
   else
     state=$(gh_secret_state "$key")
     case $state in
@@ -854,7 +893,7 @@ link_command() { # link_command ROOT
 
 KEYLEN=56   # length of an Instabox key: ibk_ plus 52 characters
 TOKLEN=108  # usual length of a token from claude setup-token
-STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked"; STATUS_COORD="not set up"; STATUS_BOAT="not set up"; STATUS_BOAT_CONSENT="not set up"
+STATUS_INSTABOX="not set up"; STATUS_CLAUDE="not set up"; STATUS_GH="not checked"; STATUS_COORD="not set up"; STATUS_BOAT="not set up"; STATUS_BOAT_CONSENT="not set up"; STATUS_E2B="not set up"
 INCOMPLETE=""
 LOCAL_ACCOUNT=""
 
@@ -871,7 +910,7 @@ more_key() { case $1 in PARTICLE_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CLOUD
 # coordinators_offered: false where a local coordinator image cannot run here: self-hosted has its own
 # coordinator flow, microsandbox has no coordinator support, and local coordinators use docker, not podman.
 coordinators_offered() {
-  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox|boat) return 1 ;; esac
+  case ${PROVIDER:-$(eff CLOUDY_CLOUD_PROVIDER)} in self-hosted|microsandbox|boat|e2b) return 1 ;; esac
   [ "$(eff CLOUDY_CLOUD_CONTAINER_RUNTIME)" != podman ] || return 1
   command -v docker >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1
 }
@@ -1180,6 +1219,101 @@ setup_github_boat() {
   hint "With CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes the value is written onto each worker sandbox."
 }
 
+# The E2B consent: this adapter writes credential VALUES into each sandbox's environment, which
+# needs an explicit yes. Saved as CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes; a no removes any saved yes.
+e2b_consent() {
+  if [ "$(get_saved CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" = yes ]; then
+    ok "Credential values may go into E2B sandboxes" "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes"
+    return 0
+  fi
+  ask "Credential values inside each E2B sandbox" \
+    "This adapter writes every worker credential (GH_TOKEN, the Claude" \
+    "token, profile keys) into each sandbox's own environment, where" \
+    "anything running inside the sandbox could read it. Sandboxes run in your" \
+    "E2B team and are deleted when their timeout ends."
+  if yn_strict "Allow credential values inside E2B sandboxes?"; then
+    write_env CLOUDY_CLOUD_E2B_TOKEN_ON_BOX yes || { bad "Could not write $(cfg)." >&2; exit 1; }
+    ok "Consent saved" "CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes"
+  else
+    del_env CLOUDY_CLOUD_E2B_TOKEN_ON_BOX || true
+    warn "Not allowed: cloud_agent refuses to create E2B sandboxes" "add CLOUDY_CLOUD_E2B_TOKEN_ON_BOX=yes to $(cfg) to allow it"
+    incomplete "the E2B credential consent was declined"
+  fi
+}
+
+setup_e2b() {
+  local saved code key tries=0
+  saved=$(get_saved E2B_API_KEY)
+  if [ -n "$saved" ]; then
+    spin_start "Checking the saved E2B key"
+    code=$(e2b_code "$saved")
+    spin_stop
+    if [ "$code" = 200 ]; then
+      STATUS_E2B="OK ($(mask e2b_ "$saved"))"
+      ok "E2B key saved and working" "$(mask e2b_ "$saved")${SPIN_T:+, $SPIN_T}"
+      yn "Replace it?" || { e2b_consent; return 0; }
+    else
+      warn "E2B key saved ($(mask e2b_ "$saved")) but the check failed" "HTTP $code"
+    fi
+  fi
+  while [ "$tries" -lt 3 ]; do
+    drain_tty
+    ask "E2B API key" "Create one at https://e2b.dev (dashboard, then API Keys)" "It starts with e2b_."
+    ask_line "Paste it (nothing shows as you paste${saved:+; Enter keeps the saved key}):"
+    read_secret key
+    if [ -z "$key" ]; then
+      [ -n "$saved" ] || stop_empty
+      ok "Kept the saved key"; e2b_consent; return 0
+    fi
+    key=$(clean_paste "$key")
+    case $key in e2b_*) ;; *)
+      bad "That does not look like an E2B API key." "It should start with e2b_. Create one at https://e2b.dev."
+      tries=$((tries + 1)); continue ;;
+    esac
+    spin_start "Checking the key with E2B"
+    code=$(e2b_code "$key")
+    spin_stop
+    case $code in
+      200) ok "E2B key works" "$SPIN_T" ;;
+      401|403) bad "E2B rejected this key." "Create a new one at https://e2b.dev"; tries=$((tries + 1)); continue ;;
+      *) yn "Could not check the key (HTTP $code). Save it anyway?" || { tries=$((tries + 1)); continue; } ;;
+    esac
+    write_env E2B_API_KEY "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+    STATUS_E2B="OK ($(mask e2b_ "$key"))"
+    ok "Saved the E2B key" "$(mask e2b_ "$key")"
+    break
+  done
+  [ -n "$(get_saved E2B_API_KEY)" ] || return 1
+  e2b_consent
+}
+
+# GH_TOKEN for a provider whose sandboxes hold real values (e2b): a plain prompt, saved like the other keys.
+setup_gh_on_box() {
+  local saved key
+  saved=$(get_saved GH_TOKEN)
+  if [ -n "$saved" ]; then
+    GH_RESULT="OK (saved in the env file)"
+    ok "GitHub token saved" "$(mask "" "$saved")"
+    yn "Replace it?" || return 0
+  fi
+  drain_tty
+  ask "GitHub token" "Subagents push their branches with it. It is written into each E2B sandbox," \
+    "which you allowed above. Create a fine-grained token at" \
+    "https://github.com/settings/personal-access-tokens/new" \
+    "Repository access: only the repos you will use with cloudy-cloud." \
+    "Permissions: Contents, Pull requests and Workflows read and write; Actions read."
+  ask_line "Paste it (nothing shows as you paste; Enter to skip):"
+  read_secret key
+  if [ -z "$key" ]; then
+    warn "Skipped GH_TOKEN; subagents cannot push without it." "run $(rerun_cmd) again to add it"
+    GH_RESULT="not saved"; return
+  fi
+  key=$(clean_paste "$key")
+  write_env GH_TOKEN "$key" || { bad "Could not write $(cfg)." >&2; exit 1; }
+  GH_RESULT="OK (saved in the env file)"
+  ok "Saved the GitHub token" "$(mask "" "$key")"
+}
+
 setup_claude() {
   local saved key tries=0 auto=1 acct marker result reason shown
   migrate_key CLAUDE_CODE_OAUTH_TOKEN || true
@@ -1440,21 +1574,21 @@ summary_row() {
   esac
 }
 
-# choose_provider [NAME [DEFAULT]]: sets PROVIDER to instabox, self-hosted or boat, asking unless NAME is given. Enter means DEFAULT (instabox).
+# choose_provider [NAME [DEFAULT]]: sets PROVIDER to instabox, self-hosted, boat or e2b, asking unless NAME is given. Enter means DEFAULT (instabox).
 # Nothing is saved here; a changed provider is written once its own step has what it needs.
 choose_provider() {
-  local a def=${2:-instabox} d1="" d2="" d3="" defnum=1
+  local a def=${2:-instabox} d1="" d2="" d3="" d4="" defnum=1
   case ${1:-} in
-    instabox|self-hosted|boat) PROVIDER=$1; return 0 ;;
+    instabox|self-hosted|boat|e2b) PROVIDER=$1; return 0 ;;
     "") ;;
-    *) bad "Unknown provider \"$1\"" "use --provider instabox, --provider self-hosted or --provider boat" >&2; exit 1 ;;
+    *) bad "Unknown provider \"$1\"" "use --provider instabox, --provider self-hosted, --provider boat or --provider e2b" >&2; exit 1 ;;
   esac
-  case $def in self-hosted) d2=" (saved, Enter keeps it)"; defnum=2 ;; boat) d3=" (saved, Enter keeps it)"; defnum=3 ;; *) d1=" (default)" ;; esac
+  case $def in self-hosted) d2=" (saved, Enter keeps it)"; defnum=2 ;; boat) d3=" (saved, Enter keeps it)"; defnum=3 ;; e2b) d4=" (saved, Enter keeps it)"; defnum=4 ;; *) d1=" (default)" ;; esac
   drain_tty
-  ask "Where should subagents run?" "1  Instabox cloud$d1" "2  your own machine over SSH (a Mac or Linux box you control)$d2" "3  boat.dev cloud (a persistent Ubuntu VM)$d3"
-  ask_line "Type 1, 2 or 3 (Enter for $defnum):"
+  ask "Where should subagents run?" "1  Instabox cloud$d1" "2  your own machine over SSH (a Mac or Linux box you control)$d2" "3  boat.dev cloud (a persistent Ubuntu VM)$d3" "4  E2B cloud (a Firecracker microVM)$d4"
+  ask_line "Type 1, 2, 3 or 4 (Enter for $defnum):"
   IFS= read -r a </dev/tty || a=""
-  case $a in 1) PROVIDER=instabox ;; 2) PROVIDER=self-hosted ;; 3) PROVIDER=boat ;; *) PROVIDER=$def ;; esac
+  case $a in 1) PROVIDER=instabox ;; 2) PROVIDER=self-hosted ;; 3) PROVIDER=boat ;; 4) PROVIDER=e2b ;; *) PROVIDER=$def ;; esac
 }
 
 # choose_agents: sets AGENTS without asking when it can: the saved choice, else claude if found, else the agents found on PATH.
@@ -1511,17 +1645,18 @@ setup_self_hosted() {
 # worker_usable: some credential can start a first worker on this provider (Instabox needs a proxy secret; a self-hosted box or boat sandbox takes a saved value).
 worker_usable() {
   local n
-  # A boat worker writes credentials onto the sandbox, so without the consent nothing is usable.
+  # A boat or e2b worker writes credentials onto the sandbox, so without the consent nothing is usable.
   if [ "$PROVIDER" = boat ] && [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" != yes ]; then return 1; fi
+  if [ "$PROVIDER" = e2b ] && [ "$(get_saved CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" != yes ]; then return 1; fi
   # With claude among the agents, the Claude step above already handled the Claude credential (saved, or declined by you).
   if agents_has claude; then
     for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do { [ -n "$(get_saved $n)" ] || { [ "$PROVIDER" = instabox ] && is_proxied $n; }; } && return 0; done
   fi
   for n in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY PARTICLE_API_KEY OPENROUTER_API_KEY; do
-    # A proxy-secret name resolves only on Instabox: boat and self-hosted write real values and
+    # A proxy-secret name resolves only on Instabox: boat, e2b and self-hosted write real values and
     # have nothing to substitute a bare name with, so only a saved value counts for them.
     [ "$PROVIDER" = instabox ] && is_proxied $n && return 0
-    case $PROVIDER in self-hosted|boat) [ -n "$(get_saved $n)" ] && return 0 ;; esac
+    case $PROVIDER in self-hosted|boat|e2b) [ -n "$(get_saved $n)" ] && return 0 ;; esac
   done
   [ -f "$(codex_auth_file)" ]
 }
@@ -1532,7 +1667,7 @@ incomplete() { INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$1"; }
 next_setup_cmd() {
   local c; c=$(rerun_cmd)
   case $INCOMPLETE in *"coordinator image"*) c="$c --more" ;; esac
-  case ${PROVIDER:-} in self-hosted|boat) c="$c --provider $PROVIDER" ;; esac
+  case ${PROVIDER:-} in self-hosted|boat|e2b) c="$c --provider $PROVIDER" ;; esac
   printf '%s' "$c"
 }
 
@@ -1543,7 +1678,7 @@ ask_worker_keys() {
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 }
 
-usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat] [--check-only]" >&2; }
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat|e2b] [--check-only]" >&2; }
 
 main() {
   local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
@@ -1556,7 +1691,7 @@ main() {
     esac
   done
   provider_arg=${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-}} # an exported name resolves like the flag, so the launcher's setup offer follows the shell's provider
-  case $provider_arg in ""|instabox|self-hosted|microsandbox|boat) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox or boat" >&2; exit 2 ;; esac
+  case $provider_arg in ""|instabox|self-hosted|microsandbox|boat|e2b) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox, boat or e2b" >&2; exit 2 ;; esac
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
   root=$(cd "$(dirname "$0")" && pwd)
@@ -1605,7 +1740,7 @@ main() {
   link_skill "$root"
 
   # Instabox is the default; the question appears only when a non-default choice is saved and neither --provider nor an exported name resolved one. Enter keeps the saved one.
-  case $saved_provider in self-hosted|boat) ;; *) [ -n "$provider_arg" ] || provider_arg=instabox ;; esac
+  case $saved_provider in self-hosted|boat|e2b) ;; *) [ -n "$provider_arg" ] || provider_arg=instabox ;; esac
   choose_provider "$provider_arg" "$saved_provider"
   choose_agents
   if agents_has claude; then
@@ -1615,6 +1750,7 @@ main() {
   fi
   warn_shell_env INSTABOX_API_KEY
   warn_shell_env BOAT_API_KEY
+  warn_shell_env E2B_API_KEY
   if [ "$PROVIDER" = self-hosted ]; then
     step 2 "Your own machine"
     setup_self_hosted "$root"
@@ -1625,6 +1761,12 @@ main() {
     setup_boat_consent || true # a no is recorded by the missing line; the check and the summary report it
     # Unlike Instabox (the default), boat must save the provider line or the launcher falls back to instabox.
     [ "$saved_provider" = boat ] || write_env CLOUDY_CLOUD_PROVIDER boat || { bad "Could not write $(cfg)." >&2; exit 1; }
+  elif [ "$PROVIDER" = e2b ]; then
+    step 2 "E2B key"
+    setup_e2b
+    [ -n "$(get_saved E2B_API_KEY)" ] || { bad "No E2B key is saved, so setup cannot continue. Run $(rerun_cmd) --provider e2b again."; exit 1; }
+    # Unlike Instabox (the default), e2b must save the provider line or the launcher falls back to instabox.
+    [ "$saved_provider" = e2b ] || write_env CLOUDY_CLOUD_PROVIDER e2b || { bad "Could not write $(cfg)." >&2; exit 1; }
   else
     step 2 "Instabox key"
     setup_instabox
@@ -1636,19 +1778,20 @@ main() {
     step 3 "Claude token"; setup_claude
     case $STATUS_CLAUDE in OK*) ;; *) incomplete "no Claude token is saved" ;; esac
   else step 3 "Worker keys"; hint "No Claude token is needed for $AGENTS."; fi
-  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; elif [ "$PROVIDER" = boat ]; then step 4 "GitHub token"; setup_github_boat; else step 4 "GitHub token"; setup_github; fi
+  if [ "$PROVIDER" = self-hosted ]; then step 4 "Optional keys"; elif [ "$PROVIDER" = boat ]; then step 4 "GitHub token"; setup_github_boat; elif [ "$PROVIDER" = e2b ]; then step 4 "GitHub token"; setup_gh_on_box; else step 4 "GitHub token"; setup_github; fi
   STATUS_GH=${GH_RESULT:-"not confirmed"}
-  # A boat worker cannot push without GH_TOKEN — like Instabox it is required, not optional.
+  # A boat or e2b worker cannot push without GH_TOKEN — like Instabox it is required, not optional.
   case $PROVIDER in self-hosted) ;; *) case $STATUS_GH in OK*) ;; *) incomplete "the GitHub token is not confirmed" ;; esac ;; esac
   [ "$PROVIDER" != boat ] || [ "$(get_saved CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX)" = yes ] || incomplete "credentials are not allowed on boat sandboxes"
+  [ "$PROVIDER" != e2b ] || [ "$(get_saved CLOUDY_CLOUD_E2B_TOKEN_ON_BOX)" = yes ] || incomplete "credentials are not allowed on E2B sandboxes"
   if [ "$more" = 1 ]; then
-    case $PROVIDER in self-hosted|boat) ;; *) setup_alerts ;; esac
+    case $PROVIDER in self-hosted|boat|e2b) ;; *) setup_alerts ;; esac
     # The OpenAI key is offered when codex is chosen or installed, even if claude was chosen too.
     if ! agents_has codex && command -v codex >/dev/null; then
       setup_provider OPENAI_API_KEY OpenAI https://platform.openai.com/api-keys "Codex workers" "Or use your ChatGPT login instead: codex login, then: install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json"
     fi
     ask_worker_keys
-    case $PROVIDER in self-hosted|boat) ;; *)
+    case $PROVIDER in self-hosted|boat|e2b) ;; *)
       store_coordinator_key || true # the coordinator copy of your Instabox key; nested coordinators need it even if you build no image now
       offer_coordinators "$root"
     ;; esac
@@ -1675,6 +1818,10 @@ main() {
     summary_row "Values on sandboxes" "$STATUS_BOAT_CONSENT"
     ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
     summary_row "GitHub token" "$STATUS_GH"
+  elif [ "$PROVIDER" = e2b ]; then
+    summary_row "E2B key" "$STATUS_E2B"
+    ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
+    summary_row "GitHub token" "$STATUS_GH"
   else
     summary_row "Instabox key" "$STATUS_INSTABOX"
     ! agents_has claude || summary_row "Claude token" "$STATUS_CLAUDE"
@@ -1690,7 +1837,7 @@ main() {
     hint "It is on branch $branch at $sha."
     hint "To update, run this in that folder: git pull && npm install"
   fi
-  local prov=""; case $PROVIDER in self-hosted|boat) prov=" --provider $PROVIDER" ;; esac
+  local prov=""; case $PROVIDER in self-hosted|boat|e2b) prov=" --provider $PROVIDER" ;; esac
   hint "To change a key later, run: $(rerun_cmd)$prov"
   hint "Restart any open cloudy-cloud session to use the new keys."
   if [ -n "$INCOMPLETE" ]; then
@@ -1712,7 +1859,7 @@ main() {
   hint "Recommended: block direct pushes to your main branch. In a repo, run: cloudy-cloud protect"
   echo
   printf '  %s\n' "Setup complete."
-  case $PROVIDER in self-hosted|boat)
+  case $PROVIDER in self-hosted|boat|e2b)
     printf '  %s\n' "Other model keys: $(rerun_cmd) --more --provider $PROVIDER."
   ;;
   *)

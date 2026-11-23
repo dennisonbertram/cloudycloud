@@ -23,6 +23,7 @@ export function missingSetup(env) {
   if (env.CLOUDY_CLOUD_PROVIDER === 'self-hosted') return env.CLOUDY_CLOUD_SELF_HOSTED_LOCAL === '1' || env.CLOUDY_CLOUD_SSH_HOST ? '' : 'self-hosted machine (CLOUDY_CLOUD_SSH_HOST)';
   if (env.CLOUDY_CLOUD_PROVIDER === 'microsandbox') return resolveMsbBin(env) ? '' : 'microsandbox CLI (CLOUDY_CLOUD_MSB_BIN)';
   if (env.CLOUDY_CLOUD_PROVIDER === 'boat') return env.BOAT_API_KEY ? '' : 'Boat API key';
+  if (env.CLOUDY_CLOUD_PROVIDER === 'e2b') return env.E2B_API_KEY ? '' : 'E2B API key (E2B_API_KEY)';
   return env.INSTABOX_API_KEY ? '' : 'Instabox API key';
 }
 

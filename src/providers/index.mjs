@@ -69,6 +69,7 @@ const REGISTRY = {
   'self-hosted': () => import('./self-hosted.mjs'),
   microsandbox: () => import('./microsandbox.mjs'),
   boat: () => import('./boat.mjs'),
+  e2b: () => import('./e2b.mjs'),
 };
 
 /**
