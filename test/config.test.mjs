@@ -1,9 +1,9 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, utimesSync, readFileSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { envRefresher, loadEnv, defaultWorkerNote, egressAllow } from '../src/config.mjs';
 import * as config from '../src/config.mjs';
 
@@ -131,6 +131,36 @@ test('envLine builds one KEY=value line and refuses CR, LF and NUL in the value,
     assert.match(e.message, /SOME_SECRET_KEY/);
     for (const part of ['first', 'second', 'a\rb', 'a\0b']) assert.ok(!e.message.includes(part), e.message);
   }
+});
+
+test('installId creates a private 16-hex id beside the env file once, and never rewrites it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
+  const env = { CLOUDY_CLOUD_CONFIG: join(dir, 'env') };
+  const id = config.installId(env);
+  assert.match(id, /^[0-9a-f]{16}$/);
+  const file = join(dir, 'install-id');
+  assert.equal(readFileSync(file, 'utf8'), `${id}\n`, 'the id is stored in <config dir>/install-id');
+  assert.equal(dirname(config.ownerFile(env)), dir, 'the install id lives in the same dir as the owner file');
+  assert.equal(statSync(file).mode & 0o777, 0o600, 'the install-id file is private');
+  assert.equal(statSync(dir).mode & 0o777, 0o700, 'the config dir is private');
+  assert.ok(readdirSync(dir).every((n) => !n.includes('.tmp.')), 'no temp file is left behind');
+  assert.equal(config.installId(env), id, 'the same id every call');
+  writeFileSync(file, 'abcdabcdabcdabcd\n');
+  assert.equal(config.installId(env), 'abcdabcdabcdabcd', 'an existing id is returned, never rewritten');
+});
+
+test('installId refuses rather than return an id it could not store', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-ro-'));
+  chmodSync(dir, 0o500); // the config dir exists but cannot take the file
+  try {
+    assert.throws(() => config.installId({ CLOUDY_CLOUD_CONFIG: join(dir, 'env') }), (e) => e.code === 'install_id_unwritable');
+  } finally { chmodSync(dir, 0o700); }
+});
+
+test('installId answers different ids for different config dirs', () => {
+  const a = mkdtempSync(join(tmpdir(), 'cfg-a-'));
+  const b = mkdtempSync(join(tmpdir(), 'cfg-b-'));
+  assert.notEqual(config.installId({ CLOUDY_CLOUD_CONFIG: join(a, 'env') }), config.installId({ CLOUDY_CLOUD_CONFIG: join(b, 'env') }));
 });
 
 test('defaultWorkerNote recommends only a profile that resolveProfile accepts under the provider\'s rules', () => {

@@ -104,6 +104,12 @@ Notes on the table:
   - The announced "introspection API" and "FUSE in every box" are not in the docs, SDK source or llms.txt. Keep-awake (`orble keep-awake`, `PATCH /v1/boxes/{name} {"keep_awake": true}`) and wake, fork and restore hooks (`~/.config/orble/on-resume.d/`, `ORBLE_EVENT`) are documented. The SDK docs list `keep_awake`, but the published 0.1.2 source has no such method. Amp's self-hosted orbs run on Orble through `dispatch.sh` ([docs](https://orble.tech/docs.md)); that is Amp on Orble, not a self-hosted Orble.
   - Verdict: not yet. Compared with Zipbox it has snapshots, a documented GitHub-friendly secret proxy and a per-box allow list, but it shares the missing deadline and labels. Phase 2 or later, after Orble confirms a create-time deadline (or hard auto-delete) and a GitHub `git push` works through its secret proxy. Unknown: rate limits, concurrent box limits, free credit, whether the API keys can be scoped.
 
+- **boat** (checked 2026-11; [boat.dev](https://boat.dev), [docs](https://docs.boat.dev)) — **implemented** as `src/providers/boat.mjs` on `feat/boat-provider`:
+  - Persistent Ubuntu 24.04 VMs (x86_64) behind a documented REST API (`https://boat.dev/api/v1`, bearer `boat_…` keys): create/get/list/delete sandboxes, run commands (detached, polled with byte offsets), read/write files, publish ports (`POST /sandboxes/{id}/host`, token-gated URLs), `GET /limits`.
+  - Fits every hard requirement except proxy secrets: server-side `ttlSeconds` auto-stop, create-time `labels` (and a `label` list filter), permanent `DELETE`, `visibility: private`, `noEnv` and `snapshots: false`, and a `files` entry that places the worker env file at create.
+  - No secret substitution, so credential values sit on the VM after the user's `CLOUDY_CLOUD_BOAT_TOKEN_ON_BOX=yes` consent (the self-hosted model). Org keys list other users' sandboxes, so ownership is enforced client-side with the `purpose=cloudy-cloud` label. No outbound firewall API, so `CLOUDY_CLOUD_EGRESS_ALLOW` is refused.
+  - Status: unit-tested against a fake fetch; not yet run against the live API.
+
 ## Recommendation
 
 1. **Phase 0:** extract the `Provider`/`Sandbox` interface, move Instabox to `src/providers/instabox.mjs`, and add a `CLOUDY_CLOUD_PROVIDER` setting. Behavior does not change.

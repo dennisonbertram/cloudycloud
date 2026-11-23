@@ -275,7 +275,7 @@ function mcpFooter(a, t) {
 }
 
 // Self-hosted: the user allowed the GitHub token on their own machine, so every reply says where it is.
-const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: on your machine ${a.tokenOnBox} (you allowed it)` : '';
+const tokenLine = (a) => a.tokenOnBox ? `\nGitHub token: stored on ${a.tokenOnBox} (you allowed it)` : '';
 const totals = (a, t) => `${modelLine(t.progress, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}\n${totalLine(t.progress, { cost: !a.profile })}${tokenLine(a)}${mcpFooter(a, t)}`;
 
 // Raw stream of every turn, kept on the machine (tee) next to meta.json; the laptop keeps a redacted copy (createLocalStream).
@@ -1054,7 +1054,7 @@ export async function runSubagent(args, deps) {
   if (apt.error) return fail(apt.error);
   const turnLimit = turnMinutes(ctx.env, ctx.provider.caps.maxTtlSeconds);
   if (turnLimit.error) return fail(turnLimit.error, true);
-  if (apt.list.length && !ctx.provider.caps.hasProxySecrets) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
+  if (apt.list.length && !(ctx.provider.caps.hasSudo ?? ctx.provider.caps.hasProxySecrets)) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
   if (egress.list.length) {
     if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker".', false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: 'start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker"' });
     if (profile?.baseUrl && !URL.canParse(profile.baseUrl)) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl "${String(profile.baseUrl).slice(0, 80)}". Fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: `CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl.`, next: 'fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });

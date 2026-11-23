@@ -68,7 +68,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [pid, owner] = process.argv.slice(2);
   // The saved settings file too: self-hosted needs CLOUDY_CLOUD_CONTAINER_BIN, _SSH_KEY and _SSH_PORT from it.
   const env = loadEnv(process.env);
-  const provider = await loadProvider(env).catch(() => null);
+  const provider = await loadProvider(env, { owner }).catch(() => null);
   // The same resolution the server used (a coordinator's proxy-secret name counts, msb is found by the ladder).
   const ready = provider && providerKey(env, provider);
   if (!provider || !ready || !(Number(pid) > 0) || !owner) process.exit(1);
