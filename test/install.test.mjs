@@ -544,6 +544,7 @@ test('link_skill links the fleet skill, and leaves an existing real folder alone
   fn(`link_skill /tool/root`, [], { HOME: home });
   assert.equal(readlinkSync(join(home, '.claude/skills/cloud-fleet')), '/tool/root/skills/cloud-fleet');
   assert.equal(readlinkSync(join(home, '.claude/skills/cloudy-cloud-setup')), '/tool/root/skills/cloudy-cloud-setup');
+  assert.equal(readlinkSync(join(home, '.claude/skills/cloud-dev')), '/tool/root/skills/cloud-dev');
   const home2 = mkdtempSync(join(tmpdir(), 'cc-home-'));
   mkdirSync(join(home2, '.claude/skills/cloud-fleet'), { recursive: true });
   fn(`link_skill /tool/root`, [], { HOME: home2 });
@@ -553,12 +554,12 @@ test('link_skill links the fleet skill, and leaves an existing real folder alone
 test('link_skill copies both skills from an npm install, and skips identical copies', () => {
   const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
   const root = join(tmp(), 'node_modules/cloudycloud');
-  for (const n of ['cloud-fleet', 'cloudy-cloud-setup']) {
+  for (const n of ['cloud-fleet', 'cloudy-cloud-setup', 'cloud-dev']) {
     mkdirSync(join(root, 'skills', n), { recursive: true });
     writeFileSync(join(root, 'skills', n, 'SKILL.md'), `---\nname: ${n}\n---\n`);
   }
   fn(`link_skill "${root}"`, [], { HOME: home });
-  for (const n of ['cloud-fleet', 'cloudy-cloud-setup']) {
+  for (const n of ['cloud-fleet', 'cloudy-cloud-setup', 'cloud-dev']) {
     assert.ok(lstatSync(join(home, '.claude/skills', n)).isDirectory(), `${n} is a real folder`);
     assert.match(readFileSync(join(home, '.claude/skills', n, 'SKILL.md'), 'utf8'), new RegExp(`name: ${n}`));
   }

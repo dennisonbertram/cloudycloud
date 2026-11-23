@@ -1,0 +1,162 @@
+---
+name: cloud-dev
+description: Move heavy development work (test suites, builds, Docker, many parallel agents) off the local machine onto Cloudy Cloud machines, and choose how. Use when the laptop slows down from running many coding agents, when the user asks to "run tests in the cloud", "offload this", "run agents in Cloudy Cloud", "start a coordinator", "use DeepSeek workers", or asks whether a cloud setup would slow development down. For running large fleets and merging many branches, also read the cloud-fleet skill.
+---
+
+# Develop on Cloudy Cloud
+
+Cloudy Cloud gives each agent its own Instabox cloud machine. This skill says when to move work there, which of three ways to use, and how to avoid the problems found in a real trial.
+
+**Read every other `.md` file in this skill's folder first.** A repository may add its own limits there, and they override this file.
+
+## First, find what is slowing the machine
+
+The agent programs themselves are rarely the problem. A waiting agent uses almost no CPU and a few hundred MB of RAM. The load comes from what agents run: test suites, type checks, builds, Docker containers, dev servers and file watchers.
+
+```sh
+sysctl -n vm.loadavg hw.ncpu        # macOS; on Linux: cat /proc/loadavg; nproc
+memory_pressure | tail -1           # macOS
+```
+
+A 15-minute load average well above the core count means CPU is saturated: move the heavy commands. Plenty of free memory means a lighter-weight harness (for example a rewrite in another language) will not help.
+
+## Before the first cloud machine on a repo
+
+1. Do the cloud-fleet skill's "Before using a repo" checks: a github.com origin, a protected default branch, and the user confirming the repo is in the Cloudy Cloud GitHub token.
+2. **Check what a push can trigger.** Read the repo's CI and release workflows (for example `.github/workflows/`). A worker pushes its `cloudy-cloud/<id>` branch automatically once it has commits (on 0.2.0, every worker pushed at start, before it read its brief). If any workflow that publishes, deploys or releases runs on pushes to all branches or to `cloudy-cloud/*`, stop and ask the user; a brief cannot prevent the push.
+3. **Starting a machine copies the repo's full git history.** If that history holds personal data or secrets, ask the user before the first start, and keep asking each time until they give standing approval.
+4. **Each machine is billed until it stops.** Before starting machines, confirm the count, the time limit and that they are billed, unless the user already asked for exactly this.
+
+## Choose a mode
+
+| Mode | What runs where | Delay it adds | Use for |
+|---|---|---|---|
+| **1. Cloud subagent** (`cloud_agent`) | A local session sends a task; the agent edits and tests on its own machine and pushes a branch | About 20-30 s to start a machine; none per edit after that | Bounded tasks you will review as a branch |
+| **2. Local agent, cloud test runner** | The agent stays local; it pushes, then runs tests on an already running machine with `cloudy-cloud shell` | About 4 s per edit-test loop (push ~1.5 s, remote fetch and run ~2.7 s) | An occasional full suite run; not tight loops |
+| **3. Coordinator** | A whole Claude Code session lives on a cloud machine; you attach from a terminal; it can start and manage its own workers | Starts in about 20 s; no delay per edit | Daily heavy work and parallel work. Recommended default |
+
+Figures are from one trial on the default machine (4 vCPU, 8 GB size, about 7 GB usable), Cloudy Cloud 0.2.0, 2026-11-23. A test suite that is slow locally is also slow on 4 cores; larger machine sizes exist but were not measured.
+
+## What a machine sees, and what stays local
+
+- A **coordinator** clones the branch you name from GitHub.
+- A **cloud subagent** started from a local session gets a snapshot of the local repo's tracked files, **including uncommitted edits**. The snapshot becomes part of the worker's branch if the worker commits. If you pass `base` (a branch name or commit SHA) to `cloud_agent`, the worker starts from that ref instead and uncommitted edits are ignored. Start subagents only from a clean worktree at the commit you intend (`git status --porcelain` prints nothing). Never from a shared checkout that holds other people's work.
+- Untracked files are never copied.
+
+Keep work local when it needs:
+
+- Untracked files: local env files, agent credential files, notes.
+- SSH keys or access to production servers, deploys, and publishes.
+- Interactive checks on the user's own machine (a terminal UI driven in tmux, a local browser).
+- Anything the repository's own rules say must run locally or by the owner.
+
+Never copy production credentials to a cloud machine to make a task fit. Run that step locally instead.
+
+## Mode 3: coordinator (recommended)
+
+One-time setup per account, done by the user because it needs a browser sign-in:
+
+1. `cloudy-cloud coordinator image` creates a sign-in machine and prints its name.
+2. The user runs `npx --yes instabox@latest ssh <machine>`, then `claude auth login` there, finishes the browser sign-in and leaves the shell.
+3. The user runs `cloudy-cloud coordinator image --save`. It can take several minutes and prints nothing until done.
+
+Start, connect and stop:
+
+```sh
+cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO \
+  --branch BRANCH --max-hours N --model MODEL --task-file task.md --json
+cloudy-cloud coordinator attach NAME      # prints the SSH command; run it to join the session
+cloudy-cloud shell MACHINE -- CMD         # one command on the machine (~3 s each)
+cloudy-cloud coordinator ls
+cloudy-cloud coordinator stop NAME        # deletes the machine at once
+```
+
+- `MACHINE` is the `machine` field in the `start --json` output (for example `coord-NAME`).
+- Read the `skippedKeys` field in the start output. A key listed there was not sent, because it is still a plain value in `~/.config/cloudy-cloud/env`, so any worker profile that needs it will fail. The user fixes this with `cloudy-cloud setup`.
+- The coordinator always runs Claude Code. Remote Control also works, so the user can talk to it from a phone or claude.ai.
+- `--max-hours` (at most 24) limits the coordinator's machine only. Workers have their own deadline (`CLOUDY_CLOUD_WORKER_HOURS`, 6 hours by default) and a session may start up to `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (200 by default). Set both to the approved budget in the environment of the session that starts workers; a number written only in the brief is not enforced.
+- `coordinator stop` deletes the machine immediately, without checking for unpushed work. Make sure the work you need is pushed first.
+
+### Workers under a coordinator
+
+The coordinator starts workers with its `cloud_agent` tool. Each worker gets its own machine. Claude workers use `model` (or nothing); DeepSeek workers use `profile: "pi-deepseek"` (the pi agent) or `profile: "deepseek"` (Claude Code through a gateway), never `model`. Both DeepSeek profiles need `PARTICLE_API_KEY` stored as an Instabox secret. The cloud-fleet skill has the full profile table, merge patterns and brief template.
+
+Use Claude for judgment and shared code; use DeepSeek for bulk, well-specified tasks.
+
+In the trial a Sonnet coordinator started three DeepSeek workers in one go, waited, sent each a follow-up with `cloud_agent_message`, checked their answers, and stopped them. Each worker took 21-34 s including machine start; follow-ups returned in about 8 s.
+
+Put these rules in every coordinator task file:
+
+- Start no more than N workers (name the number).
+- Each worker pushes only its own `cloudy-cloud/<id>` branch. Only the coordinator pushes the `fleet/<topic>` integration branch. Nobody pushes tags, the default branch or release branches.
+- No production hosts, plus anything the repo adds.
+- Give workers no untrusted content to follow (web pages, issue text, user data); they run with permission checks off.
+- Check each worker's answer yourself before relying on it. A worker saying "done" is not evidence.
+- Before stopping a worker, check that its work is on its branch if you need it (`git ls-remote --heads origin cloudy-cloud/<id>`). Then stop it with `cloud_agent_stop` and confirm with `cloud_agent_list` that none is running.
+- Do not run `cloudy-cloud coordinator finish` if the operator will run more commands on the machine.
+
+## Mode 1: cloud subagent from a local session
+
+A local session needs the cloud tools, so start it with `cloudy-cloud` instead of `claude`. The launcher already allows the cloud tools and turns off the built-in Agent and Workflow tools. To start one headless from another agent:
+
+```sh
+cloudy-cloud -p --model sonnet \
+  --allowedTools "mcp__cloud__cloud_agent,mcp__cloud__cloud_agent_wait,mcp__cloud__cloud_agent_stop,mcp__cloud__cloud_agent_list" \
+  -- "$(cat brief.md)"
+```
+
+- Put `--` before the prompt. `--allowedTools` takes several values and otherwise swallows the prompt, which fails with "Input must be provided either through stdin or as a prompt argument when using --print".
+- `--allowedTools` only adds permissions; it does not remove tools the session already has. Do not add `--dangerously-skip-permissions`; permission classifiers block it, and it is not needed.
+- Run it from a clean worktree (see "What a machine sees").
+- In the brief, cap the number of workers and tell the session to stop each one when done. An idle worker bills until its 60-minute idle timeout.
+- Prove the work ran in the cloud: the worker's `hostname` starts with `instabox-sbx-`.
+
+## Mode 2: local agent, cloud test runner
+
+Use a machine that is already running (for example a coordinator machine). Push without tags, check the push worked, and test exactly the commit you pushed in a fresh directory, so the checkout a coordinator is working in is not changed:
+
+```sh
+set -e
+SHA=$(git rev-parse HEAD)
+git push --no-follow-tags origin "HEAD:refs/heads/BRANCH"      # BRANCH is a fleet/* branch
+cloudy-cloud shell MACHINE -- bash -lc "set -e; cd ~/repo; git fetch -q origin $SHA;
+  D=\$(mktemp -d ~/testrun.XXXXXX); git worktree add -q --detach \"\$D\" $SHA; cd \"\$D\";
+  INSTALL && TEST_COMMAND; cd ~/repo; git worktree remove --force \"\$D\""
+```
+
+- `INSTALL` is the frozen-lockfile install the repo's CI uses (a new worktree has no dependencies).
+- Fetching by SHA tests the exact commit, even if the branch moves.
+- Each call costs about 3 s of overhead. Use it for full-suite runs, not every small edit.
+- Two runs at once on one machine can collide on fixed ports (for example a test database). Run one at a time per machine.
+
+## Keys and env files
+
+Cloudy Cloud stores most keys as Instabox secrets tied to hosts. The machine sees only a placeholder, and the Instabox proxy swaps in the real key on HTTPS requests to those hosts, so an agent can use a key but cannot read it.
+
+- `cloudy-cloud setup` stores the built-in keys this way (Claude token, GitHub token, provider keys).
+- A custom key needs both the secret and Cloudy Cloud configuration that passes it to machines; follow the `note` printed by `coordinator start`, or `cloudy-cloud mcp add` for an MCP server token. The user runs these in their own terminal and pastes the key there.
+- Exceptions where the real value is on the machine: the `codex-chatgpt` profile (copies a login file) and MCP tokens stored with `--allow-literal`.
+- Host-bound secrets do not work for values the code computes with (webhook signing secrets, HMAC keys), SSH keys, or database passwords. Do not move those to a machine. Use test values generated on the machine, or keep the task local.
+- Never ask for a key in chat, put one in a brief, or print one.
+- Most test suites need no real keys: they use stubs and their own local services. Prefer that to moving secrets.
+
+## Known problems (found on Cloudy Cloud 0.2.0; 0.3.0 fixes some)
+
+Check the installed version with `cloudy-cloud --version` and the published one with `npm view cloudycloud version`; some of these may be fixed in yours.
+
+- **Empty worker branches.** On 0.2.0 every worker pushed `cloudy-cloud/<id>`, even with no commits. Fixed in 0.3.0: a worker pushes only if it has commits. To clean up old empty branches on 0.3.0, run `cloudy-cloud branches prune` inside the repo. It is a dry run that lists what it would delete; add `--yes` to delete. It considers only branches named `cloudy-cloud/<8 hex>` (or `cloudy-cloud/issue-<n>-<8 hex>`) and deletes only those already contained in the default branch of origin. That includes empty branches, because a branch whose head equals a commit on the default branch counts as merged. It keeps any branch with commits not in the default branch, and it deletes with a lease, so a branch that moved since the check is skipped. A base commit that is not yet in the default branch is not covered, so such an empty branch stays. On 0.2.0, after the worker is stopped, list branches with `git ls-remote --heads origin 'cloudy-cloud/*'`. Delete only branches from your own run whose SHA equals the base commit, with a lease so a later push is not lost:
+  `git push origin --force-with-lease=refs/heads/cloudy-cloud/<id>:<sha> --delete cloudy-cloud/<id>`. Deleting remote branches may need the user; give them that exact command.
+- **`setup --check-only` and plain-value keys.** On 0.2.0 it was reported to pass while keys were still plain values. Whatever the version, read `skippedKeys` in the `coordinator start` output: a key listed there was not sent to the machine.
+- **Installed per Node version (as of 0.2.0).** Under nvm, `cloudy-cloud` exists only for the Node version it was installed with.
+- **Machine image (as of 0.2.0).** Agents run as a non-root user, and `psql` is not installed. Tests that need either fail for environment reasons.
+- **Lockfiles (as of 0.2.0).** A plain package install can modify a tracked lockfile. Use the frozen-lockfile install the repo's CI uses, and treat a failure as a real problem rather than restoring the file.
+- **Pre-started services (as of 0.2.0).** If the test suite starts its own database container, do not start one first; the two collide.
+
+## Clean up and report
+
+After each run:
+
+1. Stop only machines this task started. Leave a coordinator you borrowed (for example for Mode 2) running unless the user says to stop it.
+2. `cloud_agent_list` shows no running workers from this task.
+3. Handle empty `cloudy-cloud/*` branches as above.
+4. Report: mode used, machine count and run time, the results you checked yourself, anything left running or undeleted, and the exact command for any step the user must run.
