@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, symlinkSync, realpathSync, accessSync, constants } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, cpSync, symlinkSync, realpathSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { egressAllow } from '../src/config.mjs';
@@ -336,14 +336,58 @@ test('--strict-mcp-config is passed only on a coordinator, so a repo .mcp.json c
   assert.match(r.argv, /^--strict-mcp-config$/m);
 });
 
-test('a coordinator runs Claude with permission checks off and keeps the deny list; a laptop session does not (#88)', () => {
+test('a coordinator runs Claude with permission checks off, keeps the Workflow deny and gains Agent; a laptop session does not (#88)', () => {
   const d = repo('https://github.com/test/repo.git');
   const laptop = run({ config: full, cwd: d });
   assert.doesNotMatch(laptop.argv, /--dangerously-skip-permissions|--permission-mode/);
+  assert.match(laptop.argv, /"deny":\["Agent","Workflow"\]/);
   const r = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: '1' } });
   assert.match(r.argv, /^--dangerously-skip-permissions$/m);
-  assert.match(r.argv, /"deny":\["Agent","Workflow"\]/);
+  assert.match(r.argv, /"deny":\["Workflow"\]/);
   assert.match(r.argv, /permission checks are off/);
+  assert.match(r.argv, /built-in Agent tool is enabled/);
+  // The deadline reminder hook is in the coordinator's settings only, for both events, and takes the
+  // event name as an argument so the hook never parses stdin.
+  const settings = JSON.parse(r.argv.slice(r.argv.indexOf('--settings\n') + '--settings\n'.length).split('\n')[0]);
+  for (const event of ['UserPromptSubmit', 'PostToolUse']) {
+    assert.match(settings.hooks?.[event]?.[0]?.hooks?.[0]?.command ?? '', new RegExp(`deadline-hook\\.sh" ${event}$`), event);
+    assert.equal(settings.hooks[event][0].hooks[0].type, 'command');
+  }
+  assert.doesNotMatch(laptop.argv.slice(laptop.argv.indexOf('--settings\n')), /"hooks"/, 'the laptop settings carry no hooks key');
+});
+
+test('an install path with a character the hook command cannot quote skips the deadline hooks with a one-line note', async () => {
+  const hookTest = async (mark) => {
+    const bad = mkdtempSync(join(tmpdir(), `cc-${mark}-`));
+    mkdirSync(join(bad, 'bin'), { recursive: true });
+    cpSync(launcher, join(bad, 'bin', 'cloudy-cloud'));
+    cpSync(resolve('bin/migrate-config.sh'), join(bad, 'bin', 'migrate-config.sh'));
+    chmodSync(join(bad, 'bin', 'cloudy-cloud'), 0o755);
+    const dir = mkdtempSync(join(tmpdir(), 'cc-launcher-'));
+    const argvFile = join(dir, 'argv');
+    writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\n`);
+    chmodSync(join(dir, 'claude'), 0o755);
+    const cfg = join(dir, 'env');
+    writeFileSync(cfg, full);
+    const r = spawnSync('/bin/sh', [join(bad, 'bin', 'cloudy-cloud')], { cwd: repo('https://github.com/test/repo.git'), env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, CLOUDY_CLOUD_CONFIG: cfg, CLOUDY_CLOUD_COORDINATOR: '1' }, input: '', encoding: 'utf8' });
+    return { ...r, argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8') : '' };
+  };
+  for (const mark of ['has$dollar', 'has`tick`']) {
+    const r = await hookTest(mark);
+    assert.equal(r.status, 0, `${mark}: ${r.stderr}`);
+    assert.match(r.stderr, /the deadline hook is off/, mark);
+    assert.doesNotMatch(r.argv, /"hooks"|deadline-hook/, mark);
+  }
+});
+
+test('only CLOUDY_CLOUD_COORDINATOR=1 marks a coordinator: "0" and "false" keep the laptop behaviour', () => {
+  const d = repo('https://github.com/test/repo.git');
+  for (const v of ['0', 'false']) {
+    const r = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: v } });
+    assert.match(r.argv, /"deny":\["Agent","Workflow"\]/, v);
+    assert.doesNotMatch(r.argv, /--dangerously-skip-permissions|--strict-mcp-config|deadline-hook|"hooks"/, v);
+    assert.doesNotMatch(r.argv, /permission checks are off|built-in Agent tool is enabled/, v);
+  }
 });
 
 test('shell subcommand runs src/shell.mjs and help lists it', () => {

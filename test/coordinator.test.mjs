@@ -5,8 +5,10 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { main, toolRepoUrl, FIRST_RUN_SCRIPT, errorScreen } from '../src/coordinator.mjs';
 import { safeText } from '../src/terminal.mjs';
+import { installId } from '../src/config.mjs';
 import { redact } from '../src/events.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
@@ -51,14 +53,14 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
   const sandbox = (id, name) => ({
     sandboxId: id,
     getInfo: async () => ({ name }),
-    files: { write: async (p, d) => { log.writes.push({ p, d }); } },
+    files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; } },
     commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
       return { stdout: /pane_pid/.test(cmd) ? link : /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
   });
   const sdk = { Sandbox: {
-    async create(template, opts) { log.create.push({ template, opts }); return sandbox('m_new', opts.name ?? 'sbx-abc'); },
+    async create(template, opts) { log.create.push({ template, opts }); machines.push(mk('m_new', opts.name ?? 'sbx-abc', opts.metadata ?? {})); return sandbox('m_new', opts.name ?? 'sbx-abc'); },
     async connect(id) { return sandbox(id, 'img-1'); },
     async getSnapshot(id) { log.polls = (log.polls ?? 0) + 1; return { id, status: snapStatus(log.polls) }; },
     async kill(id) { log.killed.push(id); return true; },
@@ -183,7 +185,8 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   const { template, opts } = f.log.create[0];
   assert.equal(template, 'sn_1');
   assert.equal(opts.autoSuspendMs, 0);
-  assert.deepEqual(opts.metadata, { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' });
+  // The repo, branch and install labels are what `cloud` verifies on reattach.
+  assert.deepEqual(opts.metadata, { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(f.deps.env), branch: 'main' });
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN')));
   const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
   assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY$/m);
@@ -283,7 +286,7 @@ test('stop deletes only the named coordinator', async () => {
   assert.deepEqual(f.log.killed, ['m2']);
   assert.match(f.log.out.join('\n'), /cleanup process/);
   // piped output keeps the provider CLI line scripts saw on origin/main (#185: terminal wording only in fields)
-  assert.match(f.log.out.join('\n'), /Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud/);
+  assert.match(f.log.out.join('\n'), /Check with: cloudy-cloud machines/);
   await assert.rejects(main(['stop', 'zzz'], f.deps), /No coordinator named zzz/);
 });
 
@@ -422,8 +425,9 @@ test('start asks the provider for a never-suspending machine from the snapshot w
       commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
   };
   const out = [];
-  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1' }, root: resolve('.'), out: (x) => out.push(x) });
-  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), out: (x) => out.push(x) });
+  assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   assert.match(out.join('\n'), /Terminal: cloudy-cloud coordinator attach boss/);
   assert.doesNotMatch(out.join('\n'), /fake ssh|runs:|tmux/);
 });
@@ -975,6 +979,26 @@ test('ls and status remove an exact configured key value from the pane text (#88
   await main(['status', 'a', '--json'], f.deps);
   assert.doesNotMatch(f.log.out.join('\n'), /opaque-secret-9876543210/);
   assert.match(f.log.out.join('\n'), /\[redacted\]/);
+});
+
+test('status and ls never read env.local, print only known prompt lines, and key-shaped text in one is redacted', async () => {
+  // A pane holding arbitrary text — including a literal --env value status cannot know — is not a prompt:
+  // nothing of it is printed. Only the recognised waiting/blocked lines ever reach the screen or --json.
+  const arbitrary = fixture({ pane: `work continues\nMY_LIT=envl1t_S3NTINEL-must-not-leak\nmore output`, machines: [machine] });
+  await main(['ls'], arbitrary.deps);
+  assert.ok(arbitrary.log.out[1].endsWith('\t-'), arbitrary.log.out[1]);
+  await main(['status', 'a', '--json'], arbitrary.deps);
+  const j = JSON.parse(arbitrary.log.out.at(-1));
+  assert.equal(j.waiting, undefined);
+  assert.equal(j.screenRead, true);
+  // A recognised prompt line carrying a key-shaped value is printed with the value removed.
+  const shaped = fixture({ pane: `│ Do you want to read ${IBK}?\n❯ 1. Yes`, machines: [machine] });
+  await main(['status', 'a', '--json'], shaped.deps);
+  const text = shaped.log.out.join('\n');
+  assert.doesNotMatch(text, /ibk_REALKEY_0123456789/);
+  assert.match(text, /\[redacted\]/);
+  // No command the screen read issues ever touches the env.local file.
+  for (const c of [...arbitrary.log.cmds, ...shaped.log.cmds]) assert.doesNotMatch(c, /env\.local/);
 });
 
 test('ls reads at most four panes at a time, one per coordinator (#88)', async () => {
@@ -1830,8 +1854,8 @@ test('a start provider error renders the appended guidance once: short, cause, o
 
 test('coordinator usage errors keep the origin message for scripts and show the relevant usage only on a terminal', async () => {
   for (const [args, message, usage, help] of [
-    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
-    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
     [['ls', '--all'], 'ls takes no arguments.\nRun: cloudy-cloud coordinator ls --help', /Usage: cloudy-cloud coordinator ls/, /Next: cloudy-cloud coordinator ls --help/],
     [['stop'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator stop --help', /Usage: cloudy-cloud coordinator stop NAME/, /Next: cloudy-cloud coordinator stop --help/],
     [['start'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help', /start needs a NAME\./, /Next: cloudy-cloud coordinator start --help/],
@@ -2350,4 +2374,330 @@ test('coordinator start with no NAME says the NAME is missing', async () => {
   const e = await main(['start'], { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.equal(e.short, 'start needs a NAME.'); // the terminal headline
   assert.match(e.message, /^NAME must use lowercase letters, digits and hyphens \(1 to 40 characters\)\./); // the piped text keeps the origin/main wording
+});
+
+// ---- `cloudy-cloud cloud` and the --env bridge ----
+
+// A local clone of a bare origin whose URL claims github.com — enough for `cloud`'s local-only git checks.
+function ghRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-cloud-'));
+  const origin = join(dir, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+  const seed = join(dir, 'seed');
+  execFileSync('git', ['init', '-q', '-b', 'main', seed]);
+  execFileSync('git', ['-C', seed, 'config', 'user.email', 't@x']);
+  execFileSync('git', ['-C', seed, 'config', 'user.name', 'T']);
+  execFileSync('git', ['-C', seed, 'commit', '-q', '--allow-empty', '-m', 'c0']);
+  execFileSync('git', ['-C', seed, 'remote', 'add', 'origin', origin]);
+  execFileSync('git', ['-C', seed, 'push', '-q', 'origin', 'main']);
+  const repo = join(dir, 'repo');
+  execFileSync('git', ['clone', '-q', origin, repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 't@x']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'T']);
+  execFileSync('git', ['-C', repo, 'remote', 'set-url', 'origin', 'https://github.com/owner/cloudrepo.git']);
+  return repo;
+}
+const gitIn = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+// `cloud` runs local git through c.spawn; every non-git call (the attach exec) is recorded instead.
+const localSpawn = (calls) => (bin, a, o) => (bin === 'git' ? spawnSync(bin, a, o) : (calls.push([bin, ...(a ?? [])]), { status: 0 }));
+
+test('cloud inside a clean github clone starts the coordinator and prints the normal start output', async () => {
+  const f = fixture();
+  const spawned = [];
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn(spawned) });
+  assert.equal(f.log.create[0].opts.metadata.name, 'boss');
+  assert.ok(f.log.cmds.some((c) => /git clone -q -b 'main' 'https:\/\/github\.com\/owner\/cloudrepo'/.test(c)));
+  const text = f.log.out.join('\n');
+  assert.match(text, /Coordinator boss is running/);
+  assert.match(text, /coordinator attach boss/);
+  assert.ok(!spawned.some((a) => a.includes('attach')), 'no TTY: no attach exec');
+});
+
+test('cloud derives the coordinator name from <owner>-<repo>-<branch>-<hash>; the hash always rides along', async () => {
+  const f = fixture();
+  const repo = ghRepo();
+  gitIn(repo, 'checkout', '-q', '-b', 'Feat/My_Thing');
+  gitIn(repo, 'update-ref', 'refs/remotes/origin/Feat/My_Thing', 'HEAD'); // as if pushed (origin URL is fake)
+  await main(['cloud'], { ...f.deps, cwd: repo });
+  const tail2 = createHash('sha1').update('owner/cloudrepo@Feat/My_Thing').digest('hex').slice(0, 7);
+  assert.equal(f.log.create[0].opts.metadata.name, `owner-cloudrepo-feat-my-thing-${tail2}`);
+
+  // A slug over 40 characters is truncated with a sha1 tail of owner/repo@branch, so two different
+  // repos whose slugs share the first 32 characters still cannot collide on the name.
+  const longOwner = 'an-owner-with-a-very-long-name', longRepo = 'a-repository-with-an-even-longer-name', longBranch = 'branch-name-that-goes-on-and-on';
+  const tail = createHash('sha1').update(`${longOwner}/${longRepo}@${longBranch}`).digest('hex').slice(0, 7);
+  const g = fixture();
+  const repo2 = ghRepo();
+  gitIn(repo2, 'remote', 'set-url', 'origin', `https://github.com/${longOwner}/${longRepo}.git`);
+  gitIn(repo2, 'checkout', '-q', '-b', longBranch);
+  gitIn(repo2, 'update-ref', `refs/remotes/origin/${longBranch}`, 'HEAD');
+  await main(['cloud'], { ...g.deps, cwd: repo2 });
+  const long = g.log.create[0].opts.metadata.name;
+  assert.equal(long, `an-owner-with-a-very-long-name-a-${tail}`);
+  assert.ok(long.length <= 40, long);
+  const h = fixture();
+  const repo3 = ghRepo();
+  gitIn(repo3, 'remote', 'set-url', 'origin', `https://github.com/${longOwner}/a-repository-with-an-even-longer-other.git`);
+  gitIn(repo3, 'checkout', '-q', '-b', longBranch);
+  gitIn(repo3, 'update-ref', `refs/remotes/origin/${longBranch}`, 'HEAD');
+  await main(['cloud'], { ...h.deps, cwd: repo3 });
+  assert.notEqual(h.log.create[0].opts.metadata.name, long, 'same truncation prefix, different repo: the hash tail differs');
+});
+
+test('cloud refuses outside a repo and on a non-github origin, and never echoes the remote URL', async () => {
+  const f = fixture();
+  await assert.rejects(main(['cloud'], { ...f.deps, cwd: mkdtempSync(join(tmpdir(), 'cc-norepo-')) }), /inside a git repository/);
+  const repo = ghRepo();
+  gitIn(repo, 'remote', 'set-url', 'origin', 'https://x:tok12345@gitlab.example.com/o/r.git');
+  const e = await main(['cloud'], { ...f.deps, cwd: repo }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /github\.com/);
+  assert.doesNotMatch(e.message, /tok12345|gitlab\.example\.com/);
+  assert.equal(f.log.create.length, 0);
+});
+
+test('cloud refuses local work off a terminal and names the push command; on a TTY it asks first', async () => {
+  const f = fixture();
+  const repo = ghRepo();
+  gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'local only');
+  const e = await main(['cloud'], { ...f.deps, cwd: repo }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(e.short, 'Local work is not on GitHub.');
+  assert.match(e.message, /cloud clone comes from GitHub[\s\S]*git push/);
+  assert.equal(f.log.create.length, 0);
+  // Declining stops; agreeing starts.
+  const g = fixture();
+  const asked = [];
+  await main(['cloud'], { ...g.deps, cwd: repo, tty: true, ask: async (q) => { asked.push(q); return 'n'; }, out: (s) => g.log.out.push(s), spawn: localSpawn([]) });
+  assert.match(asked[0], /Start anyway\? \[y\/N\]/);
+  assert.equal(g.log.create.length, 0);
+  const h = fixture();
+  await main(['cloud'], { ...h.deps, cwd: repo, tty: true, ask: async () => 'y', spawn: localSpawn([]) });
+  assert.equal(h.log.create.length, 1);
+  assert.match(h.log.out.join('\n'), /not have:[\s\S]*commit\(s\) on main are not pushed/);
+});
+
+test('cloud warns about uncommitted tracked edits but not untracked files', async () => {
+  const repo = ghRepo();
+  writeFileSync(join(repo, 'untracked.txt'), 'new');
+  const clean = fixture();
+  await main(['cloud'], { ...clean.deps, cwd: repo });
+  assert.equal(clean.log.create.length, 1, 'an untracked file does not warn');
+  const dirty = fixture();
+  writeFileSync(join(repo, 'tracked.txt'), 'v1');
+  gitIn(repo, 'add', 'tracked.txt');
+  await assert.rejects(main(['cloud'], { ...dirty.deps, cwd: repo }), /uncommitted changes to tracked files/);
+});
+
+// A running coordinator of this installation on this repo and branch.
+const own = (f, name = 'boss', extra = {}) => ({ sandboxId: 'm1', name: `coord-${name}`, state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: 'owner/cloudrepo', branch: 'main', install: installId(f.deps.env), ...extra } });
+
+test('cloud reattaches to a running coordinator whose repo, branch and install labels match, instead of starting', async () => {
+  const f = fixture({ machines: [] });
+  f.machines.push(own(f));
+  const spawned = [];
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn(spawned) });
+  assert.equal(f.log.create.length, 0);
+  assert.match(f.log.out.join('\n'), /Reattaching to boss/);
+  assert.match(f.log.out.join('\n'), /coordinator attach boss/); // non-TTY attach prints the command
+
+  // --json on reattach stays machine-readable; --no-attach on a TTY prints the command instead of exec'ing.
+  const j = fixture();
+  j.machines.push(own(j));
+  await main(['cloud', '--name', 'boss', '--json'], { ...j.deps, cwd: ghRepo(), spawn: localSpawn([]) });
+  const row = JSON.parse(j.log.out.join('\n'));
+  assert.equal(row.reattached, true);
+  assert.equal(row.name, 'boss');
+  assert.equal(row.machine, 'coord-boss');
+  const n = fixture();
+  n.machines.push(own(n));
+  const spawned2 = [];
+  await main(['cloud', '--name', 'boss', '--no-attach'], { ...n.deps, cwd: ghRepo(), tty: true, spawn: localSpawn(spawned2) });
+  assert.ok(!spawned2.some((a) => a.includes('attach')), '--no-attach on reattach does not exec attach');
+  assert.match(n.log.out.join('\n'), /coordinator attach boss/);
+
+  // --env on a reattach applies nowhere: the coordinator is already running, so it says so by name.
+  const e = fixture();
+  e.machines.push(own(e));
+  const notes = [];
+  const envFile = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
+  writeFileSync(envFile, 'K=v\n');
+  await main(['cloud', '--name', 'boss', '--env', envFile], { ...e.deps, cwd: ghRepo(), note: (s) => notes.push(s) });
+  assert.equal(e.log.create.length, 0);
+  assert.match(notes.join('\n'), /env files were not applied.*already runs/);
+});
+
+test('cloud refuses to reattach when the same name is another repo, another branch or not running', async () => {
+  for (const [meta, pattern, state] of [
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'other/repo', branch: 'main', install: id }), /belongs to other\/repo, not owner\/cloudrepo/],
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'dev', install: id }), /on branch dev, not main/],
+    [() => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: 'otherinstall1234' }), /belongs to a different cloudy-cloud installation/], // a teammate's coordinator of the same name, repo and branch
+    [() => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }), /no installation label/], // a machine from before install labels existed cannot be verified by cloud
+    [(id) => ({ purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: id }), /it is stopped/, 'stopped'],
+  ]) {
+    const f = fixture();
+    f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: state ?? 'running', metadata: meta(installId(f.deps.env)) });
+    const e = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn([]) }).then(() => { throw new Error('started anyway'); }, (x) => x);
+    assert.match(e.message, pattern, JSON.stringify(meta('x')));
+    assert.match(e.message, /--name|coordinator stop boss|coordinator attach boss/);
+    assert.equal(f.log.create.length, 0);
+  }
+});
+
+test('cloud reattach attaches the machine it validated, not a same-named one created beside it', async () => {
+  // Two coordinators named boss: a teammate's (foreign install) listed first, this installation's second.
+  // A reattach that looked the name up again would hit the foreign row; the validated machine is carried through.
+  const f = fixture();
+  f.machines.push(
+    { sandboxId: 'm_foreign', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'owner/cloudrepo', branch: 'main', install: 'otherinstall1234' } },
+    own(f),
+  );
+  const spawned = [];
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn(spawned) });
+  assert.equal(f.log.create.length, 0);
+  assert.match(f.log.out.join('\n'), /Reattaching to boss/);
+  assert.match(f.log.out.join('\n'), /cloudy-cloud coordinator attach boss/);
+});
+
+test('coordinator attach refuses a same-named coordinator of a different installation; a legacy one still attaches by name', async () => {
+  const foreign = { sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: 'otherinstall1234' } };
+  const f = fixture({ machines: [foreign] });
+  await assert.rejects(main(['attach', 'boss'], f.deps), /belongs to a different cloudy-cloud installation/);
+  // Machines without an install label predate labelling: explicit `attach NAME` remains the way to reach one.
+  const g = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
+  await main(['attach', 'boss'], g.deps);
+  assert.equal(g.log.out[0], 'cloudy-cloud coordinator attach boss');
+  // And one of this installation's own attaches fine.
+  const h = fixture();
+  h.machines.push(own(h));
+  await main(['attach', 'boss'], h.deps);
+  assert.equal(h.log.out[0], 'cloudy-cloud coordinator attach boss');
+});
+
+test('cloud --branch B counts unpushed commits on local B, not on HEAD; a missing local B skips the check', async () => {
+  // main is checked out and clean; local dev has one commit origin does not. The old origin/dev..HEAD
+  // compare saw 0 and let the cloud clone start without the commit.
+  const repo = ghRepo();
+  gitIn(repo, 'checkout', '-q', '-b', 'dev');
+  gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'dev only');
+  gitIn(repo, 'update-ref', 'refs/remotes/origin/dev', 'HEAD~1');
+  gitIn(repo, 'checkout', '-q', 'main');
+  const f = fixture();
+  await assert.rejects(main(['cloud', '--branch', 'dev'], { ...f.deps, cwd: repo, spawn: localSpawn([]) }), /commit\(s\) on dev are not pushed to origin\/dev/);
+  assert.equal(f.log.create.length, 0);
+  // A branch that exists only on origin has nothing local to miss: the check is skipped and the clone gets it.
+  const g = fixture();
+  gitIn(repo, 'update-ref', 'refs/remotes/origin/ghost', 'HEAD');
+  await main(['cloud', '--branch', 'ghost'], { ...g.deps, cwd: repo, spawn: localSpawn([]) });
+  assert.equal(g.log.create.length, 1);
+});
+
+test('cloud --no-attach on a TTY starts without the attach exec', async () => {
+  const f = fixture();
+  const spawned = [];
+  await main(['cloud', '--name', 'boss', '--no-attach'], { ...f.deps, cwd: ghRepo(), tty: true, ask: async () => 'y', spawn: localSpawn(spawned) });
+  assert.equal(f.log.create.length, 1);
+  assert.ok(!spawned.some((a) => a.includes('attach')));
+  assert.match(f.log.out.join('\n'), /coordinator attach boss/);
+});
+
+test('cloud on a TTY starts and attaches through the same spawn path as coordinator attach', async () => {
+  const f = fixture();
+  const spawned = [];
+  const status = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ask: async () => 'y', spawn: localSpawn(spawned) });
+  assert.equal(f.log.create.length, 1);
+  assert.equal(status, 0);
+  assert.ok(spawned.some((a) => a.some((x) => /tmux.*attach.*claude/.test(x))), JSON.stringify(spawned));
+});
+
+test('cloud rejects bad flags before keys or git are used', async () => {
+  const f = fixture();
+  for (const args of [['cloud', '--nope'], ['cloud', '--name'], ['cloud', '--name', 'a', '--name', 'b'], ['cloud', '--env'], ['cloud', 'positional']]) {
+    await assert.rejects(main(args, { ...f.deps, cwd: ghRepo(), get sdk() { throw new Error('SDK touched'); } }), /cloud/);
+  }
+});
+
+// ---- --env bridging into the coordinator machine ----
+
+const ENV_SECRET = 'envl1t_S3NTINEL-must-not-leak';
+
+test('start --env attaches a variable by name only when its name is a stored proxy secret (no secrets set)', async () => {
+  const f = fixture();
+  const envFile = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
+  writeFileSync(envFile, `MY_TOKEN=${ENV_SECRET}\n`);
+  // MY_TOKEN is a name the user already stored as a proxy secret, so the bridge attaches it by name.
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS += ',MY_TOKEN';
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', envFile], { ...f.deps, note: (s) => notes.push(s) });
+  // The bridge never writes provider secrets: no `instabox secrets set` call at all.
+  assert.ok(!f.store.calls.some((c) => c.argv.includes('set')), `no secrets set call: ${JSON.stringify(f.store.calls)}`);
+  const patch = f.log.fetches.find((x) => x.method === 'PATCH' && /secrets/.test(x.url) && x.body.includes('MY_TOKEN'));
+  assert.ok(patch, 'the secret name is attached to the machine');
+  for (const c of f.log.cmds) assert.ok(!c.includes(ENV_SECRET), `value in command: ${c}`);
+
+  // A variable whose name is NOT a stored proxy secret is never proxied — off a terminal it is skipped.
+  const g = fixture();
+  const envFile2 = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
+  writeFileSync(envFile2, `UNKNOWN_VAR=${ENV_SECRET}\n`);
+  const notes2 = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', envFile2], { ...g.deps, note: (s) => notes2.push(s) });
+  assert.ok(!g.store.calls.some((c) => c.argv.includes('UNKNOWN_VAR')), 'an unknown name is never stored as a secret');
+  assert.ok(!g.log.fetches.some((x) => x.method === 'PATCH' && /secrets/.test(x.url) && x.body.includes('UNKNOWN_VAR')), 'not attached either');
+  assert.ok(!g.log.writes.some((x) => x.p.endsWith('env.local')), 'and not copied literally without consent');
+  assert.match(notes2.join('\n'), /skipped UNKNOWN_VAR/);
+});
+
+test('start --env copies a consented literal value into env.local, sourced into the session, never on a command', async () => {
+  const f = fixture();
+  const envFile = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
+  writeFileSync(envFile, `MY_LIT=${ENV_SECRET}\nMY_SKIP=x\n`);
+  const notes = [], asks = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', envFile], { ...f.deps, tty: true, ask: async (q) => { asks.push(q); return /MY_LIT/.test(q) ? 'y' : 'n'; }, note: (s) => notes.push(s) });
+  assert.equal(asks.length, 2, 'each unbound variable is asked about');
+  const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env.local');
+  assert.ok(w, 'env.local written');
+  assert.match(w.d, new RegExp(`^MY_LIT='${ENV_SECRET}'$`, 'm'));
+  assert.doesNotMatch(w.d, /MY_SKIP/);
+  assert.ok(f.log.cmds.some((c) => /umask 077 && : > '[^']*env\.local'/.test(c)));
+  assert.ok(f.log.cmds.some((c) => /chmod 600 '[^']*env\.local'/.test(c)));
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /set -a; \. '\\''[^'\\]*env\.local'\\''; set \+a;/);
+  const cmds = f.log.cmds.filter((c) => !/umask 077/.test(c));
+  for (const c of cmds) assert.ok(!c.includes(ENV_SECRET), `value in command: ${c}`);
+  assert.match(notes.join('\n'), /copied literally: MY_LIT/);
+  assert.match(notes.join('\n'), /skipped MY_SKIP: declined/);
+  assert.ok(!notes.join('\n').includes(ENV_SECRET), 'the summary names names only');
+});
+
+test('start --env off a terminal skips unconsented variables and still reports by name', async () => {
+  const f = fixture();
+  const envFile = join(mkdtempSync(join(tmpdir(), 'cc-env-')), 'vars.env');
+  writeFileSync(envFile, `MY_LIT=${ENV_SECRET}\n`);
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', envFile], { ...f.deps, note: (s) => notes.push(s) });
+  assert.ok(!f.log.writes.some((x) => x.p.endsWith('env.local')));
+  assert.match(notes.join('\n'), /skipped MY_LIT: needs consent; no terminal to ask/);
+});
+
+test('start reads env files from CLOUDY_CLOUD_ENV_FILES too', async () => {
+  const f = fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'cc-env-'));
+  const envFile = join(dir, 'vars.env');
+  writeFileSync(envFile, `MY_TOKEN=${ENV_SECRET}\n`);
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS += ',MY_TOKEN';
+  f.deps.env.CLOUDY_CLOUD_ENV_FILES = envFile;
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const patch = f.log.fetches.find((x) => x.method === 'PATCH' && /secrets/.test(x.url) && x.body.includes('MY_TOKEN'));
+  assert.ok(patch, 'a name already stored as a proxy secret is attached by name');
+});
+
+test('a missing --env file is a usage error and --env is repeatable', async () => {
+  const f = fixture();
+  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', '/nonexistent/none.env'], f.deps), /Cannot read the --env file/);
+  assert.equal(f.log.create.length, 0);
+  const g = fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'cc-env-'));
+  const a = join(dir, 'a.env'), b = join(dir, 'b.env');
+  writeFileSync(a, 'K1=x\n');
+  writeFileSync(b, 'K2=y\n');
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', a, '--env', b], g.deps);
+  assert.equal(g.log.create.length, 1, 'repeatable --env reaches start');
 });

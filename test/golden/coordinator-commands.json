@@ -171,7 +171,10 @@
           "metadata": {
             "purpose": "cloudy-cloud",
             "role": "coordinator",
-            "name": "boss"
+            "name": "boss",
+            "repo": "o/r",
+            "install": "<INSTALL>",
+            "branch": "main"
           }
         }
       },
@@ -189,6 +192,14 @@
         "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
         "headers": {
           "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
         }
       },
       {
@@ -265,6 +276,14 @@
       {
         "sdk": "commands.run",
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/watchdog.sh"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
       },
       {
         "sdk": "commands.run",
@@ -346,7 +365,9 @@
           "metadata": {
             "purpose": "cloudy-cloud",
             "role": "coordinator",
-            "name": "boss"
+            "name": "boss",
+            "repo": "o/r",
+            "install": "<INSTALL>"
           }
         }
       },
@@ -364,6 +385,14 @@
         "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
         "headers": {
           "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
         }
       },
       {
@@ -435,6 +464,14 @@
       {
         "sdk": "commands.run",
         "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/watchdog.sh"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
       },
       {
         "sdk": "commands.run",
@@ -549,7 +586,7 @@
       }
     ],
     "out": [
-      "Deleted coordinator boss (machine coord-boss). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: npx --yes instabox@latest ls --meta purpose=cloudy-cloud"
+      "Deleted coordinator boss (machine coord-boss). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: cloudy-cloud machines"
     ]
   },
   "finish --force": {

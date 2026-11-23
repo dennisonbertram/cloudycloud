@@ -81,7 +81,7 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
 // Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
 const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
-export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals];
+export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals].filter((v) => typeof v === 'string' && v.length >= 4); // a shorter value would over-redact
 function helpers(env, literals, keyName, tool) {
   const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
   const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
@@ -346,7 +346,10 @@ async function turnOnce(a, message, ctx, t, deadline) {
   // servers except `instabox` (no sign-in on the box) plus the shared ones (#145). A coordinator keeps its own flags.
   const worker = !coord && harnessOf(a) === 'claude';
   const merge = `node -e '${MERGE_MCP_SCRIPT.replaceAll("'", "'\\''")}' $D/mcp.json ${a.home}/.config/cloudy-cloud/mcp.json || (umask 077; rm -f $D/mcp.json; echo '{"mcpServers":{}}' > $D/mcp.json);`;
-  const cmd = [worker && merge, `${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLOUDY_CLOUD_TURN_DEADLINE=${turnEnd} BASH_DEFAULT_TIMEOUT_MS=${bashMs} BASH_MAX_TIMEOUT_MS=${bashMs} ${coord ? `CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
+  // A nested coordinator runs the launcher with its coordinator marks on the environment, exactly as a
+  // top-level one does through tmux: COORDINATOR=1 enables the built-in Agent tool and the deadline hook
+  // in bin/cloudy-cloud; DELETE_AT gives the hook and the prompt the machine's real deadline.
+  const cmd = [worker && merge, `${a.profile ? `${claudeEnv(a.profile)} ` : ''}CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLOUDY_CLOUD_TURN_DEADLINE=${turnEnd} BASH_DEFAULT_TIMEOUT_MS=${bashMs} BASH_MAX_TIMEOUT_MS=${bashMs} ${coord ? `${a.deleteAt ? `CLOUDY_CLOUD_DELETE_AT=${new Date(a.deleteAt).toISOString()} ` : ''}CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_EXTRA_PROMPT='${hint}' ${a.home}/cloudy-cloud/bin/cloudy-cloud` : 'claude'} -p`, a.sessionId && `--resume ${a.sessionId}`, '--dangerously-skip-permissions --output-format stream-json --verbose',
     worker ? '--mcp-config $D/mcp.json --strict-mcp-config' : hasMcp(a) && harnessOf(a) === 'claude' && `--mcp-config ${a.home}/.config/cloudy-cloud/mcp.json --strict-mcp-config`,
     !coord && `--append-system-prompt '${hint}'`, !a.profile && a.model && `--model ${a.model}`, a.agent && `--agent ${a.agent}`,
     `< ${a.home}/prompt.txt`].filter(Boolean).join(' ');
@@ -608,6 +611,7 @@ async function setup(a, ctx) {
 async function installCoordinator(a, ctx, envs) {
   const { env } = ctx, sh = (cmd, timeoutMs = SETUP_MS) => a.sandbox.commands.run(cmd, { cwd: a.home, timeoutMs });
   const b = toolBundle(a.tool.root); // the laptop's exact cloudy-cloud, pushed or not
+  if (b.dropped?.length) log(`tool bundle left out ${b.dropped.join(', ')}`);
   await a.sandbox.files.write(`${a.home}/cloudy-cloud.bundle`, b.data);
   await sh(toolInstallCmd(b, `${a.home}/cloudy-cloud.bundle`, a.tool.origin));
   await sh('mkdir -p .claude/skills && ln -sfn ~/cloudy-cloud/skills/cloud-fleet .claude/skills/cloud-fleet'); // the fleet skill, at the parent's commit

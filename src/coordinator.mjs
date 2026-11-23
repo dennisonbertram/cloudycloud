@@ -2,14 +2,17 @@
 // Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, installId, DEFAULT_PROVIDER_KEY } from './config.mjs';
 import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
+import { WATCHDOG_SCRIPT } from './watchdog.mjs';
+import { parseEnvFile, planEnv, consentFile } from './env-bridge.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
-import { loadProvider } from './providers/index.mjs';
+import { loadProvider, writeSecretFile } from './providers/index.mjs';
 import { makeUi, cellWidth, fitCells } from './ui.mjs';
 import { coordinatorHelp, coordinatorUsage } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
@@ -35,7 +38,7 @@ const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 const fail = (msg) => { throw Object.assign(new Error(msg), { local: true }); };
 // Coordinators run unrestricted machines: a configured worker egress policy refuses them outright (same text as runSubagent's role refusal).
-const refuseEgress = (env, cmd) => { const e = egressAllow(env); if (e.error) guided(e.error, { short: e.short, details: e.details, next: e.next }); if (e.list.length) guided(`CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker".`, { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: `start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator ${cmd} — or call cloud_agent with role "worker"` }); };
+const refuseEgress = (env, cmd) => { const e = egressAllow(env); if (e.error) guided(e.error, { short: e.short, details: e.details, next: e.next }); const again = cmd === 'cloud' ? 'cloudy-cloud cloud' : `cloudy-cloud coordinator ${cmd}`; if (e.list.length) guided(`CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off ${again} — or call cloud_agent with role "worker".`, { short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: `start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off ${again} — or call cloud_agent with role "worker"` }); };
 // A "not found" or refusal is a normal answer, not a failure. The message stays one paragraph for scripts
 // (plain stderr, --json); a terminal renders the fields: ✖ short, dim details and reason, → Next.
 // `local` marks an error our own code created (this file, a provider, config): only such an error may carry
@@ -141,8 +144,9 @@ async function context(deps) {
   const tty = deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY);
   const spawn = deps.spawn ?? spawnSync;
   const now = deps.now ?? Date.now;
-  const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask };
+  // Prompts write to stderr, never stdout: --json and piped output stay machine-readable.
+  const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stderr }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
+  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, cwd: deps.cwd };
 }
 
 // The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
@@ -180,7 +184,7 @@ const find = async (provider, role, name) =>
     .filter((m) => OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === role && (!name || m.labels?.name === name));
 
 // Installs or updates cloudy-cloud on the machine and sets up git's GitHub login. Returns the home folder.
-async function installTool(sbx, root) {
+async function installTool(sbx, root, note) {
   const run = (cmd, opts) => sbx.commands.run(cmd, { timeoutMs: SETUP_MS, ...opts });
   const home = (await run('printf %s "$HOME"')).stdout.trim() || fail('Could not read $HOME on the machine.');
   await run(`command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }`);
@@ -188,8 +192,10 @@ async function installTool(sbx, root) {
   // A fresh machine has no git identity, which the coordinator needs to commit merges and its report. Use the laptop's.
   const ident = (k, d) => { try { return execFileSync('git', [...(ownsRepo(root) ? ['-C', root, 'config'] : ['config', '--global']), k], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || d; } catch { return d; } };
   await run(`git config --global user.name ${q(`${ident('user.name', 'cloudy-cloud')} (coordinator)`)} && git config --global user.email ${q(ident('user.email', 'cloudy-cloud@localhost'))}`);
-  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version, pushed or not.
+  // Upload this checkout (HEAD plus uncommitted tracked edits) so the machine runs exactly this version,
+  // pushed or not. Credential-looking files never ride the bundle; their names are reported back.
   const b = toolBundle(root);
+  if (b.dropped?.length) note?.(`The tool bundle left out ${b.dropped.join(', ')}: file names like these can hold credentials and are never sent to a machine.`);
   await sbx.files.write(`${home}/cloudy-cloud.bundle`, b.data);
   await run(`${toolInstallCmd(b, `${home}/cloudy-cloud.bundle`, toolRepoUrl(root))} && npm install --no-audit --no-fund`, { cwd: home });
   return home;
@@ -313,7 +319,7 @@ const recordCoordinatorSecret = (c) => {
 async function storeCoordinatorSecret(c) {
   if (!c.provider.caps.hasProxySecrets || c.provider.coordinatorEnv || typeof c.provider.storeSecret !== 'function') return 'skip';
   const key = c.env[DEFAULT_PROVIDER_KEY];
-  if (!key || key.startsWith('ibsec_') || c.env.CLOUDY_CLOUD_COORDINATOR) return 'skip';
+  if (!key || key.startsWith('ibsec_') || c.env.CLOUDY_CLOUD_COORDINATOR === '1') return 'skip';
   const local = proxySecrets(c.env).has(COORDINATOR_KEY_SECRET);
   const canList = typeof c.provider.listSecrets === 'function';
   let remote; // true/false when the org's secrets could be listed; undefined when they could not
@@ -382,8 +388,50 @@ async function image(c, args) {
 }
 
 const flag = (args, name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+// A repeatable option: every value after an occurrence, in order (`--env` may appear several times).
+const flags = (args, name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
+// Every env file to bridge: --env FILE arguments plus the comma list in ~/.config/cloudy-cloud/env.
+const envFileArgs = (args, env) => [...flags(args, '--env'), ...String(env.CLOUDY_CLOUD_ENV_FILES ?? '').split(/[\s,]+/).filter(Boolean)];
+
+// The env-bridge half of start (env-bridge.mjs): parse each --env file, let planEnv sort names into proxied,
+// consented-literal and skipped, and build the sourced file text for the literal ones. A proxied variable is
+// attached to the machine by NAME only — it is one of the user's own CLOUDY_CLOUD_PROXY_SECRETS, so the value
+// never leaves the laptop and the bridge never stores a secret.
+async function bridgeEnv(c, files, origin) {
+  const vars = new Map();
+  vars.skipped = [];
+  for (const f of files) {
+    let text;
+    try { text = readFileSync(f, 'utf8'); }
+    catch { usageError(`Cannot read the --env file ${f}.`, 'start', `Cannot read the --env file ${f}.`); }
+    const parsed = parseEnvFile(text);
+    for (const [k, v] of parsed) vars.set(k, v);
+    vars.skipped.push(...parsed.skipped.map((s) => ({ ...s, file: f })));
+  }
+  const plan = await planEnv({
+    vars, env: c.env, origin, consentPath: consentFile(c.env),
+    // No proxy secrets on this provider: a proxy-secret name then needs consent like any other variable.
+    proxy: !!c.provider.caps.hasProxySecrets,
+    ask: c.tty ? (name) => c.ask(`Copy the real value of ${name} to the cloud machine? [y/N/a] `) : null,
+  });
+  const secrets = plan.proxied.map((p) => p.name), skipped = [...plan.skipped];
+  const lines = [], literal = [], values = [];
+  for (const name of plan.literal) {
+    const v = String(vars.get(name));
+    if (/[\r\n\0]/.test(v)) { skipped.push({ name, reason: 'the value contains a line break' }); continue; }
+    lines.push(`${name}='${v.replaceAll("'", "'\\''")}'`);
+    literal.push(name);
+    if (v.length >= 4) values.push(v); // kept for pane and error scrubbing only — a shorter value would over-redact
+  }
+  // A malformed line reports only its line number and file: the text itself could be a secret.
+  const shown = (s) => s.name ?? `line ${s.line}${s.file ? ` of ${s.file}` : ''}`;
+  const summary = [secrets.length && `proxied by name: ${secrets.join(', ')}`, literal.length && `copied literally: ${literal.join(', ')}`, ...skipped.map((s) => `skipped ${shown(s)}: ${s.reason}`)].filter(Boolean);
+  return { secrets, literal, values, skipped, summary, text: lines.length ? `${lines.join('\n')}\n` : '' };
+}
 
 const customHost = (env, key) => { try { const p = Object.values(loadProfiles(env)).find((x) => x?.keyName === key); return URL.canParse(p?.baseUrl) ? new URL(p.baseUrl).host : undefined; } catch { return undefined; } };
+// The owner/repo path of a github.com https URL, without any .git suffix: the value the repo label carries.
+const repoPath = (url) => url.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
 
 async function start(c, args) {
   refuseEgress(c.env, 'start');
@@ -405,7 +453,6 @@ async function start(c, args) {
   const hours = flag(args, '--max-hours') === undefined ? maxHours : Number(flag(args, '--max-hours'));
   const seconds = Math.round(hours * 3600);
   if (!(seconds >= 60 && seconds <= maxHours * 3600)) usageError(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).`, 'start', `--max-hours must be a number up to ${maxHours}.`, [`${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours.`]);
-  const deleteAt = new Date(Date.now() + seconds * 1000).toISOString();
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved, signed-in image.', next: 'cloudy-cloud coordinator image', neutral: true });
   if ((await find(c.provider, 'coordinator', name)).length) guided(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`, { short: `A coordinator named ${name} already exists.`, next: `cloudy-cloud coordinator stop ${name}` });
@@ -428,15 +475,37 @@ async function start(c, args) {
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
   const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
+  // --env FILE variables (and the CLOUDY_CLOUD_ENV_FILES list): a variable whose name is already in
+  // CLOUDY_CLOUD_PROXY_SECRETS attaches by name like any other proxy secret; the summary names names only.
+  const envFiles = envFileArgs(args, c.env);
+  const bridged = envFiles.length ? await bridgeEnv(c, envFiles, repo) : { secrets: [], literal: [], values: [], skipped: [], summary: [], text: '' };
+  for (const line of bridged.summary) c.note(`Environment: ${line}`);
   c.progress('Creating the coordinator machine...');
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...(keys.secrets.length && { secrets: keys.secrets }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
+  // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
+  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name.
+  const t0 = Date.now(); // the create timestamp, for the deadline fallback below
+  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  // The deadline comes from the machine's own deletion time once the provider reports it — the consent
+  // prompts above could otherwise eat into a deadline computed before them. Only the list row of THIS
+  // machine counts (another coordinator's deadline is wrong), so the fallback is the requested ttl from
+  // the timestamp taken just before create — never rows[0].
+  const row = await find(c.provider, 'coordinator', name).then((rows) => rows.find((m) => m.id === sbx.id)).catch(() => null);
+  const deleteAt = row?.deleteAt && Number.isFinite(new Date(row.deleteAt).getTime()) ? new Date(row.deleteAt).toISOString() : new Date(t0 + seconds * 1000).toISOString();
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
-    const home = await installTool(sbx, c.root);
+    const home = await installTool(sbx, c.root, c.note);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
     await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
+    // Consented literal values go in env.local: an empty mode-600 file first (the upload could briefly be 644),
+    // the secret file route for the body, a chmod after. tmux sources it into Claude's environment below.
+    if (bridged.text) {
+      await sbx.commands.run(`umask 077 && : > ${q(`${dir}/env.local`)}`);
+      await writeSecretFile(sbx, `${dir}/env.local`, bridged.text);
+      await sbx.commands.run(`chmod 600 ${q(`${dir}/env.local`)}`);
+    }
     c.progress('Cloning the repository...');
     await sbx.commands.run(`rm -rf ~/repo && git clone -q ${branch ? `-b ${q(branch)} ` : ''}${q(repo)} ~/repo`, { timeoutMs: SETUP_MS });
     c.progress('Starting the Claude session...');
@@ -451,7 +520,11 @@ async function start(c, args) {
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
     // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
     // a setup-token cannot start Remote Control and an env token beats the saved full login (code.claude.com/docs/en/remote-control).
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // env.local holds the consented literal --env variables; sourcing it here exports them to Claude's environment.
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`);
+    // The deadline watchdog runs in its own tmux session so a Claude restart never stops it.
+    await sbx.files.write(`${home}/watchdog.sh`, WATCHDOG_SCRIPT);
+    await sbx.commands.run(`tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} sh ${home}/watchdog.sh`)}`);
     // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
     await c.sleep(5000);
     let pane = '';
@@ -462,7 +535,7 @@ async function start(c, args) {
     }
     // The task is typed into the session, so its own lines can be on screen; they are not errors. Configured values are
     // removed before the screen is classified or fitted into an error, same as for `ls`/`status`.
-    const st = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane), task ?? '');
+    const st = paneState([...secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)), ...bridged.values].reduce((t, v) => t.split(v).join('[redacted]'), pane), task ?? '');
     const line = st.blocked;
     if (!line && st.waiting) waiting = st.waiting;
     if (line) {
@@ -480,13 +553,13 @@ async function start(c, args) {
       for (let i = 0; i < 3 && !link && !waiting; i++) {
         await c.sleep(3000);
         try {
-          const again = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''), task ?? '');
+          const again = paneState([...secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)), ...bridged.values].reduce((t, v) => t.split(v).join('[redacted]'), (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''), task ?? '');
           waiting = again.waiting || again.blocked || '';
         } catch { break; }
         if (!waiting) link = await readLink(sbx);
       }
     }
-  } catch (e) { await sbx.kill().catch(() => {}); throw e; }
+  } catch (e) { e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values]; await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
@@ -528,10 +601,16 @@ async function start(c, args) {
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
 }
 
-async function attach(c, args) {
-  const [m] = await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.'));
+async function attach(c, args, { noAttach = false, machine = null } = {}) {
+  // `cloud` passes the machine it already validated (`machine`): a same-named machine created after the
+  // lookup is not what this attach reaches. Without it the default lookup by name stands.
+  const m = machine ?? (await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.')))[0];
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
-  if (c.tty) { // on a terminal, open the session here
+  // A coordinator made by a different installation is not ours to attach to. A machine without an install
+  // label predates labelling: an explicit `attach NAME` is still how one of those is reached (only `cloud`
+  // reattach refuses those).
+  if (m.labels?.install && m.labels.install !== installId(c.env)) guided(`Coordinator ${args[0]} belongs to a different cloudy-cloud installation, so it was not attached.\nNext step: list this installation's coordinators with cloudy-cloud coordinator ls`, { short: `Coordinator ${args[0]} belongs to a different cloudy-cloud installation.`, next: 'cloudy-cloud coordinator ls' });
+  if (c.tty && !noAttach) { // on a terminal, open the session here
     const argv = c.provider.shellArgv(mach(m), ['tmux', 'attach', '-t', 'claude'], { tty: true });
     const r = c.spawn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...process.env, ...c.provider.shellEnv?.() }, ...c.provider.shellSpawnOpts?.(argv) });
     // doctor checks self-hosted boxes only; everywhere else the fix is the missing provider CLI itself.
@@ -636,11 +715,11 @@ async function stop(c, args) {
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   c.progress('Deleting the coordinator machine...');
   await c.provider.delete(m.id, { sdk: true });
-  // A terminal names our own command (listMachinesUi); piped output keeps the provider CLI line scripts had.
+  // Both name our own command when the provider has one (listMachinesUi), so the provider stays behind cloudy-cloud.
   if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
     hintFit(c.ui, `List machines: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`)].join('\n'));
-  c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachines}`);
+  c.out(`Deleted coordinator ${name} (machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`);
 }
 
 // Run ON a coordinator machine by the coordinator itself: checks that nothing is lost, then deletes this machine.
@@ -690,9 +769,27 @@ async function finish(c, args, deps) {
 }
 
 // Rejects bad arguments before any key is read or the network is touched.
-const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model'];
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model', '--env'];
+const CLOUD_OPTIONS = ['--name', '--branch', '--max-hours', '--model', '--env'];
+const CLOUD_FLAGS = ['--no-attach', '--json'];
 function validateArgs(cmd, args) {
   const bad = (message, short = message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, short);
+  if (cmd === 'cloud') {
+    const seen = new Set();
+    const badCloud = (message) => guided(`${message}\nUsage: cloudy-cloud cloud [--name N] [--branch B] [--max-hours H] [--model M] [--env FILE]... [--no-attach] [--json]`, { short: message, next: 'cloudy-cloud cloud --help', wrapShort: true });
+    for (let i = 0; i < args.length; i++) {
+      const option = args[i];
+      if (CLOUD_FLAGS.includes(option)) { if (seen.has(option)) badCloud(`Repeated option: ${option}`); seen.add(option); continue; }
+      if (!CLOUD_OPTIONS.includes(option)) badCloud(`Unknown argument: ${option}`);
+      // --env is repeatable (same as on start): it is not kept in `seen`.
+      if (option === '--env') { if (args[i + 1] === undefined || args[i + 1].startsWith('--')) badCloud(`Missing value for ${option}.`); i++; continue; }
+      if (seen.has(option)) badCloud(`Repeated option: ${option}`);
+      if (args[i + 1] === undefined || args[i + 1].startsWith('--')) badCloud(`Missing value for ${option}.`);
+      seen.add(option);
+      i++;
+    }
+    return;
+  }
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
   if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
@@ -705,30 +802,110 @@ function validateArgs(cmd, args) {
     const option = args[i];
     if (option === '--json') { if (seen.has(option)) bad('Repeated option: --json'); seen.add(option); continue; }
     if (!START_OPTIONS.includes(option)) bad(`Unknown argument: ${option}`);
-    if (seen.has(option)) bad(`Repeated option: ${option}`);
+    if (seen.has(option)) bad(`Repeated option: ${option}`); // --env is repeatable: it is not kept in `seen`
+    if (option === '--env') { if (args[i + 1] === undefined || args[i + 1].startsWith('--')) bad(`Missing value for ${option}.`); i++; continue; }
     if (args[i + 1] === undefined || (option !== '--task' && args[i + 1].startsWith('--'))) bad(`Missing value for ${option}.`);
     seen.add(option);
     i++;
   }
 }
 
+// `cloudy-cloud cloud`: inside a clone whose origin is on github.com, one step to a coordinator for this
+// branch — local work that is not on GitHub is flagged first (the cloud copy is cloned from GitHub, so it
+// would not have it), an already-running coordinator of the same name is reattached to instead of restarted.
+async function cloud(c, args) {
+  refuseEgress(c.env, 'cloud');
+  const dir = c.cwd ?? process.cwd();
+  const git = (...a) => { const r = c.spawn('git', ['-C', dir, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); return !r?.error && r.status === 0 ? (r.stdout ?? '').trim() : null; };
+  if (git('rev-parse', '--is-inside-work-tree') !== 'true') guided('cloudy-cloud cloud runs inside a git repository whose origin is on github.com. Run it inside a clone, or start a coordinator the general way: cloudy-cloud coordinator start NAME --repo URL', { short: 'Not inside a git repository.', next: 'cd into a clone, then run cloudy-cloud cloud again' });
+  const remote = git('remote', 'get-url', 'origin') ?? '';
+  // The URL itself is never echoed back: an https remote can carry a credential. Only owner/repo is extracted.
+  const m = remote.match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
+  const repo = m && REPO_RE.test(`https://github.com/${m[1]}`) ? `https://github.com/${m[1]}` : '';
+  if (!repo) guided('cloudy-cloud cloud needs an origin that is a github.com repository (https or ssh). Start a coordinator the general way: cloudy-cloud coordinator start NAME --repo URL', { short: 'The origin is not a github.com URL.', next: 'cloudy-cloud coordinator start NAME --repo URL' });
+  const branch = flag(args, '--branch') ?? git('branch', '--show-current');
+  if (!branch) guided('There is no current branch (HEAD is detached). Check out a branch or pass --branch.', { short: 'No current branch (detached HEAD).', next: 'check out a branch, or pass --branch' });
+  if (!/^[\w./-]+$/.test(branch)) guided('--branch has characters that are not allowed.', { short: '--branch has characters that are not allowed.', next: 'cloudy-cloud cloud --help' });
+  const path = repoPath(repo); // owner/repo — the value the machine's repo label stores
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+  // The default name is <owner>-<repo>-<branch>-<hash>: the short hash of owner/repo/branch always rides
+  // along, so two different repos — or the same repo on two branches — can never collide on the name.
+  const wanted = slug(`${path.replace('/', '-')}-${branch}`);
+  const auto = `${wanted.slice(0, 32).replace(/-+$/g, '')}-${createHash('sha1').update(`${path}@${branch}`).digest('hex').slice(0, 7)}`;
+  const name = flag(args, '--name') ?? auto;
+  if (!NAME_RE.test(name)) guided(`The coordinator name "${safeText(name)}" is not valid. Pass one with --name: lowercase letters, digits and hyphens (1 to 40 characters).`, { short: 'The coordinator name must use lowercase letters, digits and hyphens (1 to 40 characters).', next: 'cloudy-cloud cloud --help' });
+  const json = args.includes('--json');
+  // Reattach only to a RUNNING coordinator THIS installation made (install label) whose repo and branch
+  // labels match this checkout — a bare name match could otherwise hand the session of a teammate's
+  // coordinator, a different project, or a stale machine to this repo.
+  const existing = await find(c.provider, 'coordinator', name);
+  const mine = installId(c.env);
+  const match = existing.find((m) => m.state === 'running' && m.labels?.install === mine && m.labels?.repo === path && m.labels?.branch === branch);
+  if (match || existing.length) {
+    if (!match) {
+      const m0 = existing[0], labels = m0.labels ?? {};
+      const conflict = m0.state !== 'running' ? `it is ${safeText(m0.state ?? '') || 'not running'}`
+        : !labels.install ? 'it has no installation label (it was made before coordinators carried one), so cloud cannot verify it is yours'
+        : labels.install !== mine ? 'it belongs to a different cloudy-cloud installation'
+        : labels.repo !== path ? `it belongs to ${safeText(labels.repo ?? '') || 'a different repository'}, not ${path}`
+        : `it is on branch ${safeText(labels.branch ?? '') || 'another branch'}, not ${branch}`;
+      // A legacy coordinator (no install label) can still be attached to by name; a foreign one cannot.
+      const next = labels.install ? 'pick a different name with --name, or stop it first' : 'attach to it by name, or pick a different name with --name';
+      guided(`A coordinator named ${name} already exists, but ${conflict}.\nNext step: ${next}: cloudy-cloud ${labels.install ? `coordinator stop ${name}` : `coordinator attach ${name}`} — or: cloudy-cloud cloud --name OTHER`, { short: `The name ${name} is taken by a different coordinator.`, reason: conflict, next: 'cloudy-cloud cloud --name OTHER' });
+    }
+    // --env on a reattach would silently do nothing: say so instead (env files apply at start only).
+    if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
+    if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
+    c.out(`Reattaching to ${name}`);
+    return attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
+  }
+  // A fresh start only: what the GitHub clone would not have — commits the branch has not pushed to
+  // origin/<branch> (fetched first), plus edits to tracked files. Untracked files warn but never block.
+  const untracked = (git('status', '--porcelain') ?? '').split('\n').filter((l) => l.startsWith('?? ')).length;
+  if (untracked) c.note(`${untracked} untracked file(s) are not committed; the cloud clone will not have them.`);
+  git('fetch', '-q', 'origin', branch); // best effort: an offline laptop compares against the last fetched ref
+  const dirty = git('status', '--porcelain', '--untracked-files=no') ?? '';
+  // Local <branch> is compared, not HEAD: --branch may point at a branch that is not checked out. A local
+  // branch that does not exist skips the unpushed check (there is nothing local to miss).
+  const ahead = git('rev-parse', '--verify', '--quiet', `refs/heads/${branch}`) === null ? 0
+    : git('rev-parse', '--verify', '--quiet', `origin/${branch}`) !== null ? Number(git('rev-list', '--count', `origin/${branch}..${branch}`)) : -1;
+  const problems = [ahead === -1 && `the branch ${branch} is not on origin at all`, ahead > 0 && `${ahead} commit(s) on ${branch} are not pushed to origin/${branch}`, dirty && 'uncommitted changes to tracked files'].filter(Boolean);
+  if (problems.length) {
+    const push = `git push${ahead === -1 ? ` -u origin ${branch}` : ''}`;
+    const why = `The cloud clone comes from GitHub, so it will not have:\n- ${problems.join('\n- ')}`;
+    // --json means a script is reading: fail like a pipe does instead of prompting (which would touch stdout).
+    if (!c.tty || json) guided(`${why}\nPush first (${push}), then run cloudy-cloud cloud again.`, { short: 'Local work is not on GitHub.', details: problems.map((p) => `- ${p}`), next: `${push}, then run cloudy-cloud cloud again` });
+    c.out(why);
+    const answer = (await c.ask('Start anyway? [y/N] '))?.trim() ?? 'n';
+    if (!/^y/i.test(answer)) return c.out('Not started.');
+  }
+  // Same start path as `coordinator start`; the flags that exist on both are passed straight through.
+  const startArgs = [name, '--repo', repo, '--branch', branch,
+    ...['--max-hours', '--model'].flatMap((f) => (flag(args, f) !== undefined ? [f, flag(args, f)] : [])),
+    ...flags(args, '--env').flatMap((f) => ['--env', f]),
+    ...(json ? ['--json'] : [])];
+  await start(c, startArgs);
+  if (args.includes('--no-attach') || json || !c.tty) return undefined;
+  return attach(c, [name]);
+}
+
 async function run(argv, deps) {
   const [cmd, ...args] = argv;
-  const commands = { image, start, attach, ls, status, stop, finish: (c, a) => finish(c, a, deps) };
+  const commands = { image, start, attach, ls, status, stop, finish: (c, a) => finish(c, a, deps), cloud };
   const isHelp = (a) => a === '--help' || a === '-h';
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
+  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
   validateArgs(cmd, args);
   const c = await context(deps);
   // A provider that cannot run coordinators at all says so in its own words first (it may name a working alternative);
   // only then does the generic snapshots check apply. The first sentence is the problem; it wraps, never truncates.
-  if ((cmd === 'image' || cmd === 'start') && c.provider.text?.coordinatorRefusal) {
+  if (['image', 'start', 'cloud'].includes(cmd) && c.provider.text?.coordinatorRefusal) {
     const s = c.provider.text.coordinatorRefusal.split(/(?<=\.) +/); // a second sentence is the action
     guided(c.provider.text.coordinatorRefusal, { short: s[0], details: s.slice(1, -1), next: s.length > 1 ? s.at(-1) : 'cloudy-cloud coordinator --help', wrapShort: true });
   }
-  if ((cmd === 'image' || cmd === 'start') && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
+  if (['image', 'start', 'cloud'].includes(cmd) && !c.provider.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
   try { return await commands[cmd](c, args); } catch (e) {
     // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
     // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
@@ -742,9 +919,10 @@ async function run(argv, deps) {
 // secret values; --json also prints it as one error object.
 export async function main(argv, deps = {}) {
   try { return await run(argv, deps); } catch (e) {
-    if (argv[0] !== 'start') throw e;
+    if (argv[0] !== 'start' && argv[0] !== 'cloud') throw e;
     const env = deps.env ?? loadEnv();
-    const secrets = Object.entries(env).filter(([k, v]) => /KEY|TOKEN|SECRET/i.test(k) && String(v ?? '').length >= 8).map(([, v]) => String(v));
+    // e.scrubValues carries extra exact values an error may contain (bridged literal --env values).
+    const secrets = [...Object.entries(env).filter(([k, v]) => /KEY|TOKEN|SECRET/i.test(k) && String(v ?? '').length >= 8).map(([, v]) => String(v)), ...(Array.isArray(e?.scrubValues) ? e.scrubValues : [])];
     const clean = (s) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), redact(String(s)));
     const message = clean(e?.message ?? e);
     const code = CODES.includes(e?.code) ? e.code : classify(message);
