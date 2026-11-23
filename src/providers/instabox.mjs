@@ -477,11 +477,9 @@ export function createProvider(env, deps = {}) {
 
     // Stores an org secret through `instabox secrets set`: the value goes on stdin (never argv) and the output is
     // dropped — the same mechanism `cloudy-cloud setup` uses. Needs the instabox login session, like setup.
-    // `host` is the key's own API host: built-in keys carry it in SECRET_HOSTS; an env-bridge variable brings
-    // the exact host name CLOUDY_CLOUD_ENV_HOSTS configured (which argv rejects unless it is one).
-    async storeSecret(name, value, host = SECRET_HOSTS[name]) {
+    async storeSecret(name, value) {
+      const host = SECRET_HOSTS[name];
       if (!host) throw Object.assign(new Error(`no host is known for the secret ${String(name).replaceAll('\n', ' ')}`), { code: 'unknown_secret', local: true });
-      if (!/^[a-z0-9][a-z0-9.-]*$/i.test(host)) throw Object.assign(new Error(`the secret ${String(name).replaceAll('\n', ' ')} is bound to something that is not an exact host name`), { code: 'bad_secret_host', local: true });
       const r = await spawn([...INSTABOX_CLI, 'secrets', 'set', name, '--host', host], { input: String(value) });
       if (r.code !== 0) {
         const detail = (r.stderr || r.stdout || '').split(String(value)).join('[redacted]').split(apiKeyOrEmpty()).join('[redacted]').replaceAll('\n', ' ').trim().slice(0, 200);

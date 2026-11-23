@@ -36,6 +36,15 @@ test('envRefresher applies keys added, changed or removed in the env file withou
   assert.equal(env.GH_TOKEN, 'shell');
 });
 
+test('CLOUDY_CLOUD_ENV_FILES is a saved key, and the removed CLOUDY_CLOUD_ENV_HOSTS no longer loads', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_ENV_FILES=/tmp/a.env, /tmp/b.env\nCLOUDY_CLOUD_ENV_HOSTS=MY_TOKEN=api.example.com\n');
+  const env = loadEnv({ CLOUDY_CLOUD_CONFIG: file });
+  assert.equal(env.CLOUDY_CLOUD_ENV_FILES, '/tmp/a.env, /tmp/b.env');
+  assert.equal(env.CLOUDY_CLOUD_ENV_HOSTS, undefined, 'the env-host binding setting is gone');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file, CLOUDY_CLOUD_ENV_FILES: 'inline.env' }).CLOUDY_CLOUD_ENV_FILES, 'inline.env', 'the environment still wins');
+});
+
 test('CLOUDY_CLOUD_ALLOW_MACHINE_KINDS is read from the env file', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
   writeFileSync(file, 'CLOUDY_CLOUD_ALLOW_MACHINE_KINDS=gpu\n');

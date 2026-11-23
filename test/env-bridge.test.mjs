@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { parseEnvFile, planEnv, envHosts, readConsent, writeConsent, consentFile } from '../src/env-bridge.mjs';
+import { parseEnvFile, planEnv, readConsent, writeConsent, consentFile } from '../src/env-bridge.mjs';
 
 const ORIGIN = 'https://github.com/owner/repo.git';
 // Never read the real profiles.json or env file: every test points the loaders at a missing path.
@@ -38,21 +38,26 @@ test('parseEnvFile does not expand variables and reports invalid names, non-assi
   assert.deepEqual([...m.keys()], ['GOOD', 'REF']);
   assert.equal(m.get('REF'), '$GOOD', 'no variable expansion');
   assert.equal(m.skipped.length, 4);
-  assert.equal(m.skipped[0].name, '1BAD');
+  // A malformed line reports only its line number: the raw text before = could be credential material.
+  for (const [i, line] of [[0, 3], [1, 4], [2, 5]]) {
+    assert.equal(m.skipped[i].line, line);
+    assert.equal(m.skipped[i].name, undefined, `no name echoed for skipped line ${line}`);
+  }
   assert.match(m.skipped[0].reason, /not a valid variable name/);
-  assert.equal(m.skipped[1].name, '-ALSO_BAD');
-  assert.equal(m.skipped[2].name, undefined, 'a line without = reports no name (its text could be a secret)');
   assert.match(m.skipped[2].reason, /not a NAME=value line/);
+  // An unterminated quote keeps its name (it passed the name check; no value text is reported).
   assert.equal(m.skipped[3].name, 'UNTERMINATED');
+  assert.equal(m.skipped[3].line, 6);
   assert.match(m.skipped[3].reason, /unterminated quote/);
   assert.ok(m.skipped.every((s) => typeof s.line === 'number' && s.reason));
 });
 
-test('built-in keys cloudy-cloud sends itself are skipped, never asked and never proxied, even with a configured host', async () => {
-  const vars = parseEnvFile(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'INSTABOX_API_KEY', 'CLOUDY_CLOUD_INSTABOX_API_KEY', 'PARTICLE_API_KEY', 'OPENROUTER_API_KEY'].map((k) => `${k}=x`).join('\n'));
+test('built-in keys cloudy-cloud sends itself are skipped, never asked and never proxied, even as proxy secrets', async () => {
+  const names = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'INSTABOX_API_KEY', 'CLOUDY_CLOUD_INSTABOX_API_KEY', 'PARTICLE_API_KEY', 'OPENROUTER_API_KEY'];
+  const vars = parseEnvFile(names.map((k) => `${k}=x`).join('\n'));
   const asks = [];
   const plan = await planEnv({
-    vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'ANTHROPIC_API_KEY=api.evil.example,GH_TOKEN=git.example.com' }), origin: ORIGIN, consentPath: consentAt(),
+    vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: names.join(',') }), origin: ORIGIN, consentPath: consentAt(),
     ask: async (n) => { asks.push(n); return 'y'; },
   });
   assert.deepEqual(plan.proxied, []);
@@ -62,34 +67,52 @@ test('built-in keys cloudy-cloud sends itself are skipped, never asked and never
   assert.deepEqual(asks, [], 'a sent-by-cloudy-cloud key is never asked about');
 });
 
-test('a variable with a configured host is proxied; everything else needs consent', async () => {
-  const consentPath = consentAt();
+test('a variable named in CLOUDY_CLOUD_PROXY_SECRETS is proxied by name; everything else needs consent', async () => {
   const vars = parseEnvFile(`STRIPE_KEY=s\nOTHER=o\nWILDCARD=w\n`);
-  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'STRIPE_KEY=API.STRIPE.COM, WILDCARD=svc.example.com' }), origin: ORIGIN, consentPath, ask: null });
-  assert.deepEqual(plan.proxied, [{ name: 'STRIPE_KEY', host: 'api.stripe.com' }, { name: 'WILDCARD', host: 'svc.example.com' }], 'hosts are lowercased');
+  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: 'STRIPE_KEY, WILDCARD' }), origin: ORIGIN, consentPath: consentAt(), ask: null });
+  assert.deepEqual(plan.proxied, [{ name: 'STRIPE_KEY' }, { name: 'WILDCARD' }], 'attached by name only');
   assert.deepEqual(plan.literal, []);
   assert.deepEqual(plan.skipped, [{ name: 'OTHER', reason: 'needs consent; no terminal to ask' }]);
 });
 
-test('a wildcard host is rejected: instabox secrets set --host is not confirmed to take one', async () => {
-  for (const bad of ['WILDCARD=*.svc.example.com', 'WILDCARD=*', 'WILDCARD=x*y.example.com']) {
-    const r = envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: bad }));
-    assert.ok(r.error, bad);
-    assert.match(r.error, /entry 1 \(WILDCARD\) is not an exact host name/);
-  }
-  const vars = parseEnvFile('WILDCARD=w\n');
-  await assert.rejects(planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'WILDCARD=*.svc.example.com' }), origin: ORIGIN, consentPath: consentAt(), ask: null }), /not an exact host name/);
+test('the bridge never stores a secret: a value is proxied only when the user stored it themselves', async () => {
+  const vars = parseEnvFile(`MY_TOKEN=${SENTINEL}\n`);
+  // Not in CLOUDY_CLOUD_PROXY_SECRETS and no terminal: skipped, never written anywhere.
+  const plan = await planEnv({ vars, env: env(), origin: ORIGIN, consentPath: consentAt(), ask: null });
+  assert.deepEqual(plan.proxied, []);
+  assert.deepEqual(plan.literal, []);
+  assert.deepEqual(plan.skipped.map((s) => s.name), ['MY_TOKEN']);
 });
 
-test('proxy:false treats host-bound variables as literal, needing consent like any other', async () => {
-  const consentPath = consentAt();
+test('proxy:false treats a proxy-secret name as literal, needing consent like any other', async () => {
   const vars = parseEnvFile(`STRIPE_KEY=s\nMYSTERY=m\n`);
   const asks = [];
-  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'STRIPE_KEY=api.stripe.com' }), origin: ORIGIN, consentPath, proxy: false, ask: async (n) => { asks.push(n); return 'y'; } });
+  const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: 'STRIPE_KEY' }), origin: ORIGIN, consentPath: consentAt(), proxy: false, ask: async (n) => { asks.push(n); return 'y'; } });
   assert.deepEqual(plan.proxied, []);
   assert.deepEqual(plan.literal.sort(), ['MYSTERY', 'STRIPE_KEY']);
   assert.deepEqual(asks.sort(), ['MYSTERY', 'STRIPE_KEY']);
   assert.deepEqual(plan.skipped, []);
+});
+
+test('dangerous names are rejected with a reason, never asked, never proxied', async () => {
+  const denied = [
+    'PATH', 'HOME', 'USER', 'SHELL', 'IFS', 'ENV', 'BASH_ENV', 'CDPATH', 'PS4', 'PROMPT_COMMAND',
+    'TMUX', 'TMUX_PANE', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES',
+    'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
+    'GIT_DIR', 'GIT_SSH_COMMAND', 'SSH_AUTH_SOCK', 'SSH_ASKPASS',
+    'CLOUDY_CLOUD_EXTRA_PROMPT', 'CLOUDY_CLOUD_DELETE_AT', 'CLAUDE_CODE_FOO', 'ANTHROPIC_BASE_URL',
+  ];
+  for (const name of denied) {
+    const vars = parseEnvFile(`${name}=x\n`);
+    const asks = [];
+    const plan = await planEnv({ vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: name }), origin: ORIGIN, consentPath: consentAt(), ask: async (n) => { asks.push(n); return 'y'; } });
+    assert.deepEqual(plan.proxied, [], name);
+    assert.deepEqual(plan.literal, [], name);
+    assert.equal(plan.skipped.length, 1, name);
+    assert.equal(plan.skipped[0].name, name);
+    assert.match(plan.skipped[0].reason, /reserved/, name);
+    assert.deepEqual(asks, [], `${name} is never asked about`);
+  }
 });
 
 test('non-interactive never sends an unconsented literal and never calls ask', async () => {
@@ -107,12 +130,12 @@ test('ask y sends the value once, n declines, and a proxied variable is never as
   const asks = [];
   const vars = parseEnvFile(`YES_KEY=a\nNO_KEY=b\nALSO_YES=c\nPROXIED=d\n`);
   const plan = await planEnv({
-    vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'PROXIED=api.example.com' }), origin: ORIGIN, consentPath,
+    vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: 'PROXIED' }), origin: ORIGIN, consentPath,
     ask: async (n) => { asks.push(n); return answers[n]; },
   });
   assert.deepEqual(asks.sort(), ['ALSO_YES', 'NO_KEY', 'YES_KEY']);
   assert.deepEqual(plan.literal.sort(), ['ALSO_YES', 'YES_KEY']);
-  assert.deepEqual(plan.proxied, [{ name: 'PROXIED', host: 'api.example.com' }]);
+  assert.deepEqual(plan.proxied, [{ name: 'PROXIED' }]);
   assert.deepEqual(plan.skipped, [{ name: 'NO_KEY', reason: 'declined' }]);
   // 'y' is once only: nothing was stored.
   assert.throws(() => readFileSync(consentPath, 'utf8'), /ENOENT/);
@@ -156,49 +179,25 @@ test('a corrupt or missing consent file means no consent, not a crash', async ()
   }
 });
 
-test('no value ever appears in the plan, the consent file or thrown errors', async () => {
+test('no value ever appears in the plan or the consent file', async () => {
   const consentPath = consentAt();
   const vars = parseEnvFile(`MYSTERY=${SENTINEL}\nPROXIED=${SENTINEL}-2\nLITERAL=${SENTINEL}-3\n`);
-  const plan = await planEnv({
-    vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: `PROXIED=api.example.com,BAD=https://u:${SENTINEL}@h.example.com` }),
-    origin: ORIGIN, consentPath, ask: async () => 'a',
-  }).then((p) => ({ plan: p }), (e) => ({ err: e }));
-  // The malformed entry aborts the whole plan; its message names the setting and position, never the content.
-  assert.ok(plan.err, 'a malformed CLOUDY_CLOUD_ENV_HOSTS entry is an error');
-  assert.doesNotMatch(plan.err.message, new RegExp(SENTINEL));
-  assert.match(plan.err.message, /CLOUDY_CLOUD_ENV_HOSTS entry 2/);
-  const clean = await planEnv({ vars, env: env({ CLOUDY_CLOUD_ENV_HOSTS: 'PROXIED=api.example.com' }), origin: ORIGIN, consentPath, ask: async () => 'a' });
+  const clean = await planEnv({ vars, env: env({ CLOUDY_CLOUD_PROXY_SECRETS: 'PROXIED' }), origin: ORIGIN, consentPath, ask: async () => 'a' });
   assert.doesNotMatch(JSON.stringify(clean), new RegExp(SENTINEL));
   assert.doesNotMatch(readFileSync(consentPath, 'utf8'), new RegExp(SENTINEL));
 });
 
-test('parse-level skips merge into the plan report; an invalid name in a plain map is skipped too', async () => {
+test('parse-level skips merge into the plan report; an invalid name in a plain map is skipped without its text', async () => {
   const vars = parseEnvFile('1BAD=x\nGOOD=y\n');
   const plan = await planEnv({ vars, env: env(), origin: ORIGIN, consentPath: consentAt(), ask: null });
-  assert.deepEqual(plan.skipped.map((s) => s.name), ['1BAD', 'GOOD']);
+  assert.equal(plan.skipped.length, 2);
+  assert.equal(plan.skipped[0].name, undefined, 'the raw text of a bad line is not reported');
+  assert.equal(plan.skipped[0].line, 1);
   assert.match(plan.skipped[0].reason, /not a valid variable name/);
   const manual = new Map([['not a name', 'v'], ['OK', 'v']]);
   const plan2 = await planEnv({ vars: manual, env: env(), origin: ORIGIN, consentPath: consentAt(), ask: null });
-  assert.deepEqual(plan2.skipped[0].name, 'not a name');
+  assert.equal(plan2.skipped[0].name, undefined, 'an invalid map key is not echoed either');
   assert.match(plan2.skipped[0].reason, /not a valid variable name/);
-});
-
-test('envHosts parses NAME=host pairs, reuses egress host rules and reports position not content', () => {
-  assert.deepEqual([...envHosts(env()).map.entries()], []);
-  assert.deepEqual(envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: 'A=api.example.com, B=svc.example.org C=h.example.net' })).map, new Map([['A', 'api.example.com'], ['B', 'svc.example.org'], ['C', 'h.example.net']]));
-  for (const [bad, msg] of [
-    [`A=https://u:${SENTINEL}@h.example.com/p`, /entry 1 \(A\) is not an exact host name/],
-    ['1X=h.example.com', /entry 1 is not NAME=host/],
-    ['A', /entry 1 is not NAME=host/],
-    [' , , ', /lists no NAME=host pairs/],
-    [`A=ok.example.com,B=${SENTINEL}`, /entry 2 \(B\) is not an exact host name/],
-  ]) {
-    const r = envHosts(env({ CLOUDY_CLOUD_ENV_HOSTS: bad }));
-    assert.ok(r.error, bad);
-    assert.match(r.error, msg);
-    assert.match(r.error, /~\/\.config\/cloudy-cloud\/env/);
-    assert.doesNotMatch(r.error, new RegExp(SENTINEL.replace(/[$]/g, '\\$')), `no content echoed: ${r.error}`);
-  }
 });
 
 test('readConsent and writeConsent round-trip through an atomic mode-600 file', () => {

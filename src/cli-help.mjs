@@ -38,14 +38,14 @@ const ID = '<agent-id-or-machine>';
 const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
 const cmds = {
   cloud: { desc: 'Start a cloud coordinator for this repository and attach to its Claude session, in one command. Run inside a git clone whose origin is on github.com.', usages: [['cloud', '[--name N]', '[--branch B]', '[--max-hours H]', '[--model M]', '[--env FILE]...', '[--no-attach]', '[--json]']], rows: [
-    ['--name N', 'Coordinator name (default: <repo>-<branch> as a slug)'],
+    ['--name N', 'Coordinator name (default: <owner>-<repo>-<branch> as a slug)'],
     ['--branch B', 'Branch to clone (default: the current branch)'],
     ['--max-hours H', 'Delete the machine after H hours (up to 24, the default)'],
     ['--model M', 'Claude Code model for the session'],
     ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
     ['--no-attach', 'Start the coordinator without attaching'],
     ['--json', 'Print the start result as JSON'],
-  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. An already-running coordinator of the same name is reattached to instead of restarted. Run coordinator image once first.' },
+  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted. Run coordinator image once first.' },
   setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],

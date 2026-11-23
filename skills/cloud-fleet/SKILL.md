@@ -20,7 +20,7 @@ Workers can run Claude Code, pi, oh-my-pi, Codex or opencode, on Claude or on ot
 
 Profiles: `omp-particle`, `omp-glm`, `omp-deepseek` (the oh-my-pi `omp` harness, no gateway; each worker installs `omp`, so it starts slower); `pi-particle`, `pi-glm`, `pi-deepseek` (the `pi` harness, no gateway, uses no Claude allowance); `particle`, `glm`, `deepseek` (Claude Code through a gateway on the machine); `openrouter`; `opencode-particle`, `opencode-glm`, `opencode-deepseek` and `opencode-openrouter` (opencode, no gateway); `codex` (Codex with `OPENAI_API_KEY`), `codex-chatgpt` (Codex with the user's ChatGPT login file) and `codex-openrouter` (Codex through OpenRouter). Codex and opencode workers have not been run on a real machine yet, so run one first and check its branch before you start many. There is no free-pi worker. `particle` means Particle.ai's `particle-1` model.
 
-- Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine.
+- Use the `mcp__cloud__cloud_agent` tool. Never use the built-in `Agent` tool or `isolation: "remote"`: it takes Claude models only, and it can silently run on the local machine. Exception: a **coordinator** (its session says so) may use the built-in `Agent` tool for small tasks on its own machine — it is enabled there and runs locally — while parallel or heavy work still goes to `cloud_agent` on separate machines.
 - If you do not have `mcp__cloud__cloud_agent`, you are not in a `cloudy-cloud` session. Say so, and ask the user to restart with `cloudy-cloud`.
 - To prove a worker ran in the cloud, check its hostname starts with `instabox-sbx-`.
 

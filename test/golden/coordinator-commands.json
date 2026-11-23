@@ -171,7 +171,9 @@
           "metadata": {
             "purpose": "cloudy-cloud",
             "role": "coordinator",
-            "name": "boss"
+            "name": "boss",
+            "repo": "o/r",
+            "branch": "main"
           }
         }
       },
@@ -189,6 +191,14 @@
         "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
         "headers": {
           "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
         }
       },
       {
@@ -272,7 +282,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
       },
       {
         "sdk": "commands.run",
@@ -354,7 +364,8 @@
           "metadata": {
             "purpose": "cloudy-cloud",
             "role": "coordinator",
-            "name": "boss"
+            "name": "boss",
+            "repo": "o/r"
           }
         }
       },
@@ -372,6 +383,14 @@
         "url": "https://api.instabox.sh/v1/machines/m_new/secrets",
         "headers": {
           "X-API-Key": "<API_KEY>"
+        }
+      },
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator",
+          "name": "boss"
         }
       },
       {
@@ -450,7 +469,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
+        "cmd": "tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog 'env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> sh /data/home/watchdog.sh'"
       },
       {
         "sdk": "commands.run",

@@ -1,13 +1,14 @@
 // Env bridge: decides, per variable (for example from a repo's .env), how it reaches a coordinator machine.
-// A variable with a known host goes as an Instabox proxy secret (the machine sees a placeholder); anything else
-// needs the real value on the machine, which requires per-repo consent. Values never appear in plans, errors
-// or the consent file — only names are reported (the caller shows the actual prompt and handles values).
+// A variable is proxied only when its name is already one of the user's proxy secrets (CLOUDY_CLOUD_PROXY_SECRETS,
+// a secret the user stored themselves): it is attached to the machine by name and the bridge never stores a
+// secret. Anything else needs the real value on the machine, which requires per-repo consent. Values never
+// appear in plans, errors or the consent file — only names are reported (the caller shows the actual prompt
+// and handles values).
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DEFAULT_PROVIDER_KEY, egressAllow, proxySecrets } from './config.mjs';
-import { SECRET_HOSTS } from './errors.mjs';
+import { DEFAULT_PROVIDER_KEY, proxySecrets } from './config.mjs';
 import { COORDINATOR_KEY_SECRET, profileKeyNames } from './profiles.mjs';
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -17,8 +18,8 @@ const LINE = /^([^\s=]+)\s*=\s*(.*)$/;
 // Parses a dotenv-style file into a Map of NAME -> value. Supports `export KEY=value`, single and double
 // quotes (stripped, contents verbatim — no variable or escape expansion), # comments and blank lines.
 // Lines that are not assignments, have an invalid name, or end inside a quote are skipped; each is reported
-// in the returned map's `skipped` list as { line, name?, reason } — a name is only reported when the line
-// had one, since the rest of a bad line could be a secret.
+// in the returned map's `skipped` list as { line, name?, reason } — a name is reported only when it passed
+// the name check (for an unterminated quote), since the rest of a bad line could be a secret.
 export function parseEnvFile(text) {
   const vars = new Map();
   vars.skipped = [];
@@ -28,7 +29,7 @@ export function parseEnvFile(text) {
     const m = LINE.exec(line.replace(/^export\s+/, ''));
     if (!m) { vars.skipped.push({ line: i + 1, reason: 'not a NAME=value line' }); return; }
     const [, name, rest] = m;
-    if (!NAME_RE.test(name)) { vars.skipped.push({ line: i + 1, name, reason: 'not a valid variable name' }); return; }
+    if (!NAME_RE.test(name)) { vars.skipped.push({ line: i + 1, reason: 'not a valid variable name' }); return; }
     const v = rest.trim(), q = v[0];
     if (q === '"' || q === "'") {
       if (v.length < 2 || v[v.length - 1] !== q) { vars.skipped.push({ line: i + 1, name, reason: 'unterminated quote' }); return; }
@@ -48,29 +49,13 @@ export function parseEnvFile(text) {
 const OWN_KEYS = [DEFAULT_PROVIDER_KEY, COORDINATOR_KEY_SECRET, 'GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 const sentByCloudyCloud = (env) => new Set([...OWN_KEYS, ...profileKeyNames(env).filter((k) => k !== 'OPENAI_API_KEY' || env[k] || proxySecrets(env).has(k))]);
 
-// User host bindings for proxy secrets: CLOUDY_CLOUD_ENV_HOSTS="NAME=host,NAME2=host2" in
-// ~/.config/cloudy-cloud/env. Hosts are validated like CLOUDY_CLOUD_EGRESS_ALLOW entries — through
-// egressAllow, so the label rules (and the "name the position, never the content" errors) match — except
-// that only exact host names are allowed: `instabox secrets set --host` is not confirmed to take wildcards.
-// Returns { map } (lowercased hosts) or { error }.
-export function envHosts(env = process.env) {
-  const raw = env.CLOUDY_CLOUD_ENV_HOSTS;
-  if (raw === undefined || raw === null) return { map: new Map() };
-  const value = String(raw).trim().replace(/^(["'])(.*)\1$/, '$2');
-  if (!value) return { map: new Map() }; // an empty setting is unset (loadEnv already drops empties)
-  const parts = value.split(/[\s,]+/).filter(Boolean);
-  const how = 'Use entries such as MY_KEY=api.example.com (an exact host name, no wildcards), separated by commas or spaces. Fix the value in ~/.config/cloudy-cloud/env.';
-  if (!parts.length) return { error: `CLOUDY_CLOUD_ENV_HOSTS is set but lists no NAME=host pairs. ${how}` };
-  const map = new Map();
-  for (const [i, part] of parts.entries()) {
-    const eq = part.indexOf('='), name = eq > 0 ? part.slice(0, eq) : '', host = eq > 0 ? part.slice(eq + 1) : '';
-    if (!NAME_RE.test(name)) return { error: `CLOUDY_CLOUD_ENV_HOSTS entry ${i + 1} is not NAME=host. ${how}` };
-    const check = egressAllow({ CLOUDY_CLOUD_EGRESS_ALLOW: host });
-    if (check.error || !check.list[0] || check.list[0].includes('*')) return { error: `CLOUDY_CLOUD_ENV_HOSTS entry ${i + 1} (${name}) is not an exact host name. ${how}` };
-    map.set(name, check.list[0]);
-  }
-  return { map };
-}
+// Names a bridged variable may never take: the machine's shell and tooling read them, so a dotenv file could
+// change how Claude and its launcher run (PATH picks executables, NODE_OPTIONS reaches every node process,
+// GIT_* the watchdog's save, CLOUDY_CLOUD_* the launcher's own flags, PROMPT_COMMAND runs on each prompt).
+// The built-in names above are checked first, so they keep their "sent by cloudy-cloud already" reason.
+const DENIED_EXACT = new Set(['PATH', 'HOME', 'USER', 'SHELL', 'IFS', 'ENV', 'BASH_ENV', 'CDPATH', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'NODE_PATH']);
+const DENIED_PREFIX = ['TMUX', 'LD_', 'DYLD_', 'NODE_', 'GIT_', 'SSH_', 'CLOUDY_CLOUD_', 'CLAUDE_', 'ANTHROPIC_'];
+const deniedName = (name) => DENIED_EXACT.has(name) || DENIED_PREFIX.some((p) => name.startsWith(p));
 
 // The consent file: { origins: { <origin url>: [NAME, ...] } } — names only, never values.
 export const consentFile = (env = process.env) => env.CLOUDY_CLOUD_ENV_CONSENT || join(dirname(env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env')), 'env-consent.json');
@@ -93,26 +78,26 @@ export function writeConsent(path, data) {
   chmodSync(path, 0o600);
 }
 
-// Decides per variable: proxied (sent as an Instabox proxy secret bound to a host), literal (the real value
-// may be copied onto the machine) or skipped (with a reason). `vars` is a Map from parseEnvFile (its own
-// `skipped` reports merge in). `ask(name)` returns 'y' | 'n' | 'a' and is only called for a variable that
-// cannot be proxied and has no stored consent; pass null when there is no terminal — an unconsented variable
-// is then skipped, never sent. 'a' is remembered per repo (origin URL) in the mode-600 consent file.
-// `proxy` is false on a provider without proxy secrets: host-bound variables then need consent like any other.
-// The result names variables and hosts only: a value is never in the report or in an error.
+// Decides per variable: proxied (the name is in CLOUDY_CLOUD_PROXY_SECRETS, so the machine attaches the
+// existing secret by name), literal (the real value may be copied onto the machine) or skipped (with a
+// reason). `vars` is a Map from parseEnvFile (its own `skipped` reports merge in). `ask(name)` returns
+// 'y' | 'n' | 'a' and is only called for a variable that cannot be proxied and has no stored consent; pass
+// null when there is no terminal — an unconsented variable is then skipped, never sent. 'a' is remembered
+// per repo (origin URL) in the mode-600 consent file. `proxy` is false on a provider without proxy secrets:
+// a proxy-secret name then needs consent like any other variable. The result names variables only: a value
+// is never in the report or in an error.
 export async function planEnv({ vars, env = process.env, origin, consentPath, ask, proxy = true }) {
-  const hosts = envHosts(env);
-  if (hosts.error) throw new Error(hosts.error);
   const sent = sentByCloudyCloud(env);
+  const proxiedNames = proxySecrets(env);
   const consent = consentPath && origin ? readConsent(consentPath) : { origins: {} };
   const consentNames = new Set(consent.origins[origin] ?? []);
   const proxied = [], literal = [], skipped = [...(vars.skipped ?? [])];
   let dirty = false;
   for (const name of vars.keys()) {
-    if (!NAME_RE.test(name)) { skipped.push({ name, reason: 'not a valid variable name' }); continue; }
+    if (!NAME_RE.test(name)) { skipped.push({ reason: 'not a valid variable name' }); continue; }
     if (sent.has(name)) { skipped.push({ name, reason: 'sent by cloudy-cloud already' }); continue; }
-    const host = proxy ? hosts.map.get(name) ?? SECRET_HOSTS[name] : undefined;
-    if (host) { proxied.push({ name, host }); continue; }
+    if (deniedName(name)) { skipped.push({ name, reason: 'a reserved variable name' }); continue; }
+    if (proxy && proxiedNames.has(name)) { proxied.push({ name }); continue; }
     if (consentNames.has(name)) { literal.push(name); continue; }
     if (!ask) { skipped.push({ name, reason: 'needs consent; no terminal to ask' }); continue; }
     const a = String(await ask(name)).trim().toLowerCase();
