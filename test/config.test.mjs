@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, utimesSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, utimesSync, readFileSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { envRefresher, loadEnv, defaultWorkerNote, egressAllow } from '../src/config.mjs';
@@ -147,6 +147,14 @@ test('installId creates a private 16-hex id beside the env file once, and never 
   assert.equal(config.installId(env), id, 'the same id every call');
   writeFileSync(file, 'abcdabcdabcdabcd\n');
   assert.equal(config.installId(env), 'abcdabcdabcdabcd', 'an existing id is returned, never rewritten');
+});
+
+test('installId refuses rather than return an id it could not store', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-ro-'));
+  chmodSync(dir, 0o500); // the config dir exists but cannot take the file
+  try {
+    assert.throws(() => config.installId({ CLOUDY_CLOUD_CONFIG: join(dir, 'env') }), (e) => e.code === 'install_id_unwritable');
+  } finally { chmodSync(dir, 0o700); }
 });
 
 test('installId answers different ids for different config dirs', () => {

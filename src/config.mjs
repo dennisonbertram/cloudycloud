@@ -114,18 +114,19 @@ export const ownerFile = (env = process.env) => join(dirname(env.CLOUDY_CLOUD_CO
 // only scopes which machines a reaper may delete.
 export function installId(env = process.env) {
   const file = join(dirname(ownerFile(env)), 'install-id');
-  try {
-    const id = readFileSync(file, 'utf8').trim();
-    if (id) return id;
-  } catch { /* missing or unreadable: created below */ }
-  const id = randomBytes(8).toString('hex');
+  const read = () => { try { return readFileSync(file, 'utf8').trim(); } catch { return ''; } };
+  let id = read();
+  if (id) return id;
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     // Exclusive create: two first-run processes must agree on one id, so the loser reads the winner's.
-    writeFileSync(file, `${id}\n`, { mode: 0o600, flag: 'wx' });
+    writeFileSync(file, `${randomBytes(8).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
   } catch (e) {
-    if (e?.code === 'EEXIST') { try { return readFileSync(file, 'utf8').trim() || id; } catch { /* fall through */ } }
+    if (e?.code !== 'EEXIST') throw Object.assign(new Error(`cannot save the install id at ${file} (${e?.code ?? e?.message}); machines would be untracked after this process exits`), { code: 'install_id_unwritable' });
   }
+  // Only an id read back from the file is returned: an unstored id would orphan the machines it labels.
+  for (let i = 0; i < 50 && !(id = read()); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); // a racing writer's file can be empty for a moment
+  if (!id) throw Object.assign(new Error(`the install id file ${file} is empty`), { code: 'install_id_unwritable' });
   return id;
 }
 
