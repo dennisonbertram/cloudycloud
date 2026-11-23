@@ -5,7 +5,8 @@
       "ANTHROPIC_API_KEY"
     ],
     "opts": {
-      "deleteAfterSeconds": 21600
+      "deleteAfterSeconds": 21600,
+      "signal": {}
     }
   },
   {
