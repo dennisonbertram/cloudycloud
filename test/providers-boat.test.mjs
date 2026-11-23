@@ -1,12 +1,13 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { contractSuite } from './provider-contract.mjs';
 import { createProvider } from '../src/providers/boat.mjs';
 import { loadProvider } from '../src/providers/index.mjs';
+import { installId } from '../src/config.mjs';
 
 const KEY = 'boat_test_key_0000000000000000000000';
 const GH = 'ghp_boat_test_secret';
@@ -265,7 +266,44 @@ test('boat: delete and connect refuse a foreign sandbox with not_found and never
   assert.ok(z.boxes.has('alien') && z.boxes.has('alien2'));
 });
 
-test('boat: a teammate\'s cloudy-cloud sandbox is not ours — wrong owner label blocks every op', async () => {
+test('boat: create stamps the shared install id, and another session of this installation owns the worker', async () => {
+  const z = fakeBoat();
+  const cfg = cfgFile();
+  // Two providers = two server sessions of the same installation: same config dir, different per-session owners.
+  const p1 = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'sess-a' });
+  const p2 = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'sess-b' });
+  const s = await create(p1, { labels: { purpose: 'cloudy-cloud', owner: 'sess-a' } });
+  try {
+    const install = readFileSync(join(dirname(cfg), 'install-id'), 'utf8').trim();
+    assert.match(install, /^[0-9a-f]{16}$/);
+    assert.equal(z.boxes.get(s.id).labels.install, install, 'the install label is the installation id, not a session id');
+    assert.equal(z.boxes.get(s.id).labels.owner, 'sess-a', 'the per-session owner label still rides for the reaper');
+    const ids = (await p2.list({ purpose: 'cloudy-cloud' })).map((r) => r.id);
+    assert.ok(ids.includes(s.id), 'a new session of this installation lists the first session\'s worker');
+    assert.equal((await p2.connect(s.id)).id, s.id, 'and connects to it');
+    // An explicit owner filter still scopes to one session — the reaper deletes only its own workers.
+    assert.deepEqual((await p2.list({ owner: 'sess-b' })).map((r) => r.id), []);
+    assert.deepEqual((await p2.list({ owner: 'sess-a' })).map((r) => r.id), [s.id]);
+    await p2.delete(s.id);
+    assert.ok(!z.boxes.has(s.id), 'a new session can stop the first session\'s worker');
+  } finally { await p1.delete(s.id).catch(() => {}); }
+});
+
+test('boat: a sandbox stamped with another installation\'s id is never ours', async () => {
+  const z = fakeBoat({ serverLabelFilter: false });
+  const p = mk(z, {}, { owner: 'o1' });
+  // Another installation's worker: same purpose label, and even the same owner label — a different install excludes it.
+  z.boxes.set('other-install', z.row('other-install', { name: 'cc-elsewhere', labels: { purpose: 'cloudy-cloud', owner: 'o1', install: 'ffffeeee11112222' } }));
+  assert.deepEqual(await p.list({ purpose: 'cloudy-cloud' }), []);
+  assert.deepEqual(await p.list({ owner: 'o1' }), [], 'an explicit owner filter stays within this installation');
+  await assert.rejects(p.connect('other-install'), (e) => e.code === 'not_found');
+  await assert.rejects(p.delete('other-install'), (e) => e.code === 'not_found');
+  await assert.rejects(p.publishPort('other-install', '8080'), (e) => e.code === 'not_found');
+  assert.ok(z.boxes.has('other-install'), 'untouched');
+  assert.ok(!z.log.some((l) => l.method !== 'GET'), 'no mutation was ever attempted');
+});
+
+test('boat: a teammate\'s cloudy-cloud sandbox is not ours — without our install id every op is refused', async () => {
   const z = fakeBoat({ serverLabelFilter: false });
   const p = mk(z, {}, { owner: 'o1' });
   // Same org, same purpose label, different installation owner: must be invisible to us.
@@ -279,7 +317,7 @@ test('boat: a teammate\'s cloudy-cloud sandbox is not ours — wrong owner label
   assert.ok(!z.log.some((l) => l.method !== 'GET'), 'no mutation was ever attempted');
 });
 
-test('boat: a sandbox carrying our owner id is ours to connect, publish and delete', async () => {
+test('boat: a sandbox stamped our install id is ours to connect, publish and delete', async () => {
   const z = fakeBoat();
   const p = mk(z, {}, { owner: 'o1' });
   const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
@@ -290,7 +328,7 @@ test('boat: a sandbox carrying our owner id is ours to connect, publish and dele
   await s.kill();
 });
 
-test('boat: a lost create answer recovers only the sandbox labelled with our ccid and owner', async () => {
+test('boat: a lost create answer recovers only the sandbox labelled with our ccid and install id', async () => {
   const z = fakeBoat({ serverLabelFilter: false });
   // A teammate's ready, expired, purpose-labelled sandbox sorts first in the org list;
   // trusting sandboxes[0] would adopt (and provision) it.
@@ -410,7 +448,9 @@ test('boat: a dropped create answer retries with the same Idempotency-Key and ma
 test('boat: pagination follows pageInfo.nextCursor', async () => {
   // the first page is forced short; the adapter must ask for the next cursor to see the rest
   const z2 = fakeBoat();
-  for (let i = 0; i < 3; i++) z2.boxes.set(`bx_page${i}`, z2.row(`bx_page${i}`, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } }));
+  const cfg = cfgFile();
+  const labels = { purpose: 'cloudy-cloud', owner: 'o1', install: installId({ CLOUDY_CLOUD_CONFIG: cfg }) };
+  for (let i = 0; i < 3; i++) z2.boxes.set(`bx_page${i}`, z2.row(`bx_page${i}`, { labels }));
   let calls = 0;
   const realFetch = z2.fetch;
   z2.fetch = async (url, init) => {
@@ -420,7 +460,7 @@ test('boat: pagination follows pageInfo.nextCursor', async () => {
     }
     return realFetch(url, init);
   };
-  const p = mk(z2);
+  const p = mk(z2, { CLOUDY_CLOUD_CONFIG: cfg });
   const rows = await p.list({ owner: 'o1' });
   assert.equal(rows.length, 3, 'all pages were followed');
   assert.ok(calls >= 2);
@@ -428,9 +468,10 @@ test('boat: pagination follows pageInfo.nextCursor', async () => {
 
 test('boat: the list sweep deletes one of our sandboxes whose deleteAt label has passed', async () => {
   const z = fakeBoat();
-  const p = mk(z, {}, { owner: 'o1' });
+  const cfg = cfgFile();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfg }, { owner: 'o1' });
   const past = new Date(Date.now() - 60_000).toISOString();
-  z.boxes.set('bx_expired', z.row('bx_expired', { labels: { purpose: 'cloudy-cloud', owner: 'o1', deleteAt: past } }));
+  z.boxes.set('bx_expired', z.row('bx_expired', { labels: { purpose: 'cloudy-cloud', owner: 'o1', install: installId({ CLOUDY_CLOUD_CONFIG: cfg }), deleteAt: past } }));
   const rows = await p.list({ purpose: 'cloudy-cloud' });
   assert.equal(rows.length, 0);
   assert.ok(!z.boxes.has('bx_expired'), 'the expired sandbox was deleted');
@@ -515,6 +556,32 @@ test('boat: a command that hits its timeout is stopped with DELETE and reports t
   } finally { await s.kill(); }
 });
 
+test('boat: a command observed to exit only after the deadline is a timeout, not a success', async () => {
+  const z = fakeBoat();
+  let t = 0;
+  const realFetch = z.fetch;
+  let armed = false, statusGets = 0;
+  z.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (armed && /\/commands\/\d+$/.test(u.pathname) && (init?.method ?? 'GET') === 'GET' && ++statusGets === 2) t = 2000; // the exit answer lands after the deadline
+    return realFetch(url, init);
+  };
+  const p = mk(z, {}, { now: () => t });
+  const s = await create(p);
+  try {
+    z.statusPages = [
+      { status: 'running', running: true, stdout: 'half\n', stderr: '', stdoutNextOffset: 5, stderrNextOffset: 0 },
+      { status: 'exited', running: false, success: true, exitCode: 0, stdout: 'done\n', stderr: '', stdoutNextOffset: 10, stderrNextOffset: 0 },
+    ];
+    armed = true;
+    const e = await s.commands.run('sleepy', { timeoutMs: 1000 }).then(() => { throw new Error('should time out'); }, (x) => x);
+    assert.equal(e.code, 'timeout', 'an exit seen after the deadline must not be reported as success');
+    assert.equal(e.stdout, 'half\ndone\n', 'the output that arrived is still returned');
+    assert.ok(z.log.some((l) => l.method === 'DELETE' && /\/commands\/\d+$/.test(l.path)), 'the detached process was stopped at the deadline');
+    assert.ok([...z.procs.values()].some((pr) => pr.killed), 'the fake records the stop');
+  } finally { await s.kill(); }
+});
+
 test('boat: files.write and files.read round-trip through the files API', async () => {
   const z = fakeBoat();
   const p = mk(z);
@@ -560,6 +627,7 @@ test('boat: caps tell the truth about TTL, and list returns archiveAt in epoch m
   const z = fakeBoat();
   const p = mk(z);
   assert.equal(p.caps.hasServerTTL, false, 'Boat archives at the deadline — cloudy-cloud sweeps and deletes');
+  assert.equal(p.caps.hasSudo, true, 'the worker user has passwordless sudo — apt packages may install');
   const s = await create(p, { labels: { purpose: 'cloudy-cloud', owner: 'o1' } });
   try {
     const [r] = await p.list({ owner: 'o1' });

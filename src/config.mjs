@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveProfile } from './profiles.mjs';
@@ -107,6 +107,27 @@ export function envRefresher(env, base = process.env) {
 
 // The server writes its owner id here, so `coordinator finish` can tell which running machines are its workers.
 export const ownerFile = (env = process.env) => join(dirname(env.CLOUDY_CLOUD_CONFIG || join(homedir(), '.config/cloudy-cloud/env')), 'owner');
+
+// This installation's stable id: 16 random hex chars in <config dir>/install-id (the folder ownerFile names),
+// created once — dir 0700, file 0600, written atomically — and never rewritten. Providers stamp it as the
+// `install` label so every session of this installation owns the same workers; the per-session owner id
+// only scopes which machines a reaper may delete.
+export function installId(env = process.env) {
+  const file = join(dirname(ownerFile(env)), 'install-id');
+  try {
+    const id = readFileSync(file, 'utf8').trim();
+    if (id) return id;
+  } catch { /* missing or unreadable: created below */ }
+  const id = randomBytes(8).toString('hex');
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    // Exclusive create: two first-run processes must agree on one id, so the loser reads the winner's.
+    writeFileSync(file, `${id}\n`, { mode: 0o600, flag: 'wx' });
+  } catch (e) {
+    if (e?.code === 'EEXIST') { try { return readFileSync(file, 'utf8').trim() || id; } catch { /* fall through */ } }
+  }
+  return id;
+}
 
 // Workers run the Claude harness unless cloud_agent gets a profile. A host session for another agent (codex, opencode, pi) starts
 // without a Claude token, so this says what to pass instead. '' when a Claude credential exists. env is the result of loadEnv().

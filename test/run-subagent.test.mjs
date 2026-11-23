@@ -1568,6 +1568,26 @@ test('apt packages are refused at start on a provider without sudo', async () =>
   assert.equal(deps.provider.log.create.length, 0);
 });
 
+test('apt packages install on a provider with sudo but no proxy secrets (boat)', async () => {
+  const cmds = [];
+  const provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasProxySecrets: false, hasConsentedSecrets: true, hasSudo: true });
+  provider.name = 'boat';
+  const { deps, start, wait } = await setup({ provider, createSandbox: async (envs) => { const s = await fakeSandbox(); const run = s.commands.run; s.commands.run = (c, o) => { cmds.push(c); return /apt-get/.test(c) ? Promise.resolve({ stdout: '' }) : run(c, o); }; return s; } });
+  deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  await wait([await start()]);
+  assert.match(cmds.find((c) => /apt-get/.test(c)) ?? '', /sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg/, 'hasSudo, not hasProxySecrets, allows the install');
+});
+
+test('an explicit hasSudo false refuses apt even on a provider with proxy secrets', async () => {
+  const { deps } = await setup();
+  deps.provider = createFakeProvider({ FAKE_API_KEY: 'k' }, { hasSudo: false });
+  deps.env = { GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: SECRET, CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY', CLOUDY_CLOUD_APT_PACKAGES: 'ffmpeg' };
+  const r = await runSubagent({ description: 'd', prompt: 'hi' }, deps);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /docker\/worker\.Dockerfile/);
+  assert.equal(deps.provider.log.create.length, 0);
+});
+
 test('apt packages accept one pair of surrounding quotes, as written in the docs', async () => {
   const { aptPackages } = await import('../src/config.mjs');
   assert.deepEqual(aptPackages({ CLOUDY_CLOUD_APT_PACKAGES: '"ffmpeg postgresql-client"' }).list, ['ffmpeg', 'postgresql-client']);

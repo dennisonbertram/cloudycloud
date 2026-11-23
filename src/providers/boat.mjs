@@ -5,12 +5,15 @@
 //
 // Guards the adapter enforces:
 // - Ownership: an organization key lists OTHER people's sandboxes too, so a sandbox is ours
-//   only when labels.purpose === 'cloudy-cloud' AND labels.owner is this installation's owner
-//   id (the same value Instabox/self-hosted stamp; deps.owner in the server, the owner file a
-//   CLI reads). list() asks the server for the purpose label AND re-checks purpose+owner on
-//   every row; connect/delete/publishPort refuse (code not_found) anything that fails the
-//   check, and the deleteAt sweep deletes only what it owns. A teammate's cloudy-cloud worker
-//   shares the purpose label but carries a different owner, so it is never touched.
+//   only when labels.purpose === 'cloudy-cloud' AND labels.install is this installation's id
+//   (installId() — the stable id in <config>/install-id, shared by every session on this
+//   machine; a sandbox created before the label existed is not ours). The per-session `owner`
+//   label still rides, but only scopes what a reaper may delete: it kills just its own
+//   session's workers. list() asks the server for the purpose+install labels AND re-checks
+//   them on every row; connect/delete/publishPort refuse (code not_found) anything that
+//   fails the check, and the deleteAt sweep deletes only what it owns. A teammate's
+//   cloudy-cloud worker shares the purpose label but carries a different install, so it is
+//   never touched.
 // - Lifetime: ttlSeconds is Boat's server-side auto-stop — a lost client still stops the
 //   machine — but the deadline ARCHIVES (and snapshots:false erases the disk) rather than
 //   deletes, so caps.hasServerTTL is false: the deleteAt label is swept on list() and
@@ -31,9 +34,8 @@
 // so long-running work is not bound by the 600 s synchronous cap and abort/timeout kills
 // the process with DELETE .../commands/{processId} (SIGTERM, then SIGKILL after 5 s).
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createLimiter } from '../limits.mjs';
-import { ownerFile, savedEnv } from '../config.mjs';
+import { installId, savedEnv } from '../config.mjs';
 
 const API = 'https://boat.dev/api/v1';
 const KEY_NAME = 'BOAT_API_KEY';
@@ -95,13 +97,11 @@ export function createProvider(env = process.env, deps = {}) {
   // file, so only a fresh savedEnv() read sees a revoked line.
   const baseEnv = deps.baseEnv ?? process.env;
   const consented = () => (baseEnv[CONSENT] || savedEnv(env)[CONSENT]) === 'yes';
-  // This installation's owner id — the same value the server stamps as the `owner` label.
-  // deps.owner carries it in the server; a CLI process reads the file the server wrote.
-  const readOwner = () => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
-  const ownerId = () => deps.owner ?? readOwner();
   const createdIds = new Set(); // ids this process created — ours whatever their labels say now
-  // Ours = our purpose label AND this installation's owner id (or an id we created this run).
-  const ours = (rec) => rec?.labels?.purpose === 'cloudy-cloud' && (rec.labels.owner === ownerId() || createdIds.has(rec.id));
+  // Ours = our purpose label AND this installation's id (or an id we created this run). The
+  // per-session owner label is NOT an ownership proof: a second session must still see the
+  // first session's workers, and only the reaper scopes deletions by it.
+  const ours = (rec) => rec?.labels?.purpose === 'cloudy-cloud' && (rec.labels.install === installId(env) || createdIds.has(rec.id));
   const apiKey = () => {
     if (!env[KEY_NAME]) throw fail('no_key', api.text.noKeyFix);
     return env[KEY_NAME];
@@ -184,8 +184,8 @@ export function createProvider(env = process.env, deps = {}) {
   };
 
   const getSandbox = (id) => ctl('GET', `/sandboxes/${encodeURIComponent(id)}`);
-  // Fetch + ownership check in one: a sandbox without our purpose label and owner id is not
-  // ours, whatever the id — a teammate's cloudy-cloud worker must never be entered or mutated.
+  // Fetch + ownership check in one: a sandbox without our purpose label and install id is not
+  // ours, whatever the id — another installation's worker must never be entered or mutated.
   const owned = async (id) => {
     const rec = (await getSandbox(id))?.sandbox;
     if (!ours(rec)) throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
@@ -251,9 +251,11 @@ export function createProvider(env = process.env, deps = {}) {
             if (now() >= deadline) { await stop(); throw fail('timeout', `timed out after ${Math.ceil(timeoutMs / 1000)} s`, out()); }
             continue;
           }
-          if (st.running === false || ['exited', 'lost'].includes(st.status)) return finish(st);
+          // The deadline comes before the exit flag: this poll answer only proves the process
+          // ended SOMEWHERE in the last interval — after the deadline it must not read as a win.
           if (now() >= deadline) { await stop(); throw fail('timeout', `timed out after ${Math.ceil(timeoutMs / 1000)} s`, out()); }
-          await sleep(1000);
+          if (st.running === false || ['exited', 'lost'].includes(st.status)) return finish(st);
+          await sleep(Math.min(1000, deadline - now())); // the next poll lands no later than the deadline
         }
       };
       return poll(true);
@@ -285,7 +287,9 @@ export function createProvider(env = process.env, deps = {}) {
       // delete() permanently removes the record.
       // hasProxySecrets: Boat has no edge secret injection for a worker it did not prompt itself,
       // so values go on the VM, but only with consent.
-      hasServerTTL: false, hasProxySecrets: false, hasEgressPolicy: false,
+      // hasSudo: the worker user has passwordless sudo (the provisioning script relies on
+      // `sudo -n`), so CLOUDY_CLOUD_APT_PACKAGES can install on the fixed image.
+      hasServerTTL: false, hasProxySecrets: false, hasSudo: true, hasEgressPolicy: false,
       hasSnapshots: false, hasPortForward: false, hasPublish: true, hasSizes: false, hasShell: false,
       hasDisplay: false, hasMetrics: false,
       maxForegroundMs: Infinity, maxTtlSeconds, startsPerMin: 8, maxConcurrentCalls: 8, uploadMaxBytes: 5 * 1024 * 1024,
@@ -305,7 +309,7 @@ export function createProvider(env = process.env, deps = {}) {
       const t0 = now();
       const deleteAt = t0 + ttl * 1000;
       const idem = randomUUID(); // ONE key for the whole create: a lost answer is retried with it.
-      const all = { ...labels, purpose: 'cloudy-cloud', ...(role && { role }), ...(name && !labels.name && { name }), deleteAt: new Date(deleteAt).toISOString(), startedAt: new Date(t0).toISOString(), ccid: idem };
+      const all = { ...labels, purpose: 'cloudy-cloud', install: installId(env), ...(role && { role }), ...(name && !labels.name && { name }), deleteAt: new Date(deleteAt).toISOString(), startedAt: new Date(t0).toISOString(), ccid: idem };
       const labelNames = Object.keys(all);
       if (labelNames.length > 20) throw new Error(`too many sandbox labels (${labelNames.length} > 20)`);
       for (const [k, v] of Object.entries(all)) {
@@ -329,11 +333,11 @@ export function createProvider(env = process.env, deps = {}) {
         noEnv: true, visibility: 'private', snapshots: false, monitoring: false,
       };
       // The create may still have landed though every answer was lost (or carried no sandbox):
-      // our ccid and owner labels identify the sandbox exactly, so a retry never bills a second
+      // our ccid and install labels identify the sandbox exactly, so a retry never bills a second
       // one and a foreign sandbox — even one the server filter returned first — is never adopted.
       const recover = async () => {
         const rows = await ctl('GET', `/sandboxes?label=${encodeURIComponent('purpose=cloudy-cloud')}&label=${encodeURIComponent(`ccid=${idem}`)}&limit=10`).then((r) => r?.sandboxes ?? []).catch(() => []);
-        return rows.find((f) => f.labels?.purpose === 'cloudy-cloud' && f.labels?.ccid === idem && f.labels?.owner === all.owner);
+        return rows.find((f) => f.labels?.purpose === 'cloudy-cloud' && f.labels?.ccid === idem && f.labels?.install === all.install);
       };
       let rec;
       try {
@@ -380,22 +384,20 @@ export function createProvider(env = process.env, deps = {}) {
     },
 
     async list(labels = {}, { onError } = {}) {
-      // An explicit owner filter trusts the caller (the reaper asks for its own owner); without
-      // one only this installation's sandboxes are listed — a teammate's cloudy-cloud worker is
-      // never ours to see, sweep or delete.
-      const want = labels.owner ?? ownerId();
+      // An explicit label filter (the reaper asks for its own session's owner) narrows the
+      // answer, but ownership is always the installation's: a second session lists this
+      // installation's workers, and another installation's — or a teammate's — never appear.
       const rows = [];
       let cursor = '';
       for (let pages = 0; pages < 50; pages++) {
-        const qs = [`label=${encodeURIComponent('purpose=cloudy-cloud')}`, ...Object.entries(labels).map(([k, v]) => `label=${encodeURIComponent(`${k}=${v}`)}`), 'limit=200', ...(cursor && [`cursor=${encodeURIComponent(cursor)}`])].join('&');
+        const qs = [`label=${encodeURIComponent('purpose=cloudy-cloud')}`, `label=${encodeURIComponent(`install=${installId(env)}`)}`, ...Object.entries(labels).map(([k, v]) => `label=${encodeURIComponent(`${k}=${v}`)}`), 'limit=200', ...(cursor && [`cursor=${encodeURIComponent(cursor)}`])].join('&');
         const page = await ctl('GET', `/sandboxes?${qs}`);
         const sandboxes = Array.isArray(page?.sandboxes) ? page.sandboxes : [];
         for (const rec of sandboxes) {
           // The server filter is not trusted alone: an organization list can hold other people's
           // sandboxes, so every row is re-checked, and a caller label must match exactly.
-          if (rec?.labels?.purpose !== 'cloudy-cloud') continue;
+          if (!ours(rec)) continue;
           if (!Object.entries(labels).every(([k, v]) => rec.labels[k] === v)) continue;
-          if (want === undefined ? (rec.labels.owner !== undefined && !createdIds.has(rec.id)) : rec.labels.owner !== want) continue;
           const deleteAt = Date.parse(rec.labels.deleteAt ?? '');
           if (deleteAt && deleteAt <= now()) {
             // Sweep expired owned sandboxes. A failed delete keeps the row visible (and the next
