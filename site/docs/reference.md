@@ -262,7 +262,7 @@ cloudy-cloud coordinator start docs-fleet --repo https://github.com/OWNER/REPO -
 
 #### coordinator attach
 
-Opens the coordinator's `tmux` session over SSH. On a terminal it opens the session itself. When the output is piped it prints the command instead, and you run that to connect. On Instabox the command has the form `npx --yes instabox@latest ssh <machine> -- tmux attach -t claude`; on self-hosted it is `ssh` plus `<runtime> exec -it` (inside a coordinator's container, the plain `exec` without SSH).
+Opens the coordinator's `tmux` session over SSH. On a terminal it opens the session itself. When the output is piped it prints `cloudy-cloud coordinator attach NAME` instead, and you run that in your own terminal. `coordinator start` and `coordinator status` show this same command, never the provider's own.
 
 ```
 cloudy-cloud coordinator attach docs-fleet
@@ -280,7 +280,7 @@ When the output is piped, it prints tab-separated NAME, STATE, CREATED, MACHINE,
 
 #### coordinator status
 
-Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set) and `attach`.
+Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set), `remoteControlUrl` (only when known) and `attach`. `coordinator start` prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run `coordinator status NAME` later.
 
 ```
 cloudy-cloud coordinator status NAME [--json]

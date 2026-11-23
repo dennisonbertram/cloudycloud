@@ -14,6 +14,7 @@ import { makeUi, cellWidth, fitCells } from './ui.mjs';
 import { coordinatorHelp, coordinatorUsage } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
+import { renderUnicodeCompact } from 'uqr';
 import { paneState } from './pane-state.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { secretValues } from './run-subagent.mjs';
@@ -66,8 +67,9 @@ const tilde = (p, env) => { const h = env.HOME || homedir(); return p.startsWith
 // "→ Next: <cmd>" on one line; a command too long for that wraps whole words onto indented lines: never an ellipsis.
 const nextFit = (u, cmd) => { const l = u.next(cmd); return cellWidth(l) <= u.width ? l : [`  ${u.paint(u.col.acc, `${u.utf ? '→' : '->'} Next:`)}`, ...wrapText(u, cmd).map((x) => `    ${x}`)].join('\n'); };
 // Same wrap for the "Attach with: <cmd>" hint.
-const attachFit = (u, name) => (4 + cellWidth(`Attach with: cloudy-cloud coordinator attach ${name}`) <= u.width
-  ? u.hint(`Attach with: cloudy-cloud coordinator attach ${name}`) : [u.hint('Attach with:'), ...wrapText(u, `cloudy-cloud coordinator attach ${name}`).map((l) => `    ${u.dim(l)}`)].join('\n'));
+const cmdFit = (u, label, cmd) => (4 + cellWidth(`${label} ${cmd}`) <= u.width
+  ? u.hint(`${label} ${cmd}`) : [u.hint(label), ...wrapText(u, cmd).map((l) => `    ${u.dim(l)}`)].join('\n'));
+const attachFit = (u, name) => cmdFit(u, 'Attach with:', `cloudy-cloud coordinator attach ${name}`);
 // A hint line whose text wraps whole words onto indented dimmed lines instead of being cut mid-word.
 const hintFit = (u, text) => wrapText(u, text).map((l, i) => (i ? `    ${u.dim(l)}` : u.hint(l))).join('\n');
 // The longest prefix of s fitting `max` cells (like fitCells but never an ellipsis: nothing is dropped).
@@ -140,8 +142,29 @@ async function context(deps) {
   const spawn = deps.spawn ?? spawnSync;
   const now = deps.now ?? Date.now;
   const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, ssh: provider.text.ssh };
+  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask };
 }
+
+// The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
+// the tmux pane's process and its descendants (the Claude session), never the screen text. The file text is untrusted: only
+// one strict id builds the URL, and none or several distinct ids mean no link.
+const LINK_CMD = `p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r="$p" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '"bridgeSessionId" *: *"[^"]*"' ~/.claude/sessions/$f.json 2>/dev/null; done; true`;
+function parseLink(stdout = '') {
+  const ids = new Set([...String(stdout).matchAll(/"bridgeSessionId"\s*:\s*"([^"]*)"/g)].map((m) => m[1]).filter((id) => /^session_[A-Za-z0-9]{1,64}$/.test(id)));
+  return ids.size === 1 ? `https://claude.ai/code/${[...ids][0]}` : '';
+}
+// A failed or slow link read is never a failed screen read: it only means no link yet.
+const readLink = async (sbx) => { try { return parseLink((await sbx.commands.run(LINK_CMD, { timeoutMs: 15_000 })).stdout); } catch { return ''; } };
+// A QR code of the link for a phone: only on a UTF-8 terminal where it fits, and never an error.
+const qrLines = (u, link) => {
+  if (!u.utf) return [];
+  try {
+    const lines = renderUnicodeCompact(link).split('\n').filter(Boolean);
+    return lines.every((l) => cellWidth(l) + 4 <= u.width) ? ['', ...lines.map((l) => `    ${l}`)] : [];
+  } catch { return []; }
+};
+// The link on its own line, or the label then the link when both do not fit (the link itself is never cut).
+const linkLines = (u, link) => (2 + cellWidth(`Remote Control: ${link}`) <= u.width ? [`  Remote Control: ${link}`] : ['  Remote Control:', `    ${link}`]);
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
 // A server-supplied machine name or id reaches a suggested command (`shell`, ssh) only as one plain word —
@@ -386,6 +409,7 @@ async function start(c, args) {
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved, signed-in image.', next: 'cloudy-cloud coordinator image', neutral: true });
   if ((await find(c.provider, 'coordinator', name)).length) guided(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`, { short: `A coordinator named ${name} already exists.`, next: `cloudy-cloud coordinator stop ${name}` });
+  let link = '';
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
   // A plain setup leaves a real INSTABOX_API_KEY without the coordinator copy: store or repair it now, then read the keys.
@@ -450,12 +474,23 @@ async function start(c, args) {
       // Remote pane text is diagnostic data, not a trusted field: the cause and next are our authored words only.
       throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { local: true, code, short: 'The coordinator session started but is not working.', reason: `${cause}; the machine was deleted`, details: [`screen: ${fitCells(line, 40)}`], next: nextCmd });
     }
+    // Remote Control can take a few seconds to connect: look again briefly, and stop if a prompt appears. A missing link never fails start.
+    if (screenRead && !waiting) {
+      link = await readLink(sbx);
+      for (let i = 0; i < 3 && !link && !waiting; i++) {
+        await c.sleep(3000);
+        try {
+          const again = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''), task ?? '');
+          waiting = again.waiting || again.blocked || '';
+        } catch { break; }
+        if (!waiting) link = await readLink(sbx);
+      }
+    }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
-  const machineWord = word(machine, sbx.id); // a suggested ssh command takes only a plain word — the id when the name is not one
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: machineWord ? c.ssh(machineWord, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${name}`, started: true, ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); return storeNotice(c, stored, { json: true }); }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -470,21 +505,26 @@ async function start(c, args) {
     const rc = [`open claude.ai/code or the Claude app, pick "${name}"`, `pick "${name}" on claude.ai/code or the app`, `pick "${name}"`]
       .find((v) => cellWidth(v) <= room) ?? fitCells(`pick "${name}"`, room);
     const reach = (rows) => u.block('Reach it', rows);
-    const full = reach([['Remote Control', rc], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
-    const block = full.split('\n').every((l) => cellWidth(l) <= u.width) ? full
+    const full = (v) => reach([['Remote Control', v], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
+    const fits = (t) => t.split('\n').every((l) => cellWidth(l) <= u.width);
+    const base = fits(full(rc)) ? full(rc)
       : [reach([['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+    // The URL goes in the block row when it fits; otherwise on its own line below, whole.
+    const linkRow = link && fits(full(link));
+    const block = linkRow ? full(link) : base;
     // The warning wraps whole words: a key name is never cut, and a custom key keeps its host-specific instructions.
     const skipBlock = !skipNote ? [] : [
       ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
       ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
       ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
     ];
-    return c.out([okLine, ...warn, ...skipBlock, '', block,
+    return c.out([okLine, ...warn, ...skipBlock, '', block, ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
+      ...(!link ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook ? ['', nextFit(u, `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
   }
-  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: open claude.ai/code or the Claude app and pick the session named "${name}".\n` +
-    `  - Terminal: cloudy-cloud coordinator attach ${name}${machineWord ? `\n    (runs: ${c.ssh(machineWord, 'tmux attach -t claude')})` : ''}\n\n${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
+  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\nReach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n` +
+    `  - Terminal: cloudy-cloud coordinator attach ${name}\n\n${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
 }
 
@@ -500,40 +540,38 @@ async function attach(c, args) {
     return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
-  const target = word(mach(m), m.id); // the printed command takes a plain word, or the name the user gave
-  c.out(target ? c.ssh(target, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${args[0]}`);
+  c.out(`cloudy-cloud coordinator attach ${args[0]}`);
 }
 
 // Reads a coordinator's screen once, read-only. waiting is the prompt line a person must answer ('' if none);
 // read is false when the screen could not be read (machine not running, network, no tmux session).
-async function screenOf(c, m) {
-  if (m.state && m.state !== 'running') return { read: false, waiting: '' };
+async function screenOf(c, m, { withLink = false } = {}) {
+  if (m.state && m.state !== 'running') return { read: false, waiting: '', link: '' };
   try {
     const sbx = await c.provider.connect(m.id, { retry: false });
     const raw = (await sbx.commands.run('tmux capture-pane -t claude -p', { timeoutMs: 15_000 })).stdout ?? '';
     // Exact key values (and consented MCP tokens) are removed first; paneState then removes key-shaped text.
     const pane = secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw);
     const st = paneState(pane);
-    return { read: true, waiting: st.waiting || st.blocked };
-  } catch { return { read: false, waiting: '' }; }
+    return { read: true, waiting: st.waiting || st.blocked, link: withLink ? await readLink(sbx) : '' };
+  } catch { return { read: false, waiting: '', link: '' }; }
 }
 const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
 
 async function status(c, args) {
   const [m] = await find(c.provider, 'coordinator', args[0]);
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
-  const r = await screenOf(c, m), name = args[0], state = safeText(m.state ?? '') || 'unknown';
+  const r = await screenOf(c, m, { withLink: true }), name = args[0], state = safeText(m.state ?? '') || 'unknown';
   const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
-  const target = word(mach(m), m.id); // a suggested ssh command takes a plain word, or the name the user gave
-  const attach = target ? c.ssh(target, 'tmux attach -t claude') : `cloudy-cloud coordinator attach ${name}`;
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: shown, state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), attach }));
+  const attach = `cloudy-cloud coordinator attach ${name}`;
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: shown, state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
   if (c.ui.term) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
-  c.out([`Coordinator ${name} on machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
+  c.out([`Coordinator ${name} on machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
 
 async function ls(c) {

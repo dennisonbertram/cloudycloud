@@ -66,7 +66,7 @@ Start, connect and stop:
 ```sh
 cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO \
   --branch BRANCH --max-hours N --model MODEL --task-file task.md --json
-cloudy-cloud coordinator attach NAME      # in a terminal joins the session; piped, prints the SSH command
+cloudy-cloud coordinator attach NAME      # in a terminal joins the session; piped, prints this same command
 cloudy-cloud shell MACHINE -- CMD         # one command on the machine (~3 s each)
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator stop NAME        # deletes the machine at once
@@ -74,7 +74,7 @@ cloudy-cloud coordinator stop NAME        # deletes the machine at once
 
 - `MACHINE` is the `machine` field in the `start --json` output (for example `coord-NAME`).
 - Read the `skippedKeys` field in the start output. The field appears only when a key was skipped. A listed key was not sent because it is held only as a plain value (in `~/.config/cloudy-cloud/env` or the shell environment), not as a proxy secret, so any worker profile that needs it will fail. For a built-in key the user runs `cloudy-cloud setup --more`; for a custom key, follow the `note` in the start output.
-- The coordinator always runs Claude Code. Remote Control also works, so the user can talk to it from a phone or claude.ai.
+- The coordinator always runs Claude Code. Remote Control also works, so the user can talk to it from a phone or claude.ai. `coordinator start` and `coordinator status` print the Remote Control link (`remoteControlUrl` in `--json`), and a QR code on a terminal; if the link is not ready yet, run `coordinator status NAME` later.
 - `--max-hours` (at most 24) limits the coordinator's machine only. Workers have their own deadline (`CLOUDY_CLOUD_WORKER_HOURS`, 6 hours by default) and a session may start up to `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (200 by default). These two variables set on the laptop are not forwarded to a cloud coordinator, so it runs with the defaults, and a number written in the brief is not enforced. Keep the budget low through the worker cap in the task file, and check `cloud_agent_list` with `all: true` afterwards. In a local session that starts workers directly (Mode 1), set both in that session's environment.
 - `coordinator stop` deletes the machine immediately, without checking for unpushed work. Make sure the work you need is pushed first.
 
