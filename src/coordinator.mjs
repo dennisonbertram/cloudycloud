@@ -145,22 +145,26 @@ async function context(deps) {
   return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask };
 }
 
-// One command reads the screen and the Remote Control session id. The id is in ~/.claude/sessions/*.json once Remote Control
-// connects; the screen's hyperlink (capture-pane -e) is the fallback. Both are untrusted text: only a strict match builds the URL.
-const LINK_MARK = '@@cc-link@@';
-const READ_SCREEN = `tmux capture-pane -t claude -p || exit 1; echo ${LINK_MARK}; grep -ho '"bridgeSessionId" *: *"[^"]*"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true`;
-const LINK_RE = /"bridgeSessionId"\s*:\s*"(session_[A-Za-z0-9]+)"|https:\/\/claude\.ai\/code\/(session_[A-Za-z0-9]+)(?![A-Za-z0-9_-])/;
-function splitScreen(stdout = '') {
-  const i = stdout.lastIndexOf(`${LINK_MARK}\n`);
-  if (i < 0) return { pane: stdout, link: '' };
-  const m = LINK_RE.exec(stdout.slice(i + LINK_MARK.length));
-  return { pane: stdout.slice(0, i), link: m ? `https://claude.ai/code/${m[1] ?? m[2]}` : '' };
+// The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
+// the tmux pane's process and its descendants (the Claude session), never the screen text. The file text is untrusted: only
+// one strict id builds the URL, and none or several distinct ids mean no link.
+const LINK_CMD = `p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r="$p" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '"bridgeSessionId" *: *"[^"]*"' ~/.claude/sessions/$f.json 2>/dev/null; done; true`;
+function parseLink(stdout = '') {
+  const ids = new Set([...String(stdout).matchAll(/"bridgeSessionId"\s*:\s*"([^"]*)"/g)].map((m) => m[1]).filter((id) => /^session_[A-Za-z0-9]{1,64}$/.test(id)));
+  return ids.size === 1 ? `https://claude.ai/code/${[...ids][0]}` : '';
 }
-// A QR code of the link for a phone, only where it fits the terminal.
+// A failed or slow link read is never a failed screen read: it only means no link yet.
+const readLink = async (sbx) => { try { return parseLink((await sbx.commands.run(LINK_CMD, { timeoutMs: 15_000 })).stdout); } catch { return ''; } };
+// A QR code of the link for a phone: only on a UTF-8 terminal where it fits, and never an error.
 const qrLines = (u, link) => {
-  const lines = renderUnicodeCompact(link).split('\n').filter(Boolean);
-  return lines.every((l) => cellWidth(l) + 4 <= u.width) ? ['', ...lines.map((l) => `    ${l}`)] : [];
+  if (!u.utf) return [];
+  try {
+    const lines = renderUnicodeCompact(link).split('\n').filter(Boolean);
+    return lines.every((l) => cellWidth(l) + 4 <= u.width) ? ['', ...lines.map((l) => `    ${l}`)] : [];
+  } catch { return []; }
 };
+// The link on its own line, or the label then the link when both do not fit (the link itself is never cut).
+const linkLines = (u, link) => (2 + cellWidth(`Remote Control: ${link}`) <= u.width ? [`  Remote Control: ${link}`] : ['  Remote Control:', `    ${link}`]);
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
 // A server-supplied machine name or id reaches a suggested command (`shell`, ssh) only as one plain word —
@@ -451,7 +455,7 @@ async function start(c, args) {
     // A session that started but cannot work (spend limit, login, trust or MCP prompt) looks fine from outside. Read its screen.
     await c.sleep(5000);
     let pane = '';
-    try { ({ pane, link } = splitScreen((await sbx.commands.run(READ_SCREEN)).stdout)); } catch (e) {
+    try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''; } catch (e) {
       // A command that ran and failed carries exitCode (no tmux session). Anything else is the provider or network: the session may be fine.
       if (typeof e?.exitCode === 'number') throw Object.assign(new Error(`The Claude session on the new machine exited right after it started. The machine was deleted.\nLikely cause: the saved Claude login is missing or expired.\nNext: run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again.`), { local: true, short: 'The Claude session on the new machine exited right after it started.', reason: 'the saved Claude login is missing or expired; the machine was deleted', next: 'cloudy-cloud coordinator image' });
       screenRead = false;
@@ -470,10 +474,17 @@ async function start(c, args) {
       // Remote pane text is diagnostic data, not a trusted field: the cause and next are our authored words only.
       throw Object.assign(new Error(`The coordinator session started but is not working. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`), { local: true, code, short: 'The coordinator session started but is not working.', reason: `${cause}; the machine was deleted`, details: [`screen: ${fitCells(line, 40)}`], next: nextCmd });
     }
-    // Remote Control can take a few seconds to connect; look again briefly, never fail start for a missing link.
-    for (let i = 0; i < 3 && !link && screenRead && !waiting; i++) {
-      await c.sleep(3000);
-      try { link = splitScreen((await sbx.commands.run(READ_SCREEN)).stdout).link; } catch { break; }
+    // Remote Control can take a few seconds to connect: look again briefly, and stop if a prompt appears. A missing link never fails start.
+    if (screenRead && !waiting) {
+      link = await readLink(sbx);
+      for (let i = 0; i < 3 && !link && !waiting; i++) {
+        await c.sleep(3000);
+        try {
+          const again = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), (await sbx.commands.run('tmux capture-pane -t claude -p')).stdout ?? ''), task ?? '');
+          waiting = again.waiting || again.blocked || '';
+        } catch { break; }
+        if (!waiting) link = await readLink(sbx);
+      }
     }
   } catch (e) { await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
@@ -494,16 +505,20 @@ async function start(c, args) {
     const rc = [`open claude.ai/code or the Claude app, pick "${name}"`, `pick "${name}" on claude.ai/code or the app`, `pick "${name}"`]
       .find((v) => cellWidth(v) <= room) ?? fitCells(`pick "${name}"`, room);
     const reach = (rows) => u.block('Reach it', rows);
-    const full = reach([['Remote Control', link || rc], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
-    const block = full.split('\n').every((l) => cellWidth(l) <= u.width) ? full
-      : [reach([['Remote Control', link || rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+    const full = (v) => reach([['Remote Control', v], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
+    const fits = (t) => t.split('\n').every((l) => cellWidth(l) <= u.width);
+    const base = fits(full(rc)) ? full(rc)
+      : [reach([['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+    // The URL goes in the block row when it fits; otherwise on its own line below, whole.
+    const linkRow = link && fits(full(link));
+    const block = linkRow ? full(link) : base;
     // The warning wraps whole words: a key name is never cut, and a custom key keeps its host-specific instructions.
     const skipBlock = !skipNote ? [] : [
       ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
       ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
       ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
     ];
-    return c.out([okLine, ...warn, ...skipBlock, '', block, ...(link ? qrLines(u, link) : []),
+    return c.out([okLine, ...warn, ...skipBlock, '', block, ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook ? ['', nextFit(u, `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
@@ -530,15 +545,15 @@ async function attach(c, args) {
 
 // Reads a coordinator's screen once, read-only. waiting is the prompt line a person must answer ('' if none);
 // read is false when the screen could not be read (machine not running, network, no tmux session).
-async function screenOf(c, m) {
+async function screenOf(c, m, { withLink = false } = {}) {
   if (m.state && m.state !== 'running') return { read: false, waiting: '', link: '' };
   try {
     const sbx = await c.provider.connect(m.id, { retry: false });
-    const { pane: raw, link } = splitScreen((await sbx.commands.run(READ_SCREEN, { timeoutMs: 15_000 })).stdout);
+    const raw = (await sbx.commands.run('tmux capture-pane -t claude -p', { timeoutMs: 15_000 })).stdout ?? '';
     // Exact key values (and consented MCP tokens) are removed first; paneState then removes key-shaped text.
     const pane = secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw);
     const st = paneState(pane);
-    return { read: true, waiting: st.waiting || st.blocked, link };
+    return { read: true, waiting: st.waiting || st.blocked, link: withLink ? await readLink(sbx) : '' };
   } catch { return { read: false, waiting: '', link: '' }; }
 }
 const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
@@ -546,7 +561,7 @@ const screenText = (r) => (!r.read ? 'screen not read' : r.waiting ? `waiting on
 async function status(c, args) {
   const [m] = await find(c.provider, 'coordinator', args[0]);
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
-  const r = await screenOf(c, m), name = args[0], state = safeText(m.state ?? '') || 'unknown';
+  const r = await screenOf(c, m, { withLink: true }), name = args[0], state = safeText(m.state ?? '') || 'unknown';
   const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
   const attach = `cloudy-cloud coordinator attach ${name}`;
   if (args.includes('--json')) return c.out(JSON.stringify({ name, machine: shown, state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
@@ -554,7 +569,7 @@ async function status(c, args) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen], ...(r.link ? [['Remote Control', r.link]] : [])]), ...(r.link ? qrLines(u, r.link) : []), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
   c.out([`Coordinator ${name} on machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }

@@ -508,7 +508,7 @@ test('the coordinator keeps its logical name: ls, attach, stop and finish all fi
   const out = [];
   const deps = { provider, env: {}, out: (s) => out.push(s) };
   await coordinatorMain(['attach', 'boss'], deps);
-  assert.ok(out.join('\n').includes(`'exec' '-it' '${c.id}' 'tmux attach -t claude'`), out.join('\n'));
+  assert.equal(out.join('\n'), 'cloudy-cloud coordinator attach boss');
   await coordinatorMain(['finish', '--force'], { ...deps, hostname: c.id });
   assert.equal(box.table.size, 0, 'finish deleted this machine');
   const c2 = await provider.create({ image: 'x', name: 'coord-boss', envs: {}, labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, ttlSeconds: 600 });

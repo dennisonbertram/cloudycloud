@@ -268,19 +268,39 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "tmux capture-pane -t claude -p"
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "tmux capture-pane -t claude -p"
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
       },
       {
         "sdk": "getInfo",
@@ -418,19 +438,39 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "tmux capture-pane -t claude -p"
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "tmux capture-pane -t claude -p"
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true"
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux capture-pane -t claude -p"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "p=$(tmux display -p -t claude '#{pane_pid}') || exit 0; for f in $(ps -e -o pid= -o ppid= | awk -v r=\"$p\" '{par[$1]=$2} END{s[r]=1; do{ch=0; for(k in par) if(!(k in s) && (par[k] in s)){s[k]=1; ch=1}}while(ch); for(k in s) print k}'); do grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/$f.json 2>/dev/null; done; true",
+        "timeoutMs": 15000
       },
       {
         "sdk": "getInfo",
@@ -460,7 +500,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p || exit 1; echo @@cc-link@@; grep -ho '\"bridgeSessionId\" *: *\"[^\"]*\"' ~/.claude/sessions/*.json 2>/dev/null; tmux capture-pane -t claude -p -e 2>/dev/null | grep -o 'https://claude\\.ai/code/session_[A-Za-z0-9_-]*'; true",
+        "cmd": "tmux capture-pane -t claude -p",
         "timeoutMs": 15000
       }
     ],

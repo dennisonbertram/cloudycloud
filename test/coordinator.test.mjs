@@ -43,7 +43,7 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
 });
 
 const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true });
-function fixture({ machines = [], snapshot = 'sn_1', pane = '', auth = [SIGNED_IN], snapStatus = () => 'ready' } = {}) {
+function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
@@ -53,7 +53,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', auth = [SIGNED_I
     getInfo: async () => ({ name }),
     files: { write: async (p, d) => { log.writes.push({ p, d }); } },
     commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
-      return { stdout: /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
+      return { stdout: /pane_pid/.test(cmd) ? link : /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
   });
@@ -593,65 +593,109 @@ test('start keeps the machine when the screen waits on a trust, MCP or Remote Co
   }
 });
 
-// The fake machine answers every capture-pane command with `pane`; the link section follows the marker the real read prints.
-const LINK_MARK = '@@cc-link@@';
+// The fake machine answers the link command (it names pane_pid) with `link`: the session-file lines of the pane's process tree.
 const SID = 'session_01AbCdEfGh23';
 const URL_ = `https://claude.ai/code/${SID}`;
-const withLink = (...lines) => `Claude Code\n${LINK_MARK}\n${lines.join('\n')}\n`;
+const FILE = (id) => `"bridgeSessionId":"${id}"`;
+const BLOCK = /[\u2580\u2584\u2588]{3}/;
 
 test('start --json gives remoteControlUrl read from the session file', async () => {
-  const f = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+  const f = fixture({ link: FILE(SID) });
   await main([...START, '--json'], f.deps);
   assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, URL_);
+  assert.ok(f.log.cmds.some((c) => /pane_pid/.test(c) && /sessions\/\$f\.json/.test(c)), 'reads the files of the pane process tree only');
 });
 
-test('start falls back to the session URL on the screen', async () => {
-  const f = fixture({ pane: withLink(`${URL_}`, `${URL_}`) });
+test('the link comes only from session files, never from the screen text', async () => {
+  const f = fixture({ pane: `see ${URL_}\n` });
   await main([...START, '--json'], f.deps);
-  assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, URL_);
+  assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, undefined);
 });
 
-test('start prints the link as plain text and, on a terminal, the link and a QR code', async () => {
-  const f = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+test('start prints the link as plain text and, on a UTF-8 terminal, the link and a QR code', async () => {
+  const f = fixture({ link: FILE(SID) });
   await main(START, f.deps);
   assert.match(f.log.out.join('\n'), new RegExp(`Remote Control: ${URL_}`));
-  assert.doesNotMatch(f.log.out.join('\n'), /[\u2580\u2584\u2588]/);
-  const g = fixture({ pane: withLink(`"bridgeSessionId":"${SID}"`) });
+  assert.doesNotMatch(f.log.out.join('\n'), BLOCK);
+  const g = fixture({ link: FILE(SID) });
   g.deps.ui = tty();
   await main(START, g.deps);
-  const out = g.log.out.join('\n');
-  assert.ok(out.includes(URL_), out);
-  assert.match(out, /[\u2580\u2584\u2588]{3}/, 'a QR code is drawn');
+  assert.ok(g.log.out.join('\n').includes(URL_));
+  assert.match(g.log.out.join('\n'), BLOCK, 'a QR code is drawn');
+  const h = fixture({ link: FILE(SID) });
+  h.deps.ui = tty({ LANG: 'C' });
+  await main(START, h.deps);
+  assert.ok(h.log.out.join('\n').includes(URL_));
+  assert.doesNotMatch(h.log.out.join('\n'), BLOCK, 'ASCII mode keeps just the URL');
 });
 
-test('a link that is not a plain session id is ignored; start still succeeds and points to status', async () => {
-  for (const bad of [`"bridgeSessionId":"session_x y; rm -rf /"`, `"bridgeSessionId":"session_ab;cd"`, 'https://evil.example/code/session_abc123', 'https://claude.ai.evil.example/code/session_abc']) {
-    const f = fixture({ pane: withLink(bad) });
+test('a narrow terminal keeps every line within the width; the URL goes on its own line', async () => {
+  const f = fixture({ link: FILE(SID) });
+  f.deps.ui = makeUi({ tty: true, cols: 60, env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8' } });
+  await main(START, f.deps);
+  for (const l of f.log.out.join('\n').split('\n')) assert.ok(cellWidth(l.replace(/\x1b\[[0-9;]*m/g, '')) <= 60 || l.includes(URL_), l);
+  assert.ok(f.log.out.join('\n').includes(URL_));
+});
+
+test('ids that are not one plain session id are ignored; start still succeeds and points to status', async () => {
+  for (const bad of [FILE('session_x y; rm -rf /'), FILE('session_ab;cd'), FILE(`session_${'A'.repeat(65)}`), `${FILE(SID)}\n${FILE('session_Other99')}`, '']) {
+    const f = fixture({ link: bad });
     await main([...START, '--json'], f.deps);
     assert.equal(JSON.parse(f.log.out[0]).remoteControlUrl, undefined, bad);
-    const g = fixture({ pane: withLink(bad) });
+    const g = fixture({ link: bad });
     await main(START, g.deps);
     assert.match(g.log.out.join('\n'), /coordinator status boss/, bad);
-    assert.doesNotMatch(g.log.out.join('\n'), /evil|rm -rf/);
+    assert.doesNotMatch(g.log.out.join('\n'), /rm -rf/);
   }
+  const same = fixture({ link: `${FILE(SID)}\n${FILE(SID)}` });
+  await main([...START, '--json'], same.deps);
+  assert.equal(JSON.parse(same.log.out[0]).remoteControlUrl, URL_);
+});
+
+test('a link read that fails or times out never fails start or deletes the machine', async () => {
+  for (const err of [Object.assign(new Error('timed out'), { exitCode: 124 }), Object.assign(new Error('x'), { code: 'timeout' })]) {
+    const f = fixture();
+    const orig = f.deps.sdk.Sandbox.create;
+    f.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run; sbx.commands.run = async (cmd, ...r) => { if (/pane_pid/.test(cmd)) throw err; return run(cmd, ...r); }; return sbx; };
+    await main([...START, '--json'], f.deps);
+    assert.deepEqual(f.log.killed, []);
+    const j = JSON.parse(f.log.out[0]);
+    assert.equal(j.started, true);
+    assert.equal(j.screenRead, undefined);
+  }
+});
+
+test('a prompt that appears while waiting for the link is reported as waiting', async () => {
+  const f = fixture();
+  let reads = 0;
+  const orig = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run; sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd) && ++reads === 2) return { stdout: `${WAIT_LINE}\n  1. Yes\n  2. No\n`, stderr: '', exitCode: 0 }; return run(cmd, ...r); }; return sbx; };
+  await main([...START, '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).waiting, WAIT_LINE);
 });
 
 test('status gives the link in json and text; a terminal also draws the QR code', async () => {
   const m = { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } };
-  const pane = withLink(`"bridgeSessionId":"${SID}"`);
-  const j = fixture({ machines: [m], pane });
+  const j = fixture({ machines: [m], link: FILE(SID) });
   await main(['status', 'a', '--json'], j.deps);
   assert.equal(JSON.parse(j.log.out[0]).remoteControlUrl, URL_);
-  const t = fixture({ machines: [m], pane });
+  const t = fixture({ machines: [m], link: FILE(SID) });
   await main(['status', 'a'], t.deps);
   assert.match(t.log.out.join('\n'), new RegExp(`Remote Control: ${URL_}`));
-  const u = fixture({ machines: [m], pane });
+  const u = fixture({ machines: [m], link: FILE(SID) });
   u.deps.ui = tty();
   await main(['status', 'a'], u.deps);
-  assert.match(u.log.out.join('\n'), /[\u2580\u2584\u2588]{3}/);
-  const n = fixture({ machines: [m], pane: 'Claude Code\n' });
+  assert.match(u.log.out.join('\n'), BLOCK);
+  const n = fixture({ machines: [m] });
   await main(['status', 'a', '--json'], n.deps);
   assert.equal(JSON.parse(n.log.out[0]).remoteControlUrl, undefined);
+});
+
+test('ls never reads the link', async () => {
+  const m = { sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } };
+  const f = fixture({ machines: [m], link: FILE(SID) });
+  await main(['ls'], f.deps);
+  assert.ok(!f.log.cmds.some((c) => /pane_pid/.test(c)));
 });
 
 test('start fails and deletes the machine when the session exits at once (capture-pane fails)', async () => {
@@ -913,7 +957,7 @@ test('status NAME prints state, the waiting line and the attach command; --json 
   await main(['status', 'a', '--json'], g.deps);
   const j = JSON.parse(g.log.out[0]);
   assert.deepEqual([j.name, j.state, j.waiting, j.screenRead, j.attach], ['a', 'running', WAIT_LINE, true, 'cloudy-cloud coordinator attach a']);
-  assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane/.test(c) && c !== '/data/home'), [], 'only the pane read runs');
+  assert.deepEqual(g.log.cmds.filter((c) => !/capture-pane|pane_pid/.test(c) && c !== '/data/home'), [], 'only the pane and link reads run');
   await assert.rejects(main(['status', 'zzz'], f.deps), /No coordinator named zzz/);
   await assert.rejects(main(['status'], f.deps), /cloudy-cloud coordinator status/);
 });

@@ -1200,7 +1200,7 @@ The coordinator sees only the brief and the repo on GitHub. Commit and push ever
 ### 3. Reach it
 
 - **Remote Control:** open claude.ai/code or the Claude app and pick the session named `NAME`.
-- **Terminal:** `cloudy-cloud coordinator attach NAME` prints an SSH command that attaches to its tmux session. Run the command it prints.
+- **Terminal:** `cloudy-cloud coordinator attach NAME` opens its tmux session on a terminal. When piped, it prints that same command; run it in your own terminal.
 
 The first time, attach once and accept any trust or Remote Control prompts. To list your coordinators and their delete times, run `cloudy-cloud coordinator ls`.
 
