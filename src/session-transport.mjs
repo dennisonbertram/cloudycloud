@@ -63,12 +63,33 @@ function metadata(paths) {
   try { return JSON.parse(readFileSync(paths.metadata, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw new Error(`Cannot read named session metadata: ${e.message}`); }
 }
 
-function clearStale(paths) {
-  const m = metadata(paths);
+function ownerSocketPaths(paths, m) {
+  if (!m?.socket) return paths; // Legacy owners use the client's TMPDIR-derived socket location.
+  if (typeof m.socket !== 'string' || !m.socket.startsWith('/') || resolve(m.socket) !== m.socket || m.socket.split('/').at(-1) !== 's') {
+    throw new Error('Named session metadata contains an invalid owner socket path.');
+  }
+  const socketDir = dirname(m.socket);
+  if (socketDir.split('/').at(-1) !== paths.socketDir.split('/').at(-1)) throw new Error('Named session owner socket does not match this session.');
+  let dirStat;
+  try { dirStat = lstatSync(socketDir); } catch (e) { if (e.code === 'ENOENT') return { ...paths, socketDir, socket: m.socket }; throw e; }
+  if (!dirStat.isDirectory() || (process.getuid && dirStat.uid !== process.getuid()) || (dirStat.mode & 0o077)) {
+    throw new Error('Named session owner socket directory is not private to this user.');
+  }
+  try {
+    const socketStat = lstatSync(m.socket);
+    if (!socketStat.isSocket() || (process.getuid && socketStat.uid !== process.getuid()) || (socketStat.mode & 0o077)) {
+      throw new Error('Named session owner socket is not private to this user.');
+    }
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  return { ...paths, socketDir, socket: m.socket };
+}
+
+function clearStale(paths, m = metadata(paths), socketPaths = ownerSocketPaths(paths, m)) {
   if (m && Number.isInteger(m.pid) && isAlive(m.pid)) return false;
-  safeUnlink(paths, paths.socket);
+  safeUnlink(socketPaths, socketPaths.socket);
   safeUnlink(paths, paths.metadata);
-  try { rmdirSync(paths.socketDir); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTEMPTY') throw e; }
+  try { rmdirSync(socketPaths.socketDir); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTEMPTY') throw e; }
+  if (socketPaths.socketDir !== paths.socketDir) try { rmdirSync(paths.socketDir); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTEMPTY') throw e; }
   return true;
 }
 
@@ -87,12 +108,13 @@ export async function startNamedSession({ name, repo, home = homedir(), env = pr
   const paths = sessionPaths({ name, repo, home });
   mkdirSync(dirname(paths.metadata), { recursive: true, mode: 0o700 });
   try { chmodSync(dirname(paths.metadata), 0o700); } catch { /* best effort on platforms without chmod */ }
-  ensurePrivateSocketDir(paths);
-  if (await tryConnect(paths.socket)) return paths;
   const current = metadata(paths);
+  const currentPaths = ownerSocketPaths(paths, current);
+  if (currentPaths.socket === paths.socket) ensurePrivateSocketDir(paths);
+  if (await tryConnect(currentPaths.socket)) return currentPaths;
   if (current && Number.isInteger(current.pid) && isAlive(current.pid)) {
-    const ready = await waitForOwner(paths, timeoutMs);
-    if (ready) return paths;
+    const ready = await waitForOwner(currentPaths, timeoutMs);
+    if (ready) return currentPaths;
     throw new Error(`Named session "${name}" has a live owner process but its socket is unavailable.`);
   }
 
@@ -119,12 +141,14 @@ export async function startNamedSession({ name, repo, home = homedir(), env = pr
   try {
     if (await tryConnect(paths.socket)) return paths;
     const existing = metadata(paths);
+    const existingPaths = ownerSocketPaths(paths, existing);
+    if (existingPaths.socket !== paths.socket && await tryConnect(existingPaths.socket)) return existingPaths;
     if (existing && Number.isInteger(existing.pid) && isAlive(existing.pid)) {
-      const ready = await waitForOwner(paths, timeoutMs);
-      if (ready) return paths;
+      const ready = await waitForOwner(existingPaths, timeoutMs);
+      if (ready) return existingPaths;
       throw new Error(`Named session "${name}" has a live owner process but its socket is unavailable.`);
     }
-    clearStale(paths);
+    clearStale(paths, existing, existingPaths);
     ensurePrivateSocketDir(paths);
     const child = spawn(process.execPath, [ownerEntry, '--session-owner', '--session', name, '--repo', paths.repo], {
       detached: true, stdio: 'ignore', env: { ...env, CLOUDY_CLOUD_SESSION_HOME: home }, cwd: paths.repo,
@@ -192,7 +216,7 @@ export class NamedSessionTransport extends SocketTransport {
 
   async start() {
     if (this.started) return;
-    await startNamedSession(this.options);
+    this.paths = await startNamedSession(this.options);
     await new Promise((resolve, reject) => {
       const socket = createConnection(this.paths.socket);
       this.socket = socket;

@@ -836,6 +836,20 @@ test('provider-owned boxes keep their own capabilities and partial provider erro
   assert.deepEqual(state.machines.providerErrors, machines.providerErrors);
 });
 
+test('a partial owner inventory leaves a missing live agent unknown', () => {
+  const machines = [{ id: 'other', provider: 'instabox', name: 'other', state: 'running', status: 'running' }];
+  Object.defineProperty(machines, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }] });
+  const events = [
+    { type: 'agent', id: 'aaaa1111', status: 'running', t: 1 },
+    { type: 'machine', id: 'aaaa1111', provider: 'boat', machine: 'missing', t: 2 },
+    { type: 'status', id: 'aaaa1111', status: 'running', t: 3 },
+  ];
+  const state = buildState({ events, machines, alive: () => true });
+  const agent = state.boxes.find((b) => b.id === 'aaaa1111');
+  assert.equal(agent.status, 'running');
+  assert.equal(agent.machineState, undefined);
+});
+
 test('demo has android and gpu boxes, and no linux demo box has a kind', () => {
   const d = demoState(), by = (id) => d.boxes.find((b) => b.id === id);
   assert.equal(by('c3d4e5f6').machineKind, 'android');

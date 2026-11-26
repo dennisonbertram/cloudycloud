@@ -84,7 +84,8 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
     const m = (a.machine && findMachine(a.machine, a.provider)) ?? (a.machine ? undefined : byAgent.get(a.id));
     if (m) used.add(machineKey(m));
     // A listed machine is the truth about "running": if it is gone, an agent that looked active has ended.
-    const gone = machines && a.machine && !m && ACTIVE.includes(a.status);
+    const inventoryIncomplete = (machines?.providerErrors ?? []).some((error) => !a.provider || !error.provider || error.provider === a.provider);
+    const gone = machines && a.machine && !m && ACTIVE.includes(a.status) && !inventoryIncomplete;
     const title = a.description || m?.labels?.description || m?.name;
     return { kind: (m?.labels?.role ?? a.role) === 'coordinator' ? 'coordinator' : 'agent', ...a, pid: undefined, machine: a.machine ?? m?.id, provider: m?.provider ?? a.provider, capabilities: capabilities(m ?? (a.provider ? { provider: a.provider } : undefined)), status: gone ? 'stopped' : a.status, machineState: m?.state, deadline: a.deadline ?? m?.archiveAt,
       labels: m?.labels, machineKind: m?.labels?.kind || undefined, title, titleSource: a.description ? 'log' : m?.labels?.description ? 'label' : 'machine', source: 'log', turns: turns.get(a.id), startedByOwner: m?.owner };

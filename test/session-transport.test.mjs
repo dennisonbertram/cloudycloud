@@ -3,11 +3,11 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalRepoPath, sessionPaths, startNamedSession } from '../src/session-transport.mjs';
+import { canonicalRepoPath, createNamedSessionTransport, sessionPaths, startNamedSession, serveNamedSession } from '../src/session-transport.mjs';
 import { parseServerArgs } from '../src/session-args.mjs';
 
 const home = '/tmp/cloudy-cloud-home';
@@ -17,6 +17,12 @@ after(() => {
   for (const socket of openSockets) socket.destroy();
   for (const pid of ownerPids) { try { process.kill(pid, 'SIGTERM'); } catch { /* already closed */ } }
 });
+
+async function withTmpdir(path, fn) {
+  const previous = process.env.TMPDIR;
+  try { process.env.TMPDIR = path; return await fn(); }
+  finally { process.env.TMPDIR = previous; }
+}
 
 test('named sessions use a private, collision-resistant owner path scoped to the repo', () => {
   const root = mkdtempSync(join(tmpdir(), 'cc-paths-'));
@@ -44,6 +50,51 @@ test('named sessions use a private, collision-resistant owner path scoped to the
 test('named session names reject blank, path-like, and control-character input', () => {
   for (const name of ['', '../escape', 'a/b', 'bad\nname']) {
     assert.throws(() => sessionPaths({ name, repo: '/work/alpha', home }), /session name/i);
+  }
+});
+
+test('named clients reconnect through the live owner socket when TMPDIR differs', async () => {
+  const dir = mkdtempSync('/tmp/cc-cross-tmp-');
+  const repo = join(dir, 'repo'), userHome = join(dir, 'home'), ownerTmp = join(dir, 'owner-tmp'), clientTmp = join(dir, 'client-tmp');
+  mkdirSync(repo); mkdirSync(ownerTmp); mkdirSync(clientTmp);
+  const originalTmp = process.env.TMPDIR;
+  let owner;
+  try {
+    process.env.TMPDIR = ownerTmp;
+    owner = await serveNamedSession({ name: 'shared', repo, home: userHome, deps: { open: new Set() }, idleCheckMs: 60_000 });
+    process.env.TMPDIR = clientTmp;
+    const client = await createNamedSessionTransport({ name: 'shared', repo, home: userHome, timeoutMs: 100 });
+    await client.start();
+    assert.equal(client.paths.socket, owner.paths.socket);
+    await client.close();
+    chmodSync(owner.paths.socketDir, 0o755);
+    await assert.rejects(startNamedSession({ name: 'shared', repo, home: userHome, timeoutMs: 100 }), /not private to this user/);
+    chmodSync(owner.paths.socketDir, 0o700);
+  } finally {
+    process.env.TMPDIR = originalTmp;
+    await owner?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy named session metadata still reconnects through the local socket path', async () => {
+  const dir = mkdtempSync('/tmp/cc-legacy-session-');
+  const repo = join(dir, 'repo'), userHome = join(dir, 'home');
+  const originalTmp = process.env.TMPDIR;
+  mkdirSync(repo);
+  let owner;
+  try {
+    process.env.TMPDIR = '/tmp';
+    owner = await serveNamedSession({ name: 'legacy', repo, home: userHome, deps: { open: new Set() }, idleCheckMs: 60_000 });
+    const record = JSON.parse(readFileSync(owner.paths.metadata, 'utf8'));
+    delete record.socket;
+    writeFileSync(owner.paths.metadata, JSON.stringify(record));
+    const connected = await startNamedSession({ name: 'legacy', repo, home: userHome, timeoutMs: 100 });
+    assert.equal(connected.socket, owner.paths.socket);
+  } finally {
+    process.env.TMPDIR = originalTmp;
+    await owner?.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -110,7 +161,7 @@ test('a subprocess named owner preserves workers across disconnects and concurre
   const repo = join(dir, 'repo');
   const userHome = join(dir, 'home');
   const ownerEntry = fileURLToPath(new URL('../support/session-owner-entry.mjs', import.meta.url));
-  const env = { ...process.env, HOME: userHome, CLOUDY_CLOUD_CONFIG: join(userHome, '.config/cloudy-cloud/env'), NODE_ENV: 'test', CC_TEST_IDLE_MS: '100' };
+  const env = { ...process.env, TMPDIR: '/tmp', HOME: userHome, CLOUDY_CLOUD_CONFIG: join(userHome, '.config/cloudy-cloud/env'), NODE_ENV: 'test', CC_TEST_IDLE_MS: '100' };
   mkdirSync(repo, { recursive: true });
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env });
   execFileSync('git', ['config', 'user.name', 'test'], { cwd: repo, env });
@@ -120,15 +171,17 @@ test('a subprocess named owner preserves workers across disconnects and concurre
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repo, env });
   execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/test/session-fixture.git'], { cwd: repo, env });
 
-  const stale = sessionPaths({ name: 'shared', repo, home: userHome });
-  mkdirSync(stale.socketDir, { recursive: true, mode: 0o700 });
-  mkdirSync(dirname(stale.metadata), { recursive: true, mode: 0o700 });
-  writeFileSync(stale.socket, 'stale socket');
-  writeFileSync(stale.metadata, JSON.stringify({ pid: 2_147_483_647 }));
-  const [paths, sameOwner] = await Promise.all([
-    startNamedSession({ name: 'shared', repo, home: userHome, env, ownerEntry }),
-    startNamedSession({ name: 'shared', repo, home: userHome, env, ownerEntry }),
-  ]);
+  const [paths, sameOwner] = await withTmpdir('/tmp', async () => {
+    const stale = sessionPaths({ name: 'shared', repo, home: userHome });
+    mkdirSync(stale.socketDir, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(stale.metadata), { recursive: true, mode: 0o700 });
+    writeFileSync(stale.socket, 'stale socket');
+    writeFileSync(stale.metadata, JSON.stringify({ pid: 2_147_483_647 }));
+    return Promise.all([
+      startNamedSession({ name: 'shared', repo, home: userHome, env, ownerEntry }),
+      startNamedSession({ name: 'shared', repo, home: userHome, env, ownerEntry }),
+    ]);
+  });
   assert.equal(sameOwner.socket, paths.socket);
   const metadata = JSON.parse(readFileSync(paths.metadata, 'utf8'));
   ownerPids.add(metadata.pid);
