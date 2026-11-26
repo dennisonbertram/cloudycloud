@@ -41,7 +41,7 @@ const exitOf = (error) => Number.isInteger(error?.exitCode) ? error.exitCode
 const ownerFor = (provider, id) => ({ provider: provider.name, machine_id: String(id), selector: `${provider.name}:${id}` });
 
 function ownerAction(owner) {
-  return `Inspect this machine with: cloudy-cloud shell ${quote(owner.selector)} -- /bin/sh`;
+  return `Inspect this machine:\n  cloudy-cloud shell ${quote(owner.selector)} -- /bin/sh\nAfter preserving any needed files, delete it with:\n  cloudy-cloud machines stop ${quote(owner.selector)}`;
 }
 
 function failed(message, extra = {}) {
@@ -166,7 +166,7 @@ async function runExec(options, deps) {
         const owner = placement.owner;
         return failed(`Exec setup failed and the provider did not confirm sandbox deletion: ${textOf(deleteError)}`, {
           provider: owner.provider, machine_id: owner.machine_id, owner, preserve_machine: true,
-          action: ownerAction(owner),
+          action: ownerAction(owner), cleanup_command: `cloudy-cloud machines stop ${quote(owner.selector)}`,
         });
       }
     }
@@ -175,7 +175,11 @@ async function runExec(options, deps) {
     return failed(`Exec setup failed: ${textOf(error)}`, {
       ...(owner && { provider: owner.provider, machine_id: owner.machine_id, owner }),
       ...(uncertain && { owners: error.owners }),
-      ...(owner || uncertain ? { preserve_machine: true, action: owner ? ownerAction(owner) : 'Inspect provider-qualified machines with: cloudy-cloud machines ls' } : {}),
+      ...(owner || uncertain ? {
+        preserve_machine: true,
+        ...(owner && { cleanup_command: `cloudy-cloud machines stop ${quote(owner.selector)}` }),
+        action: owner ? ownerAction(owner) : 'Inspect provider-qualified machines with: cloudy-cloud machines ls',
+      } : {}),
     });
   }
 
@@ -250,7 +254,10 @@ async function runExec(options, deps) {
   else if (cleanupError) output.message = `The command finished, but the provider did not confirm sandbox deletion: ${textOf(cleanupError)}`;
   else if (!inspection.verified) output.message = `The command ended, but the remote workspace could not be verified (${inspection.error}); the sandbox was retained.`;
   else if (inspection.dirty || inspection.changed || inspection.refsChanged) output.message = 'The command finished with uncommitted files or changed Git commits or branches; the sandbox was retained.';
-  if (output.preserve_machine) output.action = ownerAction(owner);
+  if (output.preserve_machine) {
+    output.action = ownerAction(owner);
+    output.cleanup_command = `cloudy-cloud machines stop ${quote(owner.selector)}`;
+  }
   if (cleanupError) output.cleanup_error = textOf(cleanupError);
   return output;
 }
