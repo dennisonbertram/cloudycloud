@@ -1,6 +1,11 @@
 import { Server, ProtocolError, ProtocolErrorCode, fromJsonSchema } from '@modelcontextprotocol/server';
 import { createRequire } from 'node:module';
-import { runSubagent, recoverAgent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, sharedQueue } from './run-subagent.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { runSubagent, explainSubagent, recoverAgent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, sharedQueue, secretValues } from './run-subagent.mjs';
+import { executeRemoteArgv } from './exec.mjs';
 import { loadProfiles, resolveProfile } from './profiles.mjs';
 import { proxySecrets } from './config.mjs';
 import { providerNames, loadProviders } from './providers/index.mjs';
@@ -8,6 +13,7 @@ import { providerNames, loadProviders } from './providers/index.mjs';
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
 const CAPABILITIES_META = 'io.modelcontextprotocol/clientCapabilities';
 const packageVersion = createRequire(import.meta.url)('../package.json').version;
+const localExec = promisify(execFile);
 
 const ids = { type: 'array', items: { type: 'string' }, description: 'Agent ids' };
 const tools = [
@@ -47,8 +53,46 @@ const tools = [
     },
   },
   {
+    name: 'cloud_agent_explain',
+    description: 'Check a cloud_agent request against local configuration without starting a worker. Reports locally known exclusions and marks provider plan, live capacity, provider acceptance and model preflight checks as unknown; no provider or model service is contacted.',
+    inputSchema: { type: 'object', properties: {}, required: ['prompt', 'description'] },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['eligible', 'conditional', 'ineligible'] },
+        eligible_providers: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        rejected_providers: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        unknown_checks: { type: 'array', items: { type: 'string' } },
+        message: { type: 'string' }, request: { type: 'object', additionalProperties: true },
+      },
+      required: ['status', 'eligible_providers', 'rejected_providers', 'unknown_checks'], additionalProperties: true,
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'cloud_exec',
+    description: 'Run an argv command in a short-lived remote workspace using the configured cloud providers. This does not call a model. The result includes provider and machine ownership, exit status, captured output, and whether workspace changes remain.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        argv: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, description: 'Command and arguments as separate strings; shell metacharacters are passed literally.' },
+        repo: { type: 'string', description: 'Optional repository directory within the MCP-bound repo.' },
+        timeout_seconds: { type: 'integer', minimum: 1, maximum: 86400, description: 'Command timeout in seconds; defaults to 2100.' },
+      },
+      required: ['argv'], additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object', properties: {
+        status: { type: 'string' }, exit_code: { type: ['integer', 'null'] }, provider: { type: 'string' }, machine_id: { type: 'string' },
+        owner: { type: 'object', additionalProperties: true }, stdout: { type: 'string' }, stderr: { type: 'string' },
+        output_truncated: { type: 'boolean' }, workspace_dirty: { type: ['boolean', 'null'] }, workspace_changed: { type: 'boolean' },
+        preserve_machine: { type: 'boolean' }, stderr_streamed: { type: 'boolean' }, error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' },
+      }, required: ['status'], additionalProperties: true,
+    },
+  },
+  {
     name: 'cloud_agent_capabilities',
-    description: 'Discover configured worker profiles and available providers, machine kinds and capabilities without creating a machine or calling a model provider. Readiness checks inspect local configuration only.',
+    description: 'Discover profiles and provider capabilities without creating a machine or calling a model provider. The ready field means local configuration is present; reachability, live capacity, plan limits, model authorization and create acceptance remain unknown.',
     inputSchema: { type: 'object', properties: {} },
     outputSchema: {
       type: 'object',
@@ -117,6 +161,12 @@ const tools = [
     inputSchema: { type: 'object', properties: { agent_ids: ids, expected_turn_id: { type: 'string' }, expected_status: { type: 'string', enum: ['idle'] } }, required: ['agent_ids'] },
   },
 ];
+const launchSchema = tools.find((tool) => tool.name === 'cloud_agent').inputSchema;
+tools.find((tool) => tool.name === 'cloud_agent_explain').inputSchema = {
+  ...launchSchema,
+  properties: { ...launchSchema.properties },
+  required: [...launchSchema.required],
+};
 for (const tool of tools) {
   if (tool.outputSchema) continue;
   tool.outputSchema = {
@@ -131,7 +181,71 @@ for (const tool of tools) {
   };
 }
 const handlers = {
-  cloud_agent: runSubagent, cloud_agent_recover: recoverAgent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
+  cloud_agent: runSubagent, cloud_agent_explain: explainSubagent, cloud_agent_recover: recoverAgent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
+  cloud_exec: async (args, deps) => {
+    const secrets = secretValues(deps.env ?? process.env, deps.provider?.keyName, [...(deps.literals ?? [])]);
+    const scrub = (value) => secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), String(value ?? ''));
+    const cleanValue = (value) => typeof value === 'string' ? scrub(value) : Array.isArray(value) ? value.map(cleanValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cleanValue(item)])) : value;
+    let repo;
+    try {
+      const boundRoot = await realpath(deps.cwd ?? process.cwd());
+      const requested = await realpath(resolve(boundRoot, args.repo ?? '.'));
+      const withinBound = (path) => {
+        const rel = relative(boundRoot, path);
+        return rel === '' || (rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(rel));
+      };
+      if (!withinBound(requested)) throw new Error('repo must stay inside the MCP-bound repository.');
+      const rootResult = await localExec('git', ['-C', requested, 'rev-parse', '--show-toplevel'], { maxBuffer: 1 << 20 });
+      repo = await realpath(rootResult.stdout.trim());
+      if (!withinBound(repo)) throw new Error('repo must be the MCP-bound repository or a nested git repository inside it.');
+    } catch (error) {
+      const result = { status: 'failed', error: true, message: error.message || 'repo must be a git repository inside the MCP-bound root.' };
+      return { content: [{ type: 'text', text: scrub(result.message) }], structuredContent: cleanValue(result), isError: true };
+    }
+    const progressToken = deps.mcpReq?._meta?.progressToken;
+    let progress = 0;
+    let notifications = Promise.resolve();
+    const values = secretValues(deps.env ?? process.env, deps.provider?.keyName, [...(deps.literals ?? [])]);
+    const tails = { stdout: '', stderr: '' };
+    const partialSecretSuffix = (value) => {
+      let longest = 0;
+      for (const secret of values) {
+        const limit = Math.min(value.length, secret.length - 1);
+        for (let length = limit; length > longest; length--) {
+          if (value.endsWith(secret.slice(0, length))) { longest = length; break; }
+        }
+      }
+      return longest;
+    };
+    const report = (stream, chunk, flush = false) => {
+      if (progressToken === undefined) return Promise.resolve();
+      const combined = tails[stream] + String(chunk ?? '');
+      const heldLength = partialSecretSuffix(combined);
+      const safeLength = combined.length - heldLength;
+      const safe = scrub(combined.slice(0, safeLength)) + (flush && heldLength ? '[redacted]' : '');
+      tails[stream] = flush ? '' : combined.slice(safeLength);
+      if (!safe) return Promise.resolve();
+      for (let offset = 0; offset < safe.length; offset += 4096) {
+        const message = safe.slice(offset, offset + 4096);
+        notifications = notifications.then(() => deps.mcpReq.notify({
+          method: 'notifications/progress',
+          params: { progressToken, progress: ++progress, message: `[${stream}] ${message}` },
+        }));
+      }
+      return notifications;
+    };
+    const execute = deps.executeRemoteArgv ?? executeRemoteArgv;
+    const result = await execute(args.argv, {
+      repo, env: deps.env, providers: deps.providers, providerDeps: deps.providerDeps, timeout: args.timeout_seconds ?? 2100,
+      ...(progressToken !== undefined && { stdout: (chunk) => report('stdout', chunk), stderr: (chunk) => report('stderr', chunk) }),
+    });
+    if (progressToken !== undefined) {
+      await report('stdout', '', true);
+      await report('stderr', '', true);
+      await notifications;
+    }
+    return { content: [{ type: 'text', text: scrub(JSON.stringify(result)) }], structuredContent: cleanValue(result), ...(result?.error ? { isError: true } : {}) };
+  },
   cloud_agent_list: listAgents, cloud_agent_stop: stopAgents,
 };
 
@@ -156,7 +270,7 @@ export function buildServer(deps) {
     if (req.params.name === 'cloud_agent_capabilities') return capabilities(deps);
     const h = handlers[req.params.name];
     if (!h) return { isError: true, content: [{ type: 'text', text: `unknown tool ${req.params.name}` }] };
-    return h(req.params.arguments ?? {}, { ...deps, asTask: canTask(ctx) });
+    return h(req.params.arguments ?? {}, { ...deps, asTask: canTask(ctx), mcpReq: ctx.mcpReq });
   });
   // tasks/get and tasks/cancel are the two task methods the tasks extension keeps; the SDK has no typed API for them.
   const taskMethod = (fn) => async (params) => {
@@ -184,16 +298,16 @@ async function capabilities(deps) {
   const secrets = proxySecrets(env);
   const claudeCredential = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].some((key) => !!env[key] || secrets.has(key));
   const claudeProviders = adapters.filter((adapter) => claudeCredential && (!adapter.caps?.hasProxySecrets || adapter.caps?.localSecrets || secrets.has('CLAUDE_CODE_OAUTH_TOKEN') || secrets.has('ANTHROPIC_API_KEY'))).map((adapter) => adapter.name);
-  profiles.push({ name: 'claude', harness: 'claude', ready: claudeProviders.length > 0, ...(claudeProviders.length ? { providers: claudeProviders } : { reason: 'Claude credentials are not configured for an available provider' }) });
+  profiles.push({ name: 'claude', harness: 'claude', ready: claudeProviders.length > 0, readiness: 'local_configuration_only', unknown_checks: ['model endpoint reachability', 'model authorization and model availability', 'provider capacity and create acceptance'], ...(claudeProviders.length ? { providers: claudeProviders } : { reason: 'Claude credentials are not configured for an available provider' }) });
   for (const name of Object.keys(configured)) {
     const model = configured[name]?.model ?? 'capability-check';
     const usableOn = adapters.filter((adapter) => resolveProfile(name, model, env, { proxyOnly: !!adapter.caps?.hasProxySecrets && !adapter.caps?.localSecrets }).ok).map((adapter) => adapter.name);
-    profiles.push({ name, harness: configured[name]?.harness ?? 'claude', ...(configured[name]?.model && configured[name].model !== 'default' && { model: configured[name].model }), ...(configured[name]?.model === undefined && { requires_model: true }), ready: usableOn.length > 0, ...(usableOn.length ? { providers: usableOn } : { reason: 'profile credentials or configuration are unavailable' }) });
+    profiles.push({ name, harness: configured[name]?.harness ?? 'claude', ...(configured[name]?.model && configured[name].model !== 'default' && { model: configured[name].model }), ...(configured[name]?.model === undefined && { requires_model: true }), ready: usableOn.length > 0, readiness: 'local_configuration_only', unknown_checks: ['model endpoint reachability', 'model authorization and model availability', 'provider capacity and create acceptance'], ...(usableOn.length ? { providers: usableOn } : { reason: 'profile credentials or configuration are unavailable' }) });
   }
   const providers = ordered.map((name) => {
     const adapter = adapters.find((candidate) => candidate.name === name) ?? (provider?.name === name ? provider : undefined);
-    return { name, ready: !!adapter, active: name === provider?.name, ...(adapter?.caps && { capabilities: safeCaps(adapter.caps) }), ...(!adapter && { reason: 'not selected or not configured' }) };
+    return { name, configured: !!adapter, ready: !!adapter, readiness: 'local_configuration_only', unknown_checks: ['provider reachability', 'live capacity and plan limits', 'machine create acceptance'], active: name === provider?.name, ...(adapter?.caps && { capabilities: safeCaps(adapter.caps) }), ...(!adapter && { reason: 'not selected or not configured' }) };
   });
   const value = { profiles, providers, machine_kinds: [...new Set(adapters.flatMap((adapter) => adapter.caps?.machineKinds ?? ['linux']))], ...(env.CLOUDY_CLOUD_DEFAULT_PROFILE && { default_profile: env.CLOUDY_CLOUD_DEFAULT_PROFILE }) };
-  return { content: [{ type: 'text', text: `profiles\n${profiles.map((p) => `  ${p.name}  ${p.ready ? 'ready' : p.reason}`).join('\n')}\nproviders\n${providers.map((p) => `  ${p.name}${p.active ? '  active' : ''}`).join('\n')}\nmachine kinds\n  ${value.machine_kinds.join(', ')}` }], structuredContent: value };
+  return { content: [{ type: 'text', text: `profiles\n${profiles.map((p) => `  ${p.name}  ${p.ready ? 'configuration ready; live checks unknown' : p.reason}`).join('\n')}\nproviders\n${providers.map((p) => `  ${p.name}${p.active ? '  active' : ''}  ${p.ready ? 'configured; live checks unknown' : 'not configured'}`).join('\n')}\nmachine kinds\n  ${value.machine_kinds.join(', ')}` }], structuredContent: value };
 }

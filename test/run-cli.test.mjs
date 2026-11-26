@@ -100,6 +100,20 @@ test('CLI returns a recoverable worker after failure and a separate MCP stdio co
   assert.equal(cleanResult.error, false);
 });
 
+test('run --explain reports local eligibility without creating a worker', async (t) => {
+  const f = await fixture(t);
+  t.after(() => stopOwner(f.session, f.repo, f.home));
+  const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--json', '--explain', '--', 'check eligibility'], { env: f.env, timeout: 15_000 }).catch((error) => error);
+  assert.equal(cli.code ?? 0, 0, `explanation should succeed; stdout=${cli.stdout} stderr=${cli.stderr}`);
+  const result = JSON.parse(cli.stdout.trim());
+  assert.equal(result.status, 'conditional');
+  assert.ok(result.eligible_providers.length > 0, JSON.stringify(result));
+  assert.ok(result.unknown_checks.length > 0);
+  assert.equal(result.agent_id, undefined);
+  assert.equal(result.error, undefined);
+  await assert.rejects(access(sessionPaths({ name: f.session, repo: f.repo, home: f.home }).metadata), 'explain must not create a persistent named owner manifest');
+});
+
 test('run migrates legacy config before creating the named owner and keeps its notice off JSON stdout', async (t) => {
   const f = await fixture(t, { currentConfig: false });
   const legacy = join(f.home, '.config', 'claude-cloud');

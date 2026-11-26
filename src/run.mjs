@@ -7,8 +7,11 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createNamedSessionTransport } from './session-transport.mjs';
+import { loadEnv } from './config.mjs';
+import { combine, loadProviders } from './providers/index.mjs';
+import { explainSubagent } from './run-subagent.mjs';
 
-const usage = 'usage: cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--json] -- PROMPT';
+const usage = 'usage: cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--json] [--explain] -- PROMPT';
 const resumeUsage = 'usage: cloudy-cloud resume RUN-ID [--json] [--timeout SECONDS]';
 const MAX_TIMEOUT_SECONDS = 86_400;
 const packageVersion = createRequire(import.meta.url)('../package.json').version;
@@ -45,11 +48,12 @@ function readRunRecord(id) {
 }
 
 function parse(argv) {
-  const out = { json: false, timeout: 35 * 60, rest: [] };
+  const out = { json: false, explain: false, timeout: 35 * 60, rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--') { out.rest = argv.slice(i + 1); break; }
     if (arg === '--json') { out.json = true; continue; }
+    if (arg === '--explain') { out.explain = true; continue; }
     if (arg === '--help' || arg === '-h') { out.help = true; continue; }
     if (['--repo', '--profile', '--workspace', '--session', '--timeout', '--description', '--model', '--issue', '--base', '--prompt'].includes(arg)) {
       const value = argv[++i];
@@ -108,6 +112,21 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function run(options, resumeRecord) {
   const repo = await realpath(options.repo).catch(() => { throw new Error(`repo does not exist: ${options.repo}`); });
+  if (options.explain) {
+    const env = loadEnv();
+    const providers = await loadProviders(env);
+    const provider = providers.length === 1 ? providers[0] : combine(providers);
+    const explained = await explainSubagent({
+      prompt: options.prompt,
+      description: options.description ?? options.prompt.replace(/\s+/g, ' ').slice(0, 80),
+      ...(options.profile && { profile: options.profile }),
+      ...(options.workspace && { workspace: options.workspace }),
+      ...(options.model && { model: options.model }),
+      ...(options.issue && { issue: options.issue }),
+      ...(options.base && { base: options.base }),
+    }, { env, cwd: repo, provider, providers, open: new Map(), tasks: new Map() });
+    return explained.structuredContent ?? { status: 'failed', error: true, message: outputText(explained) || 'No explanation was returned.' };
+  }
   if (resumeRecord && repo !== resumeRecord.repo) throw new Error(`Run ${resumeRecord.id} belongs to ${resumeRecord.repo}; resume it from that repository.`);
   const id = resumeRecord?.id ?? randomUUID();
   const name = resumeRecord?.session ?? options.session ?? `run-${randomBytes(6).toString('hex')}`;
@@ -277,6 +296,13 @@ function print(value, json) {
   if (value.error) {
     process.stderr.write(`${value.message ?? 'Worker failed.'}${value.action ? `\nNext step: ${value.action}` : ''}\n`);
   } else {
+    if (['eligible', 'conditional', 'ineligible'].includes(value.status)) {
+      process.stdout.write(`${value.message ?? `Request is ${value.status}.`}\n`);
+      for (const provider of value.eligible_providers ?? []) process.stdout.write(`Eligible provider: ${provider.name}${provider.profile ? ` (profile ${provider.profile})` : ''}\n`);
+      for (const provider of value.rejected_providers ?? []) process.stdout.write(`Rejected provider: ${provider.name}: ${provider.reason}\n`);
+      for (const check of value.unknown_checks ?? []) process.stdout.write(`Unknown until launch: ${check}\n`);
+      return;
+    }
     if (value.branch) process.stdout.write(`Branch: ${value.branch}\n`);
     if (value.provider) process.stdout.write(`Provider: ${value.provider}\n`);
     if (value.profile) process.stdout.write(`Profile: ${value.profile}\n`);

@@ -14,7 +14,7 @@ import { createStartQueue } from '../src/limits.mjs';
 import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
-import { answeredProfiles, startQueue, sharedQueue, runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask, secretValues } from '../src/run-subagent.mjs';
+import { answeredProfiles, startQueue, sharedQueue, runSubagent, explainSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask, secretValues } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -54,6 +54,105 @@ const proxyProvider = () => createFakeProvider();
 const PROXY_ENV = { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY' }; // the Claude key is a proxy secret, as on Instabox
 const refs = (repo) => sh(repo, 'git for-each-ref');
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('explain shares local eligibility checks and reports dynamic checks without contacting providers', async () => {
+  let creates = 0, plans = 0, preflights = 0, lists = 0;
+  const f = await setup({
+    createSandbox: async () => { creates++; throw new Error('explain must not create'); },
+    fetchFn: async () => { preflights++; throw new Error('explain must not preflight'); },
+  });
+  const provider = f.deps.provider;
+  const plan = provider.plan;
+  const list = provider.list;
+  provider.plan = async (...args) => { plans++; return plan(...args); };
+  provider.list = async (...args) => { lists++; return list(...args); };
+  const result = await explainSubagent({ description: 'preview', prompt: 'hi' }, f.deps);
+  const data = result.structuredContent;
+  assert.equal(data.status, 'conditional');
+  assert.deepEqual(data.eligible_providers.map((p) => p.name), [provider.name]);
+  assert.deepEqual(data.rejected_providers, []);
+  assert.ok(data.unknown_checks.length > 0);
+  assert.equal(creates, 0);
+  assert.equal(plans, 0);
+  assert.equal(preflights, 0);
+  assert.equal(lists, 0);
+  assert.equal(f.deps.count?.started ?? 0, 0);
+  assert.equal(f.deps.open.size, 0);
+});
+
+test('explain reports locally known launch exclusions using the same request validation', async () => {
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: '' } });
+  const result = await explainSubagent({ description: 'preview', prompt: 'hi', machine: 'not-a-machine' }, f.deps);
+  assert.equal(result.structuredContent.status, 'ineligible');
+  assert.match(result.structuredContent.message, /not a known kind/i);
+  assert.equal(f.created.length, 0);
+  assert.equal(f.deps.open.size, 0);
+});
+
+test('cloud_agent_explain is registered as read-only and leaves the server start state untouched', async () => {
+  const f = await setup();
+  const server = buildServer(f.deps);
+  const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
+  const listed = (await server._requestHandlers.get('tools/list')({ method: 'tools/list', params: {} })).tools;
+  const tool = listed.find((x) => x.name === 'cloud_agent_explain');
+  assert.equal(tool.annotations.readOnlyHint, true);
+  assert.deepEqual(tool.inputSchema.required, ['prompt', 'description']);
+  const explained = await call('cloud_agent_explain', { prompt: 'hi', description: 'preview' });
+  assert.equal(explained.structuredContent.status, 'conditional');
+  assert.equal(f.deps.count.started, 0);
+  assert.equal(f.deps.open.size, 0);
+  assert.equal(f.deps.tasks.size, 0);
+  const capabilities = await call('cloud_agent_capabilities', {});
+  assert.equal(capabilities.structuredContent.providers[0].readiness, 'local_configuration_only');
+  assert.ok(capabilities.structuredContent.providers[0].unknown_checks.includes('provider reachability'));
+});
+
+test('cloud_exec streams ordered MCP progress updates and redacts split secrets before the final result', async () => {
+  const f = await setup();
+  const server = buildServer({ ...f.deps, executeRemoteArgv: async (_argv, deps) => {
+    await deps.stdout('before sk-test-secret-');
+    assert.ok(updates.some((x) => x.params.message === '[stdout] before '), 'short ordinary output should not wait for the longest configured credential');
+    await deps.stdout('123 after\n');
+    await deps.stderr('warning\n');
+    return { status: 'completed', exit_code: 0, stdout: `before ${SECRET} after\n`, stderr: 'warning\n' };
+  } });
+  const updates = [];
+  const call = server._requestHandlers.get('tools/call');
+  const result = await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['printf', 'x'] } } }, {
+    mcpReq: { requestState: () => undefined, _meta: { progressToken: 'exec-token' }, notify: async (notification) => updates.push(notification) },
+  });
+  assert.ok(updates.length >= 2);
+  assert.deepEqual(updates.map((x) => x.params.progress), updates.map((_, index) => index + 1));
+  assert.ok(updates.every((x) => x.method === 'notifications/progress' && x.params.progressToken === 'exec-token'));
+  assert.ok(!JSON.stringify(updates).includes('sk-test'), 'even credential fragments must not cross a progress boundary');
+  assert.equal(result.structuredContent.status, 'completed');
+});
+
+test('cloud_exec rejects paths outside the MCP-bound repository before execution', async () => {
+  const f = await setup();
+  let executions = 0;
+  const server = buildServer({ ...f.deps, executeRemoteArgv: async () => { executions++; return { status: 'completed' }; } });
+  const call = server._requestHandlers.get('tools/call');
+  const result = await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['true'], repo: f.bare } } }, { mcpReq: { requestState: () => undefined } });
+  assert.equal(result.isError, true);
+  assert.match(result.structuredContent.message, /inside the MCP-bound repository/i);
+  assert.equal(executions, 0);
+});
+
+test('cloud_exec does not send MCP progress without a progress token', async () => {
+  const f = await setup();
+  let suppliedCallbacks = false, notices = 0;
+  const server = buildServer({ ...f.deps, executeRemoteArgv: async (_argv, deps) => {
+    suppliedCallbacks = !!deps.stdout || !!deps.stderr;
+    return { status: 'completed', exit_code: 0 };
+  } });
+  const call = server._requestHandlers.get('tools/call');
+  await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['true'] } } }, {
+    mcpReq: { requestState: () => undefined, notify: async () => { notices++; } },
+  });
+  assert.equal(suppliedCallbacks, false);
+  assert.equal(notices, 0);
+});
 
 test('start returns at once with starting, before the sandbox exists', async () => {
   let release;
