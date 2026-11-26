@@ -10,6 +10,7 @@ import { main, toolRepoUrl, FIRST_RUN_SCRIPT, errorScreen } from '../src/coordin
 import { safeText } from '../src/terminal.mjs';
 import { installId } from '../src/config.mjs';
 import { redact } from '../src/events.mjs';
+import { combine } from '../src/providers/index.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
@@ -273,7 +274,7 @@ test('ls lists only coordinators', async () => {
   ] });
   await main(['ls'], f.deps);
   const text = f.log.out.join('\n');
-  assert.match(text, /boss\tinstabox\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss/);
+  assert.match(text, /boss\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss/);
   assert.ok(!/worker-1|img/.test(text));
 });
 
@@ -288,6 +289,22 @@ test('stop deletes only the named coordinator', async () => {
   // piped output keeps the provider CLI line scripts saw on origin/main (#185: terminal wording only in fields)
   assert.match(f.log.out.join('\n'), /Check with: cloudy-cloud machines/);
   await assert.rejects(main(['stop', 'zzz'], f.deps), /No coordinator named zzz/);
+});
+
+test('coordinator names are ambiguous across providers unless qualified', async () => {
+  const deleted = [];
+  const makeProvider = (name, id) => ({
+    name,
+    caps: { maxTtlSeconds: 24 * 3600, maxConcurrentCalls: 4 },
+    text: { listMachines: `${name} machines`, listMachinesUi: `${name} machines` },
+    list: async () => [{ id, name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' }, state: 'stopped' }],
+    delete: async (machineId) => { deleted.push([name, machineId]); },
+  });
+  const provider = combine([makeProvider('provider-a', 'a1'), makeProvider('provider-b', 'b1')]);
+  await assert.rejects(main(['stop', 'boss'], { provider, env: {}, out: () => {} }), /More than one coordinator is named boss/);
+  assert.deepEqual(deleted, []);
+  await main(['stop', 'provider-b:boss'], { provider, env: {}, out: () => {} });
+  assert.deepEqual(deleted, [['provider-b', 'b1']]);
 });
 
 test('attach off a terminal prints the cloudy-cloud attach command', async () => {
@@ -1486,7 +1503,7 @@ test('ls drops the absolute date from DELETES for every row when one is never de
   const g = fixture({ machines });
   await main(['ls'], g.deps);
   const tsv = g.log.out.join('\n');
-  assert.match(tsv, /NAME\tPROVIDER\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/);
+  assert.match(tsv, /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/);
   assert.match(tsv, /\d{4}-\d\d-\d\dT/, 'the ISO date stays in the TSV');
 });
 
@@ -1786,7 +1803,7 @@ test('NO_COLOR and TERM=dumb on a terminal get the coordinator screens minus col
   }
   const g = fixture({ machines: [machine] });
   await main(['ls'], g.deps);
-  assert.match(g.log.out.join('\n'), /NAME\tPROVIDER\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/); // piped stays TSV
+  assert.match(g.log.out.join('\n'), /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/); // single-provider TSV keeps its legacy columns
 });
 
 test('every coordinator screen fits 80 cells in colour, NO_COLOR and TERM=dumb; every error screen ends with exactly one Next', async () => {

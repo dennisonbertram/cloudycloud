@@ -30,6 +30,7 @@ const TEMPLATE = 'agent-browser';
 const SNAPSHOT_KEY = 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT';
 const ACCOUNT_KEY = 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT'; // the Claude account the image is signed in as; install.sh shows it
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const SELECTOR_RE = /^(?:[a-z0-9][a-z0-9-]{0,39}:)?[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
@@ -183,15 +184,17 @@ const word = (...vs) => vs.find((v) => typeof v === 'string' && WORD.test(v)) ??
 const OUR_PURPOSES = new Set(['cloudy-cloud', 'claude-cloud']);
 const find = async (provider, role, name) => {
   const [providerName, target] = name?.includes(':') ? [name.slice(0, name.indexOf(':')), name.slice(name.indexOf(':') + 1)] : [undefined, name];
+  const singleProvider = !provider.providers || provider.providers.length === 1;
+  const acceptsUntagged = singleProvider && providerName === (provider.name ?? provider.providers?.[0]?.name);
   const providerErrors = [];
   const listed = await provider.list({ role }, { sdk: true, onError: (e) => providerErrors.push({ provider: e.provider, code: e.code ?? 'api' }) });
-  const rows = listed.filter((m) => OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === role && (!providerName || m.provider === providerName) && (!target || m.labels?.name === target || m.name === target || m.id === target));
+  const rows = listed.filter((m) => OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === role && (!providerName || m.provider === providerName || (acceptsUntagged && !m.provider)) && (!target || m.labels?.name === target || m.name === target || m.id === target));
   Object.defineProperty(rows, 'providerErrors', { value: providerErrors });
   return rows;
 };
 const uniqueCoordinator = (rows, name) => {
   const providerName = name?.includes(':') ? name.slice(0, name.indexOf(':')) : undefined;
-  const unavailable = (rows.providerErrors ?? []).filter((e) => !providerName || e.provider === providerName);
+  const unavailable = (rows.providerErrors ?? []).filter((e) => !providerName || !e.provider || e.provider === providerName);
   if (unavailable.length) guided(`Could not verify the coordinator on ${unavailable.map((e) => e.provider).join(', ')}. Retry when those providers are reachable, or use provider:name for a reachable provider.`, { short: `Coordinator lookup is incomplete for ${name}.`, next: 'cloudy-cloud coordinator ls' });
   if (rows.length > 1) guided(`More than one coordinator is named ${name}. Use provider:name, for example ${rows[0].provider}:${name}.`, { short: `Coordinator name ${name} is ambiguous.`, next: 'cloudy-cloud coordinator ls' });
   return rows[0];
@@ -666,15 +669,16 @@ async function status(c, args) {
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   const r = await screenOf(c, m, { withLink: true }), name = args[0], state = safeText(m.state ?? '') || 'unknown';
   const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
+  const multiProvider = (c.provider.providers?.length ?? 1) > 1;
   const attach = `cloudy-cloud coordinator attach ${name}`;
   if (args.includes('--json')) return c.out(JSON.stringify({ name, provider: m.provider ?? c.primary.name, machine: shown, state, screenRead: r.read, ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
   if (c.ui.term) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [['Provider', m.provider ?? c.primary.name], ['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [...(multiProvider ? [['Provider', m.provider ?? c.primary.name]] : []), ['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
-  c.out([`Coordinator ${name} on ${m.provider ?? c.primary.name} machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
+  c.out([`Coordinator ${name}${multiProvider ? ` on ${m.provider ?? c.primary.name}` : ''} machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.waiting && `Answer it by attaching, or with Remote Control: ${attach}`, !r.waiting && `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
 
 async function ls(c) {
@@ -691,6 +695,7 @@ async function ls(c) {
   const when = (v) => { const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : 'unknown'; };
   const data = rows.map((m) => ({ name: clean(m.labels?.name) || 'unnamed', provider: m.provider ?? c.primary.name, state: clean(m.state) || 'unknown', created: when(m.startedAt), machine: clean(mach(m)) || 'unknown',
     deleteAt: m.deleteAt ? clean(m.deleteAt) : '' }));
+  const multiProvider = (c.provider.providers?.length ?? 1) > 1;
   // One pane read per coordinator, at most a few at a time so a long list cannot flood the provider.
   const screens = new Array(rows.length), cap = Math.min(4, c.primary.caps?.maxConcurrentCalls || 4);
   let next = 0;
@@ -702,19 +707,19 @@ async function ls(c) {
     const waitingRow = data.find((d, i) => d.screen.startsWith('waiting') && NAME_RE.test(rows[i].labels?.name ?? '')); // the attach hint needs a server name that is also a valid argument
     const done = (text) => c.out(waitingRow ? `${text}\n\n${nextFit(u, `cloudy-cloud coordinator attach ${waitingRow.name}`)}` : text);
     // DELETES is the relative time only; the ISO date stays in the piped TSV.
-    const rowCells = (d, machine) => [d.name, d.provider, [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
+    const rowCells = (d, machine) => [d.name, ...(multiProvider ? [d.provider] : []), [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
       d.deleteAt ? [[u.rel(d.deleteAt)]] : [['never', u.col.dim]]];
-    const fixedTable = (machine) => u.table(['NAME', 'PROVIDER', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES'], data.map((d) => rowCells(d, machine)));
+    const fixedTable = (machine) => u.table(['NAME', ...(multiProvider ? ['PROVIDER'] : []), 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES'], data.map((d) => rowCells(d, machine)));
     const widest = (t) => Math.max(...t.split('\n').map(cellWidth));
     // The SCREEN column gets the width left after the fixed columns. A prompt that does not fit whole moves to
     // wrapped dimmed sub-lines under its row — it is never cut mid-word with an ellipsis.
     const build = (machine) => {
       const cells = data.map((d) => [...rowCells(d, machine), [[d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]]);
-      return u.table(['NAME', 'PROVIDER', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells);
+      return u.table(['NAME', ...(multiProvider ? ['PROVIDER'] : []), 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells);
     };
     const buildTwo = (machine) => {
       const cells = data.map((d) => [...rowCells(d, machine), [[d.screen.startsWith('waiting') ? 'waiting' : d.screen, d.screen.startsWith('waiting') ? u.col.warn : u.col.dim]]]);
-      const lines = u.table(['NAME', 'PROVIDER', 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells).split('\n');
+      const lines = u.table(['NAME', ...(multiProvider ? ['PROVIDER'] : []), 'STATE', 'STARTED', ...(machine ? ['MACHINE'] : []), 'DELETES', 'SCREEN'], cells).split('\n');
       const out = [lines[0]];
       data.forEach((d, i) => { out.push(lines[i + 1]); if (d.screen.startsWith('waiting')) out.push(...wrapText(u, d.screen.slice(21)).map((l) => `    ${u.dim(l)}`)); });
       return out.join('\n');
@@ -728,10 +733,10 @@ async function ls(c) {
       if (widest(t) <= u.width) return done(t);
     }
     // A window too narrow even for that gets one short block per coordinator instead of wrapped columns.
-    return done(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, `    Provider: ${d.provider || c.primary.name}`, `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${fitCells(d.screen, u.width - 12)}`] : [])].join('\n')).join('\n\n'));
+    return done(data.map((d) => [`  ${u.bold(d.name)} [${d.state}]`, ...(multiProvider ? [`    Provider: ${d.provider || c.primary.name}`] : []), `    Machine: ${d.machine}`, `    Created: ${d.created}`, `    Deletes: ${d.deleteAt || 'never'}`, ...(d.screen !== '-' ? [`    Screen: ${fitCells(d.screen, u.width - 12)}`] : [])].join('\n')).join('\n\n'));
   }
-  c.out(['NAME', 'PROVIDER', 'STATE', 'CREATED', 'MACHINE', 'DELETES', 'WAITING'].join('\t'));
-  for (const d of data) c.out([d.name, d.provider, d.state, d.created, d.machine, d.deleteAt || 'never', d.screen].join('\t'));
+  c.out(['NAME', ...(multiProvider ? ['PROVIDER'] : []), 'STATE', 'CREATED', 'MACHINE', 'DELETES', 'WAITING'].join('\t'));
+  for (const d of data) c.out([d.name, ...(multiProvider ? [d.provider] : []), d.state, d.created, d.machine, d.deleteAt || 'never', d.screen].join('\t'));
 }
 
 async function stop(c, args) {
@@ -742,10 +747,10 @@ async function stop(c, args) {
   const selected = providerFor(c.provider, m);
   await selected.delete(m.id, { sdk: true });
   // Both name our own command when the provider has one (listMachinesUi), so the provider stays behind cloudy-cloud.
-  if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`${selected.name} machine ${safeText(mach(m))}`]),
+  if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`${(c.provider.providers?.length ?? 1) > 1 ? `${selected.name} ` : ''}machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
     hintFit(c.ui, `List machines: ${c.provider.text.listMachinesUi ?? c.provider.text.listMachines}`)].join('\n'));
-  c.out(`Deleted coordinator ${name} (${selected.name} machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${selected.text.listMachinesUi ?? selected.text.listMachines}`);
+  c.out(`Deleted coordinator ${name} (${(c.provider.providers?.length ?? 1) > 1 ? `${selected.name} ` : ''}machine ${safeText(mach(m))}). Its workers are deleted by its cleanup process, or by their own delete deadline (6 hours by default). Check with: ${selected.text.listMachinesUi ?? selected.text.listMachines}`);
 }
 
 // Run ON a coordinator machine by the coordinator itself: checks that nothing is lost, then deletes this machine.
@@ -834,11 +839,11 @@ function validateArgs(cmd, args) {
     return;
   }
   if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
-  if (cmd === 'status') { if (!NAME_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
+  if (cmd === 'status') { if (!SELECTOR_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
   // The piped text always says what is wrong with the value; the terminal headline says start needs a NAME.
-  if (!NAME_RE.test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
+  if (!(cmd === 'start' ? NAME_RE : SELECTOR_RE).test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters), with an optional provider: prefix.', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters), with an optional provider: prefix.');
   if (cmd !== 'start') { if (args.length !== 1) bad(`${cmd} takes exactly one NAME.`); return; }
   const seen = new Set();
   for (let i = 1; i < args.length; i++) {
