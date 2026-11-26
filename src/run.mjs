@@ -99,7 +99,11 @@ async function run(options) {
     let started;
     try { started = await toolCall(client, 'cloud_agent', args); }
     catch (error) {
-      final = { status: 'failed', error: true, message: `Could not start worker: ${error.message}` };
+      final = {
+        status: 'failed', error: true, recoverable: true, session: name, repo,
+        message: `The CLI could not confirm whether the worker started: ${error.message}`,
+        action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and call cloud_agent_list to check for the worker described as ${JSON.stringify(args.description)}; stop it after you have preserved any result.`,
+      };
       return final;
     }
     const startData = started?.structuredContent;
