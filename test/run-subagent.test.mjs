@@ -163,6 +163,56 @@ test('an agent writes its events (task, machine, reply, status) with keys redact
   assert.equal(events.at(-1).status, 'stopped');
 });
 
+test('startup phase timings use monotonic durations and appear in events and the completed result', async () => {
+  const events = [];
+  const f = await setup({ events: (e) => events.push(e) });
+  const id = await f.start();
+  await f.wait([id]);
+  const timings = f.deps.open.get(id).result.startup_timings;
+  for (const phase of ['queue_wait', 'repo_preparation', 'provider_creation', 'upload', 'harness_startup', 'first_tool_call']) {
+    assert.equal(typeof timings[phase].status, 'string', phase);
+    if (timings[phase].status === 'unavailable') assert.equal(timings[phase].duration_ms, null, phase);
+    else assert.ok(Number.isFinite(timings[phase].duration_ms) && timings[phase].duration_ms >= 0, phase);
+  }
+  assert.ok(events.some((e) => e.type === 'startup_timing' && e.phase === 'repo_preparation'));
+  const result = await resultAgent({ agent_id: id }, f.deps);
+  assert.deepEqual(result.structuredContent.startup_timings, timings);
+
+  const failed = await setup({ createSandbox: async () => { throw new Error('synthetic create failure'); } });
+  const failedId = await failed.start();
+  await failed.wait([failedId]);
+  const failedTimings = failed.deps.open.get(failedId).result.startup_timings;
+  assert.equal(failedTimings.provider_creation.status, 'failed');
+  assert.ok(Number.isFinite(failedTimings.provider_creation.duration_ms));
+  for (const phase of ['upload', 'harness_startup', 'first_tool_call']) {
+    assert.deepEqual(failedTimings[phase], { duration_ms: null, status: 'unavailable' }, phase);
+  }
+});
+
+test('offline cold and in-flight snapshot-cache warm starts report measured timings', async () => {
+  const samples = [];
+  for (let sample = 0; sample < 3; sample++) {
+    let creates = 0, release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const fixture = await setup({ createSandbox: async (envs) => { creates++; await gate; const s = await fakeSandbox(getGithub()); s.envs = envs; return s; } });
+    const first = await fixture.start({ profile: 'claude' });
+    while (creates < 1) await tick(1);
+    const second = await fixture.start({ profile: 'claude' });
+    while (creates < 2) await tick(1);
+    release();
+    await fixture.wait([first, second]);
+    const cold = fixture.deps.open.get(first).result.startup_timings;
+    const warm = fixture.deps.open.get(second).result.startup_timings;
+    samples.push({ cold_repo_preparation_ms: cold.repo_preparation.duration_ms, warm_repo_preparation_ms: warm.repo_preparation.duration_ms,
+      cold_upload_ms: cold.upload.duration_ms, warm_upload_ms: warm.upload.duration_ms,
+      cold_provider_creation_ms: cold.provider_creation.duration_ms, warm_provider_creation_ms: warm.provider_creation.duration_ms });
+    await fixture.stop([first, second]);
+  }
+  console.log(`offline snapshot-cache timing samples (n=${samples.length} cold/warm pairs; same repo and claude profile per pair; fake provider/harness): ${JSON.stringify(samples)}`);
+  assert.equal(samples.length, 3);
+  for (const sample of samples) for (const value of Object.values(sample)) assert.ok(Number.isFinite(value) && value >= 0);
+});
+
 test('secretValues drops empty and shorter-than-4 values, so exact scrubbing cannot mangle the text', () => {
   const vals = secretValues({ ANTHROPIC_API_KEY: 'x', MCP_X_TOKEN: 'ab', GH_TOKEN: 'real-token-1' }, 'FAKE_API_KEY', ['', 'ab', 'literal-value-1']);
   assert.ok(vals.includes('real-token-1'));
