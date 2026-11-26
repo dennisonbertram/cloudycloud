@@ -1235,6 +1235,12 @@ The first time, attach once and accept any trust or Remote Control prompts. To l
 
 > Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds the names of your proxy secrets, and its own Claude sign-in (`~/.claude/.credentials.json`, created when you finish `coordinator login`) is a real login. Anyone who can SSH into the machine can use them. Use an account you can revoke.
 
+## Coordinators talking to each other
+
+Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it can greet them with `NAME started (repo REPO, branch BRANCH)`. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name.
+
+`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack: <first 8 words>` to each message received (never to one starting with `ack:`), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
+
 ## Getting one result from many workers
 
 Each worker pushes a branch named `cloudy-cloud/<id>`. Starting 100 workers is easy. Reviewing 100 pull requests is not. The `cloud-fleet` skill teaches Claude these patterns:

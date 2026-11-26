@@ -427,6 +427,15 @@ async function start(c, args) {
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved image; each signs in to Claude at start.', next: 'cloudy-cloud coordinator image', neutral: true });
   if ((await find(c.provider, 'coordinator', name)).length) guided(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`, { short: `A coordinator named ${name} already exists.`, next: `cloudy-cloud coordinator stop ${name}` });
+  // Peers for Remote Control messaging: the running coordinators this same installation made (the install-label
+  // check `cloud` reattach uses), by name, excluding the one being started. A failed lookup never fails a start.
+  const mine = installId(c.env);
+  let peers = [];
+  try {
+    peers = (await find(c.provider, 'coordinator'))
+      .filter((m) => m.state === 'running' && m.labels?.install === mine && m.labels?.name !== name && NAME_RE.test(m.labels?.name ?? ''))
+      .map((m) => m.labels.name);
+  } catch { c.progress('Could not list the other coordinators; this one starts without peers.'); }
   let link = '';
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   let needsLogin = false, loginUrl = ''; // set while the coordinator waits for its own Claude sign-in (a normal state)
@@ -492,13 +501,16 @@ async function start(c, args) {
     const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
     // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
     // a setup-token cannot start Remote Control and an env token beats a sign-in (code.claude.com/docs/en/remote-control).
+    // CLOUDY_CLOUD_NAME makes the launcher pass --name to claude, so the other coordinators can message this
+    // session by name; CLOUDY_CLOUD_PEERS are the peer names known at start, and REPO/BRANCH feed the hello
+    // message. Every one is set explicitly — an empty value too — so a bridged env.local cannot inject them.
     // env.local holds the consented literal --env variables; sourcing it here exports them to Claude's environment.
     // launch.sh (coordinator-launch.mjs) first removes any credential the image copied in — once, at the first launch,
     // so a relaunch never deletes this coordinator's own sign-in — then runs `claude auth login` when the coordinator
     // is not signed in, and execs the session command. The pane waits at the sign-in until a person finishes it.
     await sbx.files.write(`${dir}/launch.sh`, LAUNCH_SCRIPT);
     await sbx.commands.run(`chmod 700 ${q(`${dir}/launch.sh`)}`);
-    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`sh ${dir}/launch.sh ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`)}`);
+    await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`sh ${dir}/launch.sh ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} CLOUDY_CLOUD_NAME=${name} CLOUDY_CLOUD_PEERS=${peers.join(',')} CLOUDY_CLOUD_REPO=${q(repoPath(repo))} CLOUDY_CLOUD_BRANCH=${q(branch ?? '')} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`)}`);
     // The deadline watchdog runs in its own tmux session so a Claude restart never stops it.
     await sbx.files.write(`${home}/watchdog.sh`, WATCHDOG_SCRIPT);
     await sbx.commands.run(`tmux kill-session -t cc-watchdog 2>/dev/null; tmux new-session -d -s cc-watchdog ${q(`env CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} sh ${home}/watchdog.sh`)}`);

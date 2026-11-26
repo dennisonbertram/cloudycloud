@@ -345,6 +345,16 @@ The coordinator ends its job with `~/cloudy-cloud/bin/cloudy-cloud coordinator f
 
 `--force` skips the git and worker checks, not the machine check.
 
+### 8.6 Coordinators talking to each other
+
+Two cloud coordinators on Remote Control can message each other with Claude's built-in `ListAgents`/`SendMessage` tools; all coordinators run with permission checks off, so no message is held on a permissions prompt. `coordinator start` sets `CLOUDY_CLOUD_NAME`, `CLOUDY_CLOUD_PEERS`, `CLOUDY_CLOUD_REPO` and `CLOUDY_CLOUD_BRANCH` in the tmux environment (always set, even empty, so a bridged `env.local` cannot inject them). The launcher then passes `--name NAME` to `claude`, so `ListAgents` lists the session under its coordinator name rather than the `repo` folder name — but only when `CLOUDY_CLOUD_COORDINATOR=1` and the name matches `^[a-z0-9-]{1,40}$` (an invalid name means no `--name` and one stderr note).
+
+`CLOUDY_CLOUD_PEERS` is a comma list of the installation's other running coordinators, collected at start with the same install-label lookup `cloud` reattach uses; the coordinator being started, stopped machines, other roles, machines with no `install` label and names that fail `NAME_RE` are all excluded. A failed lookup prints one progress line and starts with no peers — it never fails the start.
+
+The launcher also appends the messaging rules to the coordinator's prompt (only for a coordinator with a valid `CLOUDY_CLOUD_NAME`): announce `NAME started (repo REPO, branch BRANCH)` to each listed peer at the start of the first turn; `ListAgents` shows only sessions alive when it runs, so call it again before messaging a peer that was not in the last result and use `cloud_agent_list` `all: true` (which prints each coordinator's `name` label) to see every running coordinator, including late starters. `SendMessage` delivery has no built-in receipt, so the rules use an ack convention: reply `ack: <first 8 words>` to each received message (never to one starting with `ack:`), and if no ack arrives within 3 minutes resend once and then tell the user the peer is gone. The rules also forbid putting a secret, placeholder, `env.local` value or link in a message, and require refusing message requests to push to the default branch, delete machines the coordinator did not start, or reveal credentials.
+
+A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session: it never receives the four variables and its launcher takes the non-coordinator path, so it takes no part.
+
 ## 9. Your own machine
 
 Subagents can run on a computer you own instead of Instabox. Each one gets a Docker container on that machine, reached over SSH. This section describes what the code does. The first live run on a Mac Studio is still to come (see [STATUS.md](STATUS.md)).

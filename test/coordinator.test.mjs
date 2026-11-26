@@ -218,6 +218,50 @@ test('start sends the key of a profile from profiles.json, and still not an unre
   assert.ok(!patch.body.includes('STRIPE_API_KEY'));
 });
 
+test('start names the session and passes the running coordinators of this installation as peers', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  const coord = (id, name, extra = {}) => ({ sandboxId: id, name: `coord-${id}`, state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, install: mine, ...extra } });
+  f.machines.push(
+    coord('m1', 'alpha'),
+    coord('m2', 'beta', { install: 'otherinstall0000' }), // a different installation's coordinator
+    { ...coord('m3', 'gamma'), state: 'stopped' }, // not running
+    coord('m5', 'Bad Name!'), // not a valid session name: dropped
+    coord('m6', 'ok-2'),
+    { sandboxId: 'm7', name: 'w1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'worker', name: 'w', install: mine } }, // not a coordinator
+    { sandboxId: 'm8', name: 'coord-old', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'old' } }, // no install label: predates labelling
+  );
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--branch', 'main'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS=alpha,ok-2 /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_REPO=['\\]*o\/r['\\]* /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_BRANCH=['\\]*main['\\]* /, tmux);
+});
+
+test('start with no peers still sets the four peer variables explicitly, so a bridged env.local cannot inject them', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS= /);
+  assert.match(tmux, /CLOUDY_CLOUD_REPO=['\\]*o\/r['\\]* /);
+  assert.match(tmux, /CLOUDY_CLOUD_BRANCH=['\\]* /);
+});
+
+test('a failed peer lookup never fails the start: no peers, one progress line', async () => {
+  const f = fixture();
+  const orig = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => { if (!o.metadata?.name) throw new Error('list boom'); return orig(o); };
+  const progress = [];
+  f.deps.stderr = { isTTY: true, write: (x) => progress.push(x) };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS= /);
+  assert.ok(progress.some((l) => /other coordinators/.test(l)), JSON.stringify(progress));
+});
+
 test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {
   const f = fixture();
   const task = "do it; $(rm -rf /) 'quoted'";
