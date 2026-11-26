@@ -2876,6 +2876,25 @@ test('a profile whose preflight fails falls back to the next profile and says so
   assert.match(r, /hello from pi/);
 });
 
+test('a profile-level fallback survives a preflight failure', async () => {
+  resetPreflightCache();
+  const dir = await mkdtemp(join(tmpdir(), 'cc-prof-preflight-fallback-'));
+  const file = join(dir, 'profiles.json');
+  await writeFile(file, JSON.stringify({ 'pi-glm': { harness: 'pi', format: 'openai', baseUrl: 'https://api.particle.ai/v1', model: 'z-ai/glm-5.3-flash', keyName: 'PARTICLE_API_KEY', fallback: ['pi-particle'] } }));
+  const fetchFn = async (_url, o) => JSON.parse(o.body).model === 'z-ai/glm-5.3-flash'
+    ? { status: 404, text: async () => 'model_not_found' }
+    : { status: 200, text: async () => '{}' };
+  const { deps, wait, text } = await setup({ env: { ...pEnv, CLOUDY_CLOUD_PROFILES: file }, fetchFn });
+  try {
+    const started = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm' }, deps);
+    assert.notEqual(started.isError, true, text(started));
+    const id = text(started).match(/agent_id: ([0-9a-f]{8})/)?.[1];
+    assert.ok(id, text(started));
+    const r = await wait([id]);
+    assert.match(r, /status: idle\s*\nran on pi-particle \(pi-glm unavailable: Profile pi-glm: api\.particle\.ai answered 404/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('a profile with no key falls back to the profiles.json fallback list', async () => {
   resetPreflightCache();
   const dir = await mkdtemp(join(tmpdir(), 'cc-prof-'));

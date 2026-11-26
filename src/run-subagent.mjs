@@ -1318,12 +1318,17 @@ export async function runSubagent(args, deps) {
     let names = [profileName], tried = [];
     for (let i = 0; i < names.length; i++) {
       const eligible = [], rejected = [];
+      let preflightPromise;
       for (const p of cands) {
         const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: Boolean(p.caps.hasProxySecrets && !p.caps.localSecrets) });
         if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly.', next: 'call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
         let err = r.error;
         // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
-        if (!err && args.preflight !== false && !p.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+        if (!err && args.preflight !== false && !p.caps.localSecrets) {
+          preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
+          const pf = await preflightPromise;
+          if (!pf.ok) err = pf.error;
+        }
         if (err) rejected.push({ provider: p, result: r, error: ctx.scrub(err) });
         else eligible.push({ provider: p, profile: r.ok });
       }
@@ -1336,7 +1341,8 @@ export async function runSubagent(args, deps) {
         break;
       }
       const error = rejected[0]?.error ?? `Profile ${names[i]} could not run on any configured provider.`;
-      const fallback = rejected.find((x) => x.result?.fallback)?.result.fallback;
+      const fallbackResult = rejected.find((x) => x.result?.fallback || x.result?.ok?.fallback)?.result;
+      const fallback = fallbackResult?.fallback ?? fallbackResult?.ok?.fallback;
       if (i === 0) names = [...names, ...(args.fallback ?? fallback ?? [])];
       tried.push({ name: names[i], why: error });
       if (i === names.length - 1) return fail(tried.length === 1 ? error : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
