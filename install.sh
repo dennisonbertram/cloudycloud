@@ -1678,13 +1678,14 @@ ask_worker_keys() {
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 }
 
-usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat|e2b] [--check-only]" >&2; }
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat|e2b] [--default-profile NAME] [--check-only]" >&2; }
 
 main() {
-  local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
+  local provider_arg="" default_profile_arg="" host acct more=0 check_only=0 saved_provider tools_out root
   while [ $# -gt 0 ]; do
     case $1 in
       --provider) [ $# -ge 2 ] || { usage; exit 2; }; provider_arg=$2; shift 2 ;;
+      --default-profile) [ $# -ge 2 ] || { usage; exit 2; }; default_profile_arg=$2; shift 2 ;;
       --more) more=1; shift ;;
       --check-only) check_only=1; shift ;;
       *) usage; exit 2 ;;
@@ -1692,6 +1693,9 @@ main() {
   done
   provider_arg=${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-}} # an exported name resolves like the flag, so the launcher's setup offer follows the shell's provider
   case $provider_arg in ""|instabox|self-hosted|microsandbox|boat|e2b) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox, boat or e2b" >&2; exit 2 ;; esac
+  if [ -n "$default_profile_arg" ]; then
+    if [ "$default_profile_arg" != claude ] && ! [[ $default_profile_arg =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]]; then bad "Invalid default profile name" "use claude or a profile name from profiles.json" >&2; exit 2; fi
+  fi
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
   root=$(cd "$(dirname "$0")" && pwd)
@@ -1701,6 +1705,9 @@ main() {
   # microsandbox keeps every credential on this computer in the env file, so setup has nothing to ask or save.
   # --provider beats an exported CLOUDY_CLOUD_PROVIDER, which beats the saved line.
   if [ "$check_only" = 0 ] && [ "${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-$saved_provider}}" = microsandbox ]; then
+    if [ -n "$default_profile_arg" ]; then
+      write_env CLOUDY_CLOUD_DEFAULT_PROFILE "$default_profile_arg" || { bad "Could not update $(cfg)." >&2; exit 1; }
+    fi
     ok "The provider is microsandbox" "setup does not configure it"
     hint "Keys stay on this computer in the env file:"
     hint "$(cfg)"
@@ -1711,6 +1718,9 @@ main() {
   if [ "$check_only" = 0 ] && [ ! -t 0 ]; then
     case $0 in */node_modules/*) echo "Setup asks for keys, so run it in a terminal: cloudy-cloud setup" ;;
       *) echo "install.sh asks for keys, so run it in a terminal: ./install.sh" ;; esac; exit 1
+  fi
+  if [ -n "$default_profile_arg" ] && [ "$check_only" = 0 ]; then
+    write_env CLOUDY_CLOUD_DEFAULT_PROFILE "$default_profile_arg" || { bad "Could not update $(cfg)." >&2; exit 1; }
   fi
   trap 'cleanup_capture; ui_cleanup; stty echo 2>/dev/null' EXIT
   trap 'exit 130' INT TERM

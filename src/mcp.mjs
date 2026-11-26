@@ -1,8 +1,13 @@
 import { Server, ProtocolError, ProtocolErrorCode, fromJsonSchema } from '@modelcontextprotocol/server';
-import { runSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, sharedQueue } from './run-subagent.mjs';
+import { createRequire } from 'node:module';
+import { runSubagent, recoverAgent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, getTask, cancelTask, sharedQueue } from './run-subagent.mjs';
+import { loadProfiles, resolveProfile } from './profiles.mjs';
+import { proxySecrets } from './config.mjs';
+import { providerNames, loadProviders } from './providers/index.mjs';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
 const CAPABILITIES_META = 'io.modelcontextprotocol/clientCapabilities';
+const packageVersion = createRequire(import.meta.url)('../package.json').version;
 
 const ids = { type: 'array', items: { type: 'string' }, description: 'Agent ids' };
 const tools = [
@@ -15,7 +20,7 @@ const tools = [
         prompt: { type: 'string', description: 'Full task for the subagent' },
         description: { type: 'string', description: 'Short task label' },
         model: { type: 'string', description: 'Optional Claude model name, such as haiku. For any other agent or model use profile instead. Exceptions: the openrouter, codex-openrouter and opencode-openrouter profiles also need model (the OpenRouter model id).' },
-        profile: { type: 'string', description: 'Optional profile that runs the worker on another agent or model. Default: Claude Code. Claude Code with another model: glm, deepseek, particle, openrouter. pi: pi-glm, pi-deepseek, pi-particle. oh-my-pi: omp-glm, omp-deepseek, omp-particle. Codex: codex (OPENAI_API_KEY), codex-chatgpt (your ChatGPT login file), codex-openrouter (pass model). opencode: opencode-glm, opencode-deepseek, opencode-particle, opencode-openrouter (pass model). Or a name from profiles.json. Coordinators (role coordinator) cannot use a pi, omp, codex or opencode profile.' },
+        profile: { type: 'string', description: 'Optional profile that runs the worker on another agent or model. If omitted, uses CLOUDY_CLOUD_DEFAULT_PROFILE when configured, otherwise Claude Code. Call cloud_agent_capabilities to discover configured profiles and readiness. Coordinators (role coordinator) cannot use a pi, omp, codex or opencode profile.' },
         role: { type: 'string', enum: ['worker', 'coordinator'], description: 'Optional. worker (default) does the task. coordinator also gets cloudy-cloud installed and can start its own cloud agents (limited by CLOUDY_CLOUD_MAX_DEPTH, default 3).' },
         fallback: { type: 'array', items: { type: 'string' }, description: 'Optional profile names to try in order when the profile has no key or the provider refuses a one-token check before the machine starts. Overrides the profile\'s fallback in profiles.json. The result says which profile ran.' },
         preflight: { type: 'boolean', description: 'Optional, default true. Set false to skip the one-token provider check that runs before the machine is created.' },
@@ -26,8 +31,52 @@ const tools = [
         subagent_type: { type: 'string', description: 'Optional Claude Code agent name, passed to claude as --agent. Only for Claude Code workers (no profile, or glm, deepseek, particle, openrouter); pi, omp, Codex and opencode workers ignore it.' },
         issue: { type: 'string', description: 'Optional GitHub issue in this repo\'s origin: a number ("12") or a URL (https://github.com/<owner>/<repo>/issues/<n>). The issue title and body are quoted into the prompt as untrusted data, the branch is named cloudy-cloud/issue-<n>-<id>, and an autofix pull request gets "Fixes #<n>". Workers only.' },
         preview_port: { type: 'integer', description: 'Optional port (1-65535, a digit string also works) of an app already running on the machine; after a turn that pushes, a private link is published (like cloudy-cloud open <id> <port> --share) and the result shows "Preview: <url>". Needs a provider that supports published links.' },
+        workspace: { type: 'string', description: 'Optional directory within the repo bound when this MCP session started. Defaults to the bound repo root. Absolute paths must resolve inside that same repo.' },
       },
       required: ['prompt', 'description'],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string' }, agent_id: { type: 'string' }, branch: { type: 'string' },
+        provider: { type: 'string' }, profile: { type: 'string' }, result: { type: 'string' },
+        error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' },
+      },
+      required: ['status'], additionalProperties: true,
+    },
+  },
+  {
+    name: 'cloud_agent_capabilities',
+    description: 'Discover configured worker profiles and available providers, machine kinds and capabilities without creating a machine or calling a model provider. Readiness checks inspect local configuration only.',
+    inputSchema: { type: 'object', properties: {} },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        profiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        providers: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        machine_kinds: { type: 'array', items: { type: 'string' } },
+        default_profile: { type: 'string' },
+      },
+      required: ['profiles', 'providers', 'machine_kinds'], additionalProperties: true,
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'cloud_agent_recover',
+    description: 'Restore a worker from its last pushed checkpoint on a fresh machine and start a fresh harness conversation. The message must be newly authored by the user; do not reuse or reconstruct the previous conversation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The failed or expired agent id to restore' },
+        provider: { type: 'string', description: 'Configured provider name for the new machine' },
+        message: { type: 'string', description: 'Fresh user-authored instruction for the restored worker' },
+      },
+      required: ['agent_id', 'provider', 'message'], additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string' }, agent_id: { type: 'string' }, branch: { type: 'string' }, provider: { type: 'string' }, message: { type: 'string' }, error: { type: 'boolean' }, action: { type: 'string' } },
+      required: ['status'], additionalProperties: true,
     },
   },
   {
@@ -67,8 +116,20 @@ const tools = [
     inputSchema: { type: 'object', properties: { agent_ids: ids }, required: ['agent_ids'] },
   },
 ];
+for (const tool of tools) {
+  if (tool.outputSchema) continue;
+  tool.outputSchema = {
+    type: 'object',
+    properties: {
+      status: { type: 'string' }, agent_id: { type: 'string' }, branch: { type: 'string' }, provider: { type: 'string' }, profile: { type: 'string' },
+      result: { type: 'string' }, error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' },
+      agents: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    },
+    additionalProperties: true,
+  };
+}
 const handlers = {
-  cloud_agent: runSubagent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
+  cloud_agent: runSubagent, cloud_agent_recover: recoverAgent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
   cloud_agent_list: listAgents, cloud_agent_stop: stopAgents,
 };
 
@@ -87,9 +148,10 @@ export function buildServer(deps) {
   sharedQueue(deps);
   deps.literals ??= new Set(); // tokens to redact, added when an agent starts and needed by every later call
   deps.stoppedBranches ??= new Map(); // branches of stopped agents, for the not-open error of a later call
-  const server = new Server({ name: 'cloud', version: '0.3.0' }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
+  const server = new Server({ name: 'cloud', version: packageVersion }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {
+    if (req.params.name === 'cloud_agent_capabilities') return capabilities(deps);
     const h = handlers[req.params.name];
     if (!h) return { isError: true, content: [{ type: 'text', text: `unknown tool ${req.params.name}` }] };
     return h(req.params.arguments ?? {}, { ...deps, asTask: canTask(ctx) });
@@ -103,4 +165,33 @@ export function buildServer(deps) {
   server.setRequestHandler('tasks/get', { params: taskParams }, taskMethod(getTask));
   server.setRequestHandler('tasks/cancel', { params: taskParams }, taskMethod(cancelTask));
   return server;
+}
+
+const safeCaps = (caps = {}) => Object.fromEntries(Object.entries(caps).filter(([key, value]) => typeof value === 'boolean' || key === 'machineKinds').map(([key, value]) => [key, value]));
+
+async function capabilities(deps) {
+  const env = deps.env ?? process.env;
+  const provider = deps.provider;
+  const adapters = deps.providers ?? await loadProviders(env).catch(() => provider ? [provider] : []);
+  const names = typeof providerNames === 'function' ? providerNames(env) : providerNames;
+  const ordered = [...names];
+  for (const adapter of adapters) if (adapter?.name && !ordered.includes(adapter.name)) ordered.push(adapter.name);
+  if (provider?.name && !ordered.includes(provider.name)) ordered.push(provider.name);
+  const profiles = [];
+  const configured = loadProfiles(env);
+  const secrets = proxySecrets(env);
+  const claudeCredential = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].some((key) => !!env[key] || secrets.has(key));
+  const claudeProviders = adapters.filter((adapter) => claudeCredential && (!adapter.caps?.hasProxySecrets || adapter.caps?.localSecrets || secrets.has('CLAUDE_CODE_OAUTH_TOKEN') || secrets.has('ANTHROPIC_API_KEY'))).map((adapter) => adapter.name);
+  profiles.push({ name: 'claude', harness: 'claude', ready: claudeProviders.length > 0, ...(claudeProviders.length ? { providers: claudeProviders } : { reason: 'Claude credentials are not configured for an available provider' }) });
+  for (const name of Object.keys(configured)) {
+    const model = configured[name]?.model ?? 'capability-check';
+    const usableOn = adapters.filter((adapter) => resolveProfile(name, model, env, { proxyOnly: !!adapter.caps?.hasProxySecrets && !adapter.caps?.localSecrets }).ok).map((adapter) => adapter.name);
+    profiles.push({ name, harness: configured[name]?.harness ?? 'claude', ...(configured[name]?.model && configured[name].model !== 'default' && { model: configured[name].model }), ...(configured[name]?.model === undefined && { requires_model: true }), ready: usableOn.length > 0, ...(usableOn.length ? { providers: usableOn } : { reason: 'profile credentials or configuration are unavailable' }) });
+  }
+  const providers = ordered.map((name) => {
+    const adapter = adapters.find((candidate) => candidate.name === name) ?? (provider?.name === name ? provider : undefined);
+    return { name, ready: !!adapter, active: name === provider?.name, ...(adapter?.caps && { capabilities: safeCaps(adapter.caps) }), ...(!adapter && { reason: 'not selected or not configured' }) };
+  });
+  const value = { profiles, providers, machine_kinds: [...new Set(adapters.flatMap((adapter) => adapter.caps?.machineKinds ?? ['linux']))], ...(env.CLOUDY_CLOUD_DEFAULT_PROFILE && { default_profile: env.CLOUDY_CLOUD_DEFAULT_PROFILE }) };
+  return { content: [{ type: 'text', text: `profiles\n${profiles.map((p) => `  ${p.name}  ${p.ready ? 'ready' : p.reason}`).join('\n')}\nproviders\n${providers.map((p) => `  ${p.name}${p.active ? '  active' : ''}`).join('\n')}\nmachine kinds\n  ${value.machine_kinds.join(', ')}` }], structuredContent: value };
 }

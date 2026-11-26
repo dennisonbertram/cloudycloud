@@ -38,6 +38,12 @@ if [ "${1:-}" = mcp-server ]; then
   exec node "$root/src/server.mjs" "$@"
 fi
 
+# `cloudy-cloud run --repo PATH [--profile NAME] [--session NAME] [--json] -- PROMPT` runs one worker to completion.
+if [ "${1:-}" = run ]; then
+  shift
+  exec node "$root/src/run.mjs" "$@"
+fi
+
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
 if [ "${1:-}" = dashboard ]; then
   shift

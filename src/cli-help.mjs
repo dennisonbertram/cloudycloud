@@ -76,6 +76,13 @@ const cmds = {
   ], note: "Claude Code's own `mcp list` and `mcp add <name> -- <command>` still go to claude." },
   'mcp-server': { desc: 'Run the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts.', usages: [['mcp-server']],
     note: 'The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
+  run: { desc: 'Run one Cloudy Cloud worker in the foreground and print its result when it finishes.', usages: [['run', '--repo', 'PATH', '[--profile NAME]', '[--workspace PATH]', '[--session NAME]', '[--json]', '--', '<prompt>']], rows: [
+    ['--repo PATH', 'Bind this call to a git repository with a github.com origin'],
+    ['--profile NAME', 'Use this worker profile instead of the configured default or Claude Code'],
+    ['--workspace PATH', 'Run the worker in a directory inside the bound repository'],
+    ['--session NAME', 'Attach to a named MCP owner session; without it, the command creates a temporary owner'],
+    ['--json', 'Write one structured lifecycle/result object to stdout'],
+  ], note: 'The command waits for the worker and stops it after collecting the result. A nonzero exit status means startup or the worker turn failed.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],

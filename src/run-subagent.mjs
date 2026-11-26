@@ -2,9 +2,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
@@ -84,10 +84,11 @@ const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
 export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals].filter((v) => typeof v === 'string' && v.length >= 4); // a shorter value would over-redact
 function helpers(env, literals, keyName, tool) {
   const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
-  const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
+  const cleanValue = (value) => typeof value === 'string' ? scrub(value) : Array.isArray(value) ? value.map(cleanValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cleanValue(item)])) : value;
+  const ok = (text, structuredContent) => ({ content: [{ type: 'text', text: scrub(text) }], ...(structuredContent && { structuredContent: cleanValue(structuredContent) }) });
   // Our own error texts may carry trusted guidance fields (local, short, next) — the same fields errorScreen
   // renders when one of these errors reaches a terminal; provider-returned text never goes into them.
-  return { scrub, ok, fail: (text, bare, fields) => ({ ...ok(bare || /^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true, ...fields }) };
+  return { scrub, cleanValue, ok, fail: (text, bare, fields = {}) => ({ ...ok(bare || /^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`, { status: 'failed', error: true, message: scrub(text), ...((fields.next ?? /Next step: ([^\n]+)/.exec(text)?.[1]) && { action: scrub(fields.next ?? /Next step: ([^\n]+)/.exec(text)[1]) }) }), isError: true, ...fields }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 // The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
@@ -133,6 +134,8 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
+const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.result && { result: a.result.text, error: !!a.result.error }), ...extra });
+const remoteWorkspace = (a) => `${a.home}/repo${a.workspaceRel ? `/${a.workspaceRel.split(/[\\/]/).join('/')}` : ''}`;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
 const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
 const PARSE = { claude: parseStream, pi: parsePiStream, omp: parseOmpStream, codex: parseCodexStream, opencode: parseOpencodeStream };
@@ -185,6 +188,27 @@ function agentMcp(env, proxy = true) {
 }
 const active = (a) => a.status === 'queued' || a.status === 'starting' || a.status === 'running';
 
+async function resolveWorkspace(boundPath, workspace) {
+  let boundRoot;
+  try { boundRoot = await git(boundPath, 'rev-parse', '--show-toplevel'); }
+  catch { throw new Error('cloudy-cloud needs a bound git repository with at least one commit. Run `git init` and commit your files, then retry.'); }
+  if (workspace !== undefined && (typeof workspace !== 'string' || !workspace.trim())) throw new Error('workspace must be a non-empty path inside the bound repo');
+  const target = resolve(boundRoot, workspace ?? '.');
+  const rel = relative(boundRoot, target);
+  if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel)) throw new Error('workspace must stay inside the bound repo');
+  let actual;
+  try { actual = await realpath(target); }
+  catch { throw new Error('workspace does not exist inside the bound repo'); }
+  const actualRel = relative(boundRoot, actual);
+  if (actualRel === '..' || actualRel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(actualRel)) throw new Error('workspace must stay inside the bound repo');
+  let root;
+  try { root = await git(actual, 'rev-parse', '--show-toplevel'); }
+  catch { throw new Error('workspace must be a directory inside the bound git repo'); }
+  if (resolve(root) !== resolve(boundRoot)) throw new Error('workspace must resolve to the bound repo');
+  await git(root, 'rev-parse', '--verify', 'HEAD');
+  return { root, cwd: actual, relative: actualRel };
+}
+
 function wake(a) {
   const w = a.waiters.splice(0);
   for (const r of w) r();
@@ -202,7 +226,9 @@ async function stop(a, open, gone) {
   a.emit?.({ type: 'status', status: 'stopped' });
   if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
   wake(a);
-  await a.sandbox?.kill().catch(() => {});
+  let deleteError;
+  try { await a.sandbox?.kill(); } catch (error) { deleteError = error; }
+  return { deleted: !deleteError, error: deleteError };
 }
 
 function endTurn(t, status, result) {
@@ -366,7 +392,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
     if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
     stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
-      cwd: `${a.home}/repo`, timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
@@ -540,6 +566,7 @@ async function setup(a, ctx) {
       throw e;
     }
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
+    if (!a.provider && !ctx.providers?.length) a.provider = provider;
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
@@ -990,8 +1017,9 @@ export function getTask(taskId, deps) {
   else t.result.reported = true;
   // Claude needs the agent id for cloud_agent_message and cloud_agent_stop, and the task result is all it sees.
   const text = `agent_id: ${t.agent.id} (turn ${t.n})\n${priceNote(t) ? `${priceNote(t)}\n` : ''}\n${t.result?.text}`;
-  if (t.status === 'completed') v.result = { content: [{ type: 'text', text }] };
-  if (t.status === 'failed') v.error = { code: -32000, message: text, data: null };
+  const structuredContent = ctx.cleanValue(lifecycle(t.agent, { result: t.result?.text, error: !!t.result?.error }));
+  if (t.status === 'completed') v.result = { content: [{ type: 'text', text }], structuredContent };
+  if (t.status === 'failed') v.error = { code: -32000, message: text, data: structuredContent };
   return v;
 }
 
@@ -1023,7 +1051,9 @@ export async function runSubagent(args, deps) {
   const { fail, ok } = ctx;
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
-  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base, issue, preview_port } = args;
+  const { prompt, model, subagent_type: agent, description, profile: requestedProfile, role = 'worker', autofix: autofixOn = false, base, issue, preview_port, workspace } = args;
+  const configuredProfile = ctx.env.CLOUDY_CLOUD_DEFAULT_PROFILE;
+  const profileName = requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
   if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
@@ -1036,6 +1066,9 @@ export async function runSubagent(args, deps) {
     if (!ctx.provider.caps.hasPublish) return fail(`${ctx.provider.name[0].toUpperCase() + ctx.provider.name.slice(1)} does not support published links.`);
   }
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
+  let workspaceInfo;
+  try { workspaceInfo = await resolveWorkspace(deps.cwd ?? process.cwd(), workspace); }
+  catch (e) { return fail(e.message, true); }
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v === undefined) continue;
     const re = name === 'model' && profileName !== undefined ? MODEL : SAFE; // profile models may contain "/"
@@ -1093,13 +1126,7 @@ export async function runSubagent(args, deps) {
   }
   if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
   if (role === 'coordinator' && ['pi', 'omp', 'codex', 'opencode'].includes(profile?.harness)) return fail('A coordinator cannot use a pi, omp, codex or opencode profile, because coordinators run Claude Code. Use such a profile for workers only.');
-  let root;
-  try {
-    root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
-    await git(root, 'rev-parse', '--verify', 'HEAD');
-  } catch {
-    return fail('cloudy-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
-  }
+  const { root } = workspaceInfo;
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
   let baseInfo;
@@ -1183,7 +1210,7 @@ export async function runSubagent(args, deps) {
   if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
   count.started++;
   const id = randomUUID().slice(0, 8);
-  const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch: issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, waiters: [], result: null, idleSince: Date.now(),
+  const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch: issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, workspace: workspaceInfo.cwd, workspaceRel: workspaceInfo.relative, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   if (mcp) a.mcp = mcp;
@@ -1195,15 +1222,15 @@ export async function runSubagent(args, deps) {
     const clean = (s) => { const t = ctx.scrub(s); return a.previewUrl ? t.split(a.previewUrl).join('a private preview link was returned to the caller') : t; };
     return ctx.events?.({ id, ...e, ...(e.text && { text: clean(e.text) }), ...(e.description && { description: clean(e.description) }) });
   };
-  a.emit({ type: 'agent', description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: a.branch, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
+  a.emit({ type: 'agent', agent_id: id, description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: a.branch, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   const msg = `${prompt}${issueBlock ?? ''}`;
   a.emit({ type: 'message', text: msg });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, msg, true, ctx, t);
-  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
+  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to ${a.branch}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to ${a.branch}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`, lifecycle(a));
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
@@ -1223,7 +1250,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   ctx.tasks.set(t.id, t);
   work(a, message, false, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
-  return ok(`agent_id: ${id}\nstatus: running\nCall cloud_agent_wait with the agent_ids to get the reply.`);
+  return ok(`agent_id: ${id}\nstatus: running\nCall cloud_agent_wait with the agent_ids to get the reply.`, lifecycle(a));
 }
 
 // cloud_agent_wait: read-only. Waits for every listed agent to finish its current turn, or the timeout.
@@ -1244,16 +1271,18 @@ export async function waitAgents(args = {}, deps) {
     timeout,
   ]);
   clearTimeout(timer);
+  const states = [];
   const parts = ids.map((id, i) => {
     const a = agents[i];
-    if (!a || a.status === 'stopped') return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`;
+    if (!a || a.status === 'stopped') { states.push({ status: 'stopped', agent_id: id, message: 'Not open (stopped, idle for 60 minutes, or never existed).' }); return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`; }
     const head = `## ${id}${a.description ? ` (${a.description})` : ''}\nstatus: ${a.status}`;
-    if (active(a) || !a.result) return a.status === 'queued' ? `${head}\n${queuedText(a, ctx.queue)}` : head;
-    if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
+    if (active(a) || !a.result) { states.push(lifecycle(a)); return a.status === 'queued' ? `${head}\n${queuedText(a, ctx.queue)}` : head; }
+    if (a.result.reported) { states.push(lifecycle(a, { reported: true })); return `${head}\nresult already delivered; call cloud_agent_result to read it again`; }
     a.result.reported = true;
+    states.push(lifecycle(a, { reported: true }));
     return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`;
   });
-  return ctx.ok(parts.join('\n\n'));
+  return ctx.ok(parts.join('\n\n'), { agents: states });
 }
 
 // cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
@@ -1271,24 +1300,25 @@ export async function resultAgent(args = {}, deps) {
   const id = idList(args)[0];
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id, branch: a?.branch ?? ctx.stoppedBranches?.get(id) }));
-  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
-  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`);
+  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`, lifecycle(a, { message: 'no result yet' }));
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`, lifecycle(a, { result: a.result.text, error: !!a.result.error }));
 }
 
 // cloud_agent_list: read-only.
 export async function listAgents(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
-  const spend = usageLine(planSnapshot(ctx.provider)), tail = (t) => ok(spend ? `${t}\n${spend}` : t);
-  if (args?.all === true) return tail(await allMachines(ctx));
-  if (!open.size) return tail('No agents.');
+  const spend = usageLine(planSnapshot(ctx.provider)), tail = (t, structured) => ok(spend ? `${t}\n${spend}` : t, structured);
+  if (args?.all === true) return tail(await allMachines(ctx), { agents: [], scope: 'provider' });
+  if (!open.size) return tail('No agents.', { agents: [] });
   const usage = await usageOf([...open.values()], ctx);
   const seg = (a) => usage.get(a) ?? '';
-  return ok([[...open.values()].map((a) => (
+  const agents = [...open.values()];
+  return ok([agents.map((a) => (
     `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
-    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'), ...(spend ? [spend] : [])].join('\n'));
+    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'), ...(spend ? [spend] : [])].join('\n'), { agents: agents.map((a) => lifecycle(a, { description: a.description })) });
 }
 
 // Usage segment per running or idle agent, placed before the description. Never throws; a failure reads "usage n/a (unavailable)", slowness "(timeout)", no samples "(none yet)".
@@ -1324,13 +1354,20 @@ export async function stopAgents(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_stop');
   const ids = idList(args);
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be an array of strings');
-  const lines = await Promise.all(ids.map(async (id) => {
+  const outcomes = await Promise.all(ids.map(async (id) => {
     const a = ctx.open.get(id);
-    if (!a) return `${id}: not open (already stopped or never existed)`;
-    await stop(a, ctx.open, ctx.stoppedBranches);
-    return `${id}: stopped`;
+    if (!a) return { state: { agent_id: id, status: 'not-open', message: 'not open (already stopped or never existed)' }, text: `${id}: not open (already stopped or never existed)` };
+    let result;
+    try { result = await stop(a, ctx.open, ctx.stoppedBranches); }
+    catch (error) { result = { deleted: false, error: { message: error?.message } }; }
+    if (result?.deleted === false) {
+      const message = ctx.scrub(tail(result.error?.stderr ?? result.error?.message ?? 'provider did not confirm deletion'));
+      const action = 'retry cloud_agent_stop after the provider is reachable; the server reaper will also retry cleanup';
+      return { state: lifecycle(a, { status: 'stop-pending', error: true, message, action }), text: `${id}: stop pending (${message})\nNext step: ${action}` };
+    }
+    return { state: lifecycle(a, { status: 'stopped', error: false }), text: `${id}: stopped` };
   }));
-  return ctx.ok(lines.join('\n') || 'No agent ids given.');
+  return ctx.ok(outcomes.map((outcome) => outcome.text).join('\n') || 'No agent ids given.', { agents: outcomes.map((outcome) => outcome.state) });
 }
 
 // Server shutdown: kill every open sandbox.
