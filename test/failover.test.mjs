@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
@@ -305,6 +305,57 @@ test('candidate filtering cannot switch a proxy-selected request to a consented 
   assert.match(x.text(r), /size is not available: the a provider has one machine size/);
   assert.equal(a.log.create.length, 0);
   assert.equal(b.log.create.length, 0, 'the on-box credential mode is not selected after provider filtering');
+});
+
+test('a smaller fallback upload cap does not block the primary and is excluded when the bundle exceeds its cap', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'primary' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'small-fallback' });
+  a.caps.uploadMaxBytes = 8 * 1024 * 1024;
+  b.caps.uploadMaxBytes = 5 * 1024 * 1024;
+  const x = await setup({ a, b });
+  const sha = await sh(x.repo, 'git rev-parse HEAD');
+  const bundleSize = 6 * 1024 * 1024;
+  let acquiredMax;
+  x.deps.snapshots = {
+    async acquire(_root, _head, _snapshot, max) {
+      acquiredMax = max;
+      if (bundleSize > max) throw new Error(`The uncommitted/unpushed changes are too large to upload (${bundleSize} bytes, limit ${max}). Push the branch to GitHub first, then start the agent again.`);
+      return { sha, size: bundleSize, prereqs: [], read: async () => undefined, release: async () => {} };
+    },
+  };
+  a.create = async (opts) => { a.log.create.push(opts); throw err('quota_exceeded', 'machine limit'); };
+  const id = await x.start();
+  const r = await x.wait([id]);
+  assert.equal(acquiredMax, 7 * 1024 * 1024, 'prepare for the largest candidate, less the existing safety margin');
+  assert.equal(a.log.create.length, 1, 'try the primary that can accept this bundle');
+  assert.equal(b.log.create.length, 0, 'do not send a bundle larger than the fallback upload cap');
+  assert.ok(x.deps.open.get(id).skipped.some((s) => s.name === 'small-fallback' && /upload limit/.test(s.why)));
+});
+
+test('a localSecrets provider can validate a named profile after a proxy-only provider rejects its real key', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'proxy-only' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'local-secrets' });
+  b.caps.localSecrets = true;
+  const { deps, start, wait } = await setup({ a, b, env: {
+    OPENAI_API_KEY: 'synthetic-openai-key',
+    CLOUDY_CLOUD_PROXY_SECRETS: 'ANTHROPIC_API_KEY',
+  } });
+  const profileDir = await mkdtemp(join(tmpdir(), 'cc-routing-profiles-'));
+  const profilePath = join(profileDir, 'profiles.json');
+  await writeFile(profilePath, JSON.stringify({ local: {
+    harness: 'claude', format: 'anthropic', baseUrl: 'https://api.example.test', model: 'claude-3-7-sonnet-latest', keyName: 'OPENAI_API_KEY',
+  } }));
+  deps.env.CLOUDY_CLOUD_PROFILES = profilePath;
+  try {
+    const id = await start({ profile: 'local' });
+    assert.ok(id, 'the profile should be accepted by the localSecrets candidate');
+    const r = await wait([id]);
+    assert.match(r, /Started on local-secrets because proxy-only cannot run this request/);
+    assert.equal(a.log.create.length, 0);
+    assert.equal(b.log.create.length, 1);
+    assert.ok(b.log.create[0].secrets.includes('OPENAI_API_KEY'));
+    assert.equal(b.log.create[0].envs.OPENAI_API_KEY, undefined, 'the value is represented only by its local secret name');
+  } finally { await rm(profileDir, { recursive: true, force: true }); }
 });
 
 test('a plain key skips a proxy provider for a localSecrets one, and its value never reaches a machine', async () => {
