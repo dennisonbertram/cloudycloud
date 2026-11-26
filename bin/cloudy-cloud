@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder
 # and `help -p` still goes to claude. For mcp, only `mcp`, `mcp add|ls|rm` are ours; `mcp list -h` is Claude Code's.
 case ${1:-} in
   help) if [ $# -gt 1 ]; then case $2 in -*) ;; *) shift; exec node "$root/src/cli-help.mjs" "$@" ;; esac; fi ;;
-  setup|--setup|coordinator|cloud|run|shell|display|open|mcp|mcp-server|protect|doctor|dashboard|machines|branches)
+  setup|--setup|coordinator|cloud|run|resume|shell|display|open|mcp|mcp-server|protect|doctor|dashboard|machines|branches)
     case $1:${2:-} in mcp:''|mcp:--help|mcp:-h|mcp:add|mcp:ls|mcp:rm) ;; mcp:*) n=-1 ;; esac
     [ "${n:-}" = -1 ] || n=0
     [ "$n" = -1 ] || for a in "$@"; do
@@ -44,6 +44,12 @@ if [ "${1:-}" = run ]; then
   # Migrate before a named owner creates ~/.config/cloudy-cloud; notices go to stderr so --json stays machine-readable.
   . "$root/bin/migrate-config.sh"; migrate_config >&2
   exec node "$root/src/run.mjs" "$@"
+fi
+
+# `cloudy-cloud resume <run-id>` reconnects to a run's existing local owner and never starts a replacement worker.
+if [ "${1:-}" = resume ]; then
+  shift
+  exec node "$root/src/run.mjs" --resume "$@"
 fi
 
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
