@@ -2553,12 +2553,16 @@ test('#49 a first turn that times out after the init event leaves the agent idle
   assert.match(sbx.agentRuns.at(-1).cmd, new RegExp(`--resume ${SID}`));
 });
 
-test('#49 a first turn that times out before any stream event still fails the agent', async () => {
+test('#49 a first-turn timeout before any stream event keeps unknown execution open', async () => {
   let sbx;
-  const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
-  const r = await wait([await start()]);
-  assert.match(r, /status: failed/);
-  assert.equal(sbx.killed, true);
+  const { start, wait, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /agent is still open/);
+  assert.equal(open.get(id)?.sessionId, undefined);
+  assert.equal(open.get(id)?.status, 'idle');
+  assert.equal(sbx.killed, false);
 });
 
 test('#49 a pi turn that ends with a provider error after the session event stays open and resumable', async () => {
@@ -2814,10 +2818,12 @@ test('a cancel during the provider retry wait ends the turn instead of running a
   assert.match(await wait([id]), /status: idle/); // turn 1 (pi run 1) is fine
   await msg(id, 'again');
   for (let i = 0; piRuns < 2 && i < 100; i++) await tick(10); // turn 2's first run fails, then the backoff begins
-  await cancelTask(`cc-${id}-t2`, deps);
+  const cancelled = await cancelTask(`cc-${id}-t2`, deps);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.match(cancelled.statusMessage, /Turn cancelled/);
   const r = await wait([id], 5);
   assert.match(r, /status: idle/);
-  assert.match(r, /Turn cancelled/);
+  assert.match(r, /result already delivered/); // tasks/cancel returned the cancelled turn's result
   assert.equal(piRuns, 2); // no retry ran after the cancelled wait
 });
 
