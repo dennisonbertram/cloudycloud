@@ -73,6 +73,11 @@ const githubUrl = (raw) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const AUTH_FAIL = /403|Permission to|denied|Authentication failed|could not read Username|invalid credentials/i;
 const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@').trim().slice(-1500);
+const beforeTotals = (text, note) => {
+  const totalAt = text.lastIndexOf('\nTotal:');
+  const footerAt = totalAt < 0 ? -1 : text.lastIndexOf('\n', totalAt - 1);
+  return footerAt < 0 ? `${text}\n${note}` : `${text.slice(0, footerAt)}\n${note}${text.slice(footerAt)}`;
+};
 
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
@@ -1121,10 +1126,10 @@ async function work(a, message, first, ctx, t) {
   if (r.checkpointSha && a.role === 'worker') {
     try {
       a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
-      r = { ...r, text: `${r.text}\nRecovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.` };
+      r = { ...r, text: beforeTotals(r.text, `Recovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.`) };
     } catch (e) {
       log('recovery checkpoint could not be saved:', ctx.scrub(e?.message));
-      r = { ...r, text: `${r.text}\nRecovery checkpoint was not saved; cross-provider recovery is unavailable until a later verified push.` };
+      r = { ...r, text: beforeTotals(r.text, 'Recovery checkpoint was not saved; cross-provider recovery is unavailable until a later verified push.') };
     }
   }
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
