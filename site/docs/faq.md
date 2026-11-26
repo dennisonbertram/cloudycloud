@@ -18,7 +18,7 @@ Run `cloudy-cloud` instead of `claude`, from inside a git repo with a GitHub rem
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile (Particle.ai, OpenRouter or OpenAI, or a ChatGPT login for Codex). See [Models and keys](https://cloudycloud.tech/docs/models.html).
+An account with a configured sandbox provider, a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile (Particle.ai, OpenRouter or OpenAI, or a ChatGPT login for Codex). Provider support varies by feature and limits; see [provider settings](https://cloudycloud.tech/docs/reference.html#env-settings) and [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### What can a subagent see?
 
@@ -30,7 +30,7 @@ Yes, the ones you choose. Run `cloudy-cloud mcp add NAME` for each server. Remot
 
 ### What happens to the machines?
 
-A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.
+A subagent stops after 60 idle minutes. In the default ephemeral MCP mode, it also stops when the session ends. With `cloudy-cloud mcp-server --session NAME --repo PATH`, separate MCP connections can reconnect to the same local owner while it is running. The provider deletes the machine at its configured deadline. Only work pushed to GitHub is kept.
 
 ### What is kept after a subagent stops?
 
@@ -42,7 +42,7 @@ Your GitHub token never reaches the cloud machine. Subagents run with permission
 
 ### Does it change plain `claude`?
 
-No. Only sessions you start with `cloudy-cloud` use the cloud.
+Launching `cloudy-cloud` does not change ordinary `claude` sessions. Cloudy Cloud runs only in sessions where its MCP server is configured.
 
 ### What does it cost?
 
@@ -50,7 +50,7 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 ### Which models and agents can subagents use?
 
-Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. Status of each agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified). See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Workers use the saved default profile (Claude Code unless you changed it with `cloudy-cloud setup --default-profile NAME`). A per-request `profile` can choose pi, oh-my-pi, Codex, opencode, or a different model. Status of each agent: [what has been verified](https://cloudycloud.tech/docs/models.html#verified). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Can I use my own computer?
 
@@ -58,7 +58,7 @@ Yes. Run `cloudy-cloud setup --provider self-hosted` to send subagents to a Mac 
 
 ### Can work continue with my laptop closed?
 
-Not from a laptop session: subagents stop when the session ends. For work that must continue with the laptop closed, use a [cloud coordinator](https://cloudycloud.tech/docs/fleets.html).
+A named MCP session can outlive an individual client connection on the same computer, but it still depends on that local owner process and provider machine deadlines. For work that must continue with your computer offline, use a [cloud coordinator](https://cloudycloud.tech/docs/fleets.html).
 
 ### How do I uninstall it?
 

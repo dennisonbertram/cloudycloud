@@ -6,11 +6,11 @@ Source: https://cloudycloud.tech/docs/what-is-cloudy-cloud.html
 
 Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
 
-It works with Claude Code, Codex, opencode, pi and free-pi as your main session, and Claude Code, pi, oh-my-pi, Codex and opencode as the agent that runs on each cloud machine. Claude Code is the default for both. free-pi can only be a main session.
+Built-in launchers support Claude Code, Codex, opencode, pi and free-pi as the main session; other MCP clients can connect to the standalone server. Workers support Claude Code, pi, oh-my-pi, Codex and opencode. The `cloudy-cloud` launcher starts Claude Code, and Claude Code is the initial worker profile default; free-pi can only be a main session.
 
 ## What is Cloudy Cloud?
 
-Cloudy Cloud is a command, `cloudy-cloud`, that starts a coding agent (Claude Code by default) with an extra MCP server. The server adds tools such as `cloud_agent`. When your session hands work to a subagent, Cloudy Cloud creates a cloud machine, uploads a snapshot of your repo, runs the worker agent there (Claude Code by default), and pushes the result to a branch named `cloudy-cloud/<id>` on your GitHub repo.
+Cloudy Cloud provides built-in launchers for several coding agents and a standalone MCP server for other MCP clients. When your session hands work to a subagent, Cloudy Cloud creates a machine on an eligible configured provider, uploads a snapshot of your repo, runs the selected worker profile (Claude Code by default), and pushes the result to a branch named `cloudy-cloud/<id>` on your GitHub repo.
 
 In a `cloudy-cloud` session, the built-in `Agent` and `Workflow` tools are turned off, so subagents run in the cloud and not on your laptop. Sessions you start with plain `claude` are not changed. See [How it works](https://cloudycloud.tech/docs/how-it-works.html) for each step.
 
@@ -21,7 +21,7 @@ Subagents that run on your laptop share its CPU, memory and battery with you, so
 - **Where it runs:** on a cloud machine, one per subagent.
 - **What it sees:** files tracked by git in your repo, including uncommitted edits. It cannot see untracked files or your personal Claude settings. It has your MCP servers only if you copy them with `cloudy-cloud mcp add`.
 - **What you get back:** a git branch per subagent, `cloudy-cloud/<id>`, pushed to your GitHub repo, plus a reply with the branch, commit and token totals.
-- **How long it lives:** a subagent stops after 60 idle minutes or when your session ends. Its machine is deleted at a fixed deadline, 6 hours by default and 24 at most. Only work pushed to GitHub is kept.
+- **How long it lives:** a subagent stops after 60 idle minutes. In default ephemeral mode it also stops when the host session ends. A named MCP session lets separate client connections reconnect to one local owner while it is running. The provider deletes machines at their configured deadline. Only work pushed to GitHub is kept.
 
 ## Who is it for?
 
@@ -31,12 +31,12 @@ For a long job that must keep going with your laptop closed, use a [cloud coordi
 
 ## What do I need?
 
-- An account with a cloud sandbox provider. Instabox is supported today.
+- An account with a sandbox provider supported for the features you need. Configure one provider with `CLOUDY_CLOUD_PROVIDER` or an ordered list with `CLOUDY_CLOUD_PROVIDERS`; support and limits vary by provider.
 - A credential for each kind of worker you run. For Claude Code workers and coordinators, a Claude subscription or API key. Workers on pi, oh-my-pi, Codex or opencode use another credential instead; see [Models and keys](https://cloudycloud.tech/docs/models.html). Setup asks for a Claude token only if you use Claude; see [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 - A GitHub repo you can push to.
 - Node.js 20 or later.
 
-Subagents run Claude Code by default. A profile can run them on open models such as GLM and DeepSeek, or on another agent: pi, oh-my-pi, Codex or opencode. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Workers use the saved default profile (Claude Code unless you set another one with `cloudy-cloud setup --default-profile NAME`). A request can select a profile for one worker. Profiles choose the worker agent and model. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ## What does it cost?
 
@@ -44,7 +44,7 @@ Cloudy Cloud is open source under the MIT license, and the tool itself has no pr
 
 ## How do I start it?
 
-In a terminal, inside a git repo with a GitHub remote, run the command for your agent where you would run that agent: `cloudy-cloud` for Claude Code, `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. It opens a normal session of that agent; when the session uses a subagent, that subagent runs on its own cloud machine and pushes its work to the branch `cloudy-cloud/<id>`. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
+In a terminal, inside a git repo with a GitHub remote, run the command for your agent where you would run that agent: `cloudy-cloud` for Claude Code, `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. Other MCP clients can use `cloudy-cloud mcp-server --repo PATH`. A worker runs on its own cloud machine and pushes its work to a branch on GitHub. `cloudycloud` is the same command, and `npx cloudycloud` works without a global install.
 
 ## How do I install it?
 
