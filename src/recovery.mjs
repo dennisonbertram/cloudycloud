@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { chmod, link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { resolveProfile } from './profiles.mjs';
 import { egressAllow } from './config.mjs';
@@ -25,6 +25,8 @@ const checkpointPath = (env, id) => {
 function validateRecord(r) {
   if (!r || r.version !== 1 || !ID.test(r.id) || !BRANCH.test(r.branch) || !r.branch.endsWith(r.id)) throw new Error('invalid recovery checkpoint identity');
   if (typeof r.workspace !== 'string' || !isAbsolute(r.workspace)) throw new Error('invalid recovery workspace');
+  if (r.workspaceRel !== undefined && (typeof r.workspaceRel !== 'string' || r.workspaceRel.length > 4096 || /[\0\r\n]/.test(r.workspaceRel) || isAbsolute(r.workspaceRel) || r.workspaceRel.split(/[\\/]/).includes('..'))) throw new Error('invalid recovery workspace');
+  if (r.turnSequence !== undefined && (!Number.isSafeInteger(r.turnSequence) || r.turnSequence < 1)) throw new Error('invalid recovery turn sequence');
   if (typeof r.user !== 'string' || !r.user || r.user.length > 128) throw new Error('invalid recovery user binding');
   if (typeof r.originRepo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r.originRepo)) throw new Error('invalid recovery origin');
   if (!HARNESS.has(r.harness) || (r.profile !== null && (typeof r.profile !== 'string' || !/^[A-Za-z0-9_.-]{1,80}$/.test(r.profile)))) throw new Error('invalid recovery harness or profile');
@@ -35,13 +37,13 @@ function validateRecord(r) {
   if (r.size !== null && (typeof r.size !== 'string' || !/^\d+x\d+$/.test(r.size))) throw new Error('invalid recovery machine size');
   if (!PROVIDER.test(r.provider) || typeof r.machine !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(r.machine) || typeof r.owner !== 'string' || !/^[A-Za-z0-9_.:-]{1,100}$/.test(r.owner)) throw new Error('invalid recovery machine ownership');
   if (!OID.test(r.checkpointSha)) throw new Error('invalid recovery checkpoint commit');
-  const allowed = new Set(['version', 'id', 'branch', 'workspace', 'user', 'originRepo', 'harness', 'profile', 'model', 'machineKind', 'size', 'egress', 'checkpointSha', 'provider', 'machine', 'owner']);
+  const allowed = new Set(['version', 'id', 'branch', 'workspace', 'workspaceRel', 'turnSequence', 'user', 'originRepo', 'harness', 'profile', 'model', 'machineKind', 'size', 'egress', 'checkpointSha', 'provider', 'machine', 'owner']);
   if (Object.keys(r).some((k) => !allowed.has(k))) throw new Error('recovery checkpoint contains unsupported data');
   return r;
 }
 
 export async function saveCheckpoint(env, record) {
-  const safe = validateRecord({ ...record });
+  const safe = validateRecord({ workspaceRel: '', turnSequence: 1, ...record });
   const file = checkpointPath(env, safe.id), dir = dirname(file), temp = `${file}.${randomUUID()}.tmp`;
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -58,13 +60,13 @@ export async function readCheckpoint(env, id) {
   try { record = JSON.parse(raw); } catch { throw new Error('recovery checkpoint is damaged; refusing to recover'); }
   try { validateRecord(record); } catch { throw new Error('recovery checkpoint is invalid; refusing to recover'); }
   if (record.id !== String(id)) throw new Error('recovery checkpoint id does not match its file; refusing to recover');
-  return record;
+  return { workspaceRel: '', turnSequence: 1, ...record };
 }
 
-export async function updateCheckpointPlacement(env, id, { provider, machine, owner }) {
+export async function updateCheckpointPlacement(env, id, { provider, machine, owner, turnSequence }) {
   const prior = await readCheckpoint(env, id);
   if (!prior) throw new Error('recovery checkpoint is missing');
-  return saveCheckpoint(env, { ...prior, provider, machine, owner });
+  return saveCheckpoint(env, { ...prior, provider, machine, owner, ...(turnSequence && { turnSequence }) });
 }
 
 const originRepoOf = (url) => {
@@ -91,10 +93,20 @@ export async function verifyOriginCheckpoint(repo, record, { git = async (cwd, .
   return { ok: true, sha: match[1] };
 }
 
-export function checkpointRecord({ id, branch, workspace, origin, harness, profile, model, machineKind, size, egress, checkpointSha, provider, machine, owner }) {
+export function checkpointRecord({ id, branch, workspace, workspaceRel = '', turnSequence = 1, origin, harness, profile, model, machineKind, size, egress, checkpointSha, provider, machine, owner }) {
   const originRepo = originRepoOf(origin);
   if (!originRepo) throw new Error('recovery requires a GitHub origin');
-  return validateRecord({ version: 1, id, branch, workspace: realpathSync(workspace), user: userBinding(), originRepo, harness, profile: profile ?? null, model: model ?? '', machineKind, size: size ?? null, egress: egress ?? [], checkpointSha, provider, machine, owner });
+  return validateRecord({ version: 1, id, branch, workspace: realpathSync(workspace), workspaceRel, turnSequence, user: userBinding(), originRepo, harness, profile: profile ?? null, model: model ?? '', machineKind, size: size ?? null, egress: egress ?? [], checkpointSha, provider, machine, owner });
+}
+
+async function selectedWorkspaceExists(root, workspaceRel) {
+  try {
+    const path = await realpath(resolve(root, workspaceRel));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return false;
+    const gitRoot = (await exec('git', ['rev-parse', '--show-toplevel'], { cwd: path })).stdout.trim();
+    return await realpath(gitRoot) === root;
+  } catch { return false; }
 }
 
 async function acquireLock(env, id) {
@@ -161,6 +173,11 @@ export async function recoverFromCheckpoint({ agent_id: id, provider: providerNa
     let workspace = '';
     try { workspace = realpathSync((await exec('git', ['rev-parse', '--show-toplevel'], { cwd: deps.cwd ?? process.cwd() })).stdout.trim()); } catch { /* a repository is required */ }
     if (workspace !== record.workspace || userBinding() !== record.user) return textResult('This checkpoint belongs to a different workspace or user.', true);
+    const workspaceRel = record.workspaceRel ?? '';
+    try {
+      if (deps.validateWorkspace) await deps.validateWorkspace(workspaceRel);
+      else if (!await selectedWorkspaceExists(workspace, workspaceRel)) throw new Error('invalid saved workspace');
+    } catch { return textResult('The saved workspace no longer exists inside the bound repository; recovery was refused.', true); }
     const previous = deps.open?.get(id);
     if (previous && !['failed', 'stopped', 'idle'].includes(previous.status)) return textResult(`Agent ${id} is already open in this session; use cloud_agent_message or cloud_agent_list.`, true);
     const providers = deps.providers ?? deps.provider?.providers ?? [deps.provider].filter(Boolean);
@@ -179,7 +196,7 @@ export async function recoverFromCheckpoint({ agent_id: id, provider: providerNa
     const verified = await (deps.verifyCheckpoint ?? verifyOriginCheckpoint)(record.workspace, record);
     if (!verified?.ok || verified.sha !== record.checkpointSha) return textResult(verified?.reason ?? 'the exact origin checkpoint could not be verified', true);
     if (typeof deps.startRecovery !== 'function') return textResult('Recovery start is unavailable in this session.', true);
-    const started = await deps.startRecovery({ id, branch: record.branch, base: record.checkpointSha, profile: record.profile ?? undefined, model: record.model || undefined, machine: record.machineKind, size: record.size ?? undefined, egress: record.egress, harness: record.harness, prompt: message.trim(), description: `Recovered agent ${id}`, recoveryRecord: record }, target, { release, previous });
+    const started = await deps.startRecovery({ id, branch: record.branch, base: record.checkpointSha, profile: record.profile ?? undefined, model: record.model || undefined, machine: record.machineKind, size: record.size ?? undefined, egress: record.egress, harness: record.harness, prompt: message.trim(), description: `Recovered agent ${id}`, workspace: workspaceRel, turnSequence: record.turnSequence ?? 1, recoveryRecord: record }, target, { release, previous });
     if (started?.isError) return textResult(started.content?.find((item) => item.type === 'text')?.text ?? 'The recovery worker could not be started.', true);
     lockTransferred = true;
     const note = `Recovery start requested on ${target.name} from verified checkpoint ${record.checkpointSha}. It will restore ${record.branch} under agent id ${id} and start a fresh ${record.harness} conversation. The previous prompt and conversation were not replayed.`;

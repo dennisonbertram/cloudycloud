@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { saveCheckpoint, readCheckpoint, recoverFromCheckpoint, verifyOriginCheckpoint } from '../src/recovery.mjs';
-import { recoverAgent, runSubagent, waitAgents } from '../src/run-subagent.mjs';
+import { cancelTask, recoverAgent, runSubagent, waitAgents, withLatestCheckpoint } from '../src/run-subagent.mjs';
 import { createFakeProvider, setGithub } from './fake-provider.mjs';
 
 const fixture = () => {
@@ -15,10 +15,11 @@ const fixture = () => {
   mkdirSync(join(dir, 'config'), { recursive: true });
   execFileSync('git', ['init', '-q', '-b', 'main', dir]);
   const record = {
-    version: 1, id: 'deadbeef', branch: 'cloudy-cloud/deadbeef', workspace: resolve(dir), user: String(process.getuid?.() ?? userInfo().username),
+    version: 1, id: 'deadbeef', branch: 'cloudy-cloud/deadbeef', workspace: resolve(dir), workspaceRel: 'packages/api', turnSequence: 1, user: String(process.getuid?.() ?? userInfo().username),
     originRepo: 'owner/repo', harness: 'claude', profile: null, model: '', machineKind: 'linux', size: null, egress: [], checkpointSha: 'a'.repeat(40),
     provider: 'old-provider', machine: 'machine-old', owner: 'owner-old',
   };
+  mkdirSync(join(dir, 'packages', 'api'), { recursive: true });
   return { dir, env, record };
 };
 
@@ -28,6 +29,46 @@ test('checkpoint persistence keeps only validated recovery metadata', async () =
   const saved = await readCheckpoint(f.env, f.record.id);
   assert.deepEqual(saved, f.record);
   assert.doesNotMatch(JSON.stringify(saved), /prompt|secret|token/i);
+});
+
+test('legacy checkpoints recover at repo root and reject unsafe saved workspace paths', async () => {
+  const f = fixture();
+  const legacy = { ...f.record };
+  delete legacy.workspaceRel;
+  delete legacy.turnSequence;
+  mkdirSync(f.env.CLOUDY_CLOUD_RECOVERY, { recursive: true });
+  writeFileSync(join(f.env.CLOUDY_CLOUD_RECOVERY, `${legacy.id}.json`), JSON.stringify(legacy));
+  assert.equal((await readCheckpoint(f.env, legacy.id)).workspaceRel, '');
+  assert.equal((await readCheckpoint(f.env, legacy.id)).turnSequence, 1);
+  await assert.rejects(saveCheckpoint(f.env, { ...f.record, workspaceRel: '../outside' }), /invalid recovery workspace/i);
+  let args;
+  await recoverFromCheckpoint({ agent_id: legacy.id, provider: 'alternate', message: 'legacy root task' }, {
+    env: f.env, cwd: f.dir,
+    providers: [
+      { name: 'old-provider', list: async () => [], connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); } },
+      { name: 'alternate' },
+    ],
+    verifyCheckpoint: async () => ({ ok: true, sha: legacy.checkpointSha }),
+    startRecovery: async (recovery) => { args = recovery; return { content: [{ type: 'text', text: 'started' }] }; },
+  });
+  assert.equal(args.workspace, '', 'a legacy record must target the repo root');
+});
+
+test('recovery refuses a saved workspace directory that disappeared', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, { ...f.record, workspaceRel: 'packages/removed' });
+  let starts = 0;
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new task' }, {
+    env: f.env, cwd: f.dir, providers: [], startRecovery: async () => { starts++; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /saved workspace no longer exists/i);
+});
+
+test('autofix checkpoint propagation keeps the latest verified commit', () => {
+  assert.equal(withLatestCheckpoint({ checkpointSha: 'a'.repeat(40) }, { checkpointSha: 'b'.repeat(40) }).checkpointSha, 'b'.repeat(40));
+  assert.equal(withLatestCheckpoint({ checkpointSha: 'a'.repeat(40) }, { text: 'no fix push' }).checkpointSha, 'a'.repeat(40));
 });
 
 test('recovery confirms the old machine is gone and starts a fresh message on the selected provider', async () => {
@@ -51,6 +92,8 @@ test('recovery confirms the old machine is gone and starts a fresh message on th
   assert.equal(started.args.base, f.record.checkpointSha);
   assert.equal(started.args.prompt, 'Continue by inspecting the pushed file.');
   assert.equal(started.args.machine, 'linux');
+  assert.equal(started.args.workspace, 'packages/api');
+  assert.equal(started.args.turnSequence, 1);
   assert.equal(connects, 1, 'a listed absence requires an explicit provider not-found result');
   assert.deepEqual(started.args.egress, []);
   assert.notEqual(started.args.prompt, f.record.prompt);
@@ -203,12 +246,15 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
   mkdirSync(join(github, 'owner'), { recursive: true });
   execFileSync('git', ['init', '--bare', '-q', '-b', 'main', bare]);
   execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  mkdirSync(join(repo, 'packages', 'api'), { recursive: true });
+  writeFileSync(join(repo, 'packages', 'api', 'README.md'), 'selected workspace');
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'ignore' });
   git('config', 'user.name', 'test');
   git('config', 'user.email', 'test@example.invalid');
   git('remote', 'add', 'origin', bare);
   writeFileSync(join(repo, 'a.txt'), 'original');
   git('add', 'a.txt');
+  git('add', 'packages/api/README.md');
   git('commit', '-m', 'main');
   git('push', '-u', 'origin', 'main');
   git('remote', 'set-url', 'origin', 'https://github.com/owner/repo.git');
@@ -221,12 +267,15 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
   Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' });
   const deps = { env: { ...f.env, CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth', GH_TOKEN: 'synthetic-github', FAKE_API_KEY: 'fake-key' }, cwd: repo, owner: 'owner-old', providers: [old, alternate], provider: old, open: new Map(), tasks: new Map(), count: { started: 0 }, fetchFn: async () => ({ status: 200, text: async () => '{}' }) };
   try {
-    const initial = await runSubagent({ description: 'original task', prompt: 'EDIT-OLD-PROMPT' }, deps);
+    const initial = await runSubagent({ description: 'original task', prompt: 'EDIT-OLD-PROMPT', workspace: 'packages/api' }, deps);
     const id = /agent_id: ([0-9a-f]{8})/.exec(initial.content[0].text)?.[1];
     assert.ok(id);
     await waitAgents({ agent_ids: [id], timeout_seconds: 3 }, deps);
+    const originalTask = [...deps.tasks.values()].find((task) => task.agent.id === id);
+    assert.equal(originalTask.id, `cc-${id}-t1`, 'ordinary worker task IDs retain their established format');
     const original = deps.open.get(id);
     const saved = await readCheckpoint(f.env, id);
+    assert.equal(saved.workspaceRel, 'packages/api');
     assert.equal(saved.branch, `cloudy-cloud/${id}`);
     assert.equal(saved.checkpointSha, execFileSync('git', ['--git-dir', bare, 'rev-parse', `refs/heads/${saved.branch}`], { encoding: 'utf8' }).trim());
     await old.delete(original.sandbox.id);
@@ -245,6 +294,28 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
     const updated = await readCheckpoint(f.env, id);
     assert.equal(updated.provider, 'alternate');
     assert.equal(updated.machine, deps.open.get(id).sandbox.id);
+    const replacementTask = deps.open.get(id).turn;
+    assert.ok(originalTask);
+    assert.match(replacementTask.id, new RegExp(`^cc-${id}-t2-[0-9a-f-]{36}$`));
+    assert.notEqual(replacementTask.id, originalTask.id, 'recovery must use a task id distinct from the old turn');
+    assert.equal(deps.tasks.get(originalTask.id), originalTask, 'recovery must not overwrite the old task result');
+    assert.equal(deps.open.get(id).turns, 2);
+    await cancelTask(originalTask.id, deps);
+    assert.equal(deps.open.get(id).turn, replacementTask, 'cancelling a recovered old task id must not cancel its new turn');
+    assert.equal(deps.open.get(id).workspaceRel, 'packages/api');
+    assert.equal(updated.workspaceRel, 'packages/api');
+
+    await alternate.delete(deps.open.get(id).sandbox.id);
+    alternate.connect = async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); };
+    const secondSession = { ...deps, owner: 'owner-session-2', provider: old, open: new Map(), tasks: new Map(), count: { started: 0 } };
+    const secondStart = await recoverAgent({ agent_id: id, provider: 'old-provider', message: 'Continue in a second session.' }, secondSession);
+    assert.equal(secondStart.isError, undefined);
+    await waitAgents({ agent_ids: [id], timeout_seconds: 3 }, secondSession);
+    const secondTask = secondSession.open.get(id).turn;
+    assert.equal(secondTask.n, 3);
+    assert.match(secondTask.id, new RegExp(`^cc-${id}-t3-[0-9a-f-]{36}$`));
+    assert.notEqual(secondTask.id, replacementTask.id, 'a different session must not reuse the previous session task id');
+    assert.equal(deps.tasks.get(replacementTask.id), replacementTask, 'starting in a second session must leave the first session result addressable');
   } finally {
     for (const [k, v] of Object.entries(prevGit)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
