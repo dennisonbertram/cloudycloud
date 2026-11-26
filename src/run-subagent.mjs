@@ -1366,8 +1366,9 @@ export async function runSubagent(args, deps) {
   const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps;
   const { prompt, model, subagent_type: agent, description, profile: requestedProfile, role = 'worker', autofix: autofixOn = false, base, issue, preview_port, workspace } = args;
   const configuredProfile = ctx.env.CLOUDY_CLOUD_DEFAULT_PROFILE;
-  const profileName = requestedProfile === 'claude' ? undefined : requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
-  if (recovery && (role !== 'worker' || (recovery.profile ?? null) !== (profileName ?? null) || !AGENT_ID.test(String(recovery.id ?? '')) || !/^cloudy-cloud\/[a-z0-9-]+$/.test(recovery.branch ?? '') || !recovery.branch.endsWith(recovery.id))) return fail('invalid internal recovery start');
+  const savedProfile = recovery?.recoveryRecord?.profile ?? null;
+  const profileName = recovery ? savedProfile ?? undefined : requestedProfile === 'claude' ? undefined : requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
+  if (recovery && (role !== 'worker' || (recovery.profile ?? null) !== savedProfile || recovery.harness !== recovery.recoveryRecord.harness || (savedProfile === null && recovery.harness !== 'claude') || !AGENT_ID.test(String(recovery.id ?? '')) || !/^cloudy-cloud\/[a-z0-9-]+$/.test(recovery.branch ?? '') || !recovery.branch.endsWith(recovery.id))) return fail('invalid internal recovery start');
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
   if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');

@@ -265,9 +265,9 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
   alternate.name = 'alternate';
   const prevGit = Object.fromEntries(['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'].map((k) => [k, process.env[k]]));
   Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' });
-  const deps = { env: { ...f.env, CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth', GH_TOKEN: 'synthetic-github', FAKE_API_KEY: 'fake-key' }, cwd: repo, owner: 'owner-old', providers: [old, alternate], provider: old, open: new Map(), tasks: new Map(), count: { started: 0 }, fetchFn: async () => ({ status: 200, text: async () => '{}' }) };
+  const deps = { env: { ...f.env, CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth', GH_TOKEN: 'synthetic-github', FAKE_API_KEY: 'fake-key', CLOUDY_CLOUD_DEFAULT_PROFILE: 'codex' }, cwd: repo, owner: 'owner-old', providers: [old, alternate], provider: old, open: new Map(), tasks: new Map(), count: { started: 0 }, fetchFn: async () => ({ status: 200, text: async () => '{}' }) };
   try {
-    const initial = await runSubagent({ description: 'original task', prompt: 'EDIT-OLD-PROMPT', workspace: 'packages/api' }, deps);
+    const initial = await runSubagent({ description: 'original task', prompt: 'EDIT-OLD-PROMPT', profile: 'claude', workspace: 'packages/api' }, deps);
     const id = /agent_id: ([0-9a-f]{8})/.exec(initial.content[0].text)?.[1];
     assert.ok(id);
     await waitAgents({ agent_ids: [id], timeout_seconds: 3 }, deps);
@@ -275,6 +275,8 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
     assert.equal(originalTask.id, `cc-${id}-t1`, 'ordinary worker task IDs retain their established format');
     const original = deps.open.get(id);
     const saved = await readCheckpoint(f.env, id);
+    assert.equal(saved.harness, 'claude');
+    assert.equal(saved.profile, null);
     assert.equal(saved.workspaceRel, 'packages/api');
     assert.equal(saved.branch, `cloudy-cloud/${id}`);
     assert.equal(saved.checkpointSha, execFileSync('git', ['--git-dir', bare, 'rev-parse', `refs/heads/${saved.branch}`], { encoding: 'utf8' }).trim());
