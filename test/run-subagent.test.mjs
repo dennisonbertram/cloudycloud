@@ -97,6 +97,16 @@ test('concurrent public starts with the same repo prepare one shared snapshot', 
   assert.equal(deps.snapshots.size, 0, 'the shared bundle is removed after both setups finish');
 });
 
+test('the configured default worker profile applies when omitted and an explicit profile wins', async () => {
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'synthetic-particle-key', CLOUDY_CLOUD_DEFAULT_PROFILE: 'pi-glm' } });
+  const defaultId = await f.start({ prompt: 'OK default profile' });
+  assert.equal(f.open.get(defaultId).profile.name, 'pi-glm');
+  const explicitId = await f.start({ prompt: 'OK explicit profile', profile: 'pi-particle' });
+  assert.equal(f.open.get(explicitId).profile.name, 'pi-particle');
+  await f.wait([defaultId, explicitId]);
+  await f.stop([defaultId, explicitId]);
+});
+
 test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
   const events = [];
   const { start, wait, msg, stop } = await setup({ events: (e) => events.push(e) });
@@ -566,9 +576,23 @@ test('wait and stop accept a single id as a string or as agent_id', async () => 
     const r = await stopAgents(args, deps);
     assert.notEqual(r.isError, true, JSON.stringify(r));
     assert.match(r.content[0].text, /x1: not open/);
+    assert.equal(r.structuredContent.agents[0].status, 'not-open');
     const w = await waitAgents({ ...args, timeout_seconds: 1 }, deps);
     assert.notEqual(w.isError, true, JSON.stringify(w));
   }
+});
+
+test('stop reports independent structured outcomes when one provider deletion fails', async () => {
+  const deps = {
+    createSandbox: async () => { throw new Error('unused'); }, provider: createFakeProvider(),
+    open: new Map([['deadbeef', { id: 'deadbeef', branch: 'cloudy-cloud/deadbeef', status: 'idle', sandbox: { kill: async () => { throw new Error('provider offline'); } } }]]),
+  };
+  const r = await stopAgents({ agent_ids: ['deadbeef', 'unknown1'] }, deps);
+  assert.deepEqual(r.structuredContent.agents.map(({ agent_id, status, error }) => [agent_id, status, error]), [
+    ['deadbeef', 'stop-pending', true], ['unknown1', 'not-open', undefined],
+  ]);
+  assert.match(r.content[0].text, /deadbeef: stop pending/);
+  assert.match(r.content[0].text, /unknown1: not open/);
 });
 
 
@@ -2385,7 +2409,10 @@ test('a stopped issue agent still names its issue branch when cloud_agent_result
   // Calling the exported handlers with `deps` itself would create the shared maps up front and mask the bug.
   const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
   const text = (r) => r.content[0].text;
-  const id = text(await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' })).match(/agent_id: ([0-9a-f]{8})/)[1];
+  const started = await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' });
+  const id = text(started).match(/agent_id: ([0-9a-f]{8})/)[1];
+  assert.equal(started.structuredContent.branch, `cloudy-cloud/issue-12-${id}`);
+  assert.match(text(started), new RegExp(`It will push to cloudy-cloud/issue-12-${id}`));
   assert.match(text(await call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 60 })), /status: idle/);
   assert.match(text(await call('cloud_agent_stop', { agent_ids: [id] })), /stopped/);
   assert.match(text(await call('cloud_agent_result', { agent_id: id })), new RegExp(`git fetch origin cloudy-cloud/issue-12-${id}`));

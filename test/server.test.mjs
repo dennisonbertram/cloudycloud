@@ -172,11 +172,11 @@ test('modern revision without the tasks extension: immediate result, cloud_agent
   assert.match(text(w), /Total: 2 tool uses/);
 });
 
-test('older protocol revision (2025-11-25): all six tools are listed and work with immediate results', async () => {
+test('older protocol revision (2025-11-25): all eight tools are listed and work with immediate results', async () => {
   const c = await connect('legacy');
   const list = (await c.rpc('tools/list')).result.tools;
-  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list', 'cloud_agent_stop']);
-  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list']);
+  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_capabilities', 'cloud_agent_recover', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list', 'cloud_agent_stop']);
+  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_capabilities', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list']);
   const r = await c.call('cloud_agent', { prompt: 'OK old', description: 'd' });
   assert.equal(r.result.resultType, undefined);
   const id = text(r).match(/agent_id: ([0-9a-f]{8})/)[1];

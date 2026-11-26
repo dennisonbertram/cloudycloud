@@ -67,6 +67,13 @@ test('the ordered provider list loads from the env file and selects the first pr
   assert.equal(env.CLOUDY_CLOUD_PROVIDER, 'boat');
 });
 
+test('the configured default worker profile loads from the env file', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'cfg-')), 'env');
+  writeFileSync(file, 'CLOUDY_CLOUD_DEFAULT_PROFILE=codex\n');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file }).CLOUDY_CLOUD_DEFAULT_PROFILE, 'codex');
+  assert.equal(loadEnv({ CLOUDY_CLOUD_CONFIG: file, CLOUDY_CLOUD_DEFAULT_PROFILE: 'pi-glm' }).CLOUDY_CLOUD_DEFAULT_PROFILE, 'pi-glm');
+});
+
 
 test('egressAllow parses a comma- or space-separated host list; unset is no policy, set-but-empty is an error', () => {
   assert.deepEqual(egressAllow({}), { list: [] });
