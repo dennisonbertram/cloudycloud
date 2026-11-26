@@ -100,14 +100,15 @@ function repoFixture({ dirty = false, unpushed = false, fleetUnpushed = false, d
 function finishFx({ hostname = 'instabox-coord-boss', workers = [], machines, ...repoOpts } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cc-own-'));
   const ownerFile = join(dir, 'owner');
-  writeFileSync(ownerFile, 'own1\n');
+  const owner = 'aaaaaaaa-aaa';
+  writeFileSync(ownerFile, `${owner}\n`);
   const log = { calls: [], out: [] };
-  const all = machines ?? [{ id: 'm_me', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }];
+  const all = machines ?? [{ id: 'm_me', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', owner } }];
   const fetchFn = async (url, init = {}) => {
     log.calls.push({ url, ...init });
     if (init.method === 'DELETE') return new Response('{}');
-    if (url.includes('owner%3Aown1')) return Response.json({ machines: workers });
     if (url.includes('role%3Acoordinator')) return Response.json({ machines: all });
+    if (url.includes('purpose%3Acloudy-cloud')) return Response.json({ machines: [...all, ...workers] });
     return Response.json({ machines: [] });
   };
   const deps = { env: { INSTABOX_API_KEY: KEY }, fetchFn, hostname, repoDir: repoFixture(repoOpts), ownerFile, out: (s) => log.out.push(s) };
@@ -147,7 +148,7 @@ test('finish refuses a detached HEAD with unpushed commits, allows one that orig
 });
 
 test('finish refuses while workers it owns are running; names cloud_agent_stop', async () => {
-  const f = finishFx({ workers: [{ id: 'm_w', name: 'sbx-w', metadata: { owner: 'own1' } }] });
+  const f = finishFx({ workers: [{ id: 'm_w', name: 'sbx-w', metadata: { purpose: 'cloudy-cloud', owner: 'aaaaaaaa-aaa' } }] });
   await assert.rejects(main(['finish'], f.deps), /cloud_agent_stop/);
   assert.equal(deleted(f.log).length, 0);
 });
