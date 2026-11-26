@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { watch, reaperSpawn, startReaper, providerKey } from '../src/reaper.mjs';
+import { combine } from '../src/providers/index.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const KEY = 'sk-secret-key';
@@ -36,6 +37,17 @@ test('after the parent exits, deletes only machines with a matching owner', asyn
   assert.deepEqual(s.provider.log.delete, ['m1']);
 });
 
+test('reaper deletes matching owner machines from every configured provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('a-1', { id: 'a-1', name: 'a', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  b.machines.set('b-1', { id: 'b-1', name: 'b', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  const provider = combine([a, b]);
+  await watch({ pid: 1, owner: OWNER, provider, alive: () => false, sleep: async () => {}, maxMs: 1, pollMs: 1 });
+  assert.deepEqual(a.log.delete, ['a-1']);
+  assert.deepEqual(b.log.delete, ['b-1']);
+});
+
 test('a failed list or delete is logged without the key, and reaping continues', async () => {
   const s = await setup([{ owner: OWNER }, { owner: OWNER }]);
   const del = s.provider.delete;
@@ -52,7 +64,7 @@ test('a failed list or delete is logged without the key, and reaping continues',
 
 test('spawn options pass the key and provider only in env', () => {
   const provider = createFakeProvider();
-  const { args, options } = reaperSpawn(42, OWNER, KEY, provider, { PATH: '/bin' });
+  const { args, options } = reaperSpawn(42, OWNER, { FAKE_API_KEY: KEY }, provider, { PATH: '/bin' });
   assert.ok(!JSON.stringify(args).includes(KEY));
   assert.deepEqual(args.slice(1), ['42', OWNER]);
   assert.equal(options.env.FAKE_API_KEY, KEY);
@@ -206,6 +218,19 @@ test('startReaper passes the adapter-resolved key under the canonical name', () 
   startReaper(42, OWNER, { CLOUDY_CLOUD_INSTABOX_API_KEY: 'proxy-placeholder' }, instabox, (cmd, args, options) => { seen.push(options); return child; });
   assert.equal(seen[0].env.INSTABOX_API_KEY, 'proxy-placeholder');
   assert.equal(seen[1], 'unref');
+});
+
+test('the detached reaper receives every configured provider and each key in its own environment variable', () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  const calls = [];
+  const child = { on() { return this; }, unref() {} };
+  startReaper(42, OWNER, { FAKE_API_KEY: 'key-a', B_FAKE_API_KEY: 'key-b' }, { ...a, providers: [a, { ...b, keyName: 'B_FAKE_API_KEY' }] }, (cmd, args, options) => { calls.push({ args, options }); return child; });
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDERS, 'a,b');
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDER, 'a');
+  assert.equal(calls[0].options.env.FAKE_API_KEY, 'key-a');
+  assert.equal(calls[0].options.env.B_FAKE_API_KEY, 'key-b');
+  assert.deepEqual(calls[0].args.slice(1), ['42', OWNER]);
 });
 
 const serverPath = fileURLToPath(new URL('../src/server.mjs', import.meta.url));
