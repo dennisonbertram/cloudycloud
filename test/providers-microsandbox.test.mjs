@@ -313,11 +313,13 @@ test('an unset CLOUDY_CLOUD_MSB_BIN is no_key with the install text on its own l
 test('commands.run: exit code, timeout, cwd, env from -e, onStdout streaming', async () => {
   const { provider } = make();
   const s = await mk(provider, { envs: { FOO: "it's $x" } });
-  const out = [];
-  const r = await s.commands.run('printf %s "$FOO" && pwd', { cwd: '/home/worker/app', onStdout: (d) => out.push(d) });
+  const out = [], err = [];
+  const r = await s.commands.run('printf %s "$FOO" && pwd; printf warn >&2', { cwd: '/home/worker/app', onStdout: (d) => out.push(d), onStderr: (d) => err.push(d) });
   assert.ok(r.stdout.startsWith("it's $x"), r.stdout);
   assert.ok(r.stdout.trim().endsWith('/home/worker/app'), r.stdout); // pwd inside the fake root maps to the guest path
   assert.equal(out.join(''), r.stdout);
+  assert.equal(r.stderr, 'warn');
+  assert.equal(err.join(''), r.stderr);
   await assert.rejects(s.commands.run('exit 3'), (e) => e.exitCode === 3);
   await assert.rejects(s.commands.run('TRIGGER_TIMEOUT', { timeoutMs: 2000 }), (e) => e.code === 'timeout' && /2 s/.test(e.message));
 });

@@ -195,7 +195,7 @@ export function createProvider(env = process.env, deps = {}) {
   const sandbox = (id, rec) => {
     // A foreground command, run detached and polled with byte offsets so output streams and the
     // 600 s synchronous cap does not apply. The process is killed with DELETE on timeout/abort.
-    const run = async (cmd, { cwd, timeoutMs, signal, onStdout } = {}) => {
+    const run = async (cmd, { cwd, timeoutMs, signal, onStdout, onStderr } = {}) => {
       const inner = `set -a; [ ! -f ${ENVFILE} ] || . ${ENVFILE}; set +a; ${cwd ? `cd -- ${q(cwd)} && ` : ''}exec bash -c ${q(cmd)}`;
       let started;
       // A command sent while the sandbox starts waits server-side up to 60 s; the 409
@@ -238,12 +238,16 @@ export function createProvider(env = process.env, deps = {}) {
           const se = typeof st.stderr === 'string' ? st.stderr : '';
           if (useOffsets) {
             if (so) { stdout += so; try { onStdout?.(so); } catch { /* a bad callback must not kill the call */ } }
-            if (se) stderr += se;
+            if (se) { stderr += se; try { onStderr?.(se); } catch { /* a bad callback must not kill the call */ } }
             outOff = st.stdoutNextOffset ?? outOff + Buffer.byteLength(so);
             errOff = st.stderrNextOffset ?? errOff + Buffer.byteLength(se);
           } else { // no offsets: the answer is the tail of each log — deliver only the new tail
             if (so.length > stdout.length) { const add = so.slice(stdout.length); stdout = so; if (add) try { onStdout?.(add); } catch { /* a bad callback must not kill the call */ } }
-            if (se.length > stderr.length) stderr = se;
+            if (se.length > stderr.length) {
+              const add = se.startsWith(stderr) ? se.slice(stderr.length) : '';
+              stderr = se;
+              if (add) try { onStderr?.(add); } catch { /* a bad callback must not kill the call */ }
+            }
           }
           // `more` says the agent still holds buffered output — drain it before deciding
           // finished or timed out, or the tail of a finished command would be dropped.

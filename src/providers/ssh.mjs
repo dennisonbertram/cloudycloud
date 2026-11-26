@@ -41,7 +41,7 @@ export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = no
     ];
   };
 
-  const once = (remoteCmd, { stdin, onStdout, timeoutMs, signal } = {}) => new Promise((resolve, reject) => {
+  const once = (remoteCmd, { stdin, onStdout, onStderr, timeoutMs, signal } = {}) => new Promise((resolve, reject) => {
     const aborted = () => Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
     if (signal?.aborted) return reject(aborted());
     const child = spawn('ssh', argvFor(remoteCmd), { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -56,7 +56,7 @@ export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = no
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (d) => { d = String(d); stdout += d; try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
-    child.stderr.on('data', (d) => { stderr += d; });
+    child.stderr.on('data', (d) => { d = String(d); stderr += d; try { onStderr?.(d); } catch { /* a bad callback must not kill the call */ } });
     child.on('error', (e) => finish(reject, fail('transient', `cannot reach ${host} over ssh: ${e.message}`)));
     child.on('close', (code) => {
       if (code === 255 || code === null) return finish(reject, fail('transient', `cannot reach ${host} over ssh: ${stderr.trim().slice(-300)}`));

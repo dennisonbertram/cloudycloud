@@ -8,7 +8,7 @@ const fail = (code, message, extra) => Object.assign(new Error(message), { code 
 
 export function createLocal({ spawn = nodeSpawn } = {}) {
   const limiter = createLimiter(8);
-  const once = (cmd, { stdin, onStdout, timeoutMs, signal } = {}) => new Promise((resolve, reject) => {
+  const once = (cmd, { stdin, onStdout, onStderr, timeoutMs, signal } = {}) => new Promise((resolve, reject) => {
     const aborted = () => Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
     if (signal?.aborted) return reject(aborted());
     let child;
@@ -21,7 +21,7 @@ export function createLocal({ spawn = nodeSpawn } = {}) {
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (d) => { d = String(d); stdout += d; try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
-    child.stderr.on('data', (d) => { stderr += d; });
+    child.stderr.on('data', (d) => { d = String(d); stderr += d; try { onStderr?.(d); } catch { /* a bad callback must not kill the call */ } });
     child.on('error', (e) => finish(reject, fail('transient', `cannot start a local command: ${e.message}`)));
     child.on('close', (code) => {
       if (code === null) return finish(reject, fail('transient', 'the local command was killed'));

@@ -279,7 +279,7 @@ export function createProvider(env = process.env, deps = {}) {
         return Buffer.from(await res.arrayBuffer());
       },
     };
-    const run = async (cmd, { cwd, timeoutMs, signal, onStdout } = {}) => {
+    const run = async (cmd, { cwd, timeoutMs, signal, onStdout, onStderr } = {}) => {
       await guard();
       const secs = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0;
       const tag = `cc-${randomBytes(6).toString('hex')}`;
@@ -314,7 +314,7 @@ export function createProvider(env = process.env, deps = {}) {
             if (typeof ev.data[ch] !== 'string') continue;
             const text = utf8[ch].decode(Buffer.from(ev.data[ch], 'base64'), { stream: true });
             if (ch === 'stdout') { stdout += text; try { onStdout?.(text); } catch { /* a bad callback must not kill the call */ } }
-            else stderr += text;
+            else { stderr += text; try { onStderr?.(text); } catch { /* a bad callback must not kill the call */ } }
           }
           return;
         }
@@ -353,8 +353,11 @@ export function createProvider(env = process.env, deps = {}) {
           const full = outB.toString('utf8');
           const delta = full.startsWith(stdout) ? full.slice(stdout.length) : full;
           if (delta) { try { onStdout?.(delta); } catch { /* a bad callback must not kill the call */ } }
+          const fullErr = errB.toString('utf8');
+          const deltaErr = fullErr.startsWith(stderr) ? fullErr.slice(stderr.length) : '';
+          if (deltaErr) { try { onStderr?.(deltaErr); } catch { /* a bad callback must not kill the call */ } }
           stdout = full;
-          stderr = errB.toString('utf8');
+          stderr = fullErr;
         } catch (e) {
           throw fail('transient', `the E2B command stream dropped and its output could not be read back (${scrub(e?.message ?? e)})`, { stdout: scrub(stdout), stderr: scrub(stderr) });
         }
@@ -362,7 +365,7 @@ export function createProvider(env = process.env, deps = {}) {
         // Flush the decoders' pending bytes: a character the stream left incomplete still decodes.
         const tailOut = utf8.stdout.decode(), tailErr = utf8.stderr.decode();
         if (tailOut) { stdout += tailOut; try { onStdout?.(tailOut); } catch { /* a bad callback must not kill the call */ } }
-        stderr += tailErr;
+        if (tailErr) { stderr += tailErr; try { onStderr?.(tailErr); } catch { /* a bad callback must not kill the call */ } }
       }
       if (exitCode === undefined) throw fail('transient', 'the E2B command stream ended without an exit event', { stdout: scrub(stdout), stderr: scrub(stderr) });
       if (secs && exitCode === 124) throw fail('timeout', `timed out after ${secs} s`, { stdout: scrub(stdout), stderr: scrub(stderr), exitCode: 124 });
