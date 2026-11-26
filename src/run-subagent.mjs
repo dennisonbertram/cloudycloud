@@ -127,11 +127,10 @@ export const startQueue = (env, provider, open, opts) => {
   };
   const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => multi ? undefined : plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
   q.plan = () => plan;
-  q.learnPlan = () => (learning ??= Promise.all(providers.map(async (p) => {
-    const value = await p.plan?.().catch(() => null);
+  q.learnPlan = () => (learning ??= Promise.all(providers.map((p) => Promise.resolve().then(() => p.plan?.()).catch(() => null).then((value) => {
     if (value) providerPlans.set(p, value);
     return value;
-  })).then((values) => {
+  }))).then((values) => {
     plan = values[0] ?? null; // legacy plan guidance remains tied to the primary provider
     q.poke(); // starts already waiting for the old rate may now use learned provider rates
     if (plan) {
@@ -139,6 +138,7 @@ export const startQueue = (env, provider, open, opts) => {
       log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${plan.tier}: ${per(plan.startsPerMinute)} starts/min (using ${pace()}), ${per(plan.maxRunning)} running at once, sizes ${plan.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
     }
   }).catch(() => {}));
+  q.planFor = async (p) => { await q.learnPlan(); return providerPlans.get(p) ?? null; };
   // For multiple providers, reserve per-adapter start rates and skip a provider whose own running cap is known full.
   // Listing failures or unreadable plans remain unknown and are left to the adapter's normal refusal path.
   q.providerFull = async (agent, p) => {
@@ -1257,10 +1257,9 @@ export async function runSubagent(args, deps) {
     cands = kept;
   };
   let why;
-  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine without explicit consent. Run cloudy-cloud setup and answer yes to the GitHub token question to allow on-machine storage; the token stays in memory on your computer, never on disk.`))) return fail(why);
-  const credentialMode = (p) => p.caps.localSecrets ? 'local-substitution' : p.caps.hasProxySecrets ? 'provider-proxy' : 'consented-on-box';
-  const selectedCredentialMode = credentialMode(cands[0]);
-  narrow((p) => credentialMode(p) === selectedCredentialMode, (p) => `${p.name} uses a different credential mode than ${cands[0].name}; failover cannot change how the model token is stored.`);
+  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`))) return fail(why);
+  const proxyMode = Boolean(cands[0].caps.hasProxySecrets);
+  if ((why = narrow((p) => Boolean(p.caps.hasProxySecrets) === proxyMode, (p) => `${p.name} uses a different credential model than ${cands[0].name}; failover cannot cross credential models.`))) return fail(why);
   const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps;
   const { prompt, model, subagent_type: agent, description, profile: requestedProfile, role = 'worker', autofix: autofixOn = false, base, issue, preview_port, workspace } = args;
   const configuredProfile = ctx.env.CLOUDY_CLOUD_DEFAULT_PROFILE;
@@ -1338,7 +1337,7 @@ export async function runSubagent(args, deps) {
     if ((why = narrow((p) => p.caps.hasSizes, (p) => `size is not available: the ${p.name} provider has one machine size. Call cloud_agent again without size.`))) return fail(why);
     const has = (p) => p?.specs?.some((s) => s.vcpus === size.vcpus && s.memMiB === size.memMiB);
     const plans = new Map(await Promise.all(cands.map(async (p) => {
-      let plan = await p.plan?.().catch(() => null);
+      let plan = await ctx.queue.planFor?.(p) ?? await p.plan?.().catch(() => null);
       if (plan?.specs && !has(plan)) plan = await p.plan({ refresh: true }).catch(() => null);
       return [p, plan];
     })));

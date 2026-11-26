@@ -272,17 +272,6 @@ test('a turn limit rejected by the primary remains available on a provider with 
   assert.match(r, /Started on b/);
 });
 
-test('failover does not cross between local substitution and provider proxy credential modes', async () => {
-  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a' });
-  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b' });
-  a.caps.localSecrets = true;
-  a.create = async () => { throw Object.assign(new Error('full'), { code: 'quota_exceeded' }); };
-  const provider = combine([a, b]);
-  const x = await setup({ a, b, provider });
-  await x.wait([await x.start()]);
-  assert.equal(b.log.create.length, 0, 'a provider with a different token-handling mode is not an alternate candidate');
-});
-
 test('a coordinator lands on the provider that does not refuse coordinators', async () => {
   const x = await setup();
   x.a.text.coordinatorRefusal = 'Coordinators are not supported on a yet.';
@@ -303,6 +292,19 @@ test('failover never crosses secret models: a proxy provider does not move to a 
   assert.match(r, /machine limit is reached/);
   assert.equal(b.log.create.length, 0, 'the provider with a different secret model was never tried');
   assert.doesNotMatch(r, /Started on b|Providers tried/);
+});
+
+test('candidate filtering cannot switch a proxy-selected request to a consented on-box provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b', hasProxySecrets: false, hasConsentedSecrets: true });
+  a.caps.hasSizes = false;
+  const provider = combine([a, b]);
+  const x = await setup({ a, b, provider });
+  const r = await runSubagent({ description: 'd', prompt: 'hi', size: '4x8' }, x.deps);
+  assert.equal(r.isError, true);
+  assert.match(x.text(r), /size is not available: the a provider has one machine size/);
+  assert.equal(a.log.create.length, 0);
+  assert.equal(b.log.create.length, 0, 'the on-box credential mode is not selected after provider filtering');
 });
 
 test('a plain key skips a proxy provider for a localSecrets one, and its value never reaches a machine', async () => {
