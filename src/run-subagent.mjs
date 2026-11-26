@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -201,7 +202,28 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
-const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
+const STARTUP_PHASES = ['queue_wait', 'repo_preparation', 'provider_creation', 'upload', 'harness_startup', 'first_tool_call'];
+const beginStartupTiming = (a, phase) => { a.startupTimingStarts ??= {}; a.startupTimingStarts[phase] ??= performance.now(); };
+const endStartupTiming = (a, phase, status = 'complete', durationMs) => {
+  a.startupTimings ??= {};
+  if (a.startupTimings[phase]) return;
+  const started = a.startupTimingStarts?.[phase];
+  const duration = durationMs ?? (started === undefined ? null : Math.max(0, performance.now() - started));
+  const value = { duration_ms: duration === null ? null : Math.round(duration * 100) / 100, status };
+  a.startupTimings[phase] = value;
+  a.emit?.({ type: 'startup_timing', phase, ...value });
+};
+const addStartupTiming = (a, phase, durationMs, status = 'complete') => {
+  a.startupTimings ??= {};
+  const old = a.startupTimings[phase];
+  const value = { duration_ms: Math.round(((old?.duration_ms ?? 0) + durationMs) * 100) / 100, status };
+  a.startupTimings[phase] = value;
+  a.emit?.({ type: 'startup_timing', phase, ...value });
+};
+const finishStartupTimings = (a) => {
+  for (const phase of STARTUP_PHASES) if (!a.startupTimings?.[phase]) endStartupTiming(a, phase, 'unavailable', null);
+};
+const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.startupTimings && { startup_timings: { ...a.startupTimings } }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
 const remoteWorkspace = (a) => `${a.home}/repo${a.workspaceRel ? `/${a.workspaceRel.split(/[\\/]/).join('/')}` : ''}`;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
 const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
@@ -530,17 +552,27 @@ async function turnOnce(a, message, ctx, t, deadline) {
   if (!a.pruned) { a.pruned = true; pruneStreams(streamsDir(ctx.env)); }
   await writeMeta(a, ctx);
   const local = createLocalStream(join(streamsDir(ctx.env), a.id, `t${t.n}.jsonl`), { scrub });
+  const harnessStarted = performance.now();
+  let sawStream = false;
   try {
     const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
     const codexCmd = harnessOf(a) === 'codex' && codexCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
     const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
     if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
     stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
-      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => {
+        sawStream = true;
+        if (!a.startupTimings?.harness_startup) endStartupTiming(a, 'harness_startup', 'complete', performance.now() - harnessStarted);
+        const beforeTools = t.progress.tools;
+        local.write(chunk); t.progress.feed(chunk);
+        if (beforeTools === 0 && t.progress.tools > 0 && !a.startupTimings?.first_tool_call) endStartupTiming(a, 'first_tool_call', 'complete', performance.now() - harnessStarted);
+        if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) });
+      },
     })).stdout;
   } catch (e) {
     failure = e;
   }
+  if (!sawStream && !a.startupTimings?.harness_startup) endStartupTiming(a, 'harness_startup', 'unavailable', null);
   t.progress.end();
   local.end();
   if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
@@ -678,6 +710,7 @@ async function setup(a, ctx) {
   const branch = a.branch;
   let bundleSnapshot;
   try {
+    beginStartupTiming(a, 'repo_preparation');
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     // Many agents starting together can collide on index.lock here; wait and retry.
     let snap;
@@ -692,6 +725,7 @@ async function setup(a, ctx) {
     const usableLimit = (p) => Math.max(0, uploadLimit(p) - BUNDLE_MARGIN);
     const max = ctx.bundleMax ?? Math.max(...cands.map(usableLimit));
     bundleSnapshot = await ctx.snapshots.acquire(a.root, head, snap, max);
+    endStartupTiming(a, 'repo_preparation');
     if (ctx.bundleMax === undefined && Number.isFinite(bundleSnapshot.size)) {
       const tooSmall = cands.filter((p) => bundleSnapshot.size > usableLimit(p));
       cands = cands.filter((p) => bundleSnapshot.size <= usableLimit(p));
@@ -741,7 +775,14 @@ async function setup(a, ctx) {
           a.createAttempt = attempt;
           a.machineCreatingProvider = p;
           let sbx;
-          try { sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p); }
+          const createStarted = performance.now();
+          try {
+            sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p);
+            addStartupTiming(a, 'provider_creation', performance.now() - createStarted);
+          } catch (error) {
+            addStartupTiming(a, 'provider_creation', performance.now() - createStarted, 'failed');
+            throw error;
+          }
           finally { delete a.machineCreatingProvider; }
           a.provider = p;
           a.createAttempt = undefined;
@@ -827,6 +868,7 @@ async function setup(a, ctx) {
       throw error;
     };
     try {
+      a.onQueueGrant = (ms) => addStartupTiming(a, 'queue_wait', ms);
       a.sandbox = await ctx.queue.create(a, async () => {
         a.machineCreating = true;
         try { return await place(); }
@@ -835,7 +877,7 @@ async function setup(a, ctx) {
     } catch (error) {
       if (a.cancelled) throw new Error('cancelled');
       throw error;
-    }
+    } finally { delete a.onQueueGrant; }
     if (a.cancelled) throw new Error('cancelled'); // stop owns deletion once this setup settles
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
@@ -847,11 +889,17 @@ async function setup(a, ctx) {
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
     data = await bundleSnapshot.read(); // Do not retain bundle bytes while waiting for provider capacity.
-    if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
+    if (data) {
+      const uploadStarted = performance.now();
+      try { await a.sandbox.files.write(`${a.home}/in.bundle`, data); addStartupTiming(a, 'upload', performance.now() - uploadStarted); }
+      catch (error) { addStartupTiming(a, 'upload', performance.now() - uploadStarted, 'failed'); throw error; }
+    } else endStartupTiming(a, 'upload', 'unavailable', null);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
     const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
+    const repoSetupStarted = performance.now();
+    try {
     const init = `git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost`;
     // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
     if (!prereqs.length) {
@@ -884,6 +932,11 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    addStartupTiming(a, 'repo_preparation', performance.now() - repoSetupStarted);
+    } catch (error) {
+      addStartupTiming(a, 'repo_preparation', performance.now() - repoSetupStarted, 'failed');
+      throw error;
+    }
     const apt = aptPackages(env).list; // validated at start
     if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
     if (a.role === 'coordinator') await installCoordinator(a, ctx, a.envs);
@@ -903,6 +956,9 @@ async function setup(a, ctx) {
     else if (harnessOf(a) === 'codex') await setupCodex(a, ctx, { tail, installMs: INSTALL_MS, setupMs: SETUP_MS });
     else if (harnessOf(a) === 'opencode') await setupOpencode(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
+  } catch (error) {
+    if (a.startupTimingStarts?.repo_preparation !== undefined && !a.startupTimings?.repo_preparation) endStartupTiming(a, 'repo_preparation', 'failed');
+    throw error;
   } finally {
     await bundleSnapshot?.release();
   }
@@ -1244,7 +1300,8 @@ async function work(a, message, first, ctx, t) {
   const dead = first ? r.error && !r.retryableTransport && !r.uncertainExecution && !r.pushOnly && (r.gone || !a.sessionId) : r.gone;
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes })}` };
   if (r.error && a.recoveryPreviousAgent?.result) r = { ...r, text: `${r.text}\n\nOriginal agent result retained from before recovery:\n${a.recoveryPreviousAgent.result.text}` };
-  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, ...pushLifecycle(r) };
+  finishStartupTimings(a);
+  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, startup_timings: { ...a.startupTimings }, ...pushLifecycle(r) };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
   a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
