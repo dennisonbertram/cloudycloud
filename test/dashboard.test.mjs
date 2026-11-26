@@ -815,6 +815,27 @@ test('boxes carry machineKind from the kind label (absent is linux), and state c
   assert.equal(buildState({ events: [], machines: [], now: 1000, alive: () => true }).caps, undefined);
 });
 
+test('provider-owned boxes keep their own capabilities and partial provider errors', () => {
+  const instabox = { name: 'instabox', caps: { hasShell: true, hasDisplay: true, hasPortForward: true, hasPublish: true, hasMetrics: true } };
+  const boat = { name: 'boat', caps: { hasShell: false, hasDisplay: false, hasPortForward: false, hasPublish: false, hasMetrics: false } };
+  const provider = { name: 'instabox', caps: instabox.caps, providers: [instabox, boat], for: (machine) => [instabox, boat].find((p) => p.name === machine.provider) };
+  const machines = [
+    { id: 'shared', provider: 'instabox', labels: { agent: 'aaaa1111' }, state: 'running', status: 'running' },
+    { id: 'shared', provider: 'boat', labels: { agent: 'bbbb2222' }, state: 'running', status: 'running' },
+  ];
+  Object.defineProperty(machines, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }] });
+  const events = [
+    { type: 'agent', id: 'aaaa1111', t: 1 }, { type: 'machine', id: 'aaaa1111', t: 2, machine: 'shared', provider: 'instabox' },
+    { type: 'agent', id: 'bbbb2222', t: 3 }, { type: 'machine', id: 'bbbb2222', t: 4, machine: 'shared', provider: 'boat' },
+  ];
+  const state = buildState({ events, machines, provider, alive: () => true });
+  const by = Object.fromEntries(state.boxes.map((b) => [b.id, b]));
+  assert.deepEqual([by.aaaa1111.capabilities.hasShell, by.aaaa1111.capabilities.hasMetrics], [true, true]);
+  assert.deepEqual([by.bbbb2222.capabilities.hasShell, by.bbbb2222.capabilities.hasMetrics], [false, false]);
+  assert.deepEqual(state.providers.map((p) => [p.name, p.ready]), [['instabox', true], ['boat', false]]);
+  assert.deepEqual(state.machines.providerErrors, machines.providerErrors);
+});
+
 test('demo has android and gpu boxes, and no linux demo box has a kind', () => {
   const d = demoState(), by = (id) => d.boxes.find((b) => b.id === id);
   assert.equal(by('c3d4e5f6').machineKind, 'android');
@@ -837,8 +858,8 @@ test('the page shows kind badges, shell and display command rows once each, hide
 
 test('shell and display commands use an id the CLI resolves, and a kind or caps change re-renders the rail and the panel', () => {
   const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
-  // a local agent (source log) uses its agent id; any other box uses its machine id, since a label-only agent id is unknown to the CLI
-  assert.match(html, /const cliId = \(b\) => b\.source === 'log' \|\| !b\.machine \? b\.id : b\.machine;/);
+  // A local agent uses its agent id; a machine with provider ownership uses provider:id so duplicate ids stay unambiguous.
+  assert.match(html, /const cliId = \(b\) => b\.source === 'log' \|\| !b\.machine \? b\.id : \(b\.provider \? b\.provider \+ ':' \+ b\.machine : b\.machine\);/);
   assert.match(html, /shellCmd\(cliId\(b\)\)/);
   assert.match(html, /displayCmd\(cliId\(b\)\)/);
   assert.doesNotMatch(html, /shellCmd\(b\.id\)|displayCmd\(b\.id\)/);
@@ -894,6 +915,18 @@ test('usage is read once per running machine per 30 s, from the newest sample, a
   assert.equal('usage' in boxOf(s, 'm3'), false);
   clock.t += 2_000; await fresh(getState);
   assert.equal(calls.length, 4);
+});
+
+test('usage and quiet status join a logged agent by its machine id, not its agent id', async () => {
+  const { clock, getState, machines } = usageEnv({ metrics: async () => ({
+    samples: Array.from({ length: 21 }, (_, i) => ({ t: clock.t - 600_000 + i * 30_000, cpuPct: 1, cpuCount: 2, memUsed: 1, memTotal: 4 })),
+    fetchedAt: clock.t,
+  }) });
+  machines[0].labels = { agent: 'aaaa1111' };
+  const worker = (await fresh(getState)).boxes.find((b) => b.id === 'aaaa1111');
+  assert.equal(worker.machine, 'm1');
+  assert.equal(worker.usage.cpuPct, 1);
+  assert.equal(worker.usage.quiet, true);
 });
 
 test('at most 4 usage reads are in flight at once', async () => {
@@ -1105,7 +1138,8 @@ test('page: the copied metrics command is shown only for a safe machine id, and 
   for (const bad of ['m1; printf INJECTED #', 'a b', '$(x)', '`x`', "a'b", '-rf', '', 'a\nb', undefined]) assert.equal(pure.metricsCmdFor(bad), null, String(bad));
   assert.equal(pure.safeId('x;y'), null);
   assert.match(PAGE, /if \(!safeId\(cliId\(b\)\)\) return null/, 'Shell and Screen rows use it too');
-  assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\)\) return null/);
+  assert.match(PAGE, /metricsCmdFor\(b\.provider \? b\.provider \+ ':' \+ b\.machine : b\.machine\)/);
+  assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\) \|\| b\.capabilities\?\.hasPortForward === false\) return null/);
 });
 
 test('server: quiet needs 10 continuous minutes under 3 % CPU, a fresh newest sample, and low network where it is reported', () => {
