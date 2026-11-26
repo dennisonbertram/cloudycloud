@@ -3239,3 +3239,9 @@ test('a reattached cloud session that exited is reported with the stop command; 
   assert.match(e.message, /cloudy-cloud coordinator stop boss/);
   assert.deepEqual(f.log.killed, [], 'a reattach never deletes the machine');
 });
+
+test('the terminal start labels a pending sign-in link "Sign-in link", never "Remote Control"', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(src, /linkLines\(u, loginUrl, 'Sign-in link'\)/);
+  assert.match(src, /linkLines\(u, r\.loginUrl, 'Sign-in link'\)/);
+});

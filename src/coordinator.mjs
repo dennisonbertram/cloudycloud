@@ -170,7 +170,7 @@ const qrLines = (u, link) => {
   } catch { return []; }
 };
 // The link on its own line, or the label then the link when both do not fit (the link itself is never cut).
-const linkLines = (u, link) => (2 + cellWidth(`Remote Control: ${link}`) <= u.width ? [`  Remote Control: ${link}`] : ['  Remote Control:', `    ${link}`]);
+const linkLines = (u, link, label = 'Remote Control') => (2 + cellWidth(`${label}: ${link}`) <= u.width ? [`  ${label}: ${link}`] : [`  ${label}:`, `    ${link}`]);
 
 const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hosted rows keep the logical name in `name`
 // Every machine a command acts on must be one of ours: the purpose label plus the role. Machines made before the
@@ -636,7 +636,7 @@ async function start(c, args) {
       ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
       ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
     ];
-    c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl) : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
+    c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl, 'Sign-in link') : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${name}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
@@ -809,7 +809,7 @@ async function status(c, args) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.signin ? u.paint(u.col.warn, 'waiting for Claude sign-in') : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), ...(r.loginUrl ? linkLines(u, r.loginUrl) : []), r.signin ? nextFit(u, `cloudy-cloud coordinator login ${name}`) : r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), ...(r.loginUrl ? linkLines(u, r.loginUrl, 'Sign-in link') : []), r.signin ? nextFit(u, `cloudy-cloud coordinator login ${name}`) : r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
   c.out([`Coordinator ${name} on machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.loginUrl && `Sign-in link: ${r.loginUrl}`, r.signin ? `Next: cloudy-cloud coordinator login ${name}` : r.waiting ? `Answer it by attaching, or with Remote Control: ${attach}` : `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
