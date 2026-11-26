@@ -2,7 +2,7 @@
 
 > Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives coding agents MCP tools for running workers in separate sandbox workspaces and Git branches.
 
-Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.5.0). Install and set up with `npx cloudycloud setup`. The code is at https://github.com/dennisonbertram/cloudycloud. You need an account with a configured cloud sandbox provider, credentials for the worker profiles you use, a GitHub repo you can push to, and Node.js 20 or later. Cloudy Cloud has no price of its own; you pay your own providers. A hosted version is coming.
+Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.6.0). Install and set up with `npx cloudycloud setup`. The code is at https://github.com/dennisonbertram/cloudycloud. You need an account with a configured cloud sandbox provider, credentials for the worker profiles you use, a GitHub repo you can push to, and Node.js 20 or later. Cloudy Cloud has no price of its own; you pay your own providers. A hosted version is coming.
 
 Each page below also has its text as Markdown at its URL with `.html` replaced by `.md`. [llms-full.txt](https://cloudycloud.tech/llms-full.txt) holds all of them in one file.
 
