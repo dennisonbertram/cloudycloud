@@ -84,9 +84,11 @@ const pushLifecycle = (value = {}) => ({
   ...(value.preserve_worker !== undefined && { preserve_worker: value.preserve_worker }),
 });
 
-export const withLatestCheckpoint = (turnResult, autofixResult) => autofixResult?.checkpointSha
-  ? { ...turnResult, checkpointSha: autofixResult.checkpointSha }
-  : turnResult;
+export const withLatestCheckpoint = (turnResult, autofixResult) => ({
+  ...turnResult,
+  ...(autofixResult?.checkpointSha && { checkpointSha: autofixResult.checkpointSha }),
+  ...pushLifecycle(autofixResult),
+});
 
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
@@ -989,11 +991,11 @@ function autofix(a, ctx, t) {
   const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
   const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
   const seen = (a.autofixSeen ??= new Set());
-  let fixes = 0, lastPush = '', latestCheckpointSha, ignored = 0, n;
+  let fixes = 0, lastPush = '', latestCheckpointSha, latestDisposition = {}, ignored = 0, n;
   const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}`, af: { state: 'running', round: fixes, cap } }); };
   const fixByHand = `open or fix the pull request by hand (git fetch origin ${branch})`;
   const hand = `${fixByHand}, or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
-  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
+  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition, af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
   const stop = (why) => /Resource not accessible by (personal access token|integration)/i.test(why)
     ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions and Commit statuses to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
     : done(`Autofix stopped: ${why}\nNext step: ${hand}`);
@@ -1156,8 +1158,9 @@ function autofix(a, ctx, t) {
       if (halted()) return { cancelled: true };
       const res = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
       latestCheckpointSha = res.checkpointSha ?? latestCheckpointSha;
-      if (res.cancelled || halted()) return { cancelled: true, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }) };
-      if (res.gone) return { gone: true, text: res.text, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }) };
+      latestDisposition = pushLifecycle(res);
+      if (res.cancelled || halted()) return { cancelled: true, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition };
+      if (res.gone) return { gone: true, text: res.text, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition };
       lastPush = /^(Pushed to origin|Push failed).*$/m.exec(res.text)?.[0] ?? lastPush;
       if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
       const was = sha;

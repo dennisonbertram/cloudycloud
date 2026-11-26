@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fakeSandbox, setGithub, createFakeProvider } from './fake-provider.mjs';
 import { pushOf } from '../src/events.mjs';
 import { runSubagent, messageAgent, waitAgents, stopAgents, getTask, cancelTask } from '../src/run-subagent.mjs';
+import { readCheckpoint } from '../src/recovery.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -87,7 +88,14 @@ async function setup(g = {}, env = {}) {
         return { stdout: await handle(cmd), stderr: '', exitCode: 0 };
       }
       // the fake claude commits nothing for an autofix prompt, so commit for it (the real worker would)
-      if (g.commitOnFix !== false && / -p /.test(cmd) && g.prompts.at(-1)?.startsWith('Autofix round')) await run('echo x >> fix.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm fix', { cwd: o.cwd, timeoutMs: 5000 });
+      if (g.commitOnFix !== false && / -p /.test(cmd) && g.prompts.at(-1)?.startsWith('Autofix round')) {
+        await run('echo x >> fix.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm fix', { cwd: o.cwd, timeoutMs: 5000 });
+        g.fixPushed = true;
+      }
+      if (g.leaveDirtyOnFix && g.fixPushed && !g.dirtyAdded && cmd.startsWith('if [ "$(git rev-parse HEAD)"')) {
+        await run('echo uncommitted >> a.txt', { cwd: o.cwd, timeoutMs: 5000 });
+        g.dirtyAdded = true;
+      }
       // since branches (#53) a worker that commits nothing pushes nothing and autofix never starts, so the first turn commits
       if (/ -p /.test(cmd) && g.prompts.at(-1) === 'hi') await run('echo x > first.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm first', { cwd: o.cwd, timeoutMs: 5000 });
       return run(cmd, o);
@@ -132,6 +140,25 @@ test('autofix: a failed check then a pass runs exactly two turns, and the second
   assert.match(g.prompts[1], /AssertionError: boom in foo\.test\.js/);
   assert.ok(g.calls.includes('gh run view 555 --log-failed'));
   assert.match(r, /is clean .* after 1 fix round\./);
+});
+
+test('autofix: a dirty fix round propagates its disposition and verified checkpoint to the task result', async () => {
+  const { g, deps } = await setup({ checks: [FAILC, PASS], deps: { autofixGraceMs: 0 } });
+  g.leaveDirtyOnFix = true;
+  deps.owner = 'test-owner';
+  const makeSandbox = deps.createSandbox;
+  deps.createSandbox = async (...args) => Object.assign(await makeSandbox(...args), { id: 'fake-worker-1' });
+  deps.asTask = true;
+  const started = await runSubagent({ description: 'd', prompt: 'hi', autofix: true }, deps);
+  const id = started.taskId.split('-')[1];
+  await waitAgents({ agent_ids: [id], timeout_seconds: 60 }, deps);
+  const completed = getTask(started.taskId, deps);
+  const fields = completed.result.structuredContent;
+  assert.equal(fields.workspace_dirty, true);
+  assert.equal(fields.preserve_worker, true);
+  assert.equal(fields.push_status, 'pushed');
+  const checkpoint = await readCheckpoint(deps.env, id);
+  assert.notEqual(checkpoint.checkpointSha, g.sha0, 'the checkpoint must name the fix-turn push');
 });
 
 test('autofix: review comments and merge conflicts are sent to the worker once', async () => {
