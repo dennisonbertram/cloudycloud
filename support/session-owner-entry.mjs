@@ -19,7 +19,7 @@ const createSandbox = async () => {
     kill: async () => dead.abort(),
     commands: {
       async run(cmd, { onStdout, signal } = {}) {
-        if (!cmd.includes('claude -p')) return { stdout: cmd.includes('PUSHOK') ? 'PUSHOK\nSHA abcdef1234567\n' : '', stderr: '', exitCode: 0 };
+        if (!cmd.includes('claude -p')) return { stdout: cmd.includes('PUSHOK') ? 'PUSHOK\nSHA abcdef1234567\nSTATUS_OK\n' : '', stderr: '', exitCode: 0 };
         const emit = async (line) => { await onStdout?.(`${line}\n`); };
         await emit('{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"src/a.ts"}}],"usage":{"input_tokens":100,"output_tokens":10}}}');
         if (prompt.startsWith('HANG')) await aborted(signal);

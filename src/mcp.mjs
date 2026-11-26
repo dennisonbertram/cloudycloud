@@ -41,6 +41,7 @@ const tools = [
         status: { type: 'string' }, agent_id: { type: 'string' }, branch: { type: 'string' },
         provider: { type: 'string' }, profile: { type: 'string' }, result: { type: 'string' },
         error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' },
+        preserve_worker: { type: 'boolean' }, workspace_dirty: { type: ['boolean', 'null'] }, push_status: { type: 'string' }, turn_id: { type: 'string' }, turn_status: { type: 'string' },
       },
       required: ['status'], additionalProperties: true,
     },
@@ -112,8 +113,8 @@ const tools = [
   },
   {
     name: 'cloud_agent_stop',
-    description: 'Stop agents and delete their sandboxes. Safe to repeat or to call with unknown ids.',
-    inputSchema: { type: 'object', properties: { agent_ids: ids }, required: ['agent_ids'] },
+    description: 'Stop agents and delete their sandboxes. Safe to repeat or to call with unknown ids. Automatic cleanup may include expected_turn_id and expected_status idle so it stops only the same completed turn if the worker has not resumed.',
+    inputSchema: { type: 'object', properties: { agent_ids: ids, expected_turn_id: { type: 'string' }, expected_status: { type: 'string', enum: ['idle'] } }, required: ['agent_ids'] },
   },
 ];
 for (const tool of tools) {
@@ -123,7 +124,8 @@ for (const tool of tools) {
     properties: {
       status: { type: 'string' }, agent_id: { type: 'string' }, branch: { type: 'string' }, provider: { type: 'string' }, profile: { type: 'string' },
       result: { type: 'string' }, error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' },
-      agents: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      preserve_worker: { type: 'boolean' }, workspace_dirty: { type: ['boolean', 'null'] }, push_status: { type: 'string' }, turn_id: { type: 'string' }, turn_status: { type: 'string' },
+      agents: { type: 'array', items: { type: 'object', properties: { agent_id: { type: 'string' }, status: { type: 'string' }, turn_id: { type: 'string' }, turn_status: { type: 'string' }, preserve_worker: { type: 'boolean' }, workspace_dirty: { type: ['boolean', 'null'] }, push_status: { type: 'string' }, result: { type: 'string' }, error: { type: 'boolean' }, message: { type: 'string' }, action: { type: 'string' } }, additionalProperties: true } },
     },
     additionalProperties: true,
   };

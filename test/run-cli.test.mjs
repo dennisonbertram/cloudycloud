@@ -132,3 +132,91 @@ test('run help documents required repo and does not migrate legacy config', asyn
   await assert.rejects(access(join(f.home, '.config', 'cloudy-cloud')));
   assert.equal(await readFile(join(legacy, 'env'), 'utf8'), original);
 });
+
+test('CLI keeps workers with dirty or unverified work and returns an actionable failure', async (t) => {
+  const f = await fixture(t);
+  const cases = [
+    { prompt: 'DIRTY leave edits', expectedText: /No new commits[\s\S]*Uncommitted changes left in the sandbox/, expectedPush: 'no-change', workspaceDirty: true },
+    { prompt: 'PUSH_DIRTY push then leave edits', expectedText: /Pushed to origin[\s\S]*Uncommitted changes left in the sandbox/, expectedPush: 'pushed', workspaceDirty: true },
+    { prompt: 'OK status cannot be read', env: { CLOUDY_CLOUD_TEST_STATUS_FAILURE: '1' }, expectedText: /status could not be confirmed/i, expectedPush: 'no-change', workspaceDirty: null },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    const session = `${f.session}-preserve-${index}`;
+    t.after(() => stopOwner(session, f.repo, f.home));
+    const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', scenario.prompt], {
+      env: { ...f.env, ...scenario.env }, timeout: 40_000,
+    }).catch((error) => error);
+    assert.equal(cli.code, 1, `expected unsafe auto-stop to return nonzero; stdout=${cli.stdout} stderr=${cli.stderr}`);
+    const result = JSON.parse(cli.stdout.trim());
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, true);
+    assert.equal(result.preserve_worker, true);
+    assert.equal(result.push_status, scenario.expectedPush);
+    assert.equal(result.workspace_dirty, scenario.workspaceDirty);
+    assert.equal(result.session, session);
+    assert.equal(result.repo, f.repo);
+    assert.match(result.result, scenario.expectedText);
+    assert.match(result.action, new RegExp(`mcp-server --session ${session}`));
+
+    const mcp = rpcProcess(process.execPath, [resolve(root, 'src/server.mjs'), '--session', session, '--repo', f.repo], f.repo, f.env);
+    t.after(() => mcp.child.kill());
+    await mcp.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'run-cli-preservation-test', version: '1' } });
+    const listed = await mcp.request('tools/call', { name: 'cloud_agent_list', arguments: {} });
+    assert.ok(listed.result.structuredContent.agents.some((agent) => agent.agent_id === result.agent_id && agent.status === 'idle'));
+    const stopped = await mcp.request('tools/call', { name: 'cloud_agent_stop', arguments: { agent_ids: [result.agent_id] } });
+    assert.equal(stopped.result.structuredContent.agents[0].status, 'stopped');
+  }
+});
+
+test('CLI retries cleanup while the named owner is connected and reports reconnect coordinates on failure', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-delete-retry`;
+  t.after(() => stopOwner(session, f.repo, f.home));
+  const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', 'OK finish cleanly'], {
+    env: { ...f.env, CLOUDY_CLOUD_TEST_DELETE_FAILURES: '3' }, timeout: 40_000,
+  }).catch((error) => error);
+  assert.equal(cli.code, 1, `expected unconfirmed cleanup to return nonzero; stdout=${cli.stdout} stderr=${cli.stderr}`);
+  const result = JSON.parse(cli.stdout.trim());
+  assert.equal(result.cleanup_error, true);
+  assert.equal(result.preserve_worker, true);
+  assert.equal(result.session, session);
+  assert.equal(result.repo, f.repo);
+  assert.match(result.message, /not confirmed after three attempts/);
+  assert.match(result.action, new RegExp(`cloudy-cloud mcp-server --session ${session} --repo`));
+  assert.match(result.action, new RegExp(`cloud_agent_stop for ${result.agent_id}`));
+
+  const mcp = rpcProcess(process.execPath, [resolve(root, 'src/server.mjs'), '--session', session, '--repo', f.repo], f.repo, f.env);
+  t.after(() => mcp.child.kill());
+  await mcp.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'run-cli-cleanup-test', version: '1' } });
+  const listed = await mcp.request('tools/call', { name: 'cloud_agent_list', arguments: {} });
+  assert.ok(listed.result.structuredContent.agents.some((agent) => agent.agent_id === result.agent_id && agent.status === 'stop-pending'));
+  const stopped = await mcp.request('tools/call', { name: 'cloud_agent_stop', arguments: { agent_ids: [result.agent_id] } });
+  assert.equal(stopped.result.structuredContent.agents[0].status, 'stopped');
+});
+
+test('CLI drains large JSON output before exiting', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-large-output`;
+  t.after(() => stopOwner(session, f.repo, f.home));
+  const child = spawn(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', 'LARGE output'], {
+    cwd: f.repo, env: f.env, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '', stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+    child.stdout.pause();
+    setTimeout(() => child.stdout.resume(), 2);
+  });
+  const code = await new Promise((resolveCode, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`large JSON CLI timed out; stderr=${stderr}`)); }, 40_000);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (status) => { clearTimeout(timer); resolveCode(status); });
+  });
+  assert.equal(code, 0, `exit=${code}; stderr=${stderr}; stdoutBytes=${Buffer.byteLength(stdout)}; stdoutPrefix=${stdout.slice(0, 300)}`);
+  assert.ok(stdout.endsWith('\n'));
+  const result = JSON.parse(stdout);
+  assert.equal(result.status, 'completed');
+  assert.ok(result.result.length > 2_000_000);
+});

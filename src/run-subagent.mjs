@@ -78,6 +78,11 @@ const beforeTotals = (text, note) => {
   const footerAt = totalAt < 0 ? -1 : text.lastIndexOf('\n', totalAt - 1);
   return footerAt < 0 ? `${text}\n${note}` : `${text.slice(0, footerAt)}\n${note}${text.slice(footerAt)}`;
 };
+const pushLifecycle = (value = {}) => ({
+  ...(value.push_status !== undefined && { push_status: value.push_status }),
+  ...(value.workspace_dirty !== undefined && { workspace_dirty: value.workspace_dirty }),
+  ...(value.preserve_worker !== undefined && { preserve_worker: value.preserve_worker }),
+});
 
 export const withLatestCheckpoint = (turnResult, autofixResult) => autofixResult?.checkpointSha
   ? { ...turnResult, checkpointSha: autofixResult.checkpointSha }
@@ -194,7 +199,7 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
-const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.result && { result: a.result.text, error: !!a.result.error }), ...extra });
+const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
 const remoteWorkspace = (a) => `${a.home}/repo${a.workspaceRel ? `/${a.workspaceRel.split(/[\\/]/).join('/')}` : ''}`;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
 const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
@@ -378,7 +383,7 @@ async function safetyPush(a, ctx) {
   try {
     const push = async () => (await a.sandbox.commands.run(
       `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')"; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
-      ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
+      ` echo "SHA $(git rev-parse HEAD)"; if status=$(git status --porcelain 2>&1); then echo STATUS_OK; if [ -n "$status" ]; then printf '%s\n' "$status" | head -20 | sed 's/^/ST /'; fi; else echo STATUS_FAIL; printf '%s\n' "$status" | tail -n 8 | sed 's/^/STATUSERR /'; fi; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
     let out = await push();
@@ -390,22 +395,35 @@ async function safetyPush(a, ctx) {
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4);
-    const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
-    if (marker('NOCHANGE')) return { where: `No changes, no branch pushed.${dirty}` };
+    const statusOk = marker('STATUS_OK');
+    const statusErrors = tail(lines.filter((l) => l.startsWith('STATUSERR ')).map((l) => l.slice(10)).join('\n'));
+    const hasDirtyPaths = paths.length > 0;
+    const dirty = hasDirtyPaths ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
+    const pushStatus = marker('PUSHOK') ? 'pushed' : marker('NOCHANGE') ? 'no-change' : marker('PUSHFAIL') ? 'failed' : 'unknown';
+    if (!statusOk) {
+      const noCommitText = pushStatus === 'no-change' ? 'No new commits. ' : '';
+      return {
+        error: true, preserve_worker: true, workspace_dirty: null, push_status: pushStatus,
+        where: `${noCommitText}Git status could not be confirmed${statusErrors ? ` (${statusErrors})` : ''}; the worker stays open because uncommitted work may remain. Retry a message or inspect the workspace before stopping it.${marker('PUSHOK') ? ` The push to origin ${branch} succeeded, but its resulting workspace state is unknown.` : ''}`,
+      };
+    }
+    if (marker('NOCHANGE')) return dirty
+      ? { error: true, preserve_worker: true, workspace_dirty: true, push_status: 'no-change', where: `No new commits.${dirty}` }
+      : { where: 'No changes, no branch pushed.', workspace_dirty: false, push_status: 'no-change', preserve_worker: false };
     if (marker('PUSHOK')) {
       const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
-      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'unknown', where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
       const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
       const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
-      return { sha, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
+      return { sha, ...(hasDirtyPaths && { error: true, preserve_worker: true }), workspace_dirty: hasDirtyPaths, push_status: 'pushed', preserve_worker: hasDirtyPaths, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
-    if (!marker('PUSHFAIL')) return { failed: true, where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
-    return { failed: true, where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
+    if (!marker('PUSHFAIL')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'unknown', where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
+    return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'failed', where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
     log('safety push failed:', ctx.scrub(e?.message));
-    if (e?.code === 'not_found' || e?.status === 404) return { gone: true, where: `The sandbox is confirmed gone before the safety push (${ctx.scrub(e?.message)}). Only work already pushed to origin ${branch} survives.` };
-    return { failed: true, where: `The sandbox could not be reached to push (${ctx.scrub(e?.message)}). The agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.` };
+    if (e?.code === 'not_found' || e?.status === 404) return { gone: true, error: true, preserve_worker: false, workspace_dirty: null, push_status: 'unknown', where: `The sandbox is confirmed gone before the safety push (${ctx.scrub(e?.message)}). Only work already pushed to origin ${branch} survives.` };
+    return { failed: true, error: true, preserve_worker: true, workspace_dirty: null, push_status: 'unknown', where: `The sandbox could not be reached to push (${ctx.scrub(e?.message)}). The agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.` };
   }
 }
 
@@ -526,7 +544,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
   if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
   Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
   await writeMeta(a, ctx);
-  const { where, failed, gone, sha: checkpointSha } = await safetyPush(a, ctx);
+  const { where, failed, gone, sha: checkpointSha, error: pushError, preserve_worker, workspace_dirty, push_status } = await safetyPush(a, ctx);
 
   if (t.cancelled) return { cancelled: true, gone, ...(checkpointSha && { checkpointSha }), text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
@@ -540,7 +558,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone: turnGone, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    return { error: true, gone: turnGone, preserve_worker: !turnGone, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -564,7 +582,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to'), ...(checkpointSha && { checkpointSha }), ...(!error && (failed || gone) ? { pushOnly: true } : {}) };
+  const resultError = error || failed || gone || pushError;
+  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: resultError, gone, pushed: where.startsWith('Pushed to'), preserve_worker, workspace_dirty, push_status, ...(checkpointSha && { checkpointSha }), ...(!error && (failed || gone || pushError) ? { pushOnly: true } : {}) };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -1212,7 +1231,7 @@ async function work(a, message, first, ctx, t) {
   const dead = first ? r.error && !r.retryableTransport && !r.uncertainExecution && !r.pushOnly && (r.gone || !a.sessionId) : r.gone;
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes })}` };
   if (r.error && a.recoveryPreviousAgent?.result) r = { ...r, text: `${r.text}\n\nOriginal agent result retained from before recovery:\n${a.recoveryPreviousAgent.result.text}` };
-  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
+  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, ...pushLifecycle(r) };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
   a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
@@ -1703,9 +1722,15 @@ export async function stopAgents(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_stop');
   const ids = idList(args);
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be an array of strings');
+  const conditional = args.expected_turn_id !== undefined || args.expected_status !== undefined;
+  if (conditional && (ids.length !== 1 || typeof args.expected_turn_id !== 'string' || args.expected_status !== 'idle')) return ctx.fail('conditional stop requires one agent id, an expected_turn_id, and expected_status "idle"');
   const outcomes = await Promise.all(ids.map(async (id) => {
     const a = ctx.open.get(id);
     if (!a) return { state: { agent_id: id, status: 'not-open', message: 'not open (already stopped or never existed)' }, text: `${id}: not open (already stopped or never existed)` };
+    if (conditional && (!(a.status === 'idle' || a.status === 'stop-pending') || a.turn?.id !== args.expected_turn_id || a.turn?.status !== 'completed')) {
+      const action = 'The worker has changed state since this result was collected. Inspect it with cloud_agent_list and decide whether to wait, message, or stop it.';
+      return { state: lifecycle(a, { status: 'not-stopped', error: false, message: 'The completed turn is no longer idle; no stop was attempted.', action }), text: `${id}: not stopped (the completed turn is no longer idle).\nNext step: ${action}` };
+    }
     try {
       await stop(a, ctx.open, ctx.stoppedBranches);
       return { state: lifecycle(a, { status: 'stopped', error: false }), text: `${id}: stopped` };
