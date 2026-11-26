@@ -763,6 +763,7 @@ async function finish(c, args, deps) {
   if (!mname) guided(notHere, notHereFields);
   const me = (await c.provider.list({ role: 'coordinator' })).find((m) => mach(m) === providerFor(c.provider, m).localMachineName(host) && OUR_PURPOSES.has(m.labels?.purpose) && m.labels?.role === 'coordinator');
   if (!me?.id) guided(notHere, notHereFields);
+  const coordinatorProvider = providerFor(c.provider, me);
   const verified = [`machine ${safeText(mach(me))} (${safeText(me.id)}), coordinator ${safeText(me.labels?.name)}`];
   if (force) verified.push('--force: skipped the git and worker checks');
   else {
@@ -826,7 +827,7 @@ async function finish(c, args, deps) {
       const providers = (c.provider.providers ?? [c.provider]).map((p) => p.name).join(', ');
       problems.push(`Could not verify the machine inventory on every configured provider (${providers}); finish will not delete this machine.`);
     } else {
-      const workers = machines.filter((m) => owners.has(m.labels?.owner) && String(m.id) !== String(me.id) && !/delet/.test(m.state ?? ''));
+      const workers = machines.filter((m) => owners.has(m.labels?.owner) && !(providerFor(c.provider, m) === coordinatorProvider && String(m.id) === String(me.id)) && !/delet/.test(m.state ?? ''));
       if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
     }
     if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'fix the problems above, then run: cloudy-cloud coordinator finish' });

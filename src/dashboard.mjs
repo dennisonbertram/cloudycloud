@@ -348,7 +348,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
   };
 }
 
-const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').trim() || undefined; } catch { return undefined; } };
+const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').split(/\s+/).filter(Boolean).at(-1); } catch { return undefined; } };
 
 const COORD_MS = 10_000;
 const PANE_MS = 30_000; // a coordinator's screen is checked for a waiting prompt at most this often

@@ -220,6 +220,22 @@ test('listMachines maps the provider list, status included, and needs the key', 
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
 });
 
+test('liveState uses the last owner in a multi-owner registry for this-session labels', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-dashboard-owner-'));
+  const config = join(dir, 'env');
+  writeFileSync(join(dir, 'owner'), 'aaaaaaaa-aaa\n\nbbbbbbbb-bbb\n');
+  const machines = [
+    { id: 'old', name: 'old', provider: 'fake', owner: 'aaaaaaaa-aaa', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'aaaaaaaa-aaa' }, state: 'running', status: 'running' },
+    { id: 'current', name: 'current', provider: 'fake', owner: 'bbbbbbbb-bbb', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'bbbbbbbb-bbb' }, state: 'running', status: 'running' },
+  ];
+  const state = await liveState({ CLOUDY_CLOUD_CONFIG: config }, {
+    provider: createFakeProvider(), list: async () => machines, file: join(dir, 'events.jsonl'), cacheMs: 0,
+  })();
+  const byId = Object.fromEntries(state.boxes.map((box) => [box.machine, box]));
+  assert.equal(byId.old.startedBy, 'aaaaaaaa-aaa');
+  assert.equal(byId.current.startedBy, 'this session');
+});
+
 test('listMachines keeps provider identity and partial provider errors', async () => {
   const provider = {
     name: 'instabox', keyName: 'INSTABOX_API_KEY', providers: [{ name: 'instabox' }, { name: 'boat' }],

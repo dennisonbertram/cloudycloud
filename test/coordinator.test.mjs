@@ -2087,6 +2087,23 @@ test('finish includes owners from named sessions and from multiple configured pr
   assert.equal(deletes, 0);
 });
 
+test('finish does not hide a worker on another provider with the coordinator machine ID', async () => {
+  const { repo } = pushedFinishRepo();
+  const ownerFile = join(dirname(repo), 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  let deletes = 0;
+  const primary = finishProvider({ name: 'primary', localMachineName: () => 'cc-me', list: async (labels) => labels?.role === 'coordinator'
+    ? [{ id: 'shared-id', name: 'cc-me', provider: 'primary', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }]
+    : [] });
+  const secondary = finishProvider({ name: 'secondary', localMachineName: () => '', list: async (labels) => labels?.role === 'coordinator' ? []
+    : [{ id: 'shared-id', name: 'worker', provider: 'secondary', state: 'running', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'aaaaaaaa-aaa' } }] });
+  primary.delete = secondary.delete = async () => { deletes++; };
+  const provider = combine([primary, secondary]);
+  const e = await main(['finish'], finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir: join(dirname(repo), 'no-sessions'), provider, hostname: 'h' })).then(() => null, (x) => x);
+  assert.ok(e);
+  assert.match(e.message, /worker machine|running workers/i);
+  assert.equal(deletes, 0);
+});
+
 test('a finish refusal\'s recovery fixes the problems; --force stays a dim detail line', async () => {
   const e1 = await main(['finish'], finishDeps({ repoDir: '/nonexistent/repo' })).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.equal(e1.next, 'fix the problem above, then run: cloudy-cloud coordinator finish');
