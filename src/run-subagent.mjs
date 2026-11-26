@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail, isRateLimited, isQuotaExceeded } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
@@ -25,6 +25,7 @@ import { redact, redactText, GH_PULL_URL } from './events.mjs';
 import { writeSecretFile } from './providers/index.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
+import { createSnapshotManager } from './snapshot.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -124,7 +125,10 @@ export const startQueue = (env, provider, open, opts) => {
   return q;
 };
 // One shared queue per server, built the same way for every caller (buildServer and the tool handlers).
-export const sharedQueue = (deps) => (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
+export const sharedQueue = (deps) => {
+  deps.snapshots ??= createSnapshotManager({ git, remoteRefs: deps.bundleRemoteRefs });
+  return (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
+};
 const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
   sharedQueue(deps);
@@ -522,8 +526,8 @@ async function setup(a, ctx) {
   const cands = a.providers?.length ? a.providers : [ctx.provider];
   const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress, signal }, labels, p) => p.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }), ...(signal && { signal }) }));
   if (a.mcpError) throw new Error(a.mcpError);
-  const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = a.branch;
+  let bundleSnapshot;
   try {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     // Many agents starting together can collide on index.lock here; wait and retry.
@@ -534,31 +538,12 @@ async function setup(a, ctx) {
         await new Promise((r) => setTimeout(r, 100 * i));
       }
     }
-    a.sha = a.base?.sha ?? (snap || (await git(a.root, 'rev-parse', 'HEAD')));
-    const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
-    const bundle = join(tmp, 'in.bundle');
-    await git(a.root, 'update-ref', ref, a.sha);
-    let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
-    let data;
+    const head = a.base?.sha ?? await git(a.root, 'rev-parse', 'HEAD');
     const max = ctx.bundleMax ?? Math.min(...cands.map((p) => p.caps.uploadMaxBytes ?? Infinity)) - BUNDLE_MARGIN;
-    try {
-      await git(a.root, 'bundle', 'create', bundle, ref);
-      data = await readFile(bundle);
-      if (data.length > max) {
-        const tooBig = () => new Error(`The uncommitted/unpushed changes are too large to upload (${data?.length ?? 0} bytes, limit ${max}). Push the branch to GitHub first, then start the agent again.`);
-        // The bundle header lists each prerequisite commit on a line starting with "-".
-        const thin = await git(a.root, 'bundle', 'create', bundle, ref, '--not', '--remotes=origin').then(() => true, (e) => {
-          if (/empty bundle/i.test(`${e?.stderr ?? ''}`)) return false; // everything is already on GitHub
-          throw e;
-        });
-        data = thin ? await readFile(bundle) : null;
-        if (thin) prereqs = data.toString('latin1', 0, data.indexOf('\n\n')).split('\n').filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41));
-        else prereqs = [a.sha];
-        if (!prereqs.length || data?.length > max) throw tooBig();
-      }
-    } finally {
-      await git(a.root, 'update-ref', '-d', ref).catch(() => {});
-    }
+    bundleSnapshot = await ctx.snapshots.acquire(a.root, head, snap, max);
+    a.sha = bundleSnapshot.sha; // Equivalent captures share the same commit object as well as the bundle.
+    const prereqs = bundleSnapshot.prereqs; // commits a thin bundle needs from a currently advertised origin ref
+    let data;
     const baseEnvs = {};
     if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') baseEnvs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
     if (a.role === 'coordinator') Object.assign(baseEnvs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
@@ -638,6 +623,7 @@ async function setup(a, ctx) {
     a.emit?.({ type: 'machine', machine: a.sandbox.id, provider: a.provider?.name, branch: a.branch, deleteAt: a.deleteAt });
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
+    data = await bundleSnapshot.read(); // Do not retain bundle bytes while waiting for provider capacity.
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
     const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
@@ -647,7 +633,7 @@ async function setup(a, ctx) {
     // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
     if (!prereqs.length) {
       await a.sandbox.commands.run(
-        `${init} && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
+        `${init} && git fetch -q ../in.bundle ${a.sha} && git checkout -q --detach ${a.sha} &&` +
         ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
         { cwd: a.home, timeoutMs: SETUP_MS },
       );
@@ -657,7 +643,7 @@ async function setup(a, ctx) {
       await a.sandbox.commands.run(`${init} && git remote add origin '${a.origin}'`, { cwd: a.home, timeoutMs: SETUP_MS });
       await ghAuth();
       await a.sandbox.commands.run(
-        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${ref}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
+        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${a.sha}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
         repo,
       );
     }
@@ -695,7 +681,7 @@ async function setup(a, ctx) {
     else if (harnessOf(a) === 'opencode') await setupOpencode(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
-    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    await bundleSnapshot?.release();
   }
 }
 
