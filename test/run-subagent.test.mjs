@@ -908,6 +908,8 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   // tool and the deadline hook in bin/cloudy-cloud; DELETE_AT gives them the machine's real deadline.
   assert.match(launched, /COORD=1/);
   assert.match(launched, /DEL=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+  // A nested coordinator has no Remote Control: it never gets the peer variables a top-level one does.
+  for (const c of s.cmds) assert.doesNotMatch(c, /CLOUDY_CLOUD_(NAME|PEERS)=/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });
@@ -1521,15 +1523,17 @@ test('a default worker has profile claude', async () => {
   assert.equal(deps.provider.log.create[0].labels.profile, 'claude');
 });
 
-test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent', async () => {
+test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent and shows coordinator names', async () => {
   const { deps, text } = await setup();
   const mk = (id, labels) => deps.provider.machines.set(id, { id, name: id, labels: { purpose: 'cloudy-cloud', ...labels }, state: 'running', status: 'running', startedAt: Date.now() });
   mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
   mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
   mk('m3', { purpose: 'other', owner: 'o3' });
+  mk('m4', { role: 'coordinator', name: 'coord-b', install: 'i1' }); // the name is how other sessions message it
   const r = text(await listAgents({ all: true }, deps));
   assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
   assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
+  assert.match(r, /m4[^\n]*coordinator[^\n]*name coord-b/);
   assert.ok(!r.includes('m3'));
 });
 

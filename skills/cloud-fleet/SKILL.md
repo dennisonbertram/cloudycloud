@@ -91,6 +91,15 @@ When the user wants a long job to run unattended, start a cloud coordinator inst
 
 Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).
 
+## Coordinators talking to each other
+
+Cloud coordinators run Remote Control sessions, so they can message each other with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session and passes it the names of this installation's other running coordinators.
+
+- `ListAgents` shows only sessions alive when it runs: call it again before messaging a peer that was not in the last result. `mcp__cloud__cloud_agent_list` with `all: true` lists every running coordinator by session name, including ones that started later.
+- `SendMessage` delivery has no built-in receipt. The convention is `ack: <first 8 words>` replied to each received message (never to one starting with `ack:`); if no ack arrives within 3 minutes, resend once, then tell the user the peer is gone.
+- A coordinator announces itself at the start of its first turn: `NAME started (repo REPO, branch BRANCH)`.
+- Nested coordinators (`cloud_agent` with `role: "coordinator"`) have no Remote Control session and do not take part.
+
 ## Pick a pattern
 
 | Situation | Pattern |

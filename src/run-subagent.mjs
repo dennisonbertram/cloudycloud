@@ -1262,7 +1262,7 @@ async function allMachines({ provider }) {
   if (!rows.length) return 'No cloudy-cloud machines.';
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
-  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}${m.labels?.name ? `  name ${m.labels.name}` : ''}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
 }
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.

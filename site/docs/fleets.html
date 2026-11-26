@@ -126,6 +126,10 @@
 </ul>
 <div class="warn"><p>A coordinator is billed until it is stopped, finished or deleted. Its <code>~/.config/cloudy-cloud/env</code> holds your real Instabox key, your Claude setup-token and your provider API keys, because it needs them to start workers. Anyone who can SSH into the machine can read them. Use keys you can revoke.</p></div>
 
+<h2 id="peers">Coordinators talking to each other</h2>
+<p>Two cloud coordinators can message each other over Remote Control with Claude's built-in <code>ListAgents</code>/<code>SendMessage</code> tools. <code>coordinator start</code> names the session <code>--name NAME</code> and tells it which coordinators of this installation were already running, so it can greet them with <code>NAME started (repo REPO, branch BRANCH)</code>. <code>ListAgents</code> shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling <code>ListAgents</code> again or by <code>cloud_agent_list</code> with <code>all: true</code>, which prints each coordinator's session name.</p>
+<p><code>SendMessage</code> delivery has no built-in receipt, so coordinators use an ack convention: reply <code>ack: &lt;first 8 words&gt;</code> to each message received (never to one starting with <code>ack:</code>), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (<code>cloud_agent</code> with <code>role: "coordinator"</code>) has no Remote Control session and does not take part.</p>
+
 <h2 id="merging">Getting one result from many workers</h2>
 <p>Each worker pushes a branch named <code>cloudy-cloud/&lt;id&gt;</code>. Starting 100 workers is easy. Reviewing 100 pull requests is not. The <code>cloud-fleet</code> skill teaches Claude these patterns:</p>
 <table>

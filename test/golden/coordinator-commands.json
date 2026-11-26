@@ -154,6 +154,13 @@
         }
       },
       {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator"
+        }
+      },
+      {
         "cli": "npx --yes instabox@latest secrets ls --json"
       },
       {
@@ -275,7 +282,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> CLOUDY_CLOUD_NAME=boss CLOUDY_CLOUD_PEERS= CLOUDY_CLOUD_REPO='\\''o/r'\\'' CLOUDY_CLOUD_BRANCH='\\''main'\\'' \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
       },
       {
         "sdk": "files.write",
@@ -345,6 +352,13 @@
         "metadata": {
           "role": "coordinator",
           "name": "boss"
+        }
+      },
+      {
+        "sdk": "Sandbox.list",
+        "apiKey": "<API_KEY>",
+        "metadata": {
+          "role": "coordinator"
         }
       },
       {
@@ -463,7 +477,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> CLOUDY_CLOUD_NAME=boss CLOUDY_CLOUD_PEERS= CLOUDY_CLOUD_REPO='\\''o/r'\\'' CLOUDY_CLOUD_BRANCH='\\'''\\'' \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
       },
       {
         "sdk": "files.write",
