@@ -230,9 +230,12 @@ test('commands.run sees the env file and streams stdout; files round-trip binary
   const { provider } = make();
   const s = await mk(provider, { envs: { FOO: "it's $x" } });
   const out = [];
-  const r = await s.commands.run('printf %s "$FOO"', { onStdout: (d) => out.push(d) });
+  const err = [];
+  const r = await s.commands.run('printf %s "$FOO"; printf warning >&2', { onStdout: (d) => out.push(d), onStderr: (d) => err.push(d) });
   assert.equal(r.stdout, "it's $x");
   assert.equal(out.join(''), "it's $x");
+  assert.equal(r.stderr, 'warning');
+  assert.equal(err.join(''), r.stderr, 'stderr reaches the caller once through the SSH transport');
   const bin = Buffer.from([0, 255, 254, 10, 13, 128]);
   await s.files.write('/home/worker/b/x.bin', bin);
   assert.deepEqual(await s.files.read('/home/worker/b/x.bin'), bin);

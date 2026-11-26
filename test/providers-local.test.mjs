@@ -5,9 +5,9 @@ import { createLocal } from '../src/providers/local.mjs';
 
 test('local transport: stdout, stdin and exit codes follow the ssh transport contract', async () => {
   const t = createLocal();
-  const chunks = [];
-  const r = await t.run('cat; echo err >&2', { stdin: 'in-data', onStdout: (d) => chunks.push(d) });
-  assert.deepEqual([r.stdout, r.stderr.trim(), r.exitCode, chunks.join('')], ['in-data', 'err', 0, 'in-data']);
+  const chunks = [], errors = [];
+  const r = await t.run('cat; echo err >&2', { stdin: 'in-data', onStdout: (d) => chunks.push(d), onStderr: (d) => errors.push(d) });
+  assert.deepEqual([r.stdout, r.stderr.trim(), r.exitCode, chunks.join(''), errors.join('')], ['in-data', 'err', 0, 'in-data', r.stderr]);
   await assert.rejects(t.run('echo o; echo e >&2; exit 3'), (e) => e.exitCode === 3 && e.stdout === 'o\n' && /e/.test(e.stderr));
 });
 
