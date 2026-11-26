@@ -220,6 +220,7 @@ Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the
 ```
 cloudy-cloud coordinator image [--save]
 cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json]
+cloudy-cloud coordinator login NAME [--code CODE]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator status NAME [--json]
@@ -231,15 +232,15 @@ Manages cloud coordinators: long-lived Claude Code sessions that run on their ow
 
 #### coordinator image
 
-Builds the machine image that coordinators start from. It is a one-time step. On a terminal, it creates an image machine (or reuses one you already started), installs cloudy-cloud on it, opens the Claude sign-in (`claude auth login`), and when you finish in the browser it saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. Without a terminal it prints the manual steps instead (`cloudy-cloud shell NAME`, `claude auth login`, `exit`, then `--save`). `--save` checks that Claude is signed in on the machine, then saves and deletes it. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
+Builds the machine image that coordinators start from. It is a one-time step. It creates an image machine (or reuses one you already started), installs cloudy-cloud on it, removes `~/.claude/.credentials.json` on the machine — the image never holds a Claude sign-in, because each coordinator signs in for itself when it starts — then saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. `--save` does the same wipe-and-save on an image machine that is still running. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
 
 | Flag | Meaning |
 |---|---|
-| `--save` | Save the signed-in image machine as a snapshot and delete the machine. |
+| `--save` | Save the image machine as a snapshot and delete the machine. |
 
 #### coordinator start
 
-Starts a coordinator named NAME on a new machine from the saved image. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
+Starts a coordinator named NAME on a new machine from the saved image. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude` through a launcher (`~/.config/cloudy-cloud/launch.sh`) that runs `claude auth login` while the coordinator is not signed in, then execs the session with Remote Control under the name NAME. A fresh coordinator waits at the sign-in until you finish it with `coordinator login NAME` — waiting for sign-in is a normal state and the machine is never deleted for it; on a terminal `start` attaches you to that pane so you sign in there. The coordinator never pauses. The server deletes its machine after `--max-hours`. Once signed in you can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
 
 | Argument or flag | Default | Meaning |
 |---|---|---|
@@ -251,9 +252,9 @@ Starts a coordinator named NAME on a new machine from the saved image. It sends 
 | `--max-hours N` | 24 | Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended. |
 | `--model NAME` | Claude Code's default | Model for the coordinator's Claude Code session, such as `opus` or `claude-opus-5-5`. Rejected before any machine is created if it has characters other than letters, digits and `._:[]-`. |
 | `--env FILE` | none (repeatable) | Bridge variables from a dotenv-style file to the machine; may be given several times. See Bridged env variables. |
-| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. |
+| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. A coordinator waiting for sign-in adds `needsLogin`, `loginUrl` (the `claude.ai`, `claude.com` or `platform.claude.com` URL the pane shows — never any other pane text) and `next`. |
 
-About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or a login problem, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.
+About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or an invalid key, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. A coordinator waiting at `claude auth login` is a normal state: the machine stays, the output says to run `coordinator login NAME`, and once you sign in (in the attached pane, or in your browser plus `--code`) the session starts. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.
 
 Example:
 
@@ -279,9 +280,18 @@ Opens the coordinator's `tmux` session over SSH. On a terminal it opens the sess
 cloudy-cloud coordinator attach docs-fleet
 ```
 
+#### coordinator login
+
+Finishes a coordinator's Claude sign-in — each coordinator signs in for itself, and a fresh one waits at `claude auth login` until this runs. Without `--code` it attaches to the `claude` pane so you sign in there; a terminal is required (off one it prints an error pointing at `--code`), and when the pane shows `Login expired` or `/login` it prints `Type /login and sign in.` first. With `--code` — the way an agent finishes a sign-in the user did in a browser — it types the code (1–512 characters of letters, digits, `#`, `_`, `-`; anything else is rejected) into the pane's sign-in prompt, presses Enter, and waits up to 60 seconds for `claude auth status` to report the sign-in. It refuses `--code` when the pane is not showing the sign-in code prompt.
+
+```
+cloudy-cloud coordinator login docs-fleet
+cloudy-cloud coordinator login docs-fleet --code OK-code_#9
+```
+
 #### coordinator ls
 
-Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
+Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting for Claude sign-in` means the pane waits at `claude auth login` (finish it with `coordinator login NAME`), `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
 
 ```
 cloudy-cloud coordinator ls
@@ -291,7 +301,7 @@ When the output is piped, it prints tab-separated NAME, STATE, CREATED, MACHINE,
 
 #### coordinator status
 
-Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set), `remoteControlUrl` (only when known) and `attach`. `coordinator start` prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run `coordinator status NAME` later.
+Read-only. Prints the coordinator's state, `waiting for Claude sign-in` when the pane waits at the sign-in (with the sign-in URL when the pane shows one), the prompt line it is waiting on (if any, with keys removed), the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command — or `coordinator login NAME` while it waits for sign-in. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting`, `needsLogin`, `loginUrl`, `remoteControlUrl` and `attach` (`waiting`, `needsLogin`, `loginUrl` and `remoteControlUrl` only when set; `next` names the finish-sign-in command while it waits). `coordinator start` prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run `coordinator status NAME` later.
 
 ```
 cloudy-cloud coordinator status NAME [--json]

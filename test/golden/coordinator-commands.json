@@ -78,12 +78,27 @@
         "timeoutMs": 600000
       },
       {
-        "sdk": "getInfo",
+        "sdk": "commands.run",
+        "cmd": "rm -f ~/.claude/.credentials.json",
+        "timeoutMs": 30000
+      },
+      {
+        "sdk": "createSnapshot",
+        "name": "cloudy-cloud-coordinator-<STAMP>",
+        "description": "cloudy-cloud coordinator image"
+      },
+      {
+        "sdk": "Sandbox.getSnapshot",
+        "id": "sn_new",
+        "apiKey": "<API_KEY>"
+      },
+      {
+        "sdk": "sandbox.kill",
         "id": "m_new"
       }
     ],
     "out": [
-      "Image machine sbx-abc is ready and cloudy-cloud is installed on it. It is deleted at <HH:MM>.\n\nSign in to Claude on it (a setup-token cannot open Remote Control sessions):\n\n  1. cloudy-cloud shell sbx-abc\n  2. claude auth login\n  3. exit\n  4. cloudy-cloud coordinator image --save"
+      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
     ]
   },
   "image --save": {
@@ -109,8 +124,8 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "claude auth status --json",
-        "timeoutMs": 60000
+        "cmd": "rm -f ~/.claude/.credentials.json",
+        "timeoutMs": 30000
       },
       {
         "sdk": "createSnapshot",
@@ -274,8 +289,16 @@
         "text": "Your machine is deleted by the server at <TIME>; push your work well before then.\n\ndo it"
       },
       {
+        "sdk": "files.write",
+        "path": "/data/home/.config/cloudy-cloud/launch.sh"
+      },
+      {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'' \"$(cat '\\''/data/home/task.md'\\'')\"'"
+        "cmd": "chmod 700 '/data/home/.config/cloudy-cloud/launch.sh'"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'sh /data/home/.config/cloudy-cloud/launch.sh '\\''env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''\\'\\'''\\''boss'\\''\\'\\'''\\'' \"$(cat '\\''\\'\\'''\\''/data/home/task.md'\\''\\'\\'''\\'')\"'\\'''"
       },
       {
         "sdk": "files.write",
@@ -287,7 +310,12 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "claude auth status --json",
+        "timeoutMs": 60000
       },
       {
         "sdk": "commands.run",
@@ -296,7 +324,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -305,7 +333,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -314,7 +342,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -462,8 +490,16 @@
         "path": "/data/home/.claude/skills/cloud-fleet/handoff.md"
       },
       {
+        "sdk": "files.write",
+        "path": "/data/home/.config/cloudy-cloud/launch.sh"
+      },
+      {
         "sdk": "commands.run",
-        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''boss'\\'''"
+        "cmd": "chmod 700 '/data/home/.config/cloudy-cloud/launch.sh'"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo 'sh /data/home/.config/cloudy-cloud/launch.sh '\\''env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=<TIME> \"PATH=/data/home/cloudy-cloud/bin:$PATH\" /data/home/cloudy-cloud/bin/cloudy-cloud --remote-control '\\''\\'\\'''\\''boss'\\''\\'\\'''\\'''\\'''"
       },
       {
         "sdk": "files.write",
@@ -475,7 +511,12 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "claude auth status --json",
+        "timeoutMs": 60000
       },
       {
         "sdk": "commands.run",
@@ -484,7 +525,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -493,7 +534,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -502,7 +543,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p"
+        "cmd": "tmux capture-pane -t claude -p -J"
       },
       {
         "sdk": "commands.run",
@@ -537,7 +578,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "tmux capture-pane -t claude -p",
+        "cmd": "tmux capture-pane -t claude -p -J",
         "timeoutMs": 15000
       }
     ],

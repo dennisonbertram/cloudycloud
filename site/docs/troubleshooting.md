@@ -171,7 +171,8 @@ Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-
 
 ### Which credentials reach the cloud machine
 
-- **Claude token:** placed on each Claude Code worker without a profile (and on cloud coordinators). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
+- **Claude token:** placed on each Claude Code worker without a profile (and sent to cloud coordinators for their workers, where the launcher keeps it out of the coordinator's own session). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
+- **Coordinator sign-in:** a cloud coordinator's own Claude login (`~/.claude/.credentials.json`) is created on its machine when you finish `cloudy-cloud coordinator login NAME`. The coordinator image never holds it — the credential file is removed before the image is saved. It is a real login; use an account you can revoke.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
@@ -196,7 +197,7 @@ Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://g
 rm ~/.config/cloudy-cloud/env
 ```
 
-> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.
+> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds the real Instabox key, the Claude token and your provider keys, and `~/.claude/.credentials.json` holds its own Claude sign-in. Anyone who can SSH into the coordinator can read them. Use keys and an account you can revoke.
 
 ## FAQ
 

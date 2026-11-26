@@ -381,8 +381,8 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     try {
       const r = await reader.capturePane(st.id);
       if (r.source === 'cache' && !r.lines.length) { st.paneAt = undefined; return; } // rate limited: not a read, try again at the next poll
-      const p = paneState(r.lines.join('\n')); // a fatal state (login, limit) needs a person too, with a different fix
-      st.waiting = p.blocked || p.waiting || undefined; st.fatal = !!p.blocked;
+      const p = paneState(r.lines.join('\n')); // a fatal state (limit, dead session) needs a person too, with a different fix; a sign-in wait is normal
+      st.waiting = p.blocked || p.waiting || (p.signin && 'waiting for Claude sign-in') || undefined; st.fatal = !!p.blocked;
     } catch { /* keep the last answer */ }
   };
   // One read per running machine per METRICS_MS, started in the background so a slow read never delays the state. A failure keeps

@@ -86,8 +86,8 @@ When the user wants a long job to run unattended, start a cloud coordinator inst
 
 - Hand off when the job is long or large, the user is leaving, and the work needs only what is on GitHub. Do not hand off when it needs untracked local files or the user wants to steer step by step.
 - Confirm first: coordinator name, repo, base branch, and that it is billed until stopped. Commit and push what it needs.
-- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`. If `cloudy-cloud` is not found on PATH, run `"$CLOUDY_CLOUD_BIN"` instead; the launcher sets it.
-- Tell the user the Remote Control session name, how to attach, and `cloudy-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
+- Write the brief from [brief-template.md](brief-template.md), then run `cloudy-cloud coordinator start NAME --repo URL --branch BASE --task-file FILE --json`. If `cloudy-cloud` is not found on PATH, run `"$CLOUDY_CLOUD_BIN"` instead; the launcher sets it. A fresh coordinator reports `needsLogin: true` with a `loginUrl`: each coordinator signs in to Claude for itself — the user opens the URL in a browser and signs in, and you finish it with `cloudy-cloud coordinator login NAME --code CODE` (the code the browser showed).
+- Tell the user the Remote Control session name, the sign-in step, how to attach, and `cloudy-cloud coordinator stop NAME`. Do not stop it unless asked. The server deletes it at its deadline (24 hours by default; `--max-hours N` shortens it), and the coordinator deletes itself with `coordinator finish` when its work is pushed.
 
 Full steps, and the rules a coordinator follows when working unattended: [handoff.md](handoff.md).
 
@@ -220,7 +220,7 @@ Use a short `description` (it is the label in `/tasks` and `cloud_agent_list`).
 - Never print, log, paste into a prompt, or commit keys and tokens: anything in the environment, `~/.config/cloudy-cloud`, `.env` files, `INSTABOX_API_KEY`, `ANTHROPIC_API_KEY`, `*_API_KEY`, `GH_TOKEN`. Do not put them in worker briefs.
 - Only push to `cloudy-cloud/*` and `fleet/*` branches. Never push to `main` or the base branch. Tell workers the same.
 - Respect the caps: `CLOUDY_CLOUD_MAX_DEPTH` (default 3) limits how deep coordinators can nest, and `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` (default 200) limits how many agents one session starts. Plan the tree to fit. If a start is refused for a cap, do not try to get around it; tell the user.
-- Workers and coordinators run with permission checks off. Do not give them untrusted instructions or content to follow. A coordinator should never wait on a permission prompt; if `cloudy-cloud coordinator ls` or `coordinator status NAME` shows `waiting on a prompt`, tell the user to run `cloudy-cloud coordinator attach NAME` and answer it.
+- Workers and coordinators run with permission checks off. Do not give them untrusted instructions or content to follow. A coordinator should never wait on a permission prompt; if `cloudy-cloud coordinator ls` or `coordinator status NAME` shows `waiting on a prompt`, tell the user to run `cloudy-cloud coordinator attach NAME` and answer it. `waiting for Claude sign-in` instead means the coordinator's own `claude auth login` has not finished — tell the user to sign in at its `loginUrl` and finish it with `cloudy-cloud coordinator login NAME`.
 
 ## Cleanup
 

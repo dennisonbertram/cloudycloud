@@ -1,21 +1,43 @@
-// What a coordinator's tmux screen says: stuck or dead (BLOCKED), or waiting for a person to answer a prompt (WAITING).
-// One place for the patterns, used by `coordinator start`, `ls`, `status` and the dashboard.
+// What a coordinator's tmux screen says: stuck or dead (BLOCKED), waiting for a person to answer a prompt (WAITING),
+// or waiting for a Claude sign-in (the pane's `claude auth login`, or Claude's own login screens).
+// Waiting for sign-in is a normal state — the machine stays; only BLOCKED is a failure.
+// One place for the patterns, used by `coordinator start`, `login`, `ls`, `status` and the dashboard.
 // Only Claude Code's own prompt screens count: a "Do you want to" line is a prompt only when its option lines follow,
 // so transcript text that merely starts that way is not an alert.
 import { redact } from './events.mjs';
 import { safeText } from './terminal.mjs';
 
 const MARKS = /^[\s│|●⎿>*·⏺✗✖!❯-]+/; // box, bullet, prompt and cursor marks Claude Code draws before a line
-export const BLOCKED = /^(?:You've hit your [\w -]*limit|Authentication required \u00b7|Login expired \u00b7|Invalid API key \u00b7|Not logged in \u00b7|Credit balance is too low|Select login method)/i;
+export const BLOCKED = /^(?:You've hit your [\w -]*limit|Invalid API key ·|Credit balance is too low)/i;
+// Claude's own "please sign in" screens. A fresh coordinator is expected to sit at one until the user signs in.
+export const SIGNIN = /^(?:Authentication required ·|Login expired ·|Not logged in ·|Select login method)/i;
 // Screens a person answers once by attaching; the session is fine, so the machine stays.
 export const WAITING = /^(?:.*Do you trust the files|.*trust this folder|New MCP server found|Enable Remote Control|.*Remote Control.*\(y\/n\)|\d\. Yes, I accept)/i;
 const QUESTION = /^Do you want to /i, OPTION = /^1\.\s*Yes\b/i;
 
-// The first blocked line and the first waiting line of a screen (each redacted, '' when none).
+// A sign-in URL `claude auth login` prints: only a claude.ai, claude.com or platform.claude.com URL counts,
+// and never a Remote Control link (those live under /code/). Nothing else on the screen is read back.
+export const LOGIN_URL = /https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com)\/(?!code\/)[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]{0,500}/;
+// The prompt that takes the code the browser showed — `claude auth login` or the in-session /login dialog.
+// Its exact wording is unverified, so this matches an enter/paste ... code line loosely.
+const CODE_PROMPT = /(?:enter|paste|type|input)\b[^\n]{0,80}\bcode\b|\b(?:authorization|verification|sign-?in|login) code\b|\bcode\b[^\n]{0,40}\bfrom (?:your|the) browser\b/i;
+
+// What a pane shows: the first blocked and waiting lines (each redacted, '' when none); signin is the first
+// sign-in line, or 'sign-in' when the pane waits at the sign-in URL or code prompt instead — a coordinator
+// waiting for its Claude sign-in shows 'waiting for Claude sign-in', never the line itself.
 // `task` is text typed into the session: its own lines are not messages from Claude Code.
 export function paneState(pane, task = '') {
   const lines = String(pane ?? '').split('\n').map((l) => l.replace(MARKS, '').trim()).filter((t) => t && !(t.length > 3 && task.includes(t)));
   const pick = (found) => (found ? redact(safeText(found)) : '');
   const asked = lines.find((l, i) => QUESTION.test(l) && lines.slice(i + 1, i + 9).some((o) => OPTION.test(o)));
-  return { blocked: pick(lines.find((l) => BLOCKED.test(l))), waiting: pick(lines.find((l) => WAITING.test(l)) ?? asked) };
+  const loginUrl = lines.map((l) => l.match(LOGIN_URL)?.[0]).find(Boolean) ?? '';
+  const codePrompt = lines.some((l) => CODE_PROMPT.test(l));
+  const signin = lines.find((l) => SIGNIN.test(l));
+  return {
+    blocked: pick(lines.find((l) => BLOCKED.test(l))),
+    waiting: pick(lines.find((l) => WAITING.test(l)) ?? asked),
+    signin: pick(signin) || (codePrompt || loginUrl ? 'sign-in' : ''),
+    codePrompt,
+    loginUrl,
+  };
 }
