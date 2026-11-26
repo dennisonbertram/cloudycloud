@@ -522,7 +522,7 @@
     kids.push(h('div', { class: 'fine' }, fin(u.at) ? ['Newest sample ', live('ago', u.at)] : 'Newest sample time unknown', u.source === 'cache' && ' · from the saved copy', b.machineState !== 'running' && ' · paused or stopped since then'));
     if (isQuiet(b)) kids.push(h('div', { class: 'note', text: quietText(u) }));
     kids.push(h('details', { class: 'fine' }, h('summary', { text: 'How this is measured' }), 'Measured by Instabox on the host every 30 seconds. Network leaves out SSH and public-port traffic. Memory is what the machine has touched, so it falls only when memory is reclaimed. Reading this never wakes a paused machine.'));
-    const mc = metricsCmdFor(b.machine), cmd = mc && prop('History', h('span', { class: 'mono', text: mc }), copyBtn(mc, 'metrics command'));
+    const mc = metricsCmdFor(b.provider ? b.provider + ':' + b.machine : b.machine), cmd = mc && prop('History', h('span', { class: 'mono', text: mc }), copyBtn(mc, 'metrics command'));
     if (cmd) { cmd.querySelector('.pv').title = 'Prints the full history (up to 24 hours), or --json for the samples.'; kids.push(cmd); }
     return h('div', { class: 'usage' }, kids);
   }

@@ -76,6 +76,7 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
     return found.length === 1 ? found[0] : undefined;
   };
   const byAgent = new Map((machines ?? []).filter((m) => m.labels?.agent).map((m) => [m.labels.agent, m]));
+  const coordinatorLog = (box) => coordLogs[machineKey({ id: box.machine, provider: box.provider })] ?? coordLogs[box.machine] ?? coordLogs[box.id];
   const turns = new Map();
   for (const e of events) if (e.type === 'message' && typeof e.id === 'string') turns.set(e.id, (turns.get(e.id) ?? 0) + 1);
   const used = new Set();
@@ -95,9 +96,9 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
       description: title, title, machineKind: l.kind || undefined, titleSource: described ? 'label' : 'machine', ...(!described && { note: NO_TITLE }), labels: l, source: 'machine', startedByOwner: m.owner, messages: [] });
   }
   // A coordinator's own log (read from its machine) is the authority on its workers: fill live boxes, add the ones whose machine is gone.
-  for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordLogs[machineKey(b)])) {
+  for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordinatorLog(b))) {
     const all = [];
-    for (const w of coordLogs[machineKey(c)]) {
+    for (const w of coordinatorLog(c)) {
       const msgs = w.messages.map((m) => ({ ...m, agent: w.id }));
       all.push(...msgs);
       let b = boxes.find((x) => x !== c && (x.id === w.id || x.labels?.agent === w.id));
@@ -399,6 +400,10 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       if (added) st.dirty = true;
     } catch { /* keep what was read; the next poll tries again */ }
   };
+  const readerFor = async (machine) => {
+    const selected = providerFor(provider, machine);
+    return getReader ? getReader(selected?.name ?? machine.provider) : undefined;
+  };
   // A prompt on a coordinator's screen that a person must answer (#88). Read at most every PANE_MS, through the reader's own limit.
   const checkPane = async (reader, st) => {
     if (!reader.capturePane || now() - (st.paneAt ?? -Infinity) < PANE_MS) return;
@@ -460,7 +465,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     const coordLogs = {};
     if (machines) for (const id of logs.keys()) if (!machines.some((m) => machineKey(m) === id)) logs.delete(id); // its machine is gone: forget its history
     if (getReader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
-      const reader = await getReader(m.provider).catch(() => null);
+      const reader = await readerFor(m).catch(() => null);
       if (!reader) continue;
       await pull(reader, m);
       const st = logs.get(machineKey(m));
@@ -470,8 +475,11 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     }
     if (machines && provider && seq > appliedSeq) { appliedSeq = seq; refreshUsage(machines); }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
-    for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(machineKey(b))?.waiting) { const st = logs.get(machineKey(b)); b.waiting = st.waiting; if (st.fatal) b.fatal = true; }
-    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const key = machineKey(b); const u = usageOf(key); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(key).samples, now()), now())) u.quiet = true; } }
+    for (const b of cached.boxes) {
+      const st = logs.get(machineKey({ id: b.machine, provider: b.provider }));
+      if (b.kind === 'coordinator' && b.machineState === 'running' && st?.waiting) { b.waiting = st.waiting; if (st.fatal) b.fatal = true; }
+    }
+    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const key = machineKey({ id: b.machine, provider: b.provider }); const u = usageOf(key); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(key).samples, now()), now())) u.quiet = true; } }
     const u = planSnapshot(provider, now())?.usage;
     if (typeof u?.costUSD === 'number') cached.usage = Object.fromEntries(['costUSD', 'allowanceUSD', 'overageUSD', 'ratedUntil'].filter((k) => u[k] != null).map((k) => [k, u[k]]));
     const allTrunks = [...new Set(cached.boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))];
@@ -486,7 +494,11 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   // The last hour of samples for one running machine, from the same map (no provider call): what /api/metrics returns.
   state.settle = () => Promise.all(inflight.values()); // tests: wait for the background reads
   state.metrics = (machineId, providerName) => {
-    const u = usage.get(machineKey({ id: machineId, provider: providerName }));
+    let u = usage.get(machineKey({ id: machineId, provider: providerName }));
+    if (!providerName) {
+      const matches = [...usage].filter(([key]) => key.endsWith(`\0${machineId}`));
+      if (matches.length === 1) u = matches[0][1];
+    }
     return u && { samples: recent(u.samples, now()), fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code, u.provider) }) };
   };
   return state;
