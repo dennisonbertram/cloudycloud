@@ -36,15 +36,18 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
   const sleeping = new Map(); // agent -> cancel function while it sleeps between retries
   let pumping = false;
   const rate = () => (typeof perMin === 'function' ? perMin() : perMin); // read on every grant, so a rate learned later applies
-  let capNote; // why the head waits when the plan's running limit holds the line; everyone behind it waits for the same reason
+  const reasons = new Map(); // current queue wait reason per agent
   let wake; // ends the pump's wait for the oldest start to age out
   const q = { waiting, pace: rate, poke: () => wake?.() }; // poke: the rate changed, so recheck now
-  // Admission is strictly FIFO: only the head is checked. It needs a free rate slot and, when the plan caps running machines,
-  // free capacity (live count excludes the head's own agent). Capacity waits are local and bounded by softWaitMs; after that the API decides.
+  // A global machine cap or start-rate cap holds the whole queue. A profile cap holds only that profile's requests, so an
+  // eligible request behind it can start. The first eligible request wins, preserving FIFO among requests that can start.
+  // Capacity waits are local and bounded by softWaitMs; after that the API decides.
   const full = (e) => { const max = maxRunning?.(); return max > 0 && now() - e.t0 < softWaitMs && liveCount?.(e.a) >= max; };
   // Give every waiting agent the note it would show in cloud_agent_list (same wording as queuedText in run-subagent.mjs) and emit it only when it changes; the dashboard reads the note from the event.
-  const labelWaiting = () => waiting.forEach(({ a }, i) => {
-    const n = capNote && (i ? `queued, ${i} ahead: ${capNote}` : capNote);
+  const labelWaiting = (notes) => waiting.forEach(({ a }, i) => {
+    const why = notes[i];
+    const n = why && (i ? `queued, ${i} ahead: ${why}` : why);
+    if (why) reasons.set(a, why); else reasons.delete(a);
     if (a.queueNote === n || (!a.queueNote && !n)) return;
     if (n) a.queueNote = n; else delete a.queueNote;
     a.emit?.({ type: 'status', status: 'queued', ...(n && { note: n }) });
@@ -55,33 +58,42 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
     while (waiting.length) {
       const head = waiting[0];
       while (stamps.length && now() - stamps[0] >= MINUTE) stamps.shift();
-      let ms, pb;
-      if (full(head)) {
-        capNote = `waiting for a free machine slot (${liveCount(head.a, true)} running on the ${tierName?.() ? `${tierName()} ` : ''}plan)`;
-        ms = softPollMs;
-      } else if ((pb = profileBusy?.(head.a))) {
-        capNote = pb; // the agent's profile is at its concurrency cap; same wait as a full plan
-        ms = softPollMs;
-      } else if (stamps.length >= rate()) ms = stamps[0] + MINUTE - now();
-      if (!full(head) && !pb) capNote = undefined;
-      if (ms !== undefined) labelWaiting();
-      else if (head.a.queueNote) { delete head.a.queueNote; head.a.emit?.({ type: 'status', status: 'starting' }); } // the note ends when the machine starts; the dashboard clears it from this event
-      if (ms === undefined) { stamps.push(now()); waiting.shift().grant(); await new Promise(setImmediate); /* let the create start before the next grant */ } else await Promise.race([sleep(ms), new Promise((r) => { wake = r; })]);
+      let ms;
+      const headFull = full(head);
+      const profileNotes = headFull ? waiting.map(() => undefined) : waiting.map(({ a }) => profileBusy?.(a));
+      const rateFull = stamps.length >= rate();
+      const eligibleIndex = profileNotes.findIndex((note) => !note);
+      const candidateFull = !headFull && eligibleIndex >= 0 && full(waiting[eligibleIndex]);
+      const machineFull = headFull || candidateFull;
+      const blockedBy = headFull ? head : candidateFull ? waiting[eligibleIndex] : undefined;
+      const machineNote = blockedBy && `waiting for a free machine slot (${liveCount(blockedBy.a, true)} running on the ${tierName?.() ? `${tierName()} ` : ''}plan)`;
+      const grantIndex = machineFull || rateFull ? -1 : eligibleIndex;
+      if (grantIndex >= 0) {
+        const entry = waiting.splice(grantIndex, 1)[0];
+        reasons.delete(entry.a);
+        if (entry.a.queueNote) { delete entry.a.queueNote; entry.a.emit?.({ type: 'status', status: 'starting' }); }
+        stamps.push(now()); entry.grant(); await new Promise(setImmediate); /* let the create start before the next grant */
+      } else {
+        labelWaiting(waiting.map((_, i) => machineNote || profileNotes[i]));
+        if (machineFull || profileNotes.some(Boolean)) ms = softPollMs;
+        else if (rateFull) ms = stamps[0] + MINUTE - now();
+        if (ms !== undefined) await Promise.race([sleep(ms), new Promise((r) => { wake = r; })]);
+      }
     }
     pumping = false;
   };
-  const slot = (a) => new Promise((grant, reject) => { waiting.push({ a, grant, reject, t0: now() }); if (pumping) labelWaiting(); pump(); });
+  const slot = (a) => new Promise((grant, reject) => { waiting.push({ a, grant, reject, t0: now() }); if (pumping) wake?.(); pump(); });
   const nap = (a, ms) => new Promise((resolve, reject) => {
     sleeping.set(a, () => reject(new Error('cancelled')));
     sleep(ms).then(resolve, reject);
   }).finally(() => sleeping.delete(a));
   // Agents ahead of a in line; undefined when a is not waiting for a slot (it is retrying later or running).
   q.ahead = (a) => { const i = waiting.findIndex((e) => e.a === a); return i < 0 ? undefined : i; };
-  q.reason = (a) => (capNote && waiting.some((e) => e.a === a) ? capNote : undefined);
+  q.reason = (a) => (waiting.some((e) => e.a === a) ? reasons.get(a) : undefined);
   q.cancel = (a) => {
     a.cancelled = true;
     const i = waiting.findIndex((e) => e.a === a);
-    if (i >= 0) { waiting.splice(i, 1)[0].reject(new Error('cancelled')); wake?.(); }
+    if (i >= 0) { waiting.splice(i, 1)[0].reject(new Error('cancelled')); reasons.delete(a); wake?.(); }
     sleeping.get(a)?.();
   };
   q.create = async (a, fn) => {

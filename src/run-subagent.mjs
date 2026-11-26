@@ -95,8 +95,8 @@ function helpers(env, literals, keyName, tool) {
 export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
-  // This server's other agents holding or creating a machine. Admission counts a start whose create is still in flight; the count shown to people (shown) counts only agents that own a machine.
-  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && !(shown && !a.sandbox)))).length;
+  // Snapshot preparation is not a machine slot. Admission also counts a provider create in flight so concurrent creates cannot exceed the plan cap.
+  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && (shown ? !!a.sandbox : !!a.sandbox || !!a.machineCreating)))).length;
   // Per-profile cap (#55): profiles.json maxConcurrent, else CLOUDY_CLOUD_PROFILE_MAX, else none. The count is this server's own agents plus,
   // best effort, the machines the provider lists for the profile (other sessions); the list is eventually consistent, so it is approximate.
   const listed = new Map(); // profile name -> { n, at }
@@ -108,7 +108,7 @@ export const startQueue = (env, provider, open, opts) => {
       listed.set(name, { n: l?.n ?? 0, at: Date.now() });
       Promise.resolve(provider.list({ purpose: 'cloudy-cloud', profile: name })).then((m) => listed.set(name, { n: Array.isArray(m) ? m.filter((x) => (x.status ?? x.state) === 'running' || (x.status ?? x.state) === 'starting').length : 0, at: Date.now() })).catch(() => {});
     }
-    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && ['running', 'idle', 'starting'].includes(x.status)).length;
+    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && (x.status === 'running' || x.status === 'idle' || (x.status === 'starting' && (x.sandbox || x.machineCreating)))).length;
     const n = Math.max(local, listed.get(name)?.n ?? 0);
     return n >= max ? `waiting for a free ${name} slot (${n} of ${max} running; cap set by maxConcurrent or CLOUDY_CLOUD_PROFILE_MAX)` : undefined;
   };
@@ -529,11 +529,14 @@ async function setup(a, ctx) {
     a.createAbort = new AbortController(); // agent-scoped: cancelQueue aborts an in-flight provider create too
     a.cancelQueue = () => { a.createAbort.abort(); ctx.queue.cancel(a); };
     try {
-      a.sandbox = await ctx.queue.create(a, () => {
+      a.sandbox = await ctx.queue.create(a, async () => {
         const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
         a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
         const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-        return createSandbox(envs, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
+        a.machineCreating = true;
+        try {
+          return await createSandbox(envs, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
+        } finally { a.machineCreating = false; }
       });
     } catch (e) {
       if (a.cancelled) throw new Error('cancelled'); // an abort mid-create reads as a stop, not a provider error
