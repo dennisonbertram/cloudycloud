@@ -31,6 +31,7 @@ case "$p" in
   EDIT*) echo changed > a.txt; commit edit; git push -q origin HEAD; reply "edited" ;;
   SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
   SLOW*) sleep 0.5; reply "slow done" ;;
+  HANG*) while :; do sleep 1; done ;;
   BADSID*) printf '{"type":"result","is_error":false,"result":"x","session_id":"x; rm -rf /"}\\n' ;;
   RAW*) echo "not json" ;;
   LEAK*) reply "leak $LEAK1 $LEAK2" ;;
