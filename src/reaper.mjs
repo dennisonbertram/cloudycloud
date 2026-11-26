@@ -44,22 +44,38 @@ export const isAlive = (pid) => {
 };
 
 // Deletes the machines owned by `owner`. Returns the number deleted. provider.delete retries and treats 404 as deleted.
-export async function reap({ owner, provider, log = () => {} }) {
+async function reapAttempt({ owner, provider, log = () => {} }) {
+  let failed = false;
   let machines;
-  try { machines = await provider.list({ owner }, { onError: (e) => log(`list failed: ${e.message}`) }); } catch (e) { log(`list failed: ${e.message}`); return 0; }
+  try { machines = await provider.list({ owner }, { onError: (e) => { failed = true; log(`list failed: ${e.message}`); } }); }
+  catch (e) { log(`list failed: ${e.message}`); return { deleted: 0, failed: true }; }
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;
     let logged = false; // the adapter logs each failed attempt itself; log the final error only if it did not
-    try { await provider.delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; } catch (e) { if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
+    try { await provider.delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; }
+    catch (e) { failed = true; if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
   }
-  return deleted;
+  return { deleted, failed };
 }
 
+export async function reap(args) { return (await reapAttempt(args)).deleted; }
+
 // Polls until the parent is gone, then reaps. Resolves when done (or after the lifetime backstop).
-export async function watch({ pid, owner, provider, alive = isAlive, log, pollMs = 2000, maxMs = MAX_LIFETIME_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function watch({ pid, owner, provider, alive = isAlive, log, pollMs = 2000, retryMs = 5000, maxMs = MAX_LIFETIME_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   for (let waited = 0; waited < maxMs; waited += pollMs) {
-    if (!alive(pid)) return reap({ owner, provider, log });
+    if (!alive(pid)) {
+      let retry = 0;
+      for (let elapsed = 0; elapsed < maxMs; retry++) {
+        const result = await reapAttempt({ owner, provider, log });
+        if (!result.failed) return result.deleted;
+        const delay = Math.min(retryMs * 2 ** Math.min(retry, 4), 60_000, maxMs - elapsed);
+        if (delay < 0) return result.deleted;
+        await sleep(delay);
+        elapsed += delay || 1;
+      }
+      return 0;
+    }
     await sleep(pollMs);
   }
 }
