@@ -148,6 +148,7 @@ test('exec keeps dirty work and a clean new commit for inspection', async () => 
     assert.equal(dirty.state.deleted, 0);
     assert.equal(dirtyResult.owner.selector, 'fake:same-id');
     assert.match(dirtyResult.action, /cloudy-cloud shell 'fake:same-id'/);
+    assert.equal(dirtyResult.cleanup_command, "cloudy-cloud machines stop 'fake:same-id'");
 
     const commitResult = await invoke(repo, committed, [
       'sh', '-c', 'echo committed > new.txt && git add new.txt && git -c user.name=exec -c user.email=exec@test.invalid commit -qm saved',
