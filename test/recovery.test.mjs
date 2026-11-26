@@ -33,10 +33,11 @@ test('checkpoint persistence keeps only validated recovery metadata', async () =
 test('recovery confirms the old machine is gone and starts a fresh message on the selected provider', async () => {
   const f = fixture();
   await saveCheckpoint(f.env, f.record);
+  let connects = 0;
   const old = {
     name: 'old-provider',
-    list: async () => [{ id: 'machine-old', state: 'running', labels: { agent: 'deadbeef', parent: 'owner-old' } }],
-    connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); },
+    list: async () => [],
+    connect: async () => { connects++; throw Object.assign(new Error('gone'), { code: 'not_found' }); },
   };
   const alternate = { name: 'alternate', list: async () => [], connect: async () => { throw new Error('unused'); } };
   let started;
@@ -50,6 +51,7 @@ test('recovery confirms the old machine is gone and starts a fresh message on th
   assert.equal(started.args.base, f.record.checkpointSha);
   assert.equal(started.args.prompt, 'Continue by inspecting the pushed file.');
   assert.equal(started.args.machine, 'linux');
+  assert.equal(connects, 1, 'a listed absence requires an explicit provider not-found result');
   assert.deepEqual(started.args.egress, []);
   assert.notEqual(started.args.prompt, f.record.prompt);
   assert.match(r.content[0].text, /fresh.*conversation/i);
@@ -112,6 +114,73 @@ test('recovery refuses an unknown original machine state instead of assuming abs
   assert.equal(starts, 0);
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /could not confirm|unknown/i);
+});
+
+test('recovery refuses an incomplete original-provider list even when it returns no rows', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  let starts = 0;
+  const old = { name: 'old-provider', list: async (_labels, { onError }) => { onError(Object.assign(new Error('later page failed'), { code: 'transient' })); return []; } };
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new message' }, {
+    env: f.env, cwd: f.dir, providers: [old, { name: 'alternate' }], verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+    startRecovery: async () => { starts++; return { content: [{ type: 'text', text: 'unexpected start' }] }; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /incomplete machine list|unknown/i);
+});
+
+test('recovery refuses an unlisted original ID unless connect explicitly reports not found', async () => {
+  for (const [label, connect, expected] of [
+    ['reachable', async () => ({ id: 'machine-old' }), /still reachable|still present/i],
+    ['transient', async () => { throw Object.assign(new Error('offline'), { code: 'transient' }); }, /state is unknown|could not confirm/i],
+    ['foreign', async () => { throw Object.assign(new Error('not owned here'), { code: 'not_found', foreign: true }); }, /state is unknown|could not confirm/i],
+    ['extant', async () => { throw Object.assign(new Error('not ready'), { code: 'not_found', exists: true }); }, /state is unknown|could not confirm/i],
+  ]) {
+    const f = fixture();
+    await saveCheckpoint(f.env, f.record);
+    let starts = 0;
+    const old = { name: 'old-provider', list: async () => [], connect };
+    const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new message' }, {
+      env: f.env, cwd: f.dir, providers: [old, { name: 'alternate' }], verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+      startRecovery: async () => { starts++; return { content: [{ type: 'text', text: 'unexpected start' }] }; },
+    });
+    assert.equal(starts, 0, label);
+    assert.equal(r.isError, true, label);
+    assert.match(r.content[0].text, expected, label);
+  }
+});
+
+test('recovery refuses a listed paused machine even when its normalized status says stopped', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  let connects = 0, starts = 0;
+  const old = { name: 'old-provider', list: async () => [{ id: f.record.machine, state: 'paused', status: 'stopped', labels: { purpose: 'cloudy-cloud', agent: f.record.id, parent: f.record.owner } }], connect: async () => { connects++; throw Object.assign(new Error('not found'), { code: 'not_found' }); } };
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new message' }, {
+    env: f.env, cwd: f.dir, providers: [old, { name: 'alternate' }], verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+    startRecovery: async () => { starts++; return { content: [{ type: 'text', text: 'unexpected start' }] }; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(connects, 0, 'checking a listed machine must not wake it');
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /still listed|machine is still/i);
+});
+
+test('recovery refuses duplicate old-provider rows carrying the same agent label', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  let starts = 0;
+  const old = { name: 'old-provider', list: async () => [
+    { id: f.record.machine, status: 'stopped', labels: { purpose: 'cloudy-cloud', agent: f.record.id, parent: f.record.owner } },
+    { id: 'machine-copy', status: 'stopped', labels: { purpose: 'cloudy-cloud', agent: f.record.id, parent: f.record.owner } },
+  ], connect: async () => assert.fail('recovery must not connect to listed machines') };
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new message' }, {
+    env: f.env, cwd: f.dir, providers: [old, { name: 'alternate' }], verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+    startRecovery: async () => { starts++; return { content: [{ type: 'text', text: 'unexpected start' }] }; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /duplicate|more than one/i);
 });
 
 test('recovery leaves stale locks intact and gives a verified cleanup step', async () => {

@@ -260,10 +260,20 @@ test('boat: delete and connect refuse a foreign sandbox with not_found and never
   z.boxes.set('alien2', z.row('alien2', { labels: {} }));
   await assert.rejects(p.delete('alien'), (e) => e.code === 'not_found');
   await assert.rejects(p.delete('alien2'), (e) => e.code === 'not_found');
-  await assert.rejects(p.connect('alien'), (e) => e.code === 'not_found');
+  await assert.rejects(p.connect('alien'), (e) => e.code === 'not_found' && e.foreign === true);
+  await assert.rejects(p.connect('missing'), (e) => e.code === 'not_found' && e.foreign !== true, 'an explicit 404 for an absent id is distinct from an extant foreign sandbox');
   await assert.rejects(p.publishPort('alien', '8080'), (e) => e.code === 'not_found');
   assert.ok(!z.log.some((l) => l.method === 'DELETE'), 'no delete was ever sent for a foreign sandbox');
   assert.ok(z.boxes.has('alien') && z.boxes.has('alien2'));
+});
+
+test('boat: a listed but unavailable owned sandbox keeps an explicit exists marker', async () => {
+  const z = fakeBoat();
+  const env = { CLOUDY_CLOUD_CONFIG: cfgFile() };
+  const p = mk(z, env);
+  z.boxes.set('archived', z.row('archived', { state: 'archived', labels: { purpose: 'cloudy-cloud', install: installId(env), agent: 'deadbeef' } }));
+  await assert.rejects(p.connect('archived'), (e) => e.code === 'not_found' && e.exists === true);
+  assert.ok(z.boxes.has('archived'), 'the adapter reports state without deleting the extant sandbox');
 });
 
 test('boat: create stamps the shared install id, and another session of this installation owns the worker', async () => {

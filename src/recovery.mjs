@@ -122,25 +122,27 @@ async function acquireLock(env, id) {
 }
 
 const textResult = (text, isError = false) => ({ content: [{ type: 'text', text }], structuredContent: { status: isError ? 'failed' : 'unknown', error: isError, message: text }, ...(isError && { isError: true }) });
-const stateOf = (row) => String(row?.status ?? row?.state ?? '').toLowerCase();
-const goneCodes = new Set(['not_found', 'machine_not_found']);
-const terminal = new Set(['stopped', 'failed', 'deleted', 'expired', 'terminated']);
 
 async function confirmOriginalGone(record, provider) {
-  let rows;
-  try { rows = await provider.list({ purpose: 'cloudy-cloud', agent: record.id }); }
+  let rows, listErrors = [];
+  try { rows = await provider.list({ purpose: 'cloudy-cloud' }, { onError: (error) => listErrors.push(error) }); }
   catch { return { ok: false, reason: 'the original provider is unreachable; its machine state is unknown' }; }
   if (!Array.isArray(rows)) return { ok: false, reason: 'the original provider returned an incomplete machine list; its machine state is unknown' };
+  if (listErrors.length) return { ok: false, reason: 'the original provider returned an incomplete machine list; its machine state is unknown' };
   const related = rows.filter((m) => m?.labels?.agent === record.id);
-  const row = related.find((m) => String(m.id) === record.machine);
+  if (related.length > 1) return { ok: false, reason: 'the original provider lists duplicate machines for this agent; recovery is refused' };
+  const machineRows = rows.filter((m) => String(m?.id) === record.machine);
+  if (machineRows.length > 1) return { ok: false, reason: 'the original provider lists duplicate rows for the checkpoint machine; recovery is refused' };
   if (related.some((m) => m.labels?.parent !== record.owner)) return { ok: false, reason: 'the original machine ownership labels do not match the checkpoint' };
-  if (related.length && !row) return { ok: false, reason: 'the original agent has a different machine than its checkpoint; refusing recovery' };
-  if (row && terminal.has(stateOf(row))) return { ok: true };
+  if (related.length && String(related[0].id) !== record.machine) return { ok: false, reason: 'the original agent has a different machine than its checkpoint; refusing recovery' };
+  const row = machineRows[0];
+  if (row && (row.labels?.agent !== record.id || row.labels?.parent !== record.owner)) return { ok: false, reason: 'the original machine ownership labels do not match the checkpoint' };
+  if (row) return { ok: false, reason: 'the original machine is still listed, so its state is not confirmed gone; recovery will not start a duplicate worker' };
   try {
     await provider.connect(record.machine);
-    return { ok: false, reason: 'the original machine is still reachable; recovery will not start a duplicate worker' };
+    return { ok: false, reason: 'the original machine is still reachable, so recovery will not start a duplicate worker' };
   } catch (e) {
-    if (goneCodes.has(e?.code) || e?.status === 404) return { ok: true };
+    if ((e?.code === 'not_found' || e?.code === 'machine_not_found') && e?.foreign !== true && e?.exists !== true) return { ok: true };
     return { ok: false, reason: 'could not confirm whether the original machine is gone; its state is unknown' };
   }
 }
