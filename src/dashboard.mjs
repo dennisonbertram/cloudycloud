@@ -465,7 +465,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
     const coordLogs = {};
     if (machines) for (const id of logs.keys()) if (!machines.some((m) => machineKey(m) === id)) logs.delete(id); // its machine is gone: forget its history
-    if (getReader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
+    if (getReader && machines) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
       const reader = await readerFor(m).catch(() => null);
       if (!reader) continue;
       await pull(reader, m);
