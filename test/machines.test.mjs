@@ -34,9 +34,9 @@ test('ls piped prints a TSV header and one row per machine', async () => {
   await make(provider, { name: 'w-one' });
   await make(provider, { name: 'c-one', role: 'coordinator', labels: { name: 'boss' } });
   assert.equal(await run(['ls'], d), 0);
-  assert.equal(out[0], 'NAME\tROLE\tSTATE\tSTARTED\tDELETES\tID');
-  assert.match(out[1], /^w-one\tworker\trunning\t\d{4}-\d{2}-\d{2}T.*\tfake-1$/);
-  assert.match(out[2], /^boss\tcoordinator\trunning\t.*\tfake-2$/);
+  assert.equal(out[0], 'NAME\tPROVIDER\tROLE\tSTATE\tSTARTED\tDELETES\tID');
+  assert.match(out[1], /^w-one\tfake\tworker\trunning\t\d{4}-\d{2}-\d{2}T.*\tfake-1$/);
+  assert.match(out[2], /^boss\tfake\tcoordinator\trunning\t.*\tfake-2$/);
   assert.equal(out.length, 3, out.join('\n'));
 });
 
@@ -46,8 +46,8 @@ test('ls on a terminal prints a table ending with the count and a Next', async (
   await make(provider, { name: 'w-two' });
   assert.equal(await run([], d), 0);
   const text = out.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(text, /NAME\s+ROLE\s+STATE\s+AGE\s+DELETES/);
-  assert.match(text, /w-one\s+worker\s+running/);
+  assert.match(text, /NAME\s+PROVIDER\s+ROLE\s+STATE\s+AGE\s+DELETES/);
+  assert.match(text, /w-one\s+fake\s+worker\s+running/);
   assert.match(text, /2 running\./);
   assert.match(text, /Next: cloudy-cloud machines stop/);
 });
@@ -111,6 +111,18 @@ test('stop --all --yes deletes every listed machine and says so', async () => {
   assert.equal(provider.log.delete.length, 2);
   assert.match(out.join('\n'), /Deleted w-one/);
   assert.match(out.join('\n'), /Deleted 2 machines\./);
+});
+
+test('stop --all refuses a partial provider list and deletes nothing', async () => {
+  const { provider, err, d } = deps();
+  d.list = async () => {
+    const rows = [{ id: 'one', name: 'one', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running' }];
+    Object.defineProperties(rows, { providerNames: { value: ['fake', 'boat'] }, providerErrors: { value: [{ provider: 'boat', code: 'transient', message: 'unavailable' }] } });
+    return rows;
+  };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assert.match(err.join('\n'), /Could not list boat/);
+  assert.deepEqual(provider.log.delete, []);
 });
 
 test('stop --all on a terminal asks once; n deletes nothing, y deletes all', async () => {

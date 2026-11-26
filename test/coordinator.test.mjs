@@ -273,7 +273,7 @@ test('ls lists only coordinators', async () => {
   ] });
   await main(['ls'], f.deps);
   const text = f.log.out.join('\n');
-  assert.match(text, /boss\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss/);
+  assert.match(text, /boss\tinstabox\trunning\t2026-01-02T03:04:05.000Z\tcoord-boss/);
   assert.ok(!/worker-1|img/.test(text));
 });
 
@@ -1486,7 +1486,7 @@ test('ls drops the absolute date from DELETES for every row when one is never de
   const g = fixture({ machines });
   await main(['ls'], g.deps);
   const tsv = g.log.out.join('\n');
-  assert.match(tsv, /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/);
+  assert.match(tsv, /NAME\tPROVIDER\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/);
   assert.match(tsv, /\d{4}-\d\d-\d\dT/, 'the ISO date stays in the TSV');
 });
 
@@ -1786,7 +1786,7 @@ test('NO_COLOR and TERM=dumb on a terminal get the coordinator screens minus col
   }
   const g = fixture({ machines: [machine] });
   await main(['ls'], g.deps);
-  assert.match(g.log.out.join('\n'), /NAME\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/); // piped stays TSV
+  assert.match(g.log.out.join('\n'), /NAME\tPROVIDER\tSTATE\tCREATED\tMACHINE\tDELETES\tWAITING/); // piped stays TSV
 });
 
 test('every coordinator screen fits 80 cells in colour, NO_COLOR and TERM=dumb; every error screen ends with exactly one Next', async () => {

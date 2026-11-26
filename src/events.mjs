@@ -116,7 +116,7 @@ export function foldAgents(events, { alive = isAlive, now = Date.now() } = {}) {
       Object.assign(a, { description: e.description, profile: e.profile, role: e.role, model: e.model, branch: e.branch, startedAt: e.t });
       if (HARNESSES.has(e.harness)) a.harness = e.harness;
       a.mcp = Array.isArray(e.mcp) ? e.mcp.filter((n) => typeof n === 'string') : undefined; // names only
-    } else if (e.type === 'machine') { a.machine = e.machine; if (e.deleteAt) a.deleteAt = e.deleteAt; }
+    } else if (e.type === 'machine') { a.machine = e.machine; if (typeof e.provider === 'string') a.provider = e.provider; if (e.deleteAt) a.deleteAt = e.deleteAt; }
     else if (e.type === 'status') {
       a.status = e.status;
       a.queueNote = e.status === 'queued' ? e.note : undefined;

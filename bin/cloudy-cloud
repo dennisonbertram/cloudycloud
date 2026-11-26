@@ -220,7 +220,10 @@ if [ -z "${INSTABOX_API_KEY:-}" ] && [ -n "${CLOUDY_CLOUD_INSTABOX_API_KEY:-}" ]
 find_missing() {
   missing=
   # The provider comes from the environment or the saved file; Instabox is the default.
-  provider=$(printenv CLOUDY_CLOUD_PROVIDER)
+  providers=$(printenv CLOUDY_CLOUD_PROVIDERS)
+  [ -n "$providers" ] || providers=$(sed -n 's/^CLOUDY_CLOUD_PROVIDERS=//p' "$config" 2>/dev/null | tail -n 1)
+  provider=${providers%%[,[:space:]]*}
+  [ -n "$provider" ] || provider=$(printenv CLOUDY_CLOUD_PROVIDER)
   [ -n "$provider" ] || provider=$(sed -n 's/^CLOUDY_CLOUD_PROVIDER=//p' "$config" 2>/dev/null | tail -n 1)
   if [ "$provider" = self-hosted ]; then
     # Inside a coordinator (local mode) the Docker socket stands in for the SSH host; elsewhere the SSH address counts.

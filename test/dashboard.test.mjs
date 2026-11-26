@@ -216,8 +216,34 @@ test('listMachines maps the provider list, status included, and needs the key', 
   provider.machines.set('m2', { id: 'm2', name: 'other', labels: { purpose: 'else' }, state: 'running', status: 'running', startedAt: 6 });
   const rows = await listMachines({ FAKE_API_KEY: 'k' }, provider);
   assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
-  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
+  assert.deepEqual(rows, [{ id: 'm1', provider: 'fake', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
+});
+
+test('listMachines keeps provider identity and partial provider errors', async () => {
+  const provider = {
+    name: 'instabox', keyName: 'INSTABOX_API_KEY', providers: [{ name: 'instabox' }, { name: 'boat' }],
+    async list(_labels, opts) {
+      opts.onError(Object.assign(new Error('Boat unavailable'), { provider: 'boat', code: 'transient' }));
+      return [{ id: 'shared', provider: 'instabox', name: 'host-a', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: 1 }];
+    },
+  };
+  const rows = await listMachines({}, provider);
+  assert.equal(rows[0].provider, 'instabox');
+  assert.deepEqual(rows.providerErrors, [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }]);
+});
+
+test('buildState maps a same-id machine only to the provider in its machine event', () => {
+  const machines = [
+    { id: 'shared', provider: 'instabox', name: 'box-a', state: 'running', status: 'running' },
+    { id: 'shared', provider: 'boat', name: 'box-b', state: 'stopped', status: 'stopped' },
+  ];
+  const events = [{ type: 'agent', id: 'agent-1', t: 1 }, { type: 'machine', id: 'agent-1', t: 2, provider: 'boat', machine: 'shared' }];
+  const state = buildState({ events, machines, now: 3, alive: () => true });
+  const agent = state.boxes.find((b) => b.id === 'agent-1');
+  assert.equal(agent.provider, 'boat');
+  assert.equal(agent.machineState, 'stopped');
+  assert.ok(state.boxes.some((b) => b.id === 'instabox:box-a' && b.provider === 'instabox'));
 });
 
 test('listMachines honours an auto-discovered msb (no CLOUDY_CLOUD_MSB_BIN)', async () => {
@@ -230,6 +256,7 @@ test('listMachines honours an auto-discovered msb (no CLOUDY_CLOUD_MSB_BIN)', as
   const env = { PATH: dir, HOME: mkdtempSync(join(tmpdir(), 'cc-dshhome-')) };
   const rows = await listMachines(env, provider);
   assert.equal(rows[0].id, 'm1');
+  assert.equal(rows[0].provider, 'microsandbox');
   await assert.rejects(listMachines({ PATH: '', HOME: env.HOME }, provider), { code: 'no_key' });
 });
 
