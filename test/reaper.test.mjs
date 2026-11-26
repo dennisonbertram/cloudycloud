@@ -50,6 +50,27 @@ test('a failed list or delete is logged without the key, and reaping continues',
   assert.match(bad.logs[0], /list failed/);
 });
 
+test('the reaper retries temporary list and delete failures after the parent exits', async () => {
+  const s = await setup([{ owner: OWNER }]);
+  const list = s.provider.list;
+  let listCalls = 0, deleteCalls = 0;
+  s.provider.list = async (...args) => {
+    if (++listCalls === 1) throw new Error('temporary list failure');
+    return list(...args);
+  };
+  const del = s.provider.delete;
+  s.provider.delete = async (id, opts) => {
+    if (++deleteCalls === 1) throw new Error('temporary delete failure');
+    return del(id, opts);
+  };
+  await watch({ pid: 1, owner: OWNER, provider: s.provider, alive: () => false, log: (m) => s.log(m), retryMs: 0, sleep: async () => {}, maxMs: 20 });
+  assert.equal(listCalls, 3, 'retries a failed listing and then a failed delete');
+  assert.equal(deleteCalls, 2);
+  assert.deepEqual(s.provider.log.delete, ['m1']);
+  assert.match(s.logs.join('\n'), /temporary list failure/);
+  assert.match(s.logs.join('\n'), /temporary delete failure/);
+});
+
 test('spawn options pass the key and provider only in env', () => {
   const provider = createFakeProvider();
   const { args, options } = reaperSpawn(42, OWNER, KEY, provider, { PATH: '/bin' });

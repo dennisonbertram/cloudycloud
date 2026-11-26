@@ -74,7 +74,7 @@ const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@')
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
 // answer with a task and the result arrives through getTask. Otherwise they answer at once and cloud_agent_wait collects.
-// Agent: { id, description, status: queued|starting|running|idle|failed|stopped, result: {text, error, reported},
+// Agent: { id, description, status: queued|starting|running|idle|failed|stop-pending|stopped, result: {text, error, reported},
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
 // Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
@@ -96,7 +96,7 @@ export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
   const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
   // Snapshot preparation is not a machine slot. Admission also counts a provider create in flight so concurrent creates cannot exceed the plan cap.
-  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && (shown ? !!a.sandbox : !!a.sandbox || !!a.machineCreating)))).length;
+  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'stop-pending' || (a.status === 'starting' && (shown ? !!a.sandbox : !!a.sandbox || !!a.machineCreating)))).length;
   // Per-profile cap (#55): profiles.json maxConcurrent, else CLOUDY_CLOUD_PROFILE_MAX, else none. The count is this server's own agents plus,
   // best effort, the machines the provider lists for the profile (other sessions); the list is eventually consistent, so it is approximate.
   const listed = new Map(); // profile name -> { n, at }
@@ -108,7 +108,7 @@ export const startQueue = (env, provider, open, opts) => {
       listed.set(name, { n: l?.n ?? 0, at: Date.now() });
       Promise.resolve(provider.list({ purpose: 'cloudy-cloud', profile: name })).then((m) => listed.set(name, { n: Array.isArray(m) ? m.filter((x) => (x.status ?? x.state) === 'running' || (x.status ?? x.state) === 'starting').length : 0, at: Date.now() })).catch(() => {});
     }
-    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && (x.status === 'running' || x.status === 'idle' || (x.status === 'starting' && (x.sandbox || x.machineCreating)))).length;
+    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && (x.status === 'running' || x.status === 'idle' || x.status === 'stop-pending' || (x.status === 'starting' && (x.sandbox || x.machineCreating)))).length;
     const n = Math.max(local, listed.get(name)?.n ?? 0);
     return n >= max ? `waiting for a free ${name} slot (${n} of ${max} running; cap set by maxConcurrent or CLOUDY_CLOUD_PROFILE_MAX)` : undefined;
   };
@@ -196,13 +196,35 @@ async function stop(a, open, gone) {
   clearTimeout(a.idleTimer);
   a.cancelled = true;
   a.cancelQueue?.();
-  if (open.get(a.id) === a) open.delete(a.id);
-  if (gone && a.branch) { if (gone.size >= 500) gone.delete(gone.keys().next().value); gone.set(a.id, a.branch); }
-  a.status = 'stopped';
-  a.emit?.({ type: 'status', status: 'stopped' });
-  if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
+  if (a.status === 'stopped') return;
+  a.stopPending = true;
+  a.status = 'stop-pending';
+  a.emit?.({ type: 'status', status: 'stop-pending' });
+  if (a.turn?.status === 'working') {
+    a.turn.cancelled = true;
+    a.turn.abort.abort();
+    endTurn(a.turn, 'cancelled', { text: 'Agent stop is pending.', error: false, reported: true });
+  }
   wake(a);
-  await a.sandbox?.kill().catch(() => {});
+  if (a.stopPromise) return a.stopPromise;
+  const attempt = async () => {
+    if (!a.sandbox && a.setupPromise) await a.setupPromise.catch(() => {});
+    if (a.sandbox) {
+      try { await a.sandbox.kill(); }
+      catch (e) {
+        if (e?.code !== 'not_found' && e?.status !== 404) throw e;
+      }
+    }
+    a.stopPending = false;
+    a.status = 'stopped';
+    if (open.get(a.id) === a) open.delete(a.id);
+    if (gone && a.branch) { if (gone.size >= 500) gone.delete(gone.keys().next().value); gone.set(a.id, a.branch); }
+    a.emit?.({ type: 'status', status: 'stopped' });
+    wake(a);
+  };
+  a.stopPromise = attempt();
+  try { await a.stopPromise; }
+  finally { a.stopPromise = undefined; }
 }
 
 function endTurn(t, status, result) {
@@ -224,8 +246,12 @@ function newTurn(a) {
 
 function armIdle(a, ctx) {
   clearTimeout(a.idleTimer);
+  if (a.stopPending || a.status === 'stopped') return;
   a.idleSince = Date.now();
-  a.idleTimer = setTimeout(() => { log(`agent ${a.id} idle, stopping`); stop(a, ctx.open, ctx.stoppedBranches); }, ctx.idleMs ?? IDLE_MS);
+  a.idleTimer = setTimeout(() => {
+    log(`agent ${a.id} idle, stopping`);
+    stop(a, ctx.open, ctx.stoppedBranches).catch((e) => log(`idle stop failed for ${a.id}: ${ctx.scrub(e?.message)}`));
+  }, ctx.idleMs ?? IDLE_MS);
   a.idleTimer.unref?.();
 }
 
@@ -241,7 +267,10 @@ async function safetyPush(a, ctx) {
     )).stdout;
     let out = await push();
     const marker = (m) => new RegExp(`^${m}$`, 'm').test(out); // whole lines only: a file or error text may hold the same word
-    if (!marker('PUSHOK') && !marker('NOCHANGE')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
+    if (!marker('PUSHOK') && !marker('NOCHANGE') && marker('PUSHFAIL')) {
+      await (ctx.sleep ?? sleep)(5000);
+      out = await push();
+    }
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
     const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
@@ -253,10 +282,12 @@ async function safetyPush(a, ctx) {
       return { where: `Pushed to origin ${branch} at ${sha}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
+    if (!marker('PUSHFAIL')) return { failed: true, where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
     return { failed: true, where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
-    log('safety push failed:', e?.message);
-    return { gone: true, where: `The sandbox could not be reached to push. Only work the agent already pushed to origin ${branch} survives.` };
+    log('safety push failed:', ctx.scrub(e?.message));
+    if (e?.code === 'not_found' || e?.status === 404) return { gone: true, where: `The sandbox is confirmed gone before the safety push (${ctx.scrub(e?.message)}). Only work already pushed to origin ${branch} survives.` };
+    return { failed: true, where: `The sandbox could not be reached to push (${ctx.scrub(e?.message)}). The agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.` };
   }
 }
 
@@ -315,12 +346,12 @@ async function turn(a, message, ctx, t) {
     const c = classifyProviderError(r.text);
     if (!c) return r;
     const ok = c.retryable && (c.kind !== 'model_not_found' || answered.has(a.profile.name));
-    if (!ok || n >= max || t.cancelled || a.status === 'stopped' || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
+    if (!ok || r.uncertainExecution || n >= max || t.cancelled || a.status === 'stopped' || a.stopPending || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
     t.progress = PROGRESS[harnessOf(a)]();
     const wait = Math.min(RETRY_WAIT_MS[Math.min(n, 2)], Math.max(deadline - Date.now(), 0));
     a.emit?.({ type: 'progress', text: `provider error (${providerDetail(r.text).replace('Provider status: ', '')}), retrying in ${wait / 1000}s (attempt ${n + 2} of ${max + 1})` });
     await nap(wait, t, ctx.sleep); // the wait ends early on cancel or stop
-    if (t.cancelled || a.status === 'stopped') return { cancelled: true, text: `Turn cancelled. The agent is still open.` };
+    if (t.cancelled || a.status === 'stopped' || a.stopPending) return { cancelled: true, text: `Turn cancelled. The agent is still open.` };
     if (deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
   }
 }
@@ -331,7 +362,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
   } catch (e) {
-    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin ${a.branch} survives.` };
+    if (e?.code === 'not_found' || e?.status === 404) return { error: true, gone: true, text: `The sandbox is confirmed gone (${scrub(e?.message)}). Only work already pushed to origin ${a.branch} survives.` };
+    return { error: true, retryableTransport: true, text: `The prompt could not be written to the sandbox (${scrub(e?.message)}). The agent remains open; send the message again when the sandbox is reachable.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
@@ -380,13 +412,14 @@ async function turnOnce(a, message, ctx, t, deadline) {
 
   if (t.cancelled) return { cancelled: true, gone, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
+    const turnGone = gone || failure?.code === 'not_found' || failure?.status === 404;
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const limit = failure.exitCode === undefined ? `\nThe turn may have hit its ${turnMs / 60_000}-minute limit (CLOUDY_CLOUD_TURN_MINUTES).` : '';
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone, text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    return { error: true, gone: turnGone, uncertainExecution: failure.exitCode === undefined && !turnGone, text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -542,7 +575,7 @@ async function setup(a, ctx) {
       if (a.cancelled) throw new Error('cancelled'); // an abort mid-create reads as a stop, not a provider error
       throw e;
     }
-    if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
+    if (a.cancelled) throw new Error('cancelled'); // stop() now owns deletion after the create settles
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
@@ -883,7 +916,12 @@ function autofix(a, ctx, t) {
 async function work(a, message, first, ctx, t) {
   let r;
   try {
-    if (first) await setup(a, ctx);
+    if (first) {
+      a.setupPromise = setup(a, ctx);
+      try { await a.setupPromise; }
+      finally { a.setupPromise = undefined; }
+    }
+    if (a.stopPending || a.status === 'stopped') return;
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
@@ -915,9 +953,9 @@ async function work(a, message, first, ctx, t) {
     log('error:', ctx.scrub(e?.message));
     r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
   }
-  if (a.status === 'stopped') return;
+  if (a.status === 'stopped' || a.stopPending) return;
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
-  const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
+  const dead = first ? r.error && !r.retryableTransport && !r.uncertainExecution && !r.pushOnly && (r.gone || !a.sessionId) : r.gone;
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
@@ -1007,7 +1045,14 @@ export async function cancelTask(taskId, deps) {
   if (!t) return undefined;
   if (t.status === 'working') {
     t.cancelled = true;
-    if (t.n === 1) await stop(t.agent, ctx.open, ctx.stoppedBranches);
+    if (t.n === 1) {
+      try { await stop(t.agent, ctx.open, ctx.stoppedBranches); }
+      catch (e) {
+        const detail = ctx.scrub(e?.message);
+        log(`task cancellation stop failed for ${t.agent.id}: ${detail}`);
+        t.result = { text: `Turn cancelled, but sandbox deletion failed (${detail}). The agent remains tracked as stop-pending; retry cloud_agent_stop for ${t.agent.id}.`, error: true, reported: true };
+      }
+    }
     else {
       t.abort.abort();
       let timer;
@@ -1216,6 +1261,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   if (typeof message !== 'string' || !message) return fail('message is required');
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a) return fail(guide('agent_gone', { id }));
+  if (a.stopPending) return fail(`Agent ${id} is stopping because its sandbox deletion has not been confirmed. Retry cloud_agent_stop before sending another message.`);
   if (active(a)) return fail(guide('agent_busy', { id }));
   if (a.status === 'failed') return fail(guide('agent_failed', { id }));
   clearTimeout(a.idleTimer);
@@ -1330,8 +1376,12 @@ export async function stopAgents(args = {}, deps) {
   const lines = await Promise.all(ids.map(async (id) => {
     const a = ctx.open.get(id);
     if (!a) return `${id}: not open (already stopped or never existed)`;
-    await stop(a, ctx.open, ctx.stoppedBranches);
-    return `${id}: stopped`;
+    try {
+      await stop(a, ctx.open, ctx.stoppedBranches);
+      return `${id}: stopped`;
+    } catch (e) {
+      return `${id}: stop failed (${ctx.scrub(e?.message)}); deletion is unconfirmed and the machine remains tracked as stop-pending. Retry cloud_agent_stop for this id.`;
+    }
   }));
   return ctx.ok(lines.join('\n') || 'No agent ids given.');
 }

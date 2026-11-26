@@ -228,6 +228,140 @@ test('stop kills several sandboxes, forgets them, and is idempotent; message aft
   assert.match(await wait([ids[0]], 0.05), /status: stopped/);
 });
 
+test('a rejected stop stays tracked and blocks messages until a retry deletes the machine', async () => {
+  let killCalls = 0;
+  let beganKill, failKill;
+  const killStarted = new Promise((resolve) => { beganKill = resolve; });
+  const firstKill = new Promise((_, reject) => { failKill = reject; });
+  let sandbox;
+  const { start, wait, stop, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const kill = s.kill;
+      s.kill = async () => {
+        if (++killCalls === 1) { beganKill(); await firstKill; }
+        await kill();
+      };
+      sandbox = s;
+      return s;
+    },
+  });
+  const id = await start();
+  await wait([id]);
+  const pendingStop = stop([id]);
+  await killStarted;
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.match(await wait([id]), new RegExp(`status: stop-pending`));
+  assert.equal((await msg(id, 'must not start')).isError, true);
+  const concurrentStop = stop([id]);
+  await tick(0);
+  assert.equal(killCalls, 1, 'concurrent stop calls share one deletion attempt');
+  failKill(new Error('temporary delete failure'));
+  const [first, concurrent] = await Promise.all([pendingStop, concurrentStop]);
+  assert.match(first, /delete failure/i);
+  assert.match(concurrent, /delete failure/i);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(open.has(id), false);
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('an idle timer handles a rejected stop and leaves the machine retryable', async () => {
+  let killCalls = 0, sandbox;
+  const { start, wait, stop, open } = await setup({
+    idleMs: 30,
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const kill = sandbox.kill;
+      sandbox.kill = async () => { if (++killCalls === 1) throw new Error('temporary delete failure'); await kill(); };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  await wait([id]);
+  for (let i = 0; i < 30 && open.get(id)?.status !== 'stop-pending'; i++) await tick(10);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('failed setup cleanup keeps the sandbox handle available for a later stop retry', async () => {
+  let killCalls = 0, sandbox;
+  const { start, wait, stop, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('git init -q repo')
+        ? Promise.reject(new Error('temporary setup failure'))
+        : run(cmd, opts);
+      const kill = sandbox.kill;
+      sandbox.kill = async () => { if (++killCalls === 1) throw new Error('temporary delete failure'); await kill(); };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  assert.match(await wait([id]), /status: failed/);
+  assert.equal(open.get(id)?.sandbox, sandbox);
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('a transient prompt write failure keeps the existing session open for an explicit retry', async () => {
+  const { start, wait, msg, created, open } = await setup();
+  const id = await start();
+  await wait([id]);
+  const write = created[0].files.write;
+  let failed = false;
+  created[0].files.write = async (path, data) => {
+    if (path.endsWith('/prompt.txt') && !failed) { failed = true; throw new Error('temporary transport error'); }
+    return write(path, data);
+  };
+  await msg(id, 'first explicit turn');
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /temporary transport error/);
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(created[0].killed, false);
+  await msg(id, 'retry by user');
+  assert.match(await wait([id]), /hello/);
+  assert.equal(created[0].cmds.filter((c) => c.includes('claude -p')).length, 2);
+});
+
+test('a lost safety-push connection does not kill the session or replay the completed command', async () => {
+  let lost = false;
+  const { start, wait, msg, created, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = async (cmd, opts) => {
+        if (!lost && cmd.includes('git rev-parse HEAD')) { lost = true; throw new Error('temporary transport error'); }
+        return run(cmd, opts);
+      };
+      created.push(s);
+      return s;
+    },
+  });
+  const id = await start({ prompt: 'EDIT' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /could not be reached to push/);
+  assert.match(r, /sandbox file availability are unconfirmed/);
+  assert.doesNotMatch(r, /files remain in the sandbox/);
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(created[0].killed, false);
+  assert.equal(created[0].cmds.filter((c) => c.includes('claude -p')).length, 1);
+});
+
 test('idle timer stops the agent and kills its sandbox; a message resets it', async () => {
   const { start, wait, msg, created, open } = await setup({ idleMs: 150 });
   const id = await start();
@@ -326,11 +460,11 @@ test('a follow-up to a vanished sandbox fails the agent and says so', async () =
   const { start, wait, msg, created } = await setup();
   const id = await start();
   await wait([id]);
-  created[0].files.write = async () => { throw new Error('sandbox not found'); };
+  created[0].files.write = async () => { throw Object.assign(new Error('sandbox not found'), { code: 'not_found' }); };
   await msg(id, 'hi');
   const r = await wait([id]);
   assert.match(r, /status: failed/);
-  assert.match(r, /no longer reachable/);
+  assert.match(r, /sandbox is confirmed gone/);
   assert.match(r, new RegExp(`already pushed to origin cloudy-cloud/${id}`));
 });
 
@@ -715,21 +849,49 @@ test('the safety push retries once', async () => {
   assert.equal(sleeps.length, 1);
 });
 
-test('a finished turn whose safety push cannot reach the sandbox reports the agent gone', async () => {
+test('the safety push retry uses the normal NOCHANGE and dirty-file result parser', async () => {
+  let pushes = 0;
+  const { start, wait } = await setup({
+    sleep: async () => {},
+    createSandbox: async () => {
+      const s = await fakeSandbox();
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => {
+        if (!cmd.includes('PUSHOK')) return run(cmd, o);
+        return Promise.resolve({ stdout: pushes++ === 0
+          ? 'PUSHFAIL\nERR temporary remote failure\nSHA abc1234\nST ?? untracked.txt\n'
+          : 'NOCHANGE\nSHA abc1234\nST  M a.txt\nST ?? notes.txt\n', stderr: '', exitCode: 0 });
+      };
+      return s;
+    },
+  });
+  const r = await wait([await start({ prompt: 'DIRTY' })]);
+  assert.match(r, /No changes, no branch pushed/);
+  assert.match(r, /Uncommitted changes left in the sandbox.*a\.txt.*notes\.txt/);
+  assert.equal(pushes, 2);
+});
+
+test('a finished turn whose safety push loses contact stays open without replaying the turn', async () => {
+  let turnCalls = 0;
   const { start, wait, open } = await setup({
     createSandbox: async (envs) => {
       const s = await fakeSandbox(getGithub());
       s.envs = envs;
       const run = s.commands.run;
-      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' })) : run(cmd, o));
+      s.commands.run = (cmd, o) => {
+        if (cmd.includes('PUSHOK')) return Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' }));
+        if (cmd.includes('claude -p')) turnCalls++;
+        return run(cmd, o);
+      };
       return s;
     },
   });
   const id = await start();
   const r = await wait([id]);
-  assert.match(r, /status: failed/);
+  assert.match(r, /status: idle/);
   assert.match(r, /could not be reached to push/);
-  assert.equal(open.get(id).status, 'failed');
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(turnCalls, 1);
 });
 
 test('a file name containing NOCHANGE is not read as the push result', async () => {
@@ -2435,6 +2597,60 @@ test('a pi turn that fails twice with model_not_found is rerun and succeeds, wai
   assert.deepEqual(sleeps, [30_000, 60_000]);
   assert.ok(events.some((e) => e.type === 'progress' && /retrying .*attempt 2 of 4/.test(e.text)));
   assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
+});
+
+test('a lost command transport with a retryable provider status is not replayed automatically', async () => {
+  answeredProfiles.add('pi-glm');
+  let piRuns = 0, sandbox;
+  const sleeps = [];
+  const { start, wait } = await setup({
+    env: pEnv,
+    sleep: async (ms) => { sleeps.push(ms); },
+    createSandbox: async (envs) => {
+      const sbx = sandbox = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const run = sbx.commands.run;
+      sbx.commands.run = async (cmd, opts) => {
+        if (cmd.includes('pi --mode json')) { piRuns++; throw Object.assign(new Error('connection lost after 503 overloaded'), { code: 'transient' }); }
+        return run(cmd, opts);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /connection lost after 503 overloaded/);
+  assert.equal(piRuns, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(sandbox.killed, false);
+});
+
+test('an unknown first-turn execution without a session keeps the machine for an explicit retry', async () => {
+  let turnCalls = 0, sandbox;
+  const { start, wait, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => {
+        if (cmd.includes('claude -p')) {
+          turnCalls++;
+          if (turnCalls === 1) return Promise.reject(Object.assign(new Error('connection lost after command start'), { code: 'transient' }));
+        }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  assert.match(await wait([id]), /status: idle/);
+  assert.equal(open.get(id)?.sessionId, undefined);
+  assert.equal(sandbox.killed, false);
+  assert.equal(turnCalls, 1, 'the uncertain command was not replayed');
+  await msg(id, 'continue explicitly');
+  assert.match(await wait([id]), /hello/);
+  assert.equal(turnCalls, 2);
+  assert.equal(sandbox.killed, false);
 });
 
 test('a 401 from the provider fails at once, without waiting', async () => {
