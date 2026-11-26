@@ -79,12 +79,16 @@ const beforeTotals = (text, note) => {
   return footerAt < 0 ? `${text}\n${note}` : `${text.slice(0, footerAt)}\n${note}${text.slice(footerAt)}`;
 };
 
+export const withLatestCheckpoint = (turnResult, autofixResult) => autofixResult?.checkpointSha
+  ? { ...turnResult, checkpointSha: autofixResult.checkpointSha }
+  : turnResult;
+
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
 // answer with a task and the result arrives through getTask. Otherwise they answer at once and cloud_agent_wait collects.
 // Agent: { id, description, status: queued|starting|running|idle|failed|stop-pending|stopped, result: {text, error, reported},
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
-// Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
+// Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>[-<recovery incarnation>]', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
 // Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
@@ -244,7 +248,7 @@ function agentMcp(env, proxy = true) {
 }
 const active = (a) => a.status === 'queued' || a.status === 'starting' || a.status === 'running';
 
-async function resolveWorkspace(boundPath, workspace) {
+export async function resolveWorkspace(boundPath, workspace) {
   let boundRoot;
   try { boundRoot = await git(boundPath, 'rev-parse', '--show-toplevel'); }
   catch { throw new Error('cloudy-cloud needs a bound git repository with at least one commit. Run `git init` and commit your files, then retry.'); }
@@ -319,7 +323,7 @@ function newTurn(a) {
   a.turns = (a.turns ?? 0) + 1;
   let resolve;
   const done = new Promise((r) => { resolve = r; });
-  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: PROGRESS[harnessOf(a)](), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
+  const t = { id: `cc-${a.id}-t${a.turns}${a.taskIdSuffix ?? ''}`, n: a.turns, agent: a, status: 'working', progress: PROGRESS[harnessOf(a)](), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
   a.turn = t;
   return t;
 }
@@ -735,7 +739,7 @@ async function setup(a, ctx) {
     a.home = a.sandbox.home ?? '/home/user';
     a.emit?.({ type: 'machine', machine: a.sandbox.id, provider: a.provider?.name, branch: a.branch, deleteAt: a.deleteAt });
     if (a.recoveryRecord) {
-      a.recoveryRecord = await updateCheckpointPlacement(env, a.id, { provider: a.provider.name, machine: a.sandbox.id, owner: ctx.owner });
+      a.recoveryRecord = await updateCheckpointPlacement(env, a.id, { provider: a.provider.name, machine: a.sandbox.id, owner: ctx.owner, turnSequence: a.turns });
       await releaseRecoveryLock(a);
     }
     log(`sandbox up, id ${a.id}, ${a.description}`);
@@ -895,11 +899,11 @@ function autofix(a, ctx, t) {
   const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
   const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
   const seen = (a.autofixSeen ??= new Set());
-  let fixes = 0, lastPush = '', ignored = 0, n;
+  let fixes = 0, lastPush = '', latestCheckpointSha, ignored = 0, n;
   const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}`, af: { state: 'running', round: fixes, cap } }); };
   const fixByHand = `open or fix the pull request by hand (git fetch origin ${branch})`;
   const hand = `${fixByHand}, or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
-  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
+  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
   const stop = (why) => /Resource not accessible by (personal access token|integration)/i.test(why)
     ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions and Commit statuses to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
     : done(`Autofix stopped: ${why}\nNext step: ${hand}`);
@@ -1061,8 +1065,9 @@ function autofix(a, ctx, t) {
       t.progress = PROGRESS[harnessOf(a)]();
       if (halted()) return { cancelled: true };
       const res = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
-      if (res.cancelled || halted()) return { cancelled: true };
-      if (res.gone) return { gone: true, text: res.text };
+      latestCheckpointSha = res.checkpointSha ?? latestCheckpointSha;
+      if (res.cancelled || halted()) return { cancelled: true, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }) };
+      if (res.gone) return { gone: true, text: res.text, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }) };
       lastPush = /^(Pushed to origin|Push failed).*$/m.exec(res.text)?.[0] ?? lastPush;
       if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
       const was = sha;
@@ -1114,7 +1119,7 @@ async function work(a, message, first, ctx, t) {
       // no af of its own, so emit the terminal "stopped" here — it must never stay displayed as "running".
       a.emit?.({ type: 'autofix', af: f.af ?? { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }) } });
       t.prefix = t.note = '';
-      r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
+      r = { ...withLatestCheckpoint(r, f), text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
     }
   } catch (e) {
     if (!a.recoveryCreateAttempted) await releaseRecoveryLock(a).catch(() => {});
@@ -1125,7 +1130,7 @@ async function work(a, message, first, ctx, t) {
   if (a.status === 'stopped' || a.stopPending) return;
   if (r.checkpointSha && a.role === 'worker') {
     try {
-      a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
+      a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, workspaceRel: a.workspaceRel, turnSequence: a.turns, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
       r = { ...r, text: beforeTotals(r.text, `Recovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.`) };
     } catch (e) {
       log('recovery checkpoint could not be saved:', ctx.scrub(e?.message));
@@ -1441,7 +1446,7 @@ export async function runSubagent(args, deps) {
   if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
   count.started++;
   const branch = recovery?.branch ?? (issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`);
-  const a = { ...(baseInfo && { base: baseInfo }), ...(recovery && { recoveryRecord: recovery.recoveryRecord, recoveryLockRelease: recovery.release, recoveryPreviousAgent: deps.recoveryPreviousAgent }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, workspace: workspaceInfo.cwd, workspaceRel: workspaceInfo.relative, waiters: [], result: null, idleSince: Date.now(), egressPolicy: egress.list,
+  const a = { ...(baseInfo && { base: baseInfo }), ...(recovery && { recoveryRecord: recovery.recoveryRecord, recoveryLockRelease: recovery.release, recoveryPreviousAgent: deps.recoveryPreviousAgent, turns: recovery.turnSequence ?? 1, taskIdSuffix: `-${randomUUID()}` }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, workspace: workspaceInfo.cwd, workspaceRel: workspaceInfo.relative, waiters: [], result: null, idleSince: Date.now(), egressPolicy: egress.list,
     serverTtl: cands[0].caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (cands[0].text?.hostLabel ?? cands[0].name) : '', providers: cands, skipped };
   ctx.open.set(id, a);
   if (mcp) a.mcp = mcp;
@@ -1468,9 +1473,10 @@ export async function runSubagent(args, deps) {
 export async function recoverAgent(args, deps) {
   return recoverFromCheckpoint(args, {
     ...deps,
+    validateWorkspace: (workspace) => resolveWorkspace(deps.cwd ?? process.cwd(), workspace || undefined),
     startRecovery: async (r, provider, control) => {
       if (control.previous) deps.open?.delete(r.id);
-      const started = await runSubagent({ prompt: r.prompt, description: r.description, role: 'worker', profile: r.profile, model: r.model, base: r.base, machine: r.machine, size: r.size, fallback: [] }, {
+      const started = await runSubagent({ prompt: r.prompt, description: r.description, role: 'worker', profile: r.profile, model: r.model, base: r.base, machine: r.machine, size: r.size, workspace: r.workspace || undefined, fallback: [] }, {
         ...deps,
         provider,
         providers: [provider],
