@@ -1,6 +1,17 @@
 # Cloudy Cloud: what is built, and what has been proven
 
-This file combines historical live evidence with current release-candidate behavior. Each live result keeps its original date. It does not claim that the complete 0.5.0 integration has been run across all providers and agents. **"Proven live"** means a behavior was run against real infrastructure and its result was checked, not taken from an agent's reply.
+This file combines historical live evidence with current release-candidate behavior. Each live result keeps its original date. It does not claim that the complete 0.6.0 integration has been run across all providers and agents. **"Proven live"** means a behavior was run against real infrastructure and its result was checked, not taken from an agent's reply.
+
+## 0.6.0 release-candidate additions
+
+- `cloudy-cloud run --explain` previews launch eligibility without starting a worker; `cloud_agent_explain` provides the matching MCP preview. Dynamic provider capacity and remote checks remain unknown until a real launch.
+- A foreground `run` prints a run ID before startup. `cloudy-cloud resume <run-id>` reconnects to the original local owner and waits for that run; it does not create a replacement worker when its owner record is missing or stale.
+- Worker startup timing is reported by phase where the phase can be observed. Unavailable measurements are marked unavailable; the timing fields are diagnostic and are not a startup performance guarantee.
+- `cloudy-cloud exec --repo . -- COMMAND ...` and `cloud_exec` run a command in a fresh Linux sandbox from a local git snapshot without model or GitHub credentials. Dirty or uncertain workspace state retains the machine for inspection. `cloud_agent_recover` can use `provider: "auto"` to try eligible configured providers other than the checkpoint's original provider, subject to the saved profile, harness, and egress requirements.
+
+These additions describe the 0.6.0 release candidate. They do not add live provider or model verification to the dated evidence below.
+
+On the Mac Studio, three paired starts under the same repository and profile in each pair measured median `repo_preparation` at 332.81 ms for a cold snapshot and 293.23 ms when reusing an in-flight host snapshot. This used real Git and the snapshot manager, with a fake provider and harness; it compares shared snapshot preparation, not warm sandboxes. It does not measure or claim real provider startup speed. Cold/warm pairs in milliseconds were 332.81/293.23, 330.26/285.74, and 366.50/322.37.
 
 ## 0.5.0 release-candidate additions
 

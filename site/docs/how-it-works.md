@@ -33,6 +33,8 @@ One task is stopped after 29 minutes by default. Provider eligibility and machin
 | Tool | What it does |
 |---|---|
 | `cloud_agent` | Starts a subagent in a new machine. |
+| `cloud_agent_explain` | Previews local request eligibility and reports remote checks that remain unknown without starting a worker. |
+| `cloud_exec` | Runs literal argv in an isolated Linux sandbox without model or GitHub credentials. |
 | `cloud_agent_message` | Sends a follow-up to an open, idle agent. It continues the same session of whichever agent the worker runs, on the same machine: Claude Code resumes its session, pi and oh-my-pi use their session ID, Codex runs `codex exec resume ID`, and opencode passes `--session ses_...`. It is rejected if the agent is busy or gone. |
 | `cloud_agent_wait` | Waits for agents to finish their current turn and returns their results. |
 | `cloud_agent_list` | Lists every agent with its status, idle minutes and progress (tool uses, tokens, elapsed time, current step). |
@@ -40,6 +42,8 @@ One task is stopped after 29 minutes by default. Provider eligibility and machin
 | `cloud_agent_capabilities` | Reports configured profiles, providers and machine kinds without creating a machine or calling a model provider. |
 
 An agent's status is one of `queued`, `starting`, `running`, `idle`, `failed` or `stopped`. After a turn ends, the agent is `idle` and its machine stays open for follow-ups.
+
+Lifecycle results include `startup_timings`. Each phase has `duration_ms` and a status of `complete`, `failed` or `unavailable`; unavailable durations are `null`. Durations use a monotonic clock. `queue_wait` sums time blocked waiting for a queue grant and excludes provider creation. `repo_preparation` sums host-side tracked-file snapshot and bundle preparation plus sandbox git init, fetch, checkout and origin auth check; it excludes provider wait, provider creation and bundle upload. `provider_creation` sums provider create attempts. `upload` measures writing the repo bundle to the sandbox. `harness_startup` measures harness invocation until its first streamed stdout chunk and may be unavailable when the provider does not stream. `first_tool_call` measures invocation until the first parsed tool-use event and is unavailable if none is observed. These timings describe one startup; they are not a performance guarantee.
 
 ## How long a machine lives
 

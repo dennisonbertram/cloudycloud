@@ -101,6 +101,8 @@
 <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
 <tbody>
 <tr><td><code>cloud_agent</code></td><td>Starts a subagent in a new machine.</td></tr>
+<tr><td><code>cloud_agent_explain</code></td><td>Previews local request eligibility and reports remote checks that remain unknown without starting a worker.</td></tr>
+<tr><td><code>cloud_exec</code></td><td>Runs literal argv in an isolated Linux sandbox without model or GitHub credentials.</td></tr>
 <tr><td><code>cloud_agent_message</code></td><td>Sends a follow-up to an open, idle agent. It continues the same session of whichever agent the worker runs, on the same machine: Claude Code resumes its session, pi and oh-my-pi use their session ID, Codex runs <code>codex exec resume ID</code>, and opencode passes <code>--session ses_...</code>. It is rejected if the agent is busy or gone.</td></tr>
 <tr><td><code>cloud_agent_wait</code></td><td>Waits for agents to finish their current turn and returns their results.</td></tr>
 <tr><td><code>cloud_agent_list</code></td><td>Lists every agent with its status, idle minutes and progress (tool uses, tokens, elapsed time, current step).</td></tr>
@@ -109,6 +111,7 @@
 </tbody>
 </table>
 <p>An agent's status is one of <code>queued</code>, <code>starting</code>, <code>running</code>, <code>idle</code>, <code>failed</code> or <code>stopped</code>. After a turn ends, the agent is <code>idle</code> and its machine stays open for follow-ups.</p>
+<p>Lifecycle results include <code>startup_timings</code>. Each phase has <code>duration_ms</code> and a status of <code>complete</code>, <code>failed</code> or <code>unavailable</code>; unavailable durations are <code>null</code>. Durations use a monotonic clock. <code>queue_wait</code> sums time blocked waiting for a queue grant and excludes provider creation. <code>repo_preparation</code> sums host-side tracked-file snapshot and bundle preparation plus sandbox git init, fetch, checkout and origin auth check; it excludes provider wait, provider creation and bundle upload. <code>provider_creation</code> sums provider create attempts. <code>upload</code> measures writing the repo bundle to the sandbox. <code>harness_startup</code> measures harness invocation until its first streamed stdout chunk and may be unavailable when the provider does not stream. <code>first_tool_call</code> measures invocation until the first parsed tool-use event and is unavailable if none is observed. These timings describe one startup; they are not a performance guarantee.</p>
 
 <h2 id="lifetimes">How long a machine lives</h2>
 <table>
