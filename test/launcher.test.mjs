@@ -185,7 +185,7 @@ test('--version shows the install path with ~ for the home directory', () => {
 test('top-level help lists setup and run, and setup help explains the worker default profile', () => {
   const r = spawnSync('/bin/sh', [launcher, '--help'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
   assert.match(r.stdout, /^  setup \[--more\] \[--check-only\]/m);
-  assert.match(r.stdout, /^  run \[--repo PATH\]/m);
+  assert.match(r.stdout, /^  run --repo PATH/m);
   for (const line of r.stdout.split('\n')) assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
   const s = spawnSync('/bin/sh', [launcher, 'setup', '--help'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir(), CLOUDY_CLOUD_CONFIG: '/nonexistent' } });
   assert.match(s.stdout, /--default-profile NAME/);
