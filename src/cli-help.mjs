@@ -46,12 +46,26 @@ const cmds = {
     ['--no-attach', 'Start the coordinator without attaching'],
     ['--json', 'Print the start result as JSON'],
   ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted. Run coordinator image once first.' },
-  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
+  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]', '[--default-profile NAME]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
     ['--provider NAME', 'Check or configure one provider: instabox, self-hosted, microsandbox, boat or e2b'],
+    ['--default-profile NAME', 'Set the worker profile used when a request omits profile'],
     ['CLOUDY_CLOUD_PROVIDERS', 'Set a comma-separated provider list to check readiness for every configured provider'],
   ], note: 'Run it in a terminal: it asks for your keys.' },
+  run: { desc: 'Run one cloud worker to completion from a shell.', usages: [['run', '--repo PATH', '[--profile NAME]', '[--workspace PATH]', '[--session NAME]', '[--timeout SECONDS]', '[--description TEXT]', '[--model NAME]', '[--issue N]', '[--base REF]', '[--json]', '-- PROMPT']], rows: [
+    ['--repo PATH', 'Repository the worker uses (default: current repository)'],
+    ['--workspace PATH', 'Directory inside the repository for the worker'],
+    ['--session NAME', 'Share workers with a named MCP session'],
+    ['--timeout SECONDS', 'Maximum wait for completion (default: 2100 seconds)'],
+    ['--description TEXT', 'Short label for the worker'],
+    ['--profile NAME', 'Worker profile (default: saved default profile)'],
+    ['--model NAME', 'Model for a Claude Code worker'],
+    ['--issue N', 'GitHub issue number or URL'],
+    ['--base REF', 'Branch name or commit SHA to start from'],
+    ['--prompt TEXT', 'Task prompt, equivalent to text after --'],
+    ['--json', 'Print structured output'],
+  ], note: 'The command waits for the worker result and exits with its status. Use -- to separate options from the prompt.' },
   shell: { desc: 'Open a shell on a cloud machine, or run one command there.', usages: [['shell', ID, '[-- command [args...]]']], rows: [
     ['(no command)', 'Interactive login shell on the machine'],
     ['-- command', 'Run the command, stream its output and exit with its exit code'],
