@@ -91,6 +91,27 @@ test('rate_limited fails over at once, without the queue backoff', async () => {
   assert.equal(b.log.create.length, 1);
 });
 
+test('a definitive Boat provider refusal uses the next compatible provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'boat' });
+  const { b, start, wait } = await setup({ a });
+  a.create = async () => { throw err('size_not_allowed', 'Boat refused this machine size'); };
+  const r = await wait([await start()]);
+  assert.match(r, /Started on b because boat could not start it \(size_not_allowed: Boat refused this machine size\)\./);
+  assert.equal(a.log.create.length, 0, 'the definite refusal happened before allocation');
+  assert.equal(b.log.create.length, 1, 'a definite refusal is safe to fall back from');
+});
+
+test('an unconfirmed Boat cleanup after allocation refuses fallback to a second provider', async () => {
+  const { a, b, start, wait } = await setup();
+  const create = a.create.bind(a);
+  a.create = async (opts) => { await create(opts); throw err('cleanup_unconfirmed', 'Boat sandbox a-1 failed setup and deletion was not confirmed'); };
+  const r = await wait([await start()]);
+  assert.match(r, /status: failed/);
+  assert.match(r, /deletion was not confirmed/);
+  assert.equal(a.log.create.length, 1, 'the primary provider allocated once before cleanup became uncertain');
+  assert.equal(b.log.create.length, 0, 'an unconfirmed allocated sandbox never leads to a second provider create');
+});
+
 test('a transient create response adopts the single matching machine and never launches another provider', async () => {
   const { a, b, start, wait } = await setup();
   const create = a.create.bind(a);

@@ -371,7 +371,10 @@ export function createProvider(env = process.env, deps = {}) {
         await sb.commands.run(PROVISION, { timeoutMs: 600_000 });
         return sb;
       } catch (e) {
-        await api.delete(id).catch(() => {});
+        try { await api.delete(id); }
+        catch (cleanupError) {
+          throw fail('cleanup_unconfirmed', `Boat sandbox ${id} failed during setup and cleanup could not be confirmed (${scrub(cleanupError?.message ?? cleanupError)}); refusing to use the unprovisioned sandbox or start another provider.`, { provider: 'boat', machineId: id, allocated: true });
+        }
         throw e;
       }
     },

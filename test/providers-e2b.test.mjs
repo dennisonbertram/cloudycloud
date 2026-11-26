@@ -70,7 +70,7 @@ function fakeE2b() {
   const files = new Map(); // id -> Map(path -> body string)
   const execs = new Map(); // id -> [cmd]
   const fail = new Map(); // pathname -> (method, url) => Response (falsy falls through)
-  const z = { execState: { code: 0, out: '', err: '' } }; // what the next Process/Start answers
+  const z = { execState: { code: 0, out: '', err: '' }, deleteFails: false }; // what the next Process/Start answers
   let n = 0;
   const row = (id, metadata, extra = {}) => ({
     sandboxID: id, templateID: 'base', clientID: 'c1', envdVersion: '0.2.0', alias: 'base',
@@ -118,7 +118,7 @@ function fakeE2b() {
       if (m[3] === 'timeout') return rec ? respond(200, {}) : respond(404, { code: 404, message: 'no such sandbox' });
       if (m[3] === 'metrics') return rec ? respond(200, [{ timestampUnix: Math.floor(Date.now() / 1000) - 60, cpuCount: 2, cpuUsedPct: 12.5, memUsed: 100, memTotal: 1000, memCache: 0, diskUsed: 0, diskTotal: 0 }]) : respond(404, { code: 404, message: 'no such sandbox' });
       if (method === 'GET') return rec ? respond(200, rec) : respond(404, { code: 404, message: 'no such sandbox' });
-      if (method === 'DELETE') { const had = store.delete(m[1]); return respond(had ? 204 : 404, had ? undefined : { code: 404, message: 'no such sandbox' }); }
+      if (method === 'DELETE') { if (z.deleteFails) return respond(503, { code: 503, message: 'temporary delete failure' }); const had = store.delete(m[1]); return respond(had ? 204 : 404, had ? undefined : { code: 404, message: 'no such sandbox' }); }
       return respond(404, { code: 404, message: 'unknown route' });
     }
     if (u.hostname === 'sandbox.e2b.app') {
@@ -596,6 +596,15 @@ test('e2b: a create cancelled during provisioning deletes the sandbox', async ()
   assert.match(e.message, /cancelled|aborted/i);
   assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/')), 'the half-created sandbox was deleted');
   assert.equal(z.store.size, 0);
+});
+
+test('e2b: a provision failure with unconfirmed cleanup is typed for stop retry', async () => {
+  const z = fakeE2b();
+  z.execState = { code: 1, out: '', err: 'provision failed' };
+  z.deleteFails = true;
+  const p = mk(z);
+  await assert.rejects(create(p), (e) => e.code === 'cleanup_unconfirmed' && e.provider === 'e2b' && e.machineId === 'sbx-1' && e.allocated === true);
+  assert.equal(z.store.size, 1, 'the fake sandbox remains when cleanup is unconfirmed');
 });
 
 test('e2b: a create aborted after the POST landed recovers the sandbox by ccIdem and deletes it', async () => {

@@ -1654,11 +1654,30 @@ export async function waitAgents(args = {}, deps) {
 
 // cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
 async function allMachines({ provider }) {
-  const rows = await provider.list({ purpose: 'cloudy-cloud' });
-  if (!rows.length) return 'No cloudy-cloud machines.';
+  const providerErrors = [];
+  const rows = await provider.list({ purpose: 'cloudy-cloud' }, { onError: (error) => providerErrors.push(error) });
+  if (!rows.length) return { text: 'No cloudy-cloud machines.', agents: [], providerErrors };
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
-  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}${m.provider ? `  provider ${m.provider}` : ''}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  const agents = rows.map((m) => {
+    const labels = m.labels ?? {};
+    return {
+      id: m.id,
+      ...(m.name && { name: m.name }),
+      ...(m.provider && { provider: m.provider }),
+      state: m.state ?? m.status,
+      status: m.status ?? m.state,
+      parent: labels.parent || labels.owner || 'unknown',
+      role: labels.role ?? null,
+      profile: labels.profile ?? null,
+      kind: labels.kind ?? null,
+      ...(typeof labels.agent === 'string' && { agent_id: labels.agent }),
+      description: labels.description ?? null,
+    };
+  });
+  let text = [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}${m.provider ? `  provider ${m.provider}` : ''}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  if (providerErrors.length) text += `\nProvider listing is incomplete: ${providerErrors.map((error) => `${error.provider ?? 'unknown provider'} (${error.code ?? 'error'})`).join(', ')}`;
+  return { text, agents, providerErrors };
 }
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.
@@ -1676,7 +1695,16 @@ export async function listAgents(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
   const spend = usageLine(planSnapshot(ctx.provider)), tail = (t, structured) => ok(spend ? `${t}\n${spend}` : t, structured);
-  if (args?.all === true) return tail(await allMachines(ctx), { agents: [], scope: 'provider' });
+  if (args?.all === true) {
+    let fleet;
+    try { fleet = await allMachines(ctx); }
+    catch (error) {
+      const message = ctx.scrub(`Could not list cloudy-cloud machines${error?.provider ? ` on ${error.provider}` : ''}: ${error?.message ?? error}`);
+      const failed = ctx.fail(message, true);
+      return { ...failed, structuredContent: ctx.cleanValue({ ...failed.structuredContent, scope: 'provider', agents: [], provider_errors: [{ provider: error?.provider ?? null, code: error?.code ?? 'provider_list_failed', message }] }) };
+    }
+    return tail(fleet.text, { agents: fleet.agents, scope: 'provider', provider_errors: fleet.providerErrors.map((error) => ({ provider: error?.provider ?? null, code: error?.code ?? 'provider_list_failed', message: ctx.scrub(error?.message ?? error) })) });
+  }
   if (!open.size) return tail('No agents.', { agents: [] });
   const usage = await usageOf([...open.values()], ctx);
   const seg = (a) => usage.get(a) ?? '';

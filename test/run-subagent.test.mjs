@@ -1981,10 +1981,38 @@ test('cloud_agent_list all:true groups every cloudy-cloud machine under its pare
   mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
   mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
   mk('m3', { purpose: 'other', owner: 'o3' });
-  const r = text(await listAgents({ all: true }, deps));
+  mk('m4', { owner: 'o4', parent: 'o4', role: 'coordinator' });
+  const response = await listAgents({ all: true }, deps);
+  const r = text(response);
   assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
   assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
   assert.ok(!r.includes('m3'));
+  assert.equal(response.structuredContent.scope, 'provider');
+  assert.deepEqual(response.structuredContent.agents.map(({ id, parent, role, profile, agent_id, description }) => ({ id, parent, role, profile, agent_id, description })), [
+    { id: 'm1', parent: 'o1', role: 'worker', profile: 'claude', agent_id: 'aaaa1111', description: null },
+    { id: 'm2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent_id: 'bbbb2222', description: 'build-the-thing' },
+    { id: 'm4', parent: 'o4', role: 'coordinator', profile: null, agent_id: undefined, description: null },
+  ]);
+  assert.equal(Object.hasOwn(response.structuredContent.agents[2], 'agent_id'), false, 'machines without an agent label omit the optional field');
+});
+
+test('cloud_agent_list all:true returns typed errors when provider fleet listing fails or is partial', async () => {
+  const { deps } = await setup();
+  deps.provider.list = async () => { throw Object.assign(new Error('Boat unavailable'), { code: 'transient', provider: 'boat' }); };
+  const failed = await listAgents({ all: true }, deps);
+  assert.equal(failed.isError, true);
+  assert.equal(failed.structuredContent.scope, 'provider');
+  assert.deepEqual(failed.structuredContent.agents, []);
+  assert.deepEqual(failed.structuredContent.provider_errors, [{ provider: 'boat', code: 'transient', message: 'Could not list cloudy-cloud machines on boat: Boat unavailable' }]);
+
+  deps.provider.list = async (_labels, { onError }) => {
+    onError(Object.assign(new Error('Second provider unavailable'), { code: 'transient', provider: 'secondary' }));
+    return [{ id: 'visible', state: 'running', status: 'running', labels: { purpose: 'cloudy-cloud', owner: 'o1' } }];
+  };
+  const partial = await listAgents({ all: true }, deps);
+  assert.equal(partial.structuredContent.agents[0].id, 'visible');
+  assert.deepEqual(partial.structuredContent.provider_errors.map(({ provider, code }) => [provider, code]), [['secondary', 'transient']]);
+  assert.match(partial.content[0].text, /Provider listing is incomplete: secondary \(transient\)/);
 });
 
 // ---- #47: optional apt packages ----
