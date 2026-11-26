@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
-import { saveCheckpoint, readCheckpoint, recoverFromCheckpoint } from '../src/recovery.mjs';
+import { saveCheckpoint, readCheckpoint, recoverFromCheckpoint, verifyOriginCheckpoint } from '../src/recovery.mjs';
 import { recoverAgent, runSubagent, waitAgents } from '../src/run-subagent.mjs';
 import { createFakeProvider, setGithub } from './fake-provider.mjs';
 
@@ -53,6 +53,13 @@ test('recovery confirms the old machine is gone and starts a fresh message on th
   assert.deepEqual(started.args.egress, []);
   assert.notEqual(started.args.prompt, f.record.prompt);
   assert.match(r.content[0].text, /fresh.*conversation/i);
+  assert.equal(r.structuredContent.status, 'starting');
+  assert.equal(r.structuredContent.error, false);
+  assert.equal(r.structuredContent.agent_id, f.record.id);
+  assert.equal(r.structuredContent.branch, f.record.branch);
+  assert.equal(r.structuredContent.requested_provider, 'alternate');
+  assert.equal(r.structuredContent.checkpoint_sha, f.record.checkpointSha);
+  assert.match(r.structuredContent.message, /Recovery start requested/);
 });
 
 test('recovery refuses an origin branch that moved past its checkpoint', async () => {
@@ -67,7 +74,29 @@ test('recovery refuses an origin branch that moved past its checkpoint', async (
   });
   assert.equal(starts, 0);
   assert.equal(r.isError, true);
+  assert.equal(r.structuredContent.error, true);
   assert.match(r.content[0].text, /origin branch moved/i);
+});
+
+test('recovery reports an unreachable origin separately from a moved checkpoint', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  const old = { name: 'old-provider', list: async () => [], connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); } };
+  const alternate = { name: 'alternate' };
+  const disconnected = await verifyOriginCheckpoint(f.dir, f.record, { git: async (_cwd, ...args) => {
+    if (args[0] === 'rev-parse') return f.dir;
+    if (args[0] === 'config') return 'https://github.com/owner/repo.git';
+    throw new Error('network unavailable');
+  } });
+  assert.match(disconnected.reason, /origin is unreachable/i);
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'alternate', message: 'new message' }, {
+    env: f.env, cwd: f.dir, providers: [old, alternate], verifyCheckpoint: async () => disconnected,
+    startRecovery: async () => assert.fail('must not start with a disconnected origin'),
+  });
+  assert.equal(r.isError, true);
+  assert.equal(r.structuredContent.error, true);
+  assert.match(r.content[0].text, /origin is unreachable/i);
+  assert.doesNotMatch(r.content[0].text, /branch changed|moved/i);
 });
 
 test('recovery refuses an unknown original machine state instead of assuming absence', async () => {
