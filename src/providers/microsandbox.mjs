@@ -236,11 +236,11 @@ export function createProvider(env = process.env, deps = {}) {
       machineKinds: ['linux'],
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, includeGithubToken = true }) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `microsandbox runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`, { local: true, short: `microsandbox runs only linux machines, not ${kind.name}.`, next: 'call cloud_agent again with machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox' });
       if (role === 'coordinator') throw Object.assign(new Error(api.text.coordinatorRefusal), { local: true, short: 'Coordinators are not supported on the microsandbox provider yet.', next: 'start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox' });
       if (!bin) throw noMsb();
-      const want = [...new Set(['GH_TOKEN', ...secrets])]; // GH_TOKEN always goes in, like the other providers
+      const want = [...new Set([...(includeGithubToken ? ['GH_TOKEN'] : []), ...secrets])]; // worker creates carry GH_TOKEN by default
       for (const n of Object.keys(envs)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
         if (want.includes(n)) throw new Error(`the env ${n} is also attached as a secret on the microsandbox provider`);

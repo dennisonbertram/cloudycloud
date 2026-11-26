@@ -93,6 +93,12 @@ const cmds = {
     ['--prompt TEXT', 'Task prompt, equivalent to text after --'],
     ['--json', 'Write one structured result object to stdout'],
   ], note: 'The command waits for the worker result and exits with its status. Use -- to separate options from the prompt. Any legacy-config migration notice is written to stderr.' },
+  exec: { desc: 'Run one literal command on a temporary cloud machine seeded from a local Git snapshot.', usages: [['exec', '--repo', 'PATH', '[--timeout SECONDS]', '[--json]', '--', '<command>', '[args...]']], rows: [
+    ['--repo PATH', 'Required Git repository root; no GitHub origin or token is needed'],
+    ['--timeout SECONDS', 'Command limit (default: 2100; max: 86400, provider lifetime applies)'],
+    ['--json', 'Write one structured result to stdout; captured output is limited per stream'],
+    ['-- command', 'Pass each argument unchanged; tracked edits are included, untracked files are not'],
+  ], note: 'A verified clean workspace is deleted after any exit code. Dirty files, changed Git commits or branches, or uncertain command state keep the machine. The result gives its provider:id locator and a shell command to inspect it.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],

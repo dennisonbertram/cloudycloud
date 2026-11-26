@@ -297,13 +297,13 @@ export function createProvider(env = process.env, deps = {}) {
       get hasConsentedSecrets() { return consented(); }, // live: consent is read again on every create
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, size, egress } = {}) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, size, egress, includeGithubToken = true } = {}) {
       if (egress) throw fail('egress_unsupported', 'boat cannot limit where a machine connects.');
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `boat runs only linux machines, not ${kind.name}. Use machine "linux".`);
       if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
       if (size) throw fail('size_not_allowed', 'boat machine types are fixed (small/default/large/xlarge); Cloudy Cloud does not map a size yet.');
       apiKey(); // no_key before the consent check: the key is required either way
-      if (!consented()) throw new Error(`Boat has no proxy secrets, so every worker credential (GH_TOKEN, the Claude credential, profile keys) would be written onto the sandbox in plaintext, where anything running on the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      if ((includeGithubToken || secrets.length || Object.keys(envs).length) && !consented()) throw new Error(`Boat has no proxy secrets, so every worker credential (GH_TOKEN, the Claude credential, profile keys) would be written onto the sandbox in plaintext, where anything running on the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
 
       const ttl = Math.min(Math.max(1, ttlSeconds || maxTtlSeconds), maxTtlSeconds);
       const t0 = now();
@@ -319,7 +319,7 @@ export function createProvider(env = process.env, deps = {}) {
       const vars = { ...envs };
       // With consent GH_TOKEN goes on the VM like the self-hosted provider's; other names in
       // `secrets` are MCP tokens the core asked for after the user allowed that server.
-      for (const n of [...new Set(['GH_TOKEN', ...secrets])]) {
+      for (const n of [...new Set([...(includeGithubToken ? ['GH_TOKEN'] : []), ...secrets])]) {
         if (env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on a Boat sandbox. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }

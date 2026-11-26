@@ -107,7 +107,7 @@ export function createProvider(env = process.env, deps = {}) {
       machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false, hasSizes: false, hasEgressPolicy: false,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind, egress } = {}) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind, egress, includeGithubToken = true } = {}) {
       if (egress) throw fail('egress_unsupported', 'self-hosted cannot limit where a machine connects.');
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `self-hosted runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`);
       getSsh();
@@ -115,7 +115,7 @@ export function createProvider(env = process.env, deps = {}) {
       // The GitHub token consent (setup) covers GH_TOKEN only; it goes in like Instabox's GH_TOKEN secret. Any other secret is
       // an MCP token the core asked for after the user allowed that server (--allow-literal); it comes from this machine's env.
       // Values go only into the tmpfs env file through stdin, never argv, labels or `docker inspect`.
-      for (const n of [...(consented ? ['GH_TOKEN'] : []), ...secrets]) {
+      for (const n of [...(consented && includeGithubToken ? ['GH_TOKEN'] : []), ...secrets]) {
         if ((n === 'GH_TOKEN' && !consented) || env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on ${host}. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }
