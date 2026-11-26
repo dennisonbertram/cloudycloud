@@ -54,6 +54,9 @@ async function reapAttempt({ owner, provider, log = () => {} }) {
   const listFailed = (e) => { failed = true; log(`list failed${e.provider ? ` on ${e.provider}` : ''}: ${e.message}`); };
   try { machines = await provider.list({ owner }, { onError: listFailed }); }
   catch (e) { if (!failed) listFailed(e); return { deleted: 0, failed: true }; }
+  // Do not act on a partial inventory: a provider may still hold owned machines that the
+  // reaper cannot see. The watcher retries after a failed attempt.
+  if (failed) return { deleted: 0, failed: true };
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;

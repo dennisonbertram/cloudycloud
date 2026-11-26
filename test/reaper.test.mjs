@@ -149,7 +149,7 @@ test('the reaper never loads the SDK: reap through the real adapter, and exit 1 
   assert.equal(full.stdout.trim(), '1', full.stderr);
 });
 
-test('the reaper deletes the machines of page 1 when page 2 of the list fails, and logs the error', async () => {
+test('the reaper does not delete a partial inventory when page 2 of the list fails', async () => {
   const { reap } = await import('../src/reaper.mjs');
   const { createProvider } = await import('../src/providers/instabox.mjs');
   const deleted = [], logs = [];
@@ -159,9 +159,35 @@ test('the reaper deletes the machines of page 1 when page 2 of the list fails, a
     return Response.json({ machines: [{ id: 'm1', metadata: { owner: OWNER }, state: 'running' }], nextCursor: 'c2' });
   };
   const n = await reap({ owner: OWNER, provider: createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn }), log: (l) => logs.push(l) });
-  assert.equal(n, 1);
-  assert.deepEqual(deleted, ['m1']);
+  assert.equal(n, 0);
+  assert.deepEqual(deleted, []);
   assert.match(logs.join('\n'), /list failed.*HTTP 500/);
+});
+
+test('the reaper does not report success or delete from surviving providers after a provider list rejection', async () => {
+  const { reap } = await import('../src/reaper.mjs');
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('m1', { id: 'm1', name: 'owned', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  b.list = async () => { throw Object.assign(new Error('provider unavailable'), { code: 'transient' }); };
+  const logs = [], provider = combine([a, b]);
+  assert.equal(await reap({ owner: OWNER, provider, log: (line) => logs.push(line) }), 0);
+  assert.deepEqual(a.log.delete, []);
+  assert.match(logs.join('\n'), /list failed on b.*provider unavailable/);
+});
+
+test('the reaper retries a partial combined inventory before deleting any owned machine', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('m1', { id: 'm1', name: 'owned', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  const listB = b.list;
+  let calls = 0;
+  b.list = async (...args) => { if (++calls === 1) throw Object.assign(new Error('temporary provider outage'), { code: 'transient' }); return listB(...args); };
+  const logs = [];
+  await watch({ owner: OWNER, provider: combine([a, b]), alive: () => false, log: (line) => logs.push(line), retryMs: 0, sleep: async () => {}, maxMs: 20 });
+  assert.equal(calls, 2, 'the partial first result is retried');
+  assert.deepEqual(a.log.delete, ['m1'], 'deletion occurs only after a complete second inventory');
+  assert.match(logs.join('\n'), /list failed on b.*temporary provider outage/);
 });
 
 // server.mjs may start without the provider key (cloudy-cloud mcp-server before setup). A key saved later
