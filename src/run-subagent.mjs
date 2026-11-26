@@ -1470,6 +1470,7 @@ export async function recoverAgent(args, deps) {
         ...deps,
         provider,
         providers: [provider],
+        asTask: false,
         recoveryStart: { ...r, targetProvider: provider.name, release: control.release },
         recoveryPreviousAgent: control.previous,
       });

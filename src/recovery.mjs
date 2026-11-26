@@ -121,7 +121,7 @@ async function acquireLock(env, id) {
   };
 }
 
-const textResult = (text, isError = false) => ({ content: [{ type: 'text', text }], structuredContent: { status: isError ? 'failed' : 'unknown', ...(isError && { error: text }), message: text }, ...(isError && { isError: true }) });
+const textResult = (text, isError = false) => ({ content: [{ type: 'text', text }], structuredContent: { status: isError ? 'failed' : 'unknown', error: isError, message: text }, ...(isError && { isError: true }) });
 const stateOf = (row) => String(row?.status ?? row?.state ?? '').toLowerCase();
 const goneCodes = new Set(['not_found', 'machine_not_found']);
 const terminal = new Set(['stopped', 'failed', 'deleted', 'expired', 'terminated']);
@@ -178,11 +178,11 @@ export async function recoverFromCheckpoint({ agent_id: id, provider: providerNa
     if (!verified?.ok || verified.sha !== record.checkpointSha) return textResult(verified?.reason ?? 'the exact origin checkpoint could not be verified', true);
     if (typeof deps.startRecovery !== 'function') return textResult('Recovery start is unavailable in this session.', true);
     const started = await deps.startRecovery({ id, branch: record.branch, base: record.checkpointSha, profile: record.profile ?? undefined, model: record.model || undefined, machine: record.machineKind, size: record.size ?? undefined, egress: record.egress, harness: record.harness, prompt: message.trim(), description: `Recovered agent ${id}`, recoveryRecord: record }, target, { release, previous });
-    if (started?.isError) return started;
+    if (started?.isError) return textResult(started.content?.find((item) => item.type === 'text')?.text ?? 'The recovery worker could not be started.', true);
     lockTransferred = true;
-    const note = `Restored ${record.branch} at ${record.checkpointSha.slice(0, 7)} on ${target.name}; this starts a fresh ${record.harness} conversation. The previous prompt and conversation were not replayed.`;
+    const note = `Recovery start requested on ${target.name} from verified checkpoint ${record.checkpointSha}. It will restore ${record.branch} under agent id ${id} and start a fresh ${record.harness} conversation. The previous prompt and conversation were not replayed.`;
     for (const item of started?.content ?? []) if (item.type === 'text') item.text += `\n${note}`;
-    started.structuredContent = { ...(started.structuredContent ?? {}), status: 'starting', agent_id: id, branch: record.branch, provider: target.name, message: note };
+    started.structuredContent = { status: 'starting', error: false, agent_id: id, branch: record.branch, requested_provider: target.name, checkpoint_sha: record.checkpointSha, message: note };
     return started;
   } finally { if (!lockTransferred) await release().catch(() => {}); }
 }
