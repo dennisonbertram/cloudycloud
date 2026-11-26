@@ -74,6 +74,32 @@ test('combined provider treats a reported list error as incomplete even when the
   await assert.rejects(p.connect('b-1'), { code: 'provider_ownership_unavailable' });
 });
 
+test('combined provider reports rejected adapter listings once with the owning provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  const row = { id: 'b-1', name: 'x', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() };
+  b.machines.set(row.id, row);
+  const error = Object.freeze(Object.assign(new Error('list unavailable'), { code: 'transient' }));
+  a.list = async (_labels, opts) => { opts.onError(error); throw error; };
+  const p = combine([a, b]), reported = [];
+  const rows = await p.list({ purpose: 'cloudy-cloud' }, { onError: (e) => reported.push(e) });
+  assert.deepEqual(rows.map((m) => m.provider), ['b']);
+  assert.equal(reported.length, 1, 'an adapter callback followed by rejection is reported once');
+  assert.equal(reported[0].provider, 'a');
+  assert.equal(reported[0].code, 'transient');
+});
+
+test('combined provider forwards a rejected listing when the adapter did not call onError', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  b.machines.set('b-1', { id: 'b-1', name: 'x', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() });
+  a.list = async () => { throw Object.assign(new Error('list unavailable'), { code: 'transient' }); };
+  const reported = [];
+  const rows = await combine([a, b]).list({ purpose: 'cloudy-cloud' }, { onError: (e) => reported.push(e) });
+  assert.deepEqual(rows.map((m) => m.provider), ['b']);
+  assert.deepEqual(reported.map((e) => [e.provider, e.code]), [['a', 'transient']]);
+});
+
 // The adapter lands in a separate change; these run once src/providers/instabox.mjs exists.
 const adapter = existsSync(new URL('../src/providers/instabox.mjs', import.meta.url));
 test('loadProvider defaults to instabox and accepts it by name', { skip: !adapter && 'adapter not present yet' }, async () => {

@@ -117,30 +117,38 @@ export function combine(providers) {
     return owners.get(machineOrId);
   };
   const tagError = (error, name) => {
-    if (error && typeof error === 'object' && error.provider === undefined) {
-      try { error.provider = name; } catch { /* provider error may be frozen */ }
+    if (error && typeof error === 'object' && typeof error.provider === 'string' && error.provider) return error;
+    if (error && typeof error === 'object') {
+      try { error.provider = name; if (error.provider === name) return error; } catch { /* provider error may be frozen */ }
     }
-    return error;
+    const tagged = new Error(String(error?.message ?? error), { cause: error });
+    if (error?.name) tagged.name = error.name;
+    for (const key of ['code', 'status', 'exitCode', 'stdout', 'stderr']) if (error?.[key] !== undefined) tagged[key] = error[key];
+    tagged.provider = name;
+    return tagged;
   };
   const list = async (labels = {}, opts = {}) => {
     const reported = providers.map(() => []);
+    const report = (index, error) => {
+      const prior = reported[index].find((entry) => entry.source === error);
+      if (prior) return prior.tagged;
+      const tagged = tagError(error, providers[index].name);
+      reported[index].push({ source: error, tagged });
+      opts.onError?.(tagged);
+      return tagged;
+    };
     const results = await Promise.allSettled(providers.map((p, index) => p.list(labels, {
       ...opts,
-      onError: (e) => {
-        const error = tagError(e, p.name);
-        reported[index].push(error);
-        opts.onError?.(error);
-      },
+      onError: (e) => report(index, e),
     })));
     const rows = [], errors = [];
     results.forEach((result, index) => {
       const p = providers[index];
       if (result.status === 'rejected') {
-        const error = tagError(result.reason, p.name);
-        errors.push(error);
-        return;
+        report(index, result.reason);
       }
-      if (reported[index].length) errors.push(...reported[index]);
+      for (const { tagged } of reported[index]) if (!errors.includes(tagged)) errors.push(tagged);
+      if (result.status === 'rejected') return;
       for (const row of result.value) {
         if (owners.has(row.id) && owners.get(row.id) !== p) duplicate.add(row.id);
         owners.set(row.id, p);
