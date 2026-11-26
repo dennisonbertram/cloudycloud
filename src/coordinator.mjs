@@ -486,7 +486,7 @@ async function start(c, args) {
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS go as attached secrets; the env file holds their names and the settings only.
   // A plain setup leaves a real INSTABOX_API_KEY without the coordinator copy: store or repair it now, then read the keys.
   const stored = await storeCoordinatorSecret(c); // throws the workspace-admin error when the store was needed and failed
-  const keys = coordinatorKeys(c.env, c.provider);
+  const keys = coordinatorKeys(c.env, c.primary);
   if (keys.legacy.length) {
     const k = keys.legacy[0];
     // The coordinator copy of the Instabox key is only moved by `setup --more`; other keys keep the generic setup text.
@@ -803,10 +803,32 @@ async function finish(c, args, deps) {
         encoding: 'utf8', input: `${originRefs.map((ref) => `delete ${ref}`).join('\n')}\n`, stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch { problems.push('Could not clean up the private origin verification refs; finish will not delete this machine.'); }
-    let owner = '';
-    try { owner = readFileSync(deps.ownerFile ?? ownerFile(c.env), 'utf8').trim(); } catch { /* no server has run here */ }
-    const workers = owner ? (await c.provider.list({ owner })).filter((m) => m.labels?.owner === owner && !/delet/.test(m.state ?? '')) : [];
-    if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
+    const owners = new Set(), ownerPattern = /^[0-9a-f]{8}-[0-9a-f]{3}$/;
+    try {
+      const lines = readFileSync(deps.ownerFile ?? ownerFile(c.env), 'utf8').split(/\s+/).filter(Boolean);
+      for (const owner of lines) if (ownerPattern.test(owner)) owners.add(owner); else problems.push('The coordinator owner marker is invalid, so finish cannot identify all of its worker machines.');
+    } catch (e) { if (e.code !== 'ENOENT') problems.push('The coordinator owner marker could not be read, so finish cannot identify all of its worker machines.'); }
+    const sessionDir = deps.sessionMetadataDir ?? join(process.env.CLOUDY_CLOUD_SESSION_HOME || homedir(), '.config/cloudy-cloud/sessions');
+    try {
+      for (const entry of readdirSync(sessionDir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json'))) {
+        try {
+          const metadata = JSON.parse(readFileSync(join(sessionDir, entry.name), 'utf8'));
+          if (!ownerPattern.test(metadata?.owner ?? '')) problems.push('A named-session owner record is invalid, so finish cannot identify all of its worker machines.');
+          else owners.add(metadata.owner);
+        } catch { problems.push('A named-session owner record could not be read, so finish cannot identify all of its worker machines.'); }
+      }
+    } catch (e) { if (e.code !== 'ENOENT') problems.push('Named-session owner records could not be read, so finish cannot identify all of their worker machines.'); }
+    if (!owners.size) problems.push('Could not verify a coordinator server owner. Start its MCP server before running finish; finish will not delete this machine without a verified owner.');
+    let machines = [], listErrors = [];
+    try { machines = await c.provider.list({ purpose: 'cloudy-cloud' }, { onError: (e) => listErrors.push(e) }); }
+    catch (e) { listErrors.push(e); }
+    if (!Array.isArray(machines) || listErrors.length) {
+      const providers = (c.provider.providers ?? [c.provider]).map((p) => p.name).join(', ');
+      problems.push(`Could not verify the machine inventory on every configured provider (${providers}); finish will not delete this machine.`);
+    } else {
+      const workers = machines.filter((m) => owners.has(m.labels?.owner) && String(m.id) !== String(me.id) && !/delet/.test(m.state ?? ''));
+      if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
+    }
     if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'fix the problems above, then run: cloudy-cloud coordinator finish' });
     verified.push('working tree clean', `pushed: all local branches are reachable from current origin heads: ${safeText(branches.map((b) => b.slice('refs/heads/'.length)).join(', '))}`, 'no running workers');
   }
