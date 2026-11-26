@@ -414,14 +414,14 @@ async function safetyPush(a, ctx) {
       : { where: 'No changes, no branch pushed.', workspace_dirty: false, push_status: 'no-change', preserve_worker: false };
     if (marker('PUSHOK')) {
       const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
-      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'unknown', where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
       const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
       const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
       return { sha, ...(hasDirtyPaths && { error: true, preserve_worker: true }), workspace_dirty: hasDirtyPaths, push_status: 'pushed', preserve_worker: hasDirtyPaths, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
-    if (!marker('PUSHFAIL')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'unknown', where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
-    return { failed: true, error: true, preserve_worker: true, workspace_dirty: dirty, push_status: 'failed', where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
+    if (!marker('PUSHFAIL')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
+    return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'failed', where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
     log('safety push failed:', ctx.scrub(e?.message));
     if (e?.code === 'not_found' || e?.status === 404) return { gone: true, error: true, preserve_worker: false, workspace_dirty: null, push_status: 'unknown', where: `The sandbox is confirmed gone before the safety push (${ctx.scrub(e?.message)}). Only work already pushed to origin ${branch} survives.` };
@@ -560,7 +560,17 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone: turnGone, preserve_worker: !turnGone, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
+    const failureWhere = retainedWithoutSession
+      ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')
+        .replace(/Retry a message or stop the agent after the connection recovers\./g, '')
+        .replace(/Retry a message or inspect the workspace before stopping it\./g, 'Inspect the workspace or explicitly stop the agent.')
+        .replace(/the agent is still open, ask it to push\./g, 'The sandbox is retained for inspection.')
+      : where;
+    const noSessionNote = retainedWithoutSession
+      ? '\nThe sandbox is retained because workspace or push state may be uncommitted or unconfirmed. No session ID was reported, so this conversation cannot be resumed. Inspect the workspace or explicitly stop the agent.'
+      : '';
+    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -1240,7 +1250,10 @@ async function work(a, message, first, ctx, t) {
   a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
   a.emit?.({ type: 'status', status: a.status });
   endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
-  if (dead) await a.sandbox?.kill().catch(() => {});
+  // A first-turn failure can make the conversation unusable before it can report
+  // a session ID. Keep the sandbox when safetyPush found dirty or unconfirmed
+  // state; the user can inspect it or explicitly stop it.
+  if (dead && !r.preserve_worker) await a.sandbox?.kill().catch(() => {});
   armIdle(a, ctx);
   wake(a);
 }
