@@ -418,11 +418,11 @@ export function createProvider(env = process.env, deps = {}) {
       uploadMaxBytes: 100 * 1024 * 1024, machineKinds: ['linux'],
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, signal }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, signal, includeGithubToken = true }) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `e2b runs only linux sandboxes, not ${kind.name}. Use machine "linux".`);
       if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
       apiKey(); // no_key before the consent check: the key is required either way
-      if (!consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      if ((includeGithubToken || secrets.length || Object.keys(envs).length) && !consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
       signal?.throwIfAborted?.();
 
       const ttl = Math.min(Math.max(1, ttlSeconds || MAX_TTL_SECONDS), MAX_TTL_SECONDS);
@@ -436,7 +436,7 @@ export function createProvider(env = process.env, deps = {}) {
       const vars = { ...envs };
       // With consent GH_TOKEN goes into the sandbox like the self-hosted provider's; other names in
       // `secrets` are MCP tokens the core asked for after the user allowed that server.
-      for (const n of [...new Set(['GH_TOKEN', ...secrets])]) {
+      for (const n of [...new Set([...(includeGithubToken ? ['GH_TOKEN'] : []), ...secrets])]) {
         if (env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put into an E2B sandbox. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }

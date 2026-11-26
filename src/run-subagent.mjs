@@ -28,6 +28,7 @@ import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
 import { createSnapshotManager } from './snapshot.mjs';
 import { checkpointRecord, recoverFromCheckpoint, saveCheckpoint, updateCheckpointPlacement, verifyOriginCheckpoint } from './recovery.mjs';
+import { classifyCreateFailure, reconcileCreate } from './create-routing.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -694,13 +695,6 @@ function credentialsFor(candidate, a, env) {
   return { envs, keySecrets, coord };
 }
 
-const failoverHow = (e) => {
-  const code = String(e?.code ?? '');
-  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity'
-    || code === 'size_not_allowed' || code === 'machine_not_on_plan' || code === 'machine_gpu_limit') return 'next';
-  if (code === 'transient' || code === 'create_unknown' || code === 'ambiguous' || (!code && classifyProviderError(e?.message)?.kind === 'connection')) return 'reconcile';
-};
-
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env } = ctx;
@@ -810,7 +804,7 @@ async function setup(a, ctx) {
             if (next) a.emit?.({ type: 'progress', text: `${p.name} cannot run this request (${why}); trying ${next.name}` });
             continue;
           }
-          const how = failoverHow(error);
+          const how = classifyCreateFailure(error);
           if (how === 'next') {
             if (a.createAttempt?.provider === p) a.createAttempt = undefined;
             if (a.uncertainCreate?.provider === p) a.uncertainCreate = undefined;
@@ -824,24 +818,15 @@ async function setup(a, ctx) {
           if (how === 'reconcile') {
             // Transient transport failures may hide a successful create. Reconcile this stable agent label;
             // only one confirmed machine can be adopted. Zero, multiple, or unlistable matches fail closed.
-            let matches;
-            let listError;
-            try {
-              const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
-              matches = await p.list(attempt.labels, { onError: (e) => { listError ??= e; } });
-              if (listError) throw listError;
-              matches = matches.filter((machine) => Object.entries(attempt.labels).every(([key, value]) => machine.labels?.[key] === value));
-            }
-            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create and its machines could not be listed; refusing another create.`), { code: 'ambiguous' }); }
-            if (matches.length !== 1) throw Object.assign(new Error(matches.length ? `Provider ${p.name} returned an uncertain create and multiple machines carry agent ${a.id}; refusing to select one.` : `Provider ${p.name} returned an uncertain create and no matching machine could be confirmed; refusing another create.`), { code: 'ambiguous' });
-            try { a.sandbox = await p.connect(matches[0].id); }
-            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create; machine ${matches[0].id} could not be connected, so another create was refused.`), { code: 'ambiguous' }); }
+            const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+            const adopted = await reconcileCreate(p, attempt.labels);
+            a.sandbox = adopted.sandbox;
             a.createAttempt = undefined;
             a.uncertainCreate = undefined;
             const { envs } = credentialsFor(p, a, env);
             a.provider = p;
             a.envs = { ...envs, ...baseEnvs };
-            a.deleteAt = matches[0].deleteAt ? new Date(matches[0].deleteAt).getTime() : Date.now() + workerSeconds(env, p.caps.maxTtlSeconds) * 1000;
+            a.deleteAt = adopted.machine.deleteAt ? new Date(adopted.machine.deleteAt).getTime() : Date.now() + workerSeconds(env, p.caps.maxTtlSeconds) * 1000;
             a.serverTtl = p.caps.hasServerTTL;
             a.tokenOnBox = !p.caps.hasProxySecrets && p.caps.hasConsentedSecrets ? (p.text?.hostLabel ?? p.name) : '';
             a.providerNote = `Recovered the existing machine on ${p.name} after an uncertain create response.`;
