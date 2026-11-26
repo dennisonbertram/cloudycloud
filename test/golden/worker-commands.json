@@ -15,7 +15,7 @@
   },
   {
     "op": "run",
-    "cmd": "git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost && git fetch -q ../in.bundle refs/cc-keep/<ID> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/test/repo.git' && git checkout -q -b cloudy-cloud/<ID>",
+    "cmd": "git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost && git fetch -q ../in.bundle <SHA> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/test/repo.git' && git checkout -q -b cloudy-cloud/<ID>",
     "cwd": "/home/user",
     "timeoutMs": 120000,
     "onStdout": false
@@ -56,7 +56,7 @@
   },
   {
     "op": "run",
-    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
+    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; echo \"REMOTE_SHA $(git ls-remote --heads origin refs/heads/cloudy-cloud/<ID> | awk 'NR==1 {print $1}')\"; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
     "cwd": "/home/user/repo",
     "timeoutMs": 120000,
     "onStdout": false
@@ -83,7 +83,7 @@
   },
   {
     "op": "run",
-    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
+    "cmd": "if [ \"$(git rev-parse HEAD)\" = <SHA> ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/cloudy-cloud/<ID> 2>&1); then echo PUSHOK; echo \"REMOTE_SHA $(git ls-remote --heads origin refs/heads/cloudy-cloud/<ID> | awk 'NR==1 {print $1}')\"; else echo PUSHFAIL; printf '%s\n' \"$err\" | tail -n 8 | sed 's/^/ERR /'; fi; echo \"SHA $(git rev-parse HEAD)\"; git status --porcelain | head -20 | sed 's/^/ST /'; true",
     "cwd": "/home/user/repo",
     "timeoutMs": 120000,
     "onStdout": false
