@@ -177,3 +177,71 @@ test('profileBusy holds the head, labels it, and releases it when the cap clears
   await p;
   assert.ok(started);
 });
+
+test('a profile-blocked head cannot spend a newer request’s global-cap soft wait', async () => {
+  const c = clock();
+  const sleeps = [];
+  const starts = [];
+  const q = createStartQueue({
+    perMin: 100,
+    now: c.now,
+    sleep: (ms) => new Promise((resolve) => sleeps.push(() => { c.t += ms; resolve(); })),
+    liveCount: () => 1,
+    maxRunning: () => 1,
+    profileBusy: (a) => a.profile.name === 'a' ? 'profile a is full' : undefined,
+    softPollMs: 10,
+    softWaitMs: 20,
+  });
+  const waitForSleep = async (count) => { while (sleeps.length < count) await new Promise(setImmediate); };
+  const a = { profile: { name: 'a' } };
+  const first = q.create(a, async () => {});
+  await waitForSleep(1);
+  c.t = 10;
+  const second = q.create({ profile: { name: 'b' } }, async () => { starts.push(c.t); });
+  await waitForSleep(2);
+  sleeps[1]();
+  await waitForSleep(3);
+  if (!starts.length) {
+    sleeps[2]();
+    while (!starts.length) await new Promise(setImmediate);
+  }
+  q.cancel(a);
+  await assert.rejects(first, /cancelled/);
+  await second;
+  assert.ok(starts[0] >= 30, `the newer request started at ${starts[0]} before its own 20 ms soft wait expired`);
+});
+
+test('a profile-capped head does not block eligible profiles, and eligible requests keep order under the global rate cap', async () => {
+  const c = clock();
+  const started = [];
+  const q = createStartQueue({
+    perMin: 1,
+    now: c.now,
+    sleep: async (ms) => { c.t += ms; },
+    softPollMs: 5000,
+    profileBusy: (a) => a.profile.name === 'a' && c.t < 30_000 ? 'profile a is full' : undefined,
+  });
+  const make = (name) => ({ profile: { name } });
+  const go = (name) => q.create(make(name), async () => { started.push({ name, at: c.t }); });
+
+  await Promise.all([go('a'), go('b'), go('c')]);
+
+  assert.deepEqual(started.map((x) => x.name), ['b', 'a', 'c']);
+  assert.ok(started[0].at < 30_000, 'eligible profile b should pass the capped profile a');
+  assert.ok(started[1].at >= 30_000, 'profile a should wait until its cap clears');
+  for (let i = 1; i < started.length; i++) assert.ok(started[i].at - started[i - 1].at >= 60_000, 'profile bypass must not exceed the shared start rate');
+});
+
+test('cancelling a profile-capped head still lets the next eligible request start', async () => {
+  let release;
+  const q = createStartQueue({ profileBusy: (a) => a.profile.name === 'a' ? 'profile a is full' : undefined, sleep: () => new Promise((r) => { release = r; }) });
+  const a = { profile: { name: 'a' } }, b = { profile: { name: 'b' } };
+  const first = q.create(a, async () => assert.fail('cancelled request started'));
+  await new Promise((r) => setTimeout(r, 5));
+  q.cancel(a);
+  await assert.rejects(first, /cancelled/);
+  release?.();
+  let started = false;
+  await q.create(b, async () => { started = true; });
+  assert.equal(started, true);
+});

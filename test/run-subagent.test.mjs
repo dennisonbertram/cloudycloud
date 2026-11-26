@@ -2618,6 +2618,40 @@ test('a profile at its maxConcurrent cap queues the next start with a status lin
   await q.create(other, async () => {}); // no cap on another profile
 });
 
+test('snapshot preparation does not consume a profile slot', async () => {
+  let now = 0, started = false;
+  const preparing = { id: 'preparing', status: 'starting', profile: { name: 'pi-x' } };
+  const open = new Map([[preparing.id, preparing]]);
+  const q = startQueue({}, undefined, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; if (now >= 20) preparing.status = 'stopped'; }, softPollMs: 1 });
+  const me = { id: 'me', status: 'starting', profile: { name: 'pi-x', maxConcurrent: 1 }, emit() {} };
+  await q.create(me, async () => { started = true; });
+  assert.equal(started, true);
+  assert.equal(now, 0, 'the preparing agent has not created a machine and must not fill maxConcurrent');
+});
+
+test('snapshot preparation does not consume a machine slot', async () => {
+  let now = 0, started = false;
+  const preparing = { id: 'preparing', status: 'starting' };
+  const open = new Map([[preparing.id, preparing]]);
+  const provider = { name: 'fake', caps: { startsPerMin: 25 }, plan: async () => ({ tier: 'pro', specs: [], startsPerMinute: 25, maxRunning: 1 }) };
+  const q = startQueue({}, provider, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; }, softPollMs: 1, softWaitMs: 10 });
+  await q.learnPlan();
+  const me = { id: 'me', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
+  await q.create(me, async () => { started = true; });
+  assert.equal(started, true);
+  assert.equal(now, 0, 'the preparing agent has not created a machine and must not fill maxRunning');
+
+  preparing.machineCreating = true;
+  now = 0;
+  let createStarted = false;
+  const queued = { id: 'queued', status: 'starting', profile: { name: 'pi-z' }, emit() {} };
+  const waitForCreate = startQueue({}, provider, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; if (now >= 3) preparing.machineCreating = false; }, softPollMs: 1, softWaitMs: 10 });
+  await waitForCreate.learnPlan();
+  await waitForCreate.create(queued, async () => { createStarted = true; });
+  assert.equal(createStarted, true);
+  assert.equal(now, 3, 'an in-flight provider create must reserve a machine slot');
+});
+
 test('the profile cap counts only running or starting machines from provider.list', async () => {
   for (const [rows, shouldRun] of [
     [[{ id: 'm1', state: 'stopped', status: 'stopped' }], true],
