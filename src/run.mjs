@@ -13,6 +13,7 @@ const resumeUsage = 'usage: cloudy-cloud resume RUN-ID [--json] [--timeout SECON
 const MAX_TIMEOUT_SECONDS = 86_400;
 const packageVersion = createRequire(import.meta.url)('../package.json').version;
 const shellQuote = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`;
+export const isDifferentRunTurn = (candidate, expectedTurnId) => Boolean(expectedTurnId && candidate?.turn_id && candidate.turn_id !== expectedTurnId);
 const currentUid = () => process.getuid?.() ?? 0;
 const runHome = () => resolve(process.env.CLOUDY_CLOUD_SESSION_HOME || homedir());
 const runDirectory = () => join(runHome(), '.config', 'cloudy-cloud', 'runs');
@@ -174,6 +175,9 @@ async function run(options, resumeRecord) {
     const preserveFailure = (agent) => ({ ...agent, status: 'failed', error: true, preserve_worker: true, recoverable: true, session: name, repo,
       message: agent.workspace_dirty === true ? 'The worker left uncommitted workspace changes; the CLI kept it open for recovery.' : 'The worker workspace status could not be confirmed; the CLI kept it open for inspection.',
       action: preserveAction(agent) });
+    const changedTurnFailure = () => ({ status: 'failed', error: true, recoverable: true, preserve_worker: true, agent_id: agentId, session: name, repo,
+      message: 'The worker has a newer turn than the one attached to this run; the CLI left it open.',
+      action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list and cloud_agent_result for ${agentId} before deciding what to stop.` });
     const deadline = Date.now() + options.timeout * 1000;
     while (Date.now() < deadline) {
       const seconds = Math.max(1, Math.min(1500, Math.ceil((deadline - Date.now()) / 1000)));
@@ -184,16 +188,19 @@ async function run(options, resumeRecord) {
         break;
       }
       let agent = waited?.structuredContent?.agents?.[0];
-      if (resumeRecord && record.turn_id && agent?.turn_id && agent.turn_id !== record.turn_id) {
-        final = { status: 'failed', error: true, recoverable: true, preserve_worker: true, agent_id: agentId, session: name, repo,
-          message: 'The worker has a newer turn than the one attached to this run; the CLI left it open.',
-          action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list and cloud_agent_result for ${agentId} before deciding what to stop.` };
+      if (isDifferentRunTurn(agent, record.turn_id)) {
+        final = changedTurnFailure();
         break;
       }
       if (agent && ['idle', 'failed', 'stopped'].includes(agent.status) && (!agent.result || agent.reported)) {
         try {
           const latest = await toolCall(client, 'cloud_agent_result', { agent_id: agentId });
-          if (!latest?.isError && latest?.structuredContent?.result) agent = { ...agent, ...latest.structuredContent };
+          const latestAgent = latest?.structuredContent;
+          if (isDifferentRunTurn(latestAgent, record.turn_id)) {
+            final = changedTurnFailure();
+            break;
+          }
+          if (!latest?.isError && latestAgent?.result) agent = { ...agent, ...latestAgent };
         } catch { /* the wait response remains the best available state */ }
       }
       if (agent && ['idle', 'failed', 'stopped'].includes(agent.status)) {
@@ -305,7 +312,7 @@ export async function main(argv = process.argv.slice(2)) {
       return result.error ? (process.exitCode === 124 ? 124 : 1) : 0;
     } catch (error) {
       if (!id) { process.stderr.write(`${error.message}\n${resumeUsage}\n`); return 2; }
-      const result = { status: 'failed', error: true, recoverable: true, run_id: id, message: error.message, action: 'return to the repository used by cloudy-cloud run and retry resume; the command never starts a replacement worker' };
+      const result = { status: 'failed', error: true, recoverable: true, run_id: id, message: error.message, action: 'Retry resume; it uses the repository recorded for this run and never starts a replacement worker.' };
       print(result, json);
       return 1;
     }
