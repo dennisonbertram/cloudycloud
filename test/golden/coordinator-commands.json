@@ -263,7 +263,8 @@
         "sdk": "files.write",
         "path": "/data/home/.config/cloudy-cloud/env",
         "envNames": [
-          "CLOUDY_CLOUD_PROXY_SECRETS"
+          "CLOUDY_CLOUD_PROXY_SECRETS",
+          "CLOUDY_CLOUD_INSTALL_ID"
         ]
       },
       {
@@ -476,7 +477,8 @@
         "sdk": "files.write",
         "path": "/data/home/.config/cloudy-cloud/env",
         "envNames": [
-          "CLOUDY_CLOUD_PROXY_SECRETS"
+          "CLOUDY_CLOUD_PROXY_SECRETS",
+          "CLOUDY_CLOUD_INSTALL_ID"
         ]
       },
       {

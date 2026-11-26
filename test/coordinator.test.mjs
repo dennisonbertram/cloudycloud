@@ -46,7 +46,7 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
 });
 
 const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true });
-function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready', loginActive = true } = {}) {
+function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready', loginActive = true, task = '' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
@@ -57,6 +57,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; } },
     commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
       if (/test -f .*login-active/.test(cmd)) { if (!loginActive) throw Object.assign(new Error('no login-active'), { exitCode: 1 }); return { stdout: '', stderr: '', exitCode: 0 }; }
+      if (/task\.md/.test(cmd)) return { stdout: task, stderr: '', exitCode: 0 };
       return { stdout: /pane_pid/.test(cmd) ? link : /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
@@ -192,6 +193,8 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN')));
   const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
   assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY$/m);
+  // The operator's install id travels as trusted config so the coordinator recognises this installation's peers.
+  assert.match(w.d, new RegExp(`^CLOUDY_CLOUD_INSTALL_ID=${f.iid}$`, 'm'));
   assert.ok(![IBK, TOK, PROV].some((v) => w.d.includes(v)), 'no key value in the env file');
   assert.ok(!w.d.includes('PATH='));
   assert.ok(!w.d.includes('STRIPE_API_KEY') && !w.d.includes(OTHER), 'a key no profile uses stays on the laptop');
@@ -2690,7 +2693,7 @@ test('cloud --no-attach on a TTY starts without the attach exec', async () => {
 test('cloud on a TTY starts and attaches through the same spawn path as coordinator attach', async () => {
   const f = fixture();
   const spawned = [];
-  const status = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ask: async () => 'y', spawn: localSpawn(spawned) });
+  const status = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ui: tty(), ask: async () => 'y', spawn: localSpawn(spawned) });
   assert.equal(f.log.create.length, 1);
   assert.equal(status, 0);
   assert.ok(spawned.some((a) => a.some((x) => /tmux.*attach.*claude/.test(x))), JSON.stringify(spawned));
@@ -3022,8 +3025,8 @@ test('login --code - reads the code from stdin (first line) and sends it by file
   assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
 });
 
-// P2-1: the post-sign-in health check runs after a code sign-in too — a dead session deletes its machine.
-test('login --code deletes the machine when the session hits a limit right after sign-in', async () => {
+// P2-1: the post-sign-in health check runs after a code sign-in too — a dead session is reported, never deleted.
+test('login --code keeps the machine and names the stop command when the session hits a limit right after sign-in', async () => {
   const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
   coordMachine(f);
   const connect = f.deps.sdk.Sandbox.connect;
@@ -3032,8 +3035,40 @@ test('login --code deletes the machine when the session hits a limit right after
     sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
     return sbx;
   };
-  await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], f.deps), /not working after sign-in/);
-  assert.deepEqual(f.log.killed, ['m1']);
+  const e = await main(['login', 'a', '--code', 'OK-code-1'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// P2-1: a session that exited under sign-in is also reported, not deleted — a reattach must not lose work.
+test('login --code keeps the machine when the session exited under sign-in', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
+  coordMachine(f);
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? Promise.reject(Object.assign(new Error('no server running on /tmp/tmux-0/default'), { exitCode: 1, stderr: 'no server running' })) : run(cmd, ...r));
+    return sbx;
+  };
+  const e = await main(['login', 'a', '--code', 'OK-code-1'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /exited/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// A Claude error the brief merely quotes (the task is typed into the session) is not a live failure.
+test('login --code does not report an error line that is part of the uploaded task brief', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN], task: 'Fix the Invalid API key · Fix external API key problem in our app' });
+  coordMachine(f);
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: '  ⎿  Invalid API key · Fix external API key', stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  await main(['login', 'a', '--code', 'OK-code-1'], f.deps);
+  assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
 });
 
 test('login --code reports when the sign-in does not land within 60 seconds', async () => {
@@ -3178,9 +3213,29 @@ test('a sign-in URL over 4096 characters is reported as no URL at all', async ()
 });
 
 // ---- P2-1/P2-7: the post-sign-in health check runs after an interactive attach returns too ----
-test('login on a terminal deletes the machine when the session shows a limit on return from attach', async () => {
+test('login on a terminal keeps the machine and names the stop command when the session shows a limit on return from attach', async () => {
   const f = fixture({ pane: "You've hit your monthly spend limit" });
   coordMachine(f);
-  await assert.rejects(main(['login', 'a'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }), /not working after sign-in/);
-  assert.deepEqual(f.log.killed, ['m1']);
+  const e = await main(['login', 'a'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// A plain reattach (`cloud` finding its own coordinator) must never delete it — whatever the screen shows,
+// the report names the stop command and the machine stays.
+test('a reattached cloud session that exited is reported with the stop command; the machine is kept', async () => {
+  const f = fixture();
+  f.machines.push(own(f));
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) ? Promise.reject(Object.assign(new Error('no server running on /tmp/tmux-0/default'), { exitCode: 1, stderr: 'no server running' })) : run(cmd, ...r));
+    return sbx;
+  };
+  const spawned = [];
+  const e = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, spawn: localSpawn(spawned) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /exited/);
+  assert.match(e.message, /cloudy-cloud coordinator stop boss/);
+  assert.deepEqual(f.log.killed, [], 'a reattach never deletes the machine');
 });

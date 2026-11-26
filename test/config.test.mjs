@@ -172,6 +172,23 @@ test('installId answers different ids for different config dirs', () => {
   assert.notEqual(config.installId({ CLOUDY_CLOUD_CONFIG: join(a, 'env') }), config.installId({ CLOUDY_CLOUD_CONFIG: join(b, 'env') }));
 });
 
+// The operator's id travels to a coordinator as trusted config (start writes it into the machine's env
+// file): a well-formed value wins, in the environment or the file; anything else falls back to the local file.
+test('installId honours a valid CLOUDY_CLOUD_INSTALL_ID and ignores an invalid one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
+  const env = { CLOUDY_CLOUD_CONFIG: join(dir, 'env'), CLOUDY_CLOUD_INSTALL_ID: 'aaaa1111bbbb2222' };
+  assert.equal(config.installId(env), 'aaaa1111bbbb2222', 'the environment value wins');
+  // The same line read back from the env file (how the coordinator itself sees it) counts too.
+  writeFileSync(join(dir, 'env'), 'CLOUDY_CLOUD_INSTALL_ID=cccc3333dddd4444\n');
+  assert.equal(config.installId({ CLOUDY_CLOUD_CONFIG: join(dir, 'env') }), 'cccc3333dddd4444', 'the env file carries the override');
+  assert.equal(config.installId(env), 'aaaa1111bbbb2222', 'the environment still beats the file');
+  // An invalid value is no id at all: the local install-id file is used, as before.
+  const other = { CLOUDY_CLOUD_CONFIG: join(dir, 'other'), CLOUDY_CLOUD_INSTALL_ID: 'not hex at all' };
+  const local = config.installId(other);
+  assert.match(local, /^[0-9a-f]{16}$/);
+  assert.equal(readFileSync(join(dir, 'install-id'), 'utf8'), `${local}\n`, 'the local file is created and used');
+});
+
 test('defaultWorkerNote recommends only a profile that resolveProfile accepts under the provider\'s rules', () => {
   const base = { CLOUDY_CLOUD_PROFILES: '/nonexistent', CLOUDY_CLOUD_CODEX_AUTH: '/nonexistent/auth.json' };
   // Instabox (the default): a real OPENAI_API_KEY value is refused, so codex is not offered; a proxy secret is.

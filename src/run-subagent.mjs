@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow, installId } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow, envLine, installId } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, preflightProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
@@ -621,7 +621,9 @@ async function installCoordinator(a, ctx, envs) {
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const { lines } = coordinatorKeys(env, ctx.provider, { single: true });
-  lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
+  // The operator's install id rides along as trusted config, the same way `coordinator start` writes it, so a
+  // nested coordinator's cloud_agent_list marks the same installation's peers (allMachines uses installId()).
+  lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`, envLine('CLOUDY_CLOUD_INSTALL_ID', installId(env)));
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
   await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);

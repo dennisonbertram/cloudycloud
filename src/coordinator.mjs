@@ -517,7 +517,7 @@ async function start(c, args) {
     const home = await installTool(sbx, c.root, c.note);
     const dir = `${home}/.config/cloudy-cloud`;
     await sbx.commands.run(`mkdir -p ${q(dir)} && chmod 700 ${q(dir)}`);
-    await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n`); // values never appear in a command string
+    await sbx.files.write(`${dir}/env`, `${keys.lines.join('\n')}\n${envLine('CLOUDY_CLOUD_INSTALL_ID', installId(c.env))}\n`); // values never appear in a command string; the install id lets the coordinator classify this installation's peers
     await sbx.commands.run(`chmod 600 ${q(`${dir}/env`)}`);
     // Consented literal values go in env.local: an empty mode-600 file first (the upload could briefly be 644),
     // the secret file route for the body, a chmod after. tmux sources it into Claude's environment below.
@@ -636,10 +636,11 @@ async function start(c, args) {
       ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
       ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
     ];
-    return c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl) : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
+    c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl) : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${name}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
+    return { needsLogin, loginUrl, sbx }; // `cloud` attaches to — and health-checks — this same machine
   }
   c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? (needsLogin ? ' and starts on the task once it is signed in' : ' and has started on the task') : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
     (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${name}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
@@ -673,24 +674,30 @@ async function attach(c, args, { noAttach = false, machine = null } = {}) {
 // The code the browser sign-in shows, typed into the pane's sign-in prompt: word characters only.
 const CODE_RE = /^[A-Za-z0-9#_-]{1,512}$/;
 
+// The brief `start` uploads to ~/task.md. Its lines can sit on the pane (the task is typed into the session),
+// so the classifier excludes them exactly like start's own check — a quoted error is not the session's own
+// error. Read size-capped and never printed; anything unreadable is treated as no brief.
+const taskBrief = async (sbx) => {
+  try { return (await sbx.commands.run(`head -c ${TASK_MAX + 512} "$HOME/task.md" 2>/dev/null || true`, { timeoutMs: 15_000 })).stdout ?? ''; } catch { return ''; }
+};
+
 // The session-health check `start` runs on a new session, applied after a sign-in finishes (login --code or
-// an interactive attach): a session that exited, hit a spend or usage limit, or reports an invalid key gets
-// its machine deleted under start's own rule; a machine still waiting for sign-in (or a prompt) is never deleted.
+// an interactive attach): a session that exited, hit a spend or usage limit, or reports an invalid key is
+// reported plainly, with the stop command — the machine is NEVER deleted here, so reattaching or finishing
+// a sign-in can never destroy work. The only automatic deletion is start's own check on a brand-new machine.
 async function afterSignIn(c, sbx, name) {
   let pane = '';
   try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? ''; }
   catch (e) {
     if (typeof e?.exitCode !== 'number') return; // a transport failure is not a verdict: the machine stays
-    await sbx.kill().catch(() => {});
-    guided(`The Claude session on ${name} exited. The machine was deleted.\nLikely cause: the launcher or Claude exited.\nNext: run cloudy-cloud coordinator start ${name} again; if it repeats, run cloudy-cloud coordinator image for a fresh image.`, { short: `The Claude session on ${name} exited.`, reason: 'the launcher or Claude exited; the machine was deleted', next: `cloudy-cloud coordinator start ${name}` });
+    guided(`The Claude session on ${name} exited. The machine was kept — nothing it did is lost.\nLikely cause: the launcher or Claude exited.\nNext: inspect it with cloudy-cloud coordinator attach ${name}, or stop it with cloudy-cloud coordinator stop ${name}.`, { short: `The Claude session on ${name} exited.`, reason: 'the launcher or Claude exited; the machine was kept', next: `cloudy-cloud coordinator stop ${name}` });
   }
-  const line = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane)).blocked;
+  const line = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane), await taskBrief(sbx)).blocked;
   if (!line) return; // waiting on a prompt or still at the sign-in: the machine stays
-  const [code, cause, next, nextCmd] = /invalid api key/i.test(line)
-    ? ['coordinator_invalid_key', 'the session reports an invalid API key', `check the keys the image settings or your --env files send, then run cloudy-cloud coordinator start ${name} again`, `check the machine's Claude settings and your --env files, then start ${name} again`]
-    : ['spend_limit', 'the Claude account on the coordinator has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`, `check the plan at claude.ai, then start ${name} again`];
-  await sbx.kill().catch(() => {});
-  guided(`The coordinator session is not working after sign-in. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`, { code, short: 'The coordinator session is not working after sign-in.', reason: `${cause}; the machine was deleted`, details: [`screen: ${fitCells(line, 40)}`], next: nextCmd });
+  const [code, cause] = /invalid api key/i.test(line)
+    ? ['coordinator_invalid_key', "the session reports an invalid API key; check the keys the image settings or your --env files send"]
+    : ['spend_limit', 'the Claude account on the coordinator has hit its spend or usage limit; check the plan at claude.ai'];
+  guided(`The coordinator session is not working after sign-in. Its screen shows: ${line}\nThe machine was kept — inspect it with cloudy-cloud coordinator attach ${name}.\nLikely cause: ${cause}.\nNext: cloudy-cloud coordinator stop ${name}.`, { code, short: 'The coordinator session is not working after sign-in.', reason: `${cause}; the machine was kept`, details: [`screen: ${fitCells(line, 40)}`], next: `cloudy-cloud coordinator stop ${name}` });
 }
 
 // After an interactive attach returns: the post-sign-in health check above, then the Remote Control link (and
@@ -725,10 +732,11 @@ async function login(c, args) {
   // Signing in there by hand (attach, the same way `coordinator attach` stays open to legacy machines) remains.
   if (code !== undefined && m.labels?.install !== installId(c.env)) guided(`Coordinator ${name} has no installation label, so cloudy-cloud cannot verify it is yours; the code was not sent.\nNext step: finish the sign-in on the machine itself — attach with cloudy-cloud coordinator attach ${name}`, { short: `Coordinator ${name} cannot be verified as yours.`, reason: 'it has no installation label; the code was not sent', next: `cloudy-cloud coordinator attach ${name}` });
   const sbx = await c.provider.connect(m.id, { retry: false });
+  const task = await taskBrief(sbx); // the uploaded brief: its pane lines are quotes, not live state
   const paneOf = async () => {
     const raw = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? '';
     // Exact configured values are removed first; paneState then removes key-shaped text.
-    return paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw));
+    return paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw), task);
   };
   let st;
   try { st = await paneOf(); } catch (e) {
