@@ -2,7 +2,7 @@
 // Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { homedir, hostname as osHostname, constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -742,25 +742,42 @@ async function finish(c, args, deps) {
     try {
       dirty = git('status', '--porcelain');
       current = git('rev-parse', '--abbrev-ref', 'HEAD');
-      branches = git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter((b) => b === current || b.startsWith('fleet/'));
+      branches = git('for-each-ref', '--format=%(refname)', 'refs/heads').split('\n').filter(Boolean);
     } catch (e) { guided(`Could not read the git repo ${repo}: ${e.stderr || e.message}`, { short: `Could not read the git repo ${repo}.`, reason: e.stderr || e.message, details: ['Or skip the checks and delete anyway: cloudy-cloud coordinator finish --force'], next: 'fix the problem above, then run: cloudy-cloud coordinator finish' }); }
     if (dirty) problems.push(`${repo} has uncommitted changes:\n${dirty.split('\n').slice(0, 10).join('\n')}`);
-    if (current === 'HEAD') {
-      let held = '';
-      try { held = git('branch', '-r', '--contains', 'HEAD'); } catch { /* treated as not pushed */ }
-      if (!held) problems.push('HEAD is detached and not contained in any remote branch, so its commits may be unpushed. Push them to a branch first: git push origin HEAD:refs/heads/<branch>');
+    // Query origin directly. Fetch its advertised heads into a unique private namespace so
+    // stale refs/remotes/origin entries cannot prove publication and finish cannot rewrite them.
+    const namespace = `refs/cloudycloud/finish-check/${randomUUID()}`;
+    let originRefs = [];
+    let originError;
+    try {
+      git('fetch', '--no-tags', '--refmap=', '--no-write-fetch-head', 'origin', `+refs/heads/*:${namespace}/*`);
+      originRefs = git('for-each-ref', '--format=%(refname)', namespace).split('\n').filter(Boolean);
+    } catch {
+      originError = 'Could not verify the current branches on origin. Check that origin is reachable and try again; finish will not delete this machine without a successful check.';
     }
-    for (const b of branches) {
-      let ahead;
-      try { ahead = git('rev-list', `${b}@{u}..${b}`); } catch { problems.push(`Branch ${b} has no upstream on GitHub; push it with: git push -u origin ${q(b)}`); continue; }
-      if (ahead) problems.push(`Branch ${b} has ${ahead.split('\n').length} commit(s) not pushed to its upstream; run: git push`);
+    if (originError) problems.push(originError);
+    else {
+      const contained = (ref) => {
+        const oid = git('rev-parse', '--verify', ref);
+        return Boolean(git('for-each-ref', '--format=%(refname)', `--contains=${oid}`, namespace));
+      };
+      for (const b of branches) {
+        if (!contained(b)) problems.push(`Branch ${b.slice('refs/heads/'.length)} has unpushed commits not reachable from any current branch on origin; push it with: git push origin ${q(b.slice('refs/heads/'.length))}`);
+      }
+      if (current === 'HEAD' && !contained('HEAD')) problems.push('HEAD is detached and is not contained in any current branch on origin, so its commits may be unpushed. Push them to a branch first: git push origin HEAD:refs/heads/<branch>');
     }
+    try {
+      if (originRefs.length) execFileSync('git', ['-C', repo, 'update-ref', '--stdin'], {
+        encoding: 'utf8', input: `${originRefs.map((ref) => `delete ${ref}`).join('\n')}\n`, stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch { problems.push('Could not clean up the private origin verification refs; finish will not delete this machine.'); }
     let owner = '';
     try { owner = readFileSync(deps.ownerFile ?? ownerFile(c.env), 'utf8').trim(); } catch { /* no server has run here */ }
     const workers = owner ? (await c.provider.list({ owner })).filter((m) => m.labels?.owner === owner && !/delet/.test(m.state ?? '')) : [];
     if (workers.length) problems.push(`${workers.length} worker machine(s) of this coordinator are still running (${workers.map((m) => m.name || m.id).join(', ')}). Stop them with cloud_agent_stop first.`);
     if (problems.length) guided(`Not deleting this machine, because work could be lost:\n- ${problems.join('\n- ')}\nFix these and run finish again, or use --force to delete anyway.`, { short: 'Not deleting this machine, because work could be lost.', details: [...problems.map((p) => `- ${p}`), 'Fix these and run finish again, or use --force to delete anyway.'], next: 'fix the problems above, then run: cloudy-cloud coordinator finish' });
-    verified.push('working tree clean', `pushed: ${safeText(branches.join(', '))}`, 'no running workers');
+    verified.push('working tree clean', `pushed: all local branches are reachable from current origin heads: ${safeText(branches.map((b) => b.slice('refs/heads/'.length)).join(', '))}`, 'no running workers');
   }
   // One attempt; list and delete here use the raw API, as finish always has (ls, attach, stop use the SDK).
   await c.provider.delete(me.id, { retries: 0 }).catch((e) => { throw e.status ? Object.assign(new Error(`Delete failed: HTTP ${e.status}`), { local: true }) : e; });

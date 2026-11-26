@@ -1973,11 +1973,93 @@ test('a finish refusal\'s recovery fixes the problems; --force stays a dim detai
   writeFileSync(join(repo, 'x'), 'dirty'); // an uncommitted change: the work-could-be-lost refusal
   const e2 = await main(['finish'], finishDeps({ repoDir: repo })).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.equal(e2.next, 'fix the problems above, then run: cloudy-cloud coordinator finish');
+  assert.match(e2.message, /uncommitted changes/, 'a missing origin must not hide the dirty worktree problem');
   const s2 = plainText(errorScreen(e2, tty()));
   assert.doesNotMatch(s2, /Next:[^\n]*--force/);
   assert.match(s2, /--force/);
   assert.doesNotMatch(s2, /(→ Next:|›)[^\n]*--force/);
   for (const l of s2.split('\n')) assert.ok(cellWidth(l) <= 80, l);
+});
+
+test('finish refuses a local-only commit on any branch until it is pushed to origin', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-finish-origin-'));
+  const bare = join(root, 'origin.git');
+  const other = join(root, 'other.git');
+  const repo = join(root, 'repo');
+  execFileSync('git', ['init', '--bare', '-q', bare]);
+  execFileSync('git', ['init', '--bare', '-q', other]);
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'ignore' });
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.invalid');
+  git('remote', 'add', 'origin', bare);
+  git('commit', '--allow-empty', '-m', 'main');
+  git('push', '-u', 'origin', 'main');
+  git('switch', '-q', '-c', 'feature/local-only');
+  git('commit', '--allow-empty', '-m', 'local only');
+  git('switch', '-q', 'main');
+  git('remote', 'add', 'other', other);
+  git('push', '-u', 'other', 'feature/local-only');
+  git('tag', 'feature/local-only', 'main'); // a short ref name must not resolve this tag instead of refs/heads/...
+  let deletes = 0;
+  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  await assert.rejects(main(['finish'], deps), /local-only|not reachable|not pushed|unpushed/i);
+  assert.equal(deletes, 0, 'a branch published only to another remote must not be treated as safe');
+  git('push', 'origin', 'refs/heads/feature/local-only:refs/heads/feature/local-only');
+  await main(['finish'], deps);
+  assert.equal(deletes, 1, 'finish can proceed after the commit is reachable from origin');
+});
+
+test('finish ignores stale origin tracking refs and leaves them untouched', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-finish-stale-'));
+  const bare = join(root, 'origin.git');
+  const repo = join(root, 'repo');
+  execFileSync('git', ['init', '--bare', '-q', bare]);
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'ignore' });
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.invalid');
+  git('remote', 'add', 'origin', bare);
+  git('commit', '--allow-empty', '-m', 'main');
+  git('push', '-u', 'origin', 'main');
+  git('switch', '-q', '-c', 'feature/gone');
+  git('commit', '--allow-empty', '-m', 'feature');
+  git('push', '-u', 'origin', 'feature/gone');
+  const pushedFeature = execFileSync('git', ['-C', repo, 'rev-parse', 'refs/heads/feature/gone'], { encoding: 'utf8' }).trim();
+  git('switch', '-q', 'main');
+  git('push', 'origin', ':refs/heads/feature/gone');
+  git('update-ref', 'refs/remotes/origin/feature/gone', pushedFeature);
+  let deletes = 0;
+  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  await assert.rejects(main(['finish'], deps), /feature\/gone.*not reachable/i);
+  assert.equal(deletes, 0);
+  assert.ok(execFileSync('git', ['-C', repo, 'show-ref', '--verify', 'refs/remotes/origin/feature/gone'], { encoding: 'utf8' }), 'finish must not prune the user\'s stale tracking ref');
+});
+
+test('finish leaves origin tracking refs untouched when an origin head advances', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-finish-advance-'));
+  const bare = join(root, 'origin.git');
+  const repo = join(root, 'repo');
+  execFileSync('git', ['init', '--bare', '-q', bare]);
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'ignore' });
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.invalid');
+  git('remote', 'add', 'origin', bare);
+  git('commit', '--allow-empty', '-m', 'main A');
+  const old = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  git('push', '-u', 'origin', 'main');
+  git('commit', '--allow-empty', '-m', 'main B');
+  const advanced = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  git('push', 'origin', 'main');
+  git('reset', '--hard', old);
+  git('update-ref', 'refs/remotes/origin/main', old);
+  let deletes = 0;
+  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  await main(['finish'], deps);
+  assert.equal(deletes, 1, 'the local commit is reachable from the advanced origin head');
+  assert.equal(execFileSync('git', ['-C', repo, 'rev-parse', 'refs/remotes/origin/main'], { encoding: 'utf8' }).trim(), old, 'finish must not advance the user\'s tracking ref');
+  assert.notEqual(old, advanced);
 });
 
 test('errorScreen scrubs control characters and escapes from every field, not just the message', () => {
