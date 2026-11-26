@@ -188,7 +188,7 @@ export function createProvider(env = process.env, deps = {}) {
   // ours, whatever the id — another installation's worker must never be entered or mutated.
   const owned = async (id) => {
     const rec = (await getSandbox(id))?.sandbox;
-    if (!ours(rec)) throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`);
+    if (!ours(rec)) throw fail('not_found', `No cloudy-cloud boat sandbox ${id}`, { foreign: Boolean(rec) });
     return rec;
   };
 
@@ -380,7 +380,7 @@ export function createProvider(env = process.env, deps = {}) {
       const rec = await owned(id);
       if (READY.has(rec.state)) return sandbox(id, rec);
       if (STARTING.has(rec.state)) throw fail('transient', `the Boat sandbox ${id} is still starting (${rec.state})`);
-      throw fail('not_found', `the Boat sandbox ${id} is ${rec.state}${rec.error ? ` (${scrub(rec.error)})` : ''}`);
+      throw fail('not_found', `the Boat sandbox ${id} is ${rec.state}${rec.error ? ` (${scrub(rec.error)})` : ''}`, { exists: true });
     },
 
     async list(labels = {}, { onError } = {}) {
