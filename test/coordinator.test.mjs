@@ -502,6 +502,59 @@ test('start on a terminal: ok with the deadline detail, a Reach it block with a 
   assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true });
 });
 
+test('a top-level coordinator uses the primary provider coordinator configuration', async () => {
+  const f = fixture();
+  const primary = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'self-hosted', hasProxySecrets: false });
+  primary.coordinatorEnv = () => ({ fixed: ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1'], names: ['CLOUDY_CLOUD_SELF_HOSTED_SLOTS'] });
+  const secondary = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'boat', hasProxySecrets: false });
+  const sandboxes = new Map();
+  for (const p of [primary, secondary]) {
+    p.create = async (opts) => {
+      p.log.create.push(opts);
+      const sbx = { id: `${p.name}-machine`, name: opts.name, home: '/data/home',
+        files: { write: async (path, data) => p.log.writes.push({ p: path, d: String(data) }) },
+        commands: { run: async (cmd) => ({ stdout: /printf %s/.test(cmd) ? '/data/home' : /auth status/.test(cmd) ? SIGNED_IN : '', stderr: '', exitCode: 0 }) } };
+      sandboxes.set(sbx.id, sbx);
+      p.machines.set(sbx.id, { id: sbx.id, name: sbx.name, labels: opts.labels, state: 'running', startedAt: Date.now() });
+      return sbx;
+    };
+    p.connect = async (id) => sandboxes.get(id);
+    p.list = async () => [...p.machines.values()];
+  }
+  f.deps.env.CLOUDY_CLOUD_SELF_HOSTED_SLOTS = '4';
+  f.deps.provider = combine([primary, secondary]);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const config = primary.log.writes.find((w) => w.p.endsWith('/.config/cloudy-cloud/env'))?.d;
+  assert.match(config, /^CLOUDY_CLOUD_PROVIDER=self-hosted$/m);
+  assert.match(config, /^CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1$/m);
+  assert.match(config, /^CLOUDY_CLOUD_SELF_HOSTED_SLOTS=4$/m);
+
+  const g = fixture();
+  g.deps.env.OPENAI_API_KEY = 'openai_test_value';
+  writeFileSync(g.configFile, 'OPENAI_API_KEY=openai_test_value\n');
+  const instabox = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'instabox', hasProxySecrets: true });
+  instabox.keyName = 'INSTABOX_API_KEY';
+  const boat = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'boat', hasProxySecrets: false });
+  const boxes = new Map();
+  for (const p of [instabox, boat]) {
+    p.create = async (opts) => {
+      p.log.create.push(opts);
+      const sbx = { id: `${p.name}-machine`, name: opts.name, home: '/data/home',
+        files: { write: async (path, data) => p.log.writes.push({ p: path, d: String(data) }) },
+        commands: { run: async (cmd) => ({ stdout: /printf %s/.test(cmd) ? '/data/home' : /auth status/.test(cmd) ? SIGNED_IN : '', stderr: '', exitCode: 0 }) } };
+      boxes.set(sbx.id, sbx);
+      p.machines.set(sbx.id, { id: sbx.id, name: sbx.name, labels: opts.labels, state: 'running', startedAt: Date.now() });
+      return sbx;
+    };
+    p.connect = async (id) => boxes.get(id);
+    p.list = async () => [...p.machines.values()];
+  }
+  g.deps.provider = combine([instabox, boat]);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  const instaboxConfig = instabox.log.writes.find((w) => w.p.endsWith('/.config/cloudy-cloud/env'))?.d;
+  assert.doesNotMatch(instaboxConfig, /^OPENAI_API_KEY=/m, 'a fallback provider without proxy secrets must not change the primary secret policy');
+});
+
 test('stop and image on a terminal use status lines; piped output has no escapes', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } }] });
   f.deps.ui = tty();
@@ -1975,6 +2028,64 @@ const finishDeps = (extra = {}) => ({
   provider: finishProvider(), env: { FAKE_API_KEY: 'k', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-fin-')), 'env') },
   out: () => {}, hostname: 'h', ownerFile: '/nonexistent/owner-file', ...extra,
 });
+const pushedFinishRepo = () => {
+  const root = mkdtempSync(join(tmpdir(), 'cc-finish-safe-'));
+  const bare = join(root, 'origin.git'), repo = join(root, 'repo');
+  execFileSync('git', ['init', '--bare', '-q', '-b', 'main', bare]);
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'ignore' });
+  git('config', 'user.name', 'test'); git('config', 'user.email', 'test@example.invalid');
+  git('remote', 'add', 'origin', bare); git('commit', '--allow-empty', '-m', 'main'); git('push', '-u', 'origin', 'main');
+  return { root, repo };
+};
+
+test('finish refuses to delete without a verified owner marker or named-session owner', async () => {
+  const { repo } = pushedFinishRepo();
+  let deletes = 0;
+  const e = await main(['finish'], finishDeps({ repoDir: repo, ownerFile: join(dirname(repo), 'missing-owner'), provider: finishProvider({ delete: async () => { deletes++; } }), sessionMetadataDir: join(dirname(repo), 'no-sessions') })).then(() => null, (x) => x);
+  assert.ok(e, 'finish must refuse when it cannot identify this coordinator server owner');
+  assert.match(e.message, /owner/i);
+  assert.equal(deletes, 0);
+});
+
+test('finish refuses when any configured provider inventory is incomplete', async () => {
+  const { repo } = pushedFinishRepo();
+  const ownerFile = join(dirname(repo), 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  let deletes = 0;
+  const first = finishProvider({ name: 'first', delete: async () => { deletes++; }, list: async (labels) => labels?.role === 'coordinator' ? [{ id: 'coord', name: 'cc-me', labels: { purpose: 'cloudy-cloud', role: 'coordinator' } }] : [] });
+  const second = finishProvider({ name: 'second', list: async (labels, { onError }) => {
+    if (labels?.role === 'coordinator') return [{ id: 'coord', name: 'cc-me', labels: { purpose: 'cloudy-cloud', role: 'coordinator' } }];
+    onError(Object.assign(new Error('offline'), { code: 'transient' }));
+    return [];
+  } });
+  const provider = combine([first, second]);
+  const e = await main(['finish'], finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir: join(dirname(repo), 'no-sessions'), provider })).then(() => null, (x) => x);
+  assert.ok(e, 'a partial fleet view cannot justify deleting the coordinator');
+  assert.match(e.message, /provider|inventory|list/i);
+  assert.equal(deletes, 0);
+});
+
+test('finish includes owners from named sessions and from multiple configured providers', async () => {
+  const { repo } = pushedFinishRepo();
+  const ownerFile = join(dirname(repo), 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  const sessionMetadataDir = join(dirname(repo), 'sessions'); mkdirSync(sessionMetadataDir);
+  writeFileSync(join(sessionMetadataDir, 'session.json'), JSON.stringify({ owner: 'bbbbbbbb-bbb' }));
+  let deletes = 0;
+  const first = finishProvider({ name: 'first', list: async (labels) => labels?.role === 'coordinator'
+    ? [{ id: 'coord', name: 'cc-me', labels: { purpose: 'cloudy-cloud', role: 'coordinator' } }]
+    : [] });
+  const second = finishProvider({ name: 'second', list: async (labels) => labels?.role === 'coordinator'
+    ? [{ id: 'coord', name: 'cc-me', labels: { purpose: 'cloudy-cloud', role: 'coordinator' } }]
+    : labels?.owner === 'bbbbbbbb-bbb' || labels?.purpose === 'cloudy-cloud'
+      ? [{ id: 'worker-b', name: 'worker-b', state: 'running', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'bbbbbbbb-bbb' } }]
+      : [] });
+  first.delete = second.delete = async () => { deletes++; };
+  const provider = combine([first, second]);
+  const e = await main(['finish'], finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir, provider })).then(() => null, (x) => x);
+  assert.ok(e, 'a worker belonging to a named session on another provider must block finish');
+  assert.match(e.message, /running workers|worker machine/i);
+  assert.equal(deletes, 0);
+});
 
 test('a finish refusal\'s recovery fixes the problems; --force stays a dim detail line', async () => {
   const e1 = await main(['finish'], finishDeps({ repoDir: '/nonexistent/repo' })).then(() => { throw new Error('no fail'); }, (x) => x);
@@ -2019,7 +2130,8 @@ test('finish refuses a local-only commit on any branch until it is pushed to ori
   git('push', '-u', 'other', 'feature/local-only');
   git('tag', 'feature/local-only', 'main'); // a short ref name must not resolve this tag instead of refs/heads/...
   let deletes = 0;
-  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  const ownerFile = join(root, 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  const deps = finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir: join(root, 'sessions'), provider: finishProvider({ delete: async () => { deletes++; } }) });
   await assert.rejects(main(['finish'], deps), /local-only|not reachable|not pushed|unpushed/i);
   assert.equal(deletes, 0, 'a branch published only to another remote must not be treated as safe');
   git('push', 'origin', 'refs/heads/feature/local-only:refs/heads/feature/local-only');
@@ -2047,7 +2159,8 @@ test('finish ignores stale origin tracking refs and leaves them untouched', asyn
   git('push', 'origin', ':refs/heads/feature/gone');
   git('update-ref', 'refs/remotes/origin/feature/gone', pushedFeature);
   let deletes = 0;
-  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  const ownerFile = join(root, 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  const deps = finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir: join(root, 'sessions'), provider: finishProvider({ delete: async () => { deletes++; } }) });
   await assert.rejects(main(['finish'], deps), /feature\/gone.*not reachable/i);
   assert.equal(deletes, 0);
   assert.ok(execFileSync('git', ['-C', repo, 'show-ref', '--verify', 'refs/remotes/origin/feature/gone'], { encoding: 'utf8' }), 'finish must not prune the user\'s stale tracking ref');
@@ -2072,7 +2185,8 @@ test('finish leaves origin tracking refs untouched when an origin head advances'
   git('reset', '--hard', old);
   git('update-ref', 'refs/remotes/origin/main', old);
   let deletes = 0;
-  const deps = finishDeps({ repoDir: repo, provider: finishProvider({ delete: async () => { deletes++; } }) });
+  const ownerFile = join(root, 'owner'); writeFileSync(ownerFile, 'aaaaaaaa-aaa\n');
+  const deps = finishDeps({ repoDir: repo, ownerFile, sessionMetadataDir: join(root, 'sessions'), provider: finishProvider({ delete: async () => { deletes++; } }) });
   await main(['finish'], deps);
   assert.equal(deletes, 1, 'the local commit is reachable from the advanced origin head');
   assert.equal(execFileSync('git', ['-C', repo, 'rev-parse', 'refs/remotes/origin/main'], { encoding: 'utf8' }).trim(), old, 'finish must not advance the user\'s tracking ref');

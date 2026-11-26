@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { combine, loadProviders } from './providers/index.mjs';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { chdir, cwd } from 'node:process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,10 +86,14 @@ if (options.owner) {
 } else {
   const runtime = await createRuntime();
   const { deps } = runtime;
-  // This marker is for `coordinator finish`; it remains only on the legacy single-process stdio path.
-  if (!options.repo) {
-    try { mkdirSync(dirname(ownerFile(runtime.env)), { recursive: true, mode: 0o700 }); writeFileSync(ownerFile(runtime.env), `${runtime.owner}\n`); } catch { /* only `coordinator finish` reads it */ }
-  }
+  // This owner registry is for `coordinator finish`. Keep every stdio owner so concurrent MCP servers,
+  // including servers started with --repo, cannot hide each other's workers from the finish check.
+  try {
+    const file = ownerFile(runtime.env);
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(file, `${runtime.owner}\n`, { mode: 0o600 });
+    chmodSync(file, 0o600);
+  } catch { /* finish fails closed if it cannot read a verified owner */ }
   installCleanup(deps);
   serveStdio(() => buildServer(deps));
 }
