@@ -23,16 +23,20 @@ export const providerKey = (env, provider) =>
   || '';
 
 // The key goes only in the child's environment, never in argv (argv is visible in `ps`).
-export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env) => ({
-  command: process.execPath,
-  args: [REAPER, String(pid), owner],
-  options: { detached: true, stdio: 'ignore', env: { ...baseEnv, [provider.keyName]: apiKey, CLOUDY_CLOUD_PROVIDER: provider.name } },
-});
+export const reaperSpawn = (pid, owner, env, provider, baseEnv = process.env) => {
+  const providers = provider.providers ?? [provider];
+  const childEnv = { ...baseEnv, CLOUDY_CLOUD_PROVIDERS: providers.map((p) => p.name).join(','), CLOUDY_CLOUD_PROVIDER: providers[0].name };
+  for (const p of providers) {
+    const key = providerKey(env, p);
+    if (key) childEnv[p.keyName] = key;
+  }
+  return { command: process.execPath, args: [REAPER, String(pid), owner], options: { detached: true, stdio: 'ignore', env: childEnv } };
+};
 
 // Starts the detached reaper for the server and returns the child (null when the spawn itself threw),
-// so the server can start a new one once this child is gone. The key comes from providerKey.
+// so the server can start a new one once this child is gone. Every provider key is passed in its env variable.
 export function startReaper(pid, owner, env, provider, spawnFn = nodeSpawn) {
-  const { command, args, options } = reaperSpawn(pid, owner, providerKey(env, provider), provider);
+  const { command, args, options } = reaperSpawn(pid, owner, env, provider);
   let child;
   try { child = spawnFn(command, args, options); } catch { return null; }
   child.on('error', () => {}).unref();
@@ -47,13 +51,14 @@ export const isAlive = (pid) => {
 async function reapAttempt({ owner, provider, log = () => {} }) {
   let failed = false;
   let machines;
-  try { machines = await provider.list({ owner }, { onError: (e) => { failed = true; log(`list failed: ${e.message}`); } }); }
-  catch (e) { log(`list failed: ${e.message}`); return { deleted: 0, failed: true }; }
+  const listFailed = (e) => { failed = true; log(`list failed${e.provider ? ` on ${e.provider}` : ''}: ${e.message}`); };
+  try { machines = await provider.list({ owner }, { onError: listFailed }); }
+  catch (e) { if (!failed) listFailed(e); return { deleted: 0, failed: true }; }
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;
     let logged = false; // the adapter logs each failed attempt itself; log the final error only if it did not
-    try { await provider.delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; }
+    try { await (provider.for ? provider.for(m) : provider).delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; }
     catch (e) { failed = true; if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
   }
   return { deleted, failed };
@@ -86,7 +91,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = loadEnv(process.env);
   const provider = await loadProvider(env, { owner }).catch(() => null);
   // The same resolution the server used (a coordinator's proxy-secret name counts, msb is found by the ladder).
-  const ready = provider && providerKey(env, provider);
+  const ready = provider && (provider.providers ?? [provider]).some((p) => providerKey(env, p));
   if (!provider || !ready || !(Number(pid) > 0) || !owner) process.exit(1);
   watch({ pid: Number(pid), owner, provider }).finally(() => process.exit(0));
 }
