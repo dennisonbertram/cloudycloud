@@ -132,6 +132,43 @@ test('a missing key or API failure becomes an error with a fix, and never leaks 
   assert.ok(!JSON.stringify(down).includes('ibk_supersecretvalue'));
 });
 
+test('liveState retains event history and setup guidance when inventory fails with a reader configured', async () => {
+  const env = {}, provider = createFakeProvider(env);
+  provider.caps.hasMetrics = false;
+  const dir = mkdtempSync(join(tmpdir(), 'cc-dashboard-inventory-'));
+  const file = join(dir, 'events.jsonl');
+  const events = [
+    { type: 'agent', id: 'aaaa1111', t: 1, description: 'Keep this history' },
+    { type: 'machine', id: 'aaaa1111', t: 2, machine: 'missing-machine' },
+    { type: 'message', id: 'aaaa1111', t: 3, text: 'Previous session message' },
+    { type: 'status', id: 'aaaa1111', t: 4, status: 'running' },
+  ];
+  writeFileSync(file, `${events.map((e) => JSON.stringify(e)).join('\n')}\n`);
+  const readerCalls = [];
+  const reader = { async readTail(machine, _name, from) { readerCalls.push(machine); return { from, next: from, size: from, data: '', source: 'live', fetchedAt: 1 }; } };
+  const getReader = async () => reader;
+  const noInventory = liveState(env, {
+    provider, file, cacheMs: 0, getReader,
+    list: async () => { throw Object.assign(new Error('FAKE_API_KEY is not set.'), { code: 'no_key' }); },
+  });
+
+  const unavailable = await noInventory();
+  assert.deepEqual(unavailable.machines, { ok: false, code: 'no_key', message: 'FAKE_API_KEY is not set.', fix: 'Set FAKE_API_KEY.' });
+  assert.equal(unavailable.hasLog, true);
+  assert.deepEqual(unavailable.boxes.map((b) => [b.id, b.title, b.status, b.messages.map((m) => m.text)]), [
+    ['aaaa1111', 'Keep this history', 'running', ['Previous session message']],
+  ]);
+  assert.deepEqual(readerCalls, []);
+
+  const partialMachines = [{ id: 'coord-1', name: 'coord', labels: { role: 'coordinator' }, state: 'running', status: 'running' }];
+  Object.defineProperty(partialMachines, 'providerErrors', { value: [{ provider: 'fake', code: 'transient', message: 'One listing failed' }] });
+  const partialState = liveState(env, { provider, file, cacheMs: 0, getReader, list: async () => partialMachines });
+  const partial = await partialState();
+  assert.deepEqual(readerCalls, ['coord-1']);
+  assert.deepEqual(partial.machines, { ok: true, providerErrors: partialMachines.providerErrors });
+  assert.equal(partial.boxes.find((b) => b.id === 'aaaa1111')?.status, 'running');
+});
+
 test('pushOf reads the push sentence the safety push writes; the last one wins', () => {
   assert.deepEqual(pushOf('Done.\n\nPushed to origin cloudy-cloud/a1 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/a1.\nModel: m\nTotal: 3 tool uses'), { sha: '9d2e7b4', branch: 'cloudy-cloud/a1' });
   assert.deepEqual(pushOf('x\n\nPush failed: rejected\nhint: pull first; the agent is still open, ask it to push.\nModel: m'), { failed: true });
