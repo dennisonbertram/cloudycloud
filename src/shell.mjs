@@ -9,6 +9,7 @@ import { listMachines } from './dashboard.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { ID_RE, ID_ERR, resolveTarget } from './open.mjs';
 import { guide } from './errors.mjs';
+import { providerFor } from './provider-lookup.mjs';
 
 export const USAGE = helpText('shell', true);
 
@@ -43,13 +44,14 @@ export async function run(argv, deps = {}) {
       if (/is not running/.test(e.message)) fail(`${e.message}\n${guide('machine_not_running', { id: a.id })}`);
       throw e;
     }
-    if (!provider.caps.hasShell) fail(guide('shell_unsupported', { provider: provider.name }));
+    const selected = providerFor(provider, machine);
+    if (!selected.caps.hasShell) fail(guide('shell_unsupported', { provider: selected.name }));
     const tty = deps.isTTY ?? !!process.stdin.isTTY;
     if (!a.cmd && !tty) fail(`An interactive shell needs a terminal, and this has none. Pass a command instead: cloudy-cloud shell ${a.id} -- <command>`);
-    const shArgv = provider.shellArgv(machine, a.cmd);
-    const r = (deps.spawn ?? ((argv, o) => spawnSync(argv[0], argv.slice(1), o)))(shArgv, { stdio: 'inherit', env: { ...process.env, ...provider.shellEnv?.() }, ...provider.shellSpawnOpts?.(shArgv) });
+    const shArgv = selected.shellArgv(machine.id, a.cmd);
+    const r = (deps.spawn ?? ((argv, o) => spawnSync(argv[0], argv.slice(1), o)))(shArgv, { stdio: 'inherit', env: { ...process.env, ...selected.shellEnv?.() }, ...selected.shellSpawnOpts?.(shArgv) });
     // doctor checks self-hosted boxes only; everywhere else the fix is the missing provider CLI itself.
-    if (r.error) fail(provider.name === 'self-hosted' ? `Could not start ${shArgv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor` : `Could not start ${shArgv[0]} (${r.error.message}). Install ${shArgv[0]} first.`);
+    if (r.error) fail(selected.name === 'self-hosted' ? `Could not start ${shArgv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor` : `Could not start ${shArgv[0]} (${r.error.message}). Install ${shArgv[0]} first.`);
     return r.status ?? (r.signal ? 128 + (constants.signals[r.signal] ?? 0) : 1);
   } catch (e) {
     err(e.message.startsWith('Usage') ? e.message : `cloudy-cloud shell: ${e.message}`);

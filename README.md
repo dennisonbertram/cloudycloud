@@ -133,7 +133,7 @@ Many subagents at once are paced for Instabox's limits. A subagent waiting for a
 
 ## Providers
 
-Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox`, `boat` or `e2b` (experimental). A provider must keep the GitHub token behind proxy secrets or, on a machine you answer for, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
+Cloudy Cloud selects its sandbox provider with `CLOUDY_CLOUD_PROVIDER`: `instabox` (the default), `self-hosted`, `microsandbox`, `boat` or `e2b` (experimental). To manage machines from several providers in one session, set `CLOUDY_CLOUD_PROVIDERS=instabox,boat` in `~/.config/cloudy-cloud/env` or the process environment. Cloudy Cloud lists machines from every configured provider and routes machine operations back to the provider that owns each machine. If a native ID or name is shared, select it with `provider:id` or `provider:name`; ambiguous bare targets are refused. `cloudy-cloud setup --check-only` checks readiness for each provider in that list. A provider must keep the GitHub token behind proxy secrets or, on a machine you answer for, have your consent to store it there. It must also enforce a delete deadline and forward ports for `cloudy-cloud open`. See the [sandbox provider research](docs/research/sandbox-providers.md) for other options.
 
 ## Run on your own machine
 

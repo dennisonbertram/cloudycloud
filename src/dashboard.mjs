@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { loadEnv, ownerFile } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
+import { providerFor, machineKey } from './provider-lookup.mjs';
 import { resolveMsbBin } from './providers/microsandbox.mjs';
 import { eventsFile, foldAgents, readEvents, redact, redactText } from './events.mjs';
 import { createMachineReader } from './machine-read.mjs';
@@ -37,11 +38,21 @@ const cleanLabels = (l) => Object.fromEntries(Object.entries(l ?? {}).filter(([,
 export async function listMachines(env, provider) {
   provider ??= await loadProvider(env);
   // The msb "key" is its binary, also found at ~/.local/bin/msb or on PATH without the variable.
-  if (!env[provider.keyName] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
-  return (await provider.list({ purpose: 'cloudy-cloud' }, { sdk: true })).map((m) => ({
-    id: m.id, name: m.name, role: m.labels?.role, owner: m.labels?.owner, labels: cleanLabels(m.labels), state: m.state, status: m.status,
+  if (!provider.providers && !env[provider.keyName] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  const providerErrors = [];
+  const values = [...new Set((provider.providers ?? [provider]).flatMap((p) => secretValues(env, p.keyName, consentedLiterals(env))))];
+  const listed = await provider.list({ purpose: 'cloudy-cloud' }, { sdk: true, onError: (e) => {
+    let message = redact(String(e.message ?? 'Provider list failed.'));
+    for (const value of values) message = message.split(value).join('[redacted]');
+    providerErrors.push({ provider: e.provider, code: e.code ?? 'api', message });
+  } });
+  const rows = listed.map((m) => ({
+    id: m.id, provider: m.provider ?? provider.name, name: m.name, role: m.labels?.role, owner: m.labels?.owner, labels: cleanLabels(m.labels), state: m.state, status: m.status,
     startedAt: m.startedAt, archiveAt: m.archiveAt,
   }));
+  Object.defineProperty(rows, 'providerErrors', { value: providerErrors });
+  Object.defineProperty(rows, 'providerNames', { value: (provider.providers ?? [provider]).map((p) => p.name) });
+  return rows;
 }
 
 const NO_TITLE = 'no title: started before labels (#48)';
@@ -54,30 +65,39 @@ const FLEET_TRUNK = /^fleet\/[A-Za-z0-9._-]{1,60}$/;
 // (coordinators, and agents from sessions that never wrote an event log). `owner` is this server's owner id.
 export function buildState({ events, machines, machineError, now = Date.now(), alive, provider, owner, coordLogs = {} }) {
   const agents = foldAgents(events, { alive, now });
-  const live = new Map((machines ?? []).map((m) => [m.id, m]));
+  const capabilities = (machine) => {
+    try {
+      const p = machine ? providerFor(provider, machine) : provider;
+      return p?.caps && { hasShell: !!p.caps.hasShell, hasDisplay: !!p.caps.hasDisplay, hasPortForward: !!p.caps.hasPortForward, hasPublish: !!p.caps.hasPublish, hasMetrics: !!p.caps.hasMetrics };
+    } catch { return undefined; }
+  };
+  const findMachine = (id, providerName) => {
+    const found = (machines ?? []).filter((m) => m.id === id && (!providerName || m.provider === providerName));
+    return found.length === 1 ? found[0] : undefined;
+  };
   const byAgent = new Map((machines ?? []).filter((m) => m.labels?.agent).map((m) => [m.labels.agent, m]));
   const turns = new Map();
   for (const e of events) if (e.type === 'message' && typeof e.id === 'string') turns.set(e.id, (turns.get(e.id) ?? 0) + 1);
   const used = new Set();
   const boxes = agents.map((a) => {
-    const m = live.get(a.machine) ?? (a.machine ? undefined : byAgent.get(a.id));
-    if (m) used.add(m.id);
+    const m = (a.machine && findMachine(a.machine, a.provider)) ?? (a.machine ? undefined : byAgent.get(a.id));
+    if (m) used.add(machineKey(m));
     // A listed machine is the truth about "running": if it is gone, an agent that looked active has ended.
     const gone = machines && a.machine && !m && ACTIVE.includes(a.status);
     const title = a.description || m?.labels?.description || m?.name;
-    return { kind: (m?.labels?.role ?? a.role) === 'coordinator' ? 'coordinator' : 'agent', ...a, pid: undefined, machine: a.machine ?? m?.id, status: gone ? 'stopped' : a.status, machineState: m?.state, deadline: a.deadline ?? m?.archiveAt,
+    return { kind: (m?.labels?.role ?? a.role) === 'coordinator' ? 'coordinator' : 'agent', ...a, pid: undefined, machine: a.machine ?? m?.id, provider: m?.provider ?? a.provider, capabilities: capabilities(m ?? (a.provider ? { provider: a.provider } : undefined)), status: gone ? 'stopped' : a.status, machineState: m?.state, deadline: a.deadline ?? m?.archiveAt,
       labels: m?.labels, machineKind: m?.labels?.kind || undefined, title, titleSource: a.description ? 'log' : m?.labels?.description ? 'label' : 'machine', source: 'log', turns: turns.get(a.id), startedByOwner: m?.owner };
   });
   for (const m of machines ?? []) {
-    if (used.has(m.id)) continue;
+    if (used.has(machineKey(m))) continue;
     const status = m.status ?? 'stopped', l = m.labels ?? {}, described = !!l.description, title = l.description || m.name || m.id;
-    boxes.push({ kind: l.role === 'coordinator' || m.role === 'coordinator' ? 'coordinator' : l.agent ? 'agent' : 'machine', id: l.agent || m.name || m.id, machine: m.id, role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt,
+    boxes.push({ kind: l.role === 'coordinator' || m.role === 'coordinator' ? 'coordinator' : l.agent ? 'agent' : 'machine', id: l.agent || (m.provider ? `${m.provider}:${m.name || m.id}` : m.name || m.id), machine: m.id, provider: m.provider, capabilities: capabilities(m), role: m.role, status, machineState: m.state, startedAt: m.startedAt, lastActivity: m.startedAt, deadline: m.archiveAt,
       description: title, title, machineKind: l.kind || undefined, titleSource: described ? 'label' : 'machine', ...(!described && { note: NO_TITLE }), labels: l, source: 'machine', startedByOwner: m.owner, messages: [] });
   }
   // A coordinator's own log (read from its machine) is the authority on its workers: fill live boxes, add the ones whose machine is gone.
-  for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordLogs[b.machine])) {
+  for (const c of boxes.filter((b) => b.kind === 'coordinator' && coordLogs[machineKey(b)])) {
     const all = [];
-    for (const w of coordLogs[c.machine]) {
+    for (const w of coordLogs[machineKey(c)]) {
       const msgs = w.messages.map((m) => ({ ...m, agent: w.id }));
       all.push(...msgs);
       let b = boxes.find((x) => x !== c && (x.id === w.id || x.labels?.agent === w.id));
@@ -111,7 +131,11 @@ export function buildState({ events, machines, machineError, now = Date.now(), a
     if (f) b.fleet = f;
   }
   const error = machineError && { code: machineError.code ?? 'api', message: redact(machineError.message), fix: (machineError.code === 'no_key' ? provider?.text.noKeyFix : provider?.text.apiFix) ?? GENERIC_FIX };
-  return { now, hasLog: events.length > 0, ...(provider?.caps && { caps: { hasShell: !!provider.caps.hasShell, hasDisplay: !!provider.caps.hasDisplay } }), machines: machines ? { ok: true } : { ok: false, ...error }, boxes };
+  const providers = (provider?.providers ?? (provider ? [provider] : [])).map((p) => ({ name: p.name, capabilities: {
+    shell: !!p.caps?.hasShell, display: !!p.caps?.hasDisplay, metrics: !!p.caps?.hasMetrics,
+    portForward: !!p.caps?.hasPortForward, publish: !!p.caps?.hasPublish, snapshots: !!p.caps?.hasSnapshots,
+  }, ready: machines ? !(machines.providerErrors ?? []).some((e) => e.provider === p.name) : false }));
+  return { now, hasLog: events.length > 0, providers, ...(provider?.caps && { caps: { hasShell: !!provider.caps.hasShell, hasDisplay: !!provider.caps.hasDisplay } }), machines: machines ? { ok: true, providerErrors: machines.providerErrors ?? [] } : { ok: false, ...error }, boxes };
 }
 
 // state.fleets: one row per valid trunk on any box. `merged` is the trunk's agents whose own branch git lists as
@@ -207,7 +231,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     return m;
   };
   async function fromMachine(reader, machine, name) {
-    const k = `${machine}/${name}`;
+    const k = `${reader.providerName ?? ''}/${machine}/${name}`;
     let st = remote.get(k);
     remote.delete(k); // most recently used last; the oldest goes with the memo's oldest, so neither grows without bound
     if (!st) st = { raw: '', next: 0, at: -Infinity, fetchedAt: 0, more: false };
@@ -233,7 +257,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
       try { const st = statSync(f); return found('local', undefined, `streams/${agent}/t${n}.jsonl`, st.mtimeMs, f, `${st.size}/${st.mtimeMs}`, () => readFileSync(f, 'utf8')); } catch { /* no local copy */ }
     }
     let reason = !box.machine || isLive(box) ? 'no_stream_yet' : 'machine_gone';
-    const reader = await getReader?.().catch(() => null);
+    const reader = await getReader?.(box.provider).catch(() => null);
     if (!reader) return { kind: 'none', reason: box.machine ? 'provider_error' : reason, machine: box.machine };
     if (isLive(box)) {
       try {
@@ -245,7 +269,7 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
     const co = boxes.find((b) => b.id === box.parent && b.kind === 'coordinator'), crel = `streams/${agent}/t${n}.jsonl`;
     if (co && isLive(co) && /^[0-9a-f]{8}$/.test(agent)) {
       try {
-        const st = await fromMachine(reader, co.machine, crel);
+        const st = await fromMachine(await getReader?.(co.provider) ?? reader, co.machine, crel);
         if (st.raw) return found('coordinator', co.machine, crel, st.fetchedAt, `${co.machine}/${crel}`, st.raw.length, () => st.raw, st.more);
       } catch (e) { if (reasonOf(e) === 'provider_error') reason = 'provider_error'; }
     }
@@ -287,14 +311,14 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
         if (!box) return json(404, { error: 'unknown box' });
         if (url.pathname === '/api/metrics') {
           if (box.machineState !== 'running' || !box.machine) return json(404, { error: 'unknown box' });
-          const m = demo ? demo.metrics(box.id) : getMetrics?.(box.machine);
+          const m = demo ? demo.metrics(box.id) : getMetrics?.(box.machine, box.provider);
           return json(200, { box: box.id, samples: m?.samples ?? [], fetchedAt: m?.fetchedAt ?? null, window: METRICS_WINDOW_MS, source: m?.source ?? 'none', ...(m?.error && { error: m.error }) });
         }
         if (url.pathname === '/api/pane') {
           if (box.kind !== 'coordinator' || !isLive(box)) return json(404, { error: 'unknown box' });
           if (demo) return json(200, { lines: demo.pane(box.id) ?? [], fetchedAt: now(), source: { kind: 'machine', machine: box.machine } });
           try {
-            const r = await (await getReader()).capturePane(box.machine);
+            const r = await (await getReader(box.provider)).capturePane(box.machine);
             if (r.source === 'cache' && !r.lines.length) { // the reader's rate-limit fallback: not a new read, so show the last real one
               const last = panes.get(box.id);
               return json(200, last ? { ...last, source: { kind: 'cache', machine: box.machine } } : { lines: [], fetchedAt: null, source: { kind: 'none', machine: box.machine, reason: 'rate_limited' } });
@@ -358,8 +382,9 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   mergedCheck ??= makeMergedCheck({ now });
   const logs = new Map(); // coordinator machine id -> { offset, size, at, events }
   const pull = async (reader, m) => {
-    let st = logs.get(m.id);
-    if (!st) logs.set(m.id, st = { id: m.id, offset: 0, at: -Infinity, events: [], folded: [] });
+    const key = machineKey(m);
+    let st = logs.get(key);
+    if (!st) logs.set(key, st = { id: m.id, provider: m.provider, offset: 0, at: -Infinity, events: [], folded: [] });
     if (now() - st.at < COORD_MS && !st.behind) return; // read recently; while catching up a long log, only the reader's own interval applies
     try {
       const r = await reader.readTail(m.id, 'events.jsonl', st.offset);
@@ -391,32 +416,34 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   let running = [], lastPoll = 0;
   const recent = (samples, t) => (Array.isArray(samples) ? samples : []).filter((x) => x.t >= t - METRICS_WINDOW_MS).slice(-METRICS_MAX_SAMPLES);
   const refreshUsage = (machines) => {
-    running = machines.filter((m) => m.state === 'running').map((m) => m.id);
+    running = machines.filter((m) => m.state === 'running').map(machineKey);
     limiter ??= createLimiter(Math.max(1, Math.min(METRICS_AT_ONCE, (provider.caps?.maxConcurrentCalls || 24) - 1)));
     for (const [id, t] of lastRead) if (now() - t >= METRICS_MS) lastRead.delete(id);
     for (const id of usage.keys()) if (!running.includes(id)) usage.delete(id);
-    for (const id of running) {
-      const prev = usage.get(id);
-      if (inflight.has(id) || now() - (lastRead.get(id) ?? -Infinity) < METRICS_MS) continue;
-      if (!provider.caps?.hasMetrics) { usage.set(id, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' } }); lastRead.set(id, now()); continue; }
+    for (const key of running) {
+      const machine = machines.find((m) => machineKey(m) === key);
+      const prev = usage.get(key);
+      if (inflight.has(key) || now() - (lastRead.get(key) ?? -Infinity) < METRICS_MS) continue;
+      const selected = providerFor(provider, machine);
+      if (!selected.caps?.hasMetrics) { usage.set(key, { samples: [], fetchedAt: null, at: now(), error: { code: 'metrics_unsupported' }, provider: selected.name }); lastRead.set(key, now()); continue; }
       // Eligibility is checked when the limiter grants the slot, not when the read was queued; a read that is no longer wanted is dropped.
-      inflight.set(id, limiter.run(async () => {
-        if (!running.includes(id) || now() - lastPoll > METRICS_POLL_GRACE_MS) return;
+      inflight.set(key, limiter.run(async () => {
+        if (!running.includes(key) || now() - lastPoll > METRICS_POLL_GRACE_MS) return;
         const t = now(); // the 30 s interval counts from here
-        lastRead.set(id, t);
+        lastRead.set(key, t);
         let u;
-        try { const r = await provider.metrics(id, { since: t - METRICS_WINDOW_MS }); u = { samples: recent(r.samples, t), fetchedAt: r.fetchedAt, at: t }; }
-        catch (e) { u = { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' } }; }
-        if (running.includes(id)) usage.set(id, u);
-      }).catch(() => {}).finally(() => inflight.delete(id)));
+        try { const r = await selected.metrics(machine.id, { since: t - METRICS_WINDOW_MS }); u = { samples: recent(r.samples, t), fetchedAt: r.fetchedAt, at: t, provider: selected.name }; }
+        catch (e) { u = { samples: prev?.samples ?? [], fetchedAt: prev?.fetchedAt ?? null, at: t, error: { code: e?.code ?? 'unknown' }, provider: selected.name }; }
+        if (running.includes(key)) usage.set(key, u);
+      }).catch(() => {}).finally(() => inflight.delete(key)));
     }
   };
-  const errorOf = (code) => (code === 'not_found' ? { code: 'machine_gone' } : (({ code: c, whatHappened, nextStep }) => ({ code: c, whatHappened, nextStep }))(guideObj(code, { provider: provider.name })));
+  const errorOf = (code, providerName = provider.name) => (code === 'not_found' ? { code: 'machine_gone' } : (({ code: c, whatHappened, nextStep }) => ({ code: c, whatHappened, nextStep }))(guideObj(code, { provider: providerName })));
   const sourceOf = (u) => (u.fetchedAt != null && now() - u.fetchedAt < METRICS_MS * 2 ? 'live' : 'cache');
-  const usageOf = (id) => {
-    const u = usage.get(id);
+  const usageOf = (key) => {
+    const u = usage.get(key);
     if (!u) return { none: 'no_samples_yet', fetchedAt: null };
-    if (u.error) return { error: errorOf(u.error.code) };
+    if (u.error) return { error: errorOf(u.error.code, u.provider) };
     const n = recent(u.samples, now()).at(-1);
     if (!n) return { none: 'no_samples_yet', fetchedAt: u.fetchedAt };
     return { at: n.t, cpuPct: n.cpuPct, cpuCount: n.cpuCount, memUsed: n.memUsed, memTotal: n.memTotal, netIn: n.netIn, netOut: n.netOut, fetchedAt: u.fetchedAt, source: sourceOf(u) };
@@ -431,19 +458,20 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
       machines = await list(env, provider);
     } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
     const coordLogs = {};
-    const reader = getReader && machines?.some((m) => m.labels?.role === 'coordinator') ? await getReader().catch(() => null) : null;
-    if (machines) for (const id of logs.keys()) if (!machines.some((m) => m.id === id)) logs.delete(id); // its machine is gone: forget its history
-    if (reader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
+    if (machines) for (const id of logs.keys()) if (!machines.some((m) => machineKey(m) === id)) logs.delete(id); // its machine is gone: forget its history
+    if (getReader) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
+      const reader = await getReader(m.provider).catch(() => null);
+      if (!reader) continue;
       await pull(reader, m);
-      const st = logs.get(m.id);
+      const st = logs.get(machineKey(m));
       await checkPane(reader, st);
       if (st.dirty || !st.folded.length) { st.folded = foldAgents(st.events, { alive: () => true, now: now() }); st.dirty = false; } // refolded only when events arrived
-      coordLogs[m.id] = st.folded;
+      coordLogs[machineKey(m)] = st.folded;
     }
     if (machines && provider && seq > appliedSeq) { appliedSeq = seq; refreshUsage(machines); }
     cached = buildState({ events: readEvents(file), machines, machineError, provider, owner: readOwner(env), coordLogs });
-    for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(b.machine)?.waiting) { b.waiting = logs.get(b.machine).waiting; if (logs.get(b.machine).fatal) b.fatal = true; }
-    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const u = usageOf(b.machine); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(b.machine).samples, now()), now())) u.quiet = true; } }
+    for (const b of cached.boxes) if (b.kind === 'coordinator' && b.machineState === 'running' && logs.get(machineKey(b))?.waiting) { const st = logs.get(machineKey(b)); b.waiting = st.waiting; if (st.fatal) b.fatal = true; }
+    for (const b of cached.boxes) if (b.machineState === 'running' && b.machine) { const key = machineKey(b); const u = usageOf(key); if (u) { b.usage = u; if (b.status === 'running' && u.at != null && isQuiet(recent(usage.get(key).samples, now()), now())) u.quiet = true; } }
     const u = planSnapshot(provider, now())?.usage;
     if (typeof u?.costUSD === 'number') cached.usage = Object.fromEntries(['costUSD', 'allowanceUSD', 'overageUSD', 'ratedUntil'].filter((k) => u[k] != null).map((k) => [k, u[k]]));
     const allTrunks = [...new Set(cached.boxes.map((b) => b.fleet).filter((t) => t && FLEET_TRUNK.test(t)))];
@@ -457,9 +485,9 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
   };
   // The last hour of samples for one running machine, from the same map (no provider call): what /api/metrics returns.
   state.settle = () => Promise.all(inflight.values()); // tests: wait for the background reads
-  state.metrics = (machineId) => {
-    const u = usage.get(machineId);
-    return u && { samples: recent(u.samples, now()), fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code) }) };
+  state.metrics = (machineId, providerName) => {
+    const u = usage.get(machineKey({ id: machineId, provider: providerName }));
+    return u && { samples: recent(u.samples, now()), fetchedAt: u.fetchedAt, source: sourceOf(u), ...(u.error && { error: errorOf(u.error.code, u.provider) }) };
   };
   return state;
 }
@@ -492,8 +520,21 @@ export async function main(argv = process.argv.slice(2)) {
   // one provider and one reader per process; consented MCP token values are read at each use, so values added later are covered
   const getProvider = lazy(() => loadProvider(env));
   const literals = { [Symbol.iterator]: () => consentedLiterals(env)[Symbol.iterator]() };
-  const getReader = lazy(async () => createMachineReader(await getProvider(), env, { literals }));
-  const getSecrets = async () => secretValues(env, (await getProvider()).keyName, consentedLiterals(env));
+  const readers = new Map();
+  const getReader = async (name) => {
+    const provider = await getProvider();
+    const selected = name ? providerFor(provider, { provider: name }) : provider;
+    if (!readers.has(selected.name)) {
+      const reader = createMachineReader(selected, env, { literals: [...consentedLiterals(env)], cacheDir: join(streamsDir(), 'remote', selected.name) });
+      reader.providerName = selected.name;
+      readers.set(selected.name, reader);
+    }
+    return readers.get(selected.name);
+  };
+  const getSecrets = async () => {
+    const provider = await getProvider();
+    return [...new Set((provider.providers ?? [provider]).flatMap((p) => secretValues(env, p.keyName, consentedLiterals(env))))];
+  };
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
   const live = demo ? undefined : liveState(env, { getReader });
   const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live }), port);
