@@ -225,6 +225,17 @@ test('boat: create fails and deletes the sandbox when the env file cannot be loc
   assert.ok(z.log.some((l) => l.method === 'DELETE' && l.path.startsWith('/sandboxes/bx_')), 'the half-created sandbox was deleted');
 });
 
+test('boat: an unconfirmed cleanup after provisioning failure is reported as an allocated sandbox', async () => {
+  const z = fakeBoat();
+  z.exec = (cmd) => (cmd.includes('MARK=') ? { code: 1, out: '', err: 'provisioning failed' } : { code: 0, out: '', err: '' });
+  z.fail.set('DELETE /sandboxes/bx_fake001', () => z.err(503, 'unavailable', 'delete unavailable'));
+  const p = mk(z);
+  await assert.rejects(create(p), (e) => e.code === 'cleanup_unconfirmed' && e.machineId === 'bx_fake001' && /cleanup.*confirmed/i.test(e.message));
+  assert.equal(z.boxes.has('bx_fake001'), true, 'the test leaves the allocated machine present when delete is unconfirmed');
+  assert.equal(z.log.filter((l) => l.method === 'POST' && l.path === '/sandboxes').length, 1);
+  assert.ok(z.log.filter((l) => l.method === 'DELETE' && l.path === '/sandboxes/bx_fake001').length >= 3, 'delete retries are exhausted before reporting uncertainty');
+});
+
 test('boat: an egress allow list, a coordinator, another kind and an explicit size are refused before any HTTP call', async () => {
   const z = fakeBoat();
   const p = mk(z);

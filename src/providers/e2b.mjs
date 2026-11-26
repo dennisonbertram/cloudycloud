@@ -56,6 +56,7 @@ const PROVISION_HOSTS = ['deb.debian.org', 'security.debian.org', 'cli.github.co
 const MAX_LEN_RE = /max(imum)? (instance|sandbox).*(length|duration|timeout)|timeout cannot be (greater|longer|more) than/i; // live API: 'Timeout cannot be greater than 1 hours'
 const STATUS = { running: 'running', paused: 'stopped' };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
+const cleanupUnconfirmed = (id) => fail('cleanup_unconfirmed', `E2B sandbox ${id} failed setup and cleanup could not be confirmed; refusing to use it or start another provider.`, { provider: 'e2b', machineId: id, allocated: true });
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, inside the sandbox's sh -c
 const portOf = (port) => {
   const p = String(port);
@@ -485,7 +486,9 @@ export function createProvider(env = process.env, deps = {}) {
               // can exist. Recover it by that marker (fresh calls, never the aborted signal) and
               // delete whatever it created — an aborted create must not leave an orphan running.
               const lostId = await recover().catch(() => undefined);
-              if (lostId) await ctl('DELETE', `/sandboxes/${encodeURIComponent(lostId)}`).catch(() => {});
+              if (lostId) {
+                try { await api.delete(lostId); } catch { throw cleanupUnconfirmed(lostId); }
+              }
               throw e?.name === 'AbortError' ? e : Object.assign(new Error('aborted'), { name: 'AbortError' });
             }
             if (e.code === 'ttl_capped') break; // plan caps the timeout: try the next rung
@@ -515,7 +518,10 @@ export function createProvider(env = process.env, deps = {}) {
         if (lostId) ({ data: { sandboxID: id, envdAccessToken: envdToken } } = await ctl('GET', `/sandboxes/${encodeURIComponent(lostId)}`));
         if (!id) throw fail('transient', 'the E2B create answer carried no sandbox id or envd token');
       }
-      if (!envdToken) { await api.delete(id).catch(() => {}); throw fail('transient', 'the E2B create answer carried no envd access token'); }
+      if (!envdToken) {
+        try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
+        throw fail('transient', 'the E2B create answer carried no envd access token');
+      }
       createdIds.add(id);
       try {
         const sb = sandbox(id, envdToken, deleteAt);
@@ -540,7 +546,7 @@ export function createProvider(env = process.env, deps = {}) {
         armRefresh(id, deleteAt, step);
         return sb;
       } catch (e) {
-        await api.delete(id).catch(() => {});
+        try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
         throw e;
       }
     },

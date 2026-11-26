@@ -30,7 +30,7 @@ const kv = (s) => { const i = s.indexOf('='); return [s.slice(0, i), s.slice(i +
 // A fake msb: an in-memory sandbox table; `exec` runs the command locally under a temp root with the sandbox's
 // env (`-e` vars — bare `-e NAME` resolves from the create child's env like ui::parse_env — plus a placeholder
 // per --secret, never the value — the value stays in the create call's env).
-function fakeMsb({ imageOk = true, imageErr, lsBadJson = false, createErr, onCreate } = {}) {
+function fakeMsb({ imageOk = true, imageErr, lsBadJson = false, createErr, createAfterError, rmFails = false, onCreate } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cc-msb-'));
   roots.push(root);
   const table = new Map(); // name -> { name, status, created_at, image, labels, env }
@@ -56,6 +56,7 @@ function fakeMsb({ imageOk = true, imageErr, lsBadJson = false, createErr, onCre
       for (const s of all(rest, '--secret')) senv[s.split(/[:@]/)[0]] = `msb-placeholder-${s.split(/[:@]/)[0]}`;
       table.set(name, { name, status: 'Running', created_at: new Date().toISOString(), image: pos(rest)[0], labels, env: senv });
       onCreate?.(table, name);
+      if (createAfterError) return done(1, createAfterError.stdout ?? '', createAfterError.stderr ?? 'create failed after allocation');
       return done(0, `${name}\n`);
     }
     if (cmd === 'ls') {
@@ -94,7 +95,7 @@ function fakeMsb({ imageOk = true, imageErr, lsBadJson = false, createErr, onCre
       // the real guest has `timeout`; macOS does not, so drop it here (same as the self-hosted fake box)
       return runLocal('sh', ['-c', local(inner).replace(/exec timeout -k 5 \d+ /, 'exec ')]);
     }
-    if (cmd === 'rm') return table.delete(rest.at(-1)) ? done(0, `${rest.at(-1)}\n`) : done(1, '', `sandbox ${rest.at(-1)} not found`);
+    if (cmd === 'rm') return rmFails ? done(1, '', 'temporary microsandbox cleanup failure') : table.delete(rest.at(-1)) ? done(0, `${rest.at(-1)}\n`) : done(1, '', `sandbox ${rest.at(-1)} not found`);
     done(1, '', `unknown command ${cmd}`);
   }
   const spawn = (bin, args, opts = {}) => {
@@ -469,6 +470,12 @@ test('a failed create redacts secret-bearing output and removes the half-made sa
   for (const f of [e.message, e.stdout, e.stderr]) assert.ok(!String(f ?? '').includes('sk-live-xyz'), `${f} echoed the credential`);
   assert.match(e.stderr, /<redacted>/);
   assert.equal(box.table.size, 0, 'the failed sandbox was not removed');
+});
+
+test('an allocated microsandbox with unconfirmed cleanup is typed for stop retry', async () => {
+  const { box, provider } = make({}, { createAfterError: { stderr: 'post-create failure' }, rmFails: true });
+  await assert.rejects(mk(provider), (e) => e.code === 'cleanup_unconfirmed' && e.provider === 'microsandbox' && e.machineId?.startsWith('cc-') && e.allocated === true);
+  assert.equal(box.table.size, 1, 'the fake sandbox remains when cleanup is unconfirmed');
 });
 
 test('an image-inspect failure that is not "missing image" keeps its cause', async () => {

@@ -10,10 +10,10 @@ const KEY = 'ib-secret-key';
 const done = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
 const timing = { pollMs: 5, timeoutMs: 100 };
 
-function fakeSdk() {
+function fakeSdk({ killFails = false } = {}) {
   const calls = { create: [], snapshot: [], connect: [], list: [], kill: [] };
   const box = () => ({
-    sandboxId: 'm-1', kill: async () => true, getInfo: async () => ({ name: 'machine-x' }),
+    sandboxId: 'm-1', kill: async () => { if (killFails) throw new Error('temporary delete failure'); return true; }, getInfo: async () => ({ name: 'machine-x' }),
     files: { write: async () => {}, read: async () => new Uint8Array() },
     commands: { run: async () => ({ stdout: 'ok', stderr: '', exitCode: 0 }) },
     createSnapshot: async (o) => { calls.snapshot.push(o); return { id: 'snap-1', status: 'pending' }; },
@@ -78,6 +78,16 @@ test('adapter-authored errors are local: the failed secrets PATCH, a secret neve
   await assert.rejects(createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn: bad.f }).list({}), (e) => e.status === 402 && e.local === true);
   const p4 = createProvider({ INSTABOX_API_KEY: KEY }, { spawn: async () => ({ code: 1, stdout: '', stderr: 'server says no' }) });
   await assert.rejects(p4.publishPort('m1', '3000'), (e) => e.local !== true && /server says no/.test(e.message));
+});
+
+test('an allocated Instabox machine with failed secret setup and unconfirmed cleanup is typed for stop retry', async () => {
+  const { sdk } = fakeSdk({ killFails: true });
+  const failPatch = fakeFetch((u, init) => init.method === 'PATCH' && /secrets$/.test(u)
+    ? new Response('{"error":{"code":"forbidden","message":"no"}}', { status: 403 })
+    : new Response('{}'));
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: failPatch.f, timing });
+  await assert.rejects(p.create({ image: 'agent-browser', secrets: ['MCP_X_TOKEN'] }),
+    (e) => e.code === 'cleanup_unconfirmed' && e.provider === 'instabox' && e.machineId === 'm-1' && e.allocated === true);
 });
 
 test('a failed secrets PATCH: our authored cause in the fields, the HTTP excerpt only in details (#185)', async () => {
