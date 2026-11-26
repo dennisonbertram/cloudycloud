@@ -78,6 +78,34 @@ test('cancelling while provider create is pending releases the shared disk snaps
   assert.equal(deps.snapshots?.size, 0, 'cancelled setup releases the bundle and its temporary directory');
 });
 
+test('stop waits for setup to settle after a sandbox handle arrives', async () => {
+  let sandbox, beginSetup, releaseSetup;
+  const setupStarted = new Promise((resolve) => { beginSetup = resolve; });
+  const setupGate = new Promise((resolve) => { releaseSetup = resolve; });
+  const { start, open, deps } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (cmd.includes('git init -q repo')) { beginSetup(); await setupGate; }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  await setupStarted;
+  const stopping = stopAgents({ agent_ids: [id] }, deps);
+  await tick(10);
+  const killedBeforeSetupSettled = sandbox.killed;
+  releaseSetup();
+  await stopping;
+  assert.equal(killedBeforeSetupSettled, false, 'deletion waits for the setup promise even after create returns a handle');
+  assert.equal(sandbox.killed, true);
+  assert.equal(open.has(id), false);
+});
+
 test('concurrent public starts with the same repo prepare one shared snapshot', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
@@ -323,6 +351,124 @@ test('a rejected stop stays tracked and blocks messages until a retry deletes th
   assert.equal(killCalls, 2);
 });
 
+test('a stop after an uncertain create stays pending until exact ownership can be connected', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'uncertain', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  const list = provider.list.bind(provider);
+  const connect = provider.connect.bind(provider);
+  let listUnavailable = true, connectUnavailable = true;
+  provider.create = async (opts) => { await create(opts); throw Object.assign(new Error('create response was lost'), { code: 'transient' }); };
+  provider.list = async (labels = {}) => {
+    if (labels.agent && listUnavailable) throw Object.assign(new Error('provider listing unavailable'), { code: 'transient' });
+    return list(labels);
+  };
+  provider.connect = async (id) => {
+    if (connectUnavailable) throw Object.assign(new Error('machine connection unavailable'), { code: 'transient' });
+    return connect(id);
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, wait, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  assert.match(await wait([id]), /machines could not be listed/);
+  assert.equal(provider.log.create.length, 1);
+  assert.equal(provider.machines.size, 1, 'the provider allocated a machine before its response was lost');
+  assert.equal(open.get(id)?.sandbox, undefined, 'initial reconciliation could not obtain a handle');
+
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1, 'a failed listing is not proof that the machine was deleted');
+
+  listUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1, 'a failed connect is not proof that the machine was deleted');
+  const exactFilter = provider.log.list.at(-1);
+  assert.equal(exactFilter.agent, id);
+  assert.equal(exactFilter.owner, 'testowner');
+  assert.equal(exactFilter.parent, 'testowner');
+  assert.equal(exactFilter.purpose, 'cloudy-cloud');
+
+  connectUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.has(id), false);
+  assert.equal(provider.machines.size, 0, 'the owned machine is deleted only after it is connected');
+  assert.equal(provider.log.create.length, 1, 'stopping never retries the uncertain create');
+});
+
+test('stop waits for an in-flight uncertain create, then deletes its single owned machine', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'late', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  let entered, release;
+  const started = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  provider.create = async (opts) => {
+    entered();
+    await gate;
+    await create(opts);
+    throw Object.assign(new Error('create response was lost'), { code: 'transient' });
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  await started;
+  const stopping = stopAgents({ agent_ids: [id] }, deps);
+  await tick(10);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 0, 'stop waits for the provider create to settle before reconciling');
+  release();
+  await stopping;
+  assert.equal(provider.machines.size, 0);
+  assert.equal(provider.log.create.length, 1);
+  assert.equal(provider.log.connect.length, 1, 'the late allocated machine is connected only for deletion');
+  assert.equal(open.has(id), false);
+});
+
+test('cleanup_unconfirmed keeps a partially provisioned machine stop-pending until direct delete succeeds', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'partial', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  const remove = provider.delete.bind(provider);
+  let machineId, deleteCalls = 0, deleteUnavailable = true;
+  provider.create = async (opts) => {
+    const sandbox = await create(opts);
+    machineId = sandbox.id;
+    throw Object.assign(new Error('setup failed; cleanup is unconfirmed'), { code: 'cleanup_unconfirmed', provider: 'partial', machineId, allocated: true });
+  };
+  provider.delete = async (id) => {
+    deleteCalls++;
+    if (deleteUnavailable) throw Object.assign(new Error('provider delete unavailable'), { code: 'transient' });
+    return remove(id);
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, wait, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  assert.match(await wait([id]), /cleanup is unconfirmed/);
+  assert.equal(open.get(id)?.sandbox, undefined);
+  assert.equal(provider.machines.size, 1);
+  assert.equal(provider.log.create.length, 1);
+
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1);
+  assert.equal(provider.log.connect.length, 0, 'a half-provisioned machine is never adopted as a worker');
+
+  deleteUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.has(id), false);
+  assert.equal(provider.machines.size, 0);
+  assert.equal(deleteCalls, 2);
+  assert.equal(provider.log.delete.length, 1);
+  assert.equal(provider.log.create.length, 1, 'cleanup retries delete the known ID and never repeat create');
+});
+
 test('an idle timer handles a rejected stop and leaves the machine retryable', async () => {
   let killCalls = 0, sandbox;
   const { start, wait, stop, open } = await setup({
@@ -367,6 +513,28 @@ test('failed setup cleanup keeps the sandbox handle available for a later stop r
   assert.match(await stop([id]), new RegExp(`${id}: stopped`));
   assert.equal(sandbox.killed, true);
   assert.equal(killCalls, 2);
+});
+
+test('a command-specific 404 does not mark a reachable sandbox gone', async () => {
+  let sandbox;
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (/claude -p /.test(cmd)) throw Object.assign(new Error('remote command not found'), { code: 'not_found', status: 404 });
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /remote command not found/);
+  assert.equal(open.get(id)?.status, 'idle');
+  assert.equal(sandbox.killed, false, 'the successful safety push proves the machine is still reachable');
 });
 
 test('a transient prompt write failure keeps the existing session open for an explicit retry', async () => {

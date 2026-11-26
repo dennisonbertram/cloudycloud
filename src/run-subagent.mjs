@@ -292,7 +292,39 @@ async function stop(a, open, gone) {
   wake(a);
   if (a.stopPromise) return a.stopPromise;
   const attempt = async () => {
-    if (!a.sandbox && a.setupPromise) await a.setupPromise.catch(() => {});
+    if (a.setupPromise) await a.setupPromise.catch(() => {});
+    if (!a.sandbox && (a.uncertainCreate || a.createAttempt)) {
+      const created = a.uncertainCreate ?? a.createAttempt;
+      const { provider, labels } = created;
+      if (created.cleanupUnconfirmed) {
+        // Adapters use this for a machine they allocated but could not finish provisioning.
+        // Delete it directly; it must never be adopted as a runnable worker.
+        let machineId = created.machineId;
+        if (!machineId) {
+          let listError;
+          const rows = await provider.list(labels, { onError: (e) => { listError ??= e; } });
+          if (listError) throw listError;
+          const matches = rows.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value));
+          if (matches.length > 1) throw new Error(`Provider ${provider.name} returned multiple machines for agent ${a.id}; refusing to choose one while cleaning up.`);
+          machineId = matches[0]?.id;
+        }
+        if (machineId) await provider.delete(machineId);
+      } else {
+        let listError;
+        const rows = await provider.list(labels, { onError: (e) => { listError ??= e; } });
+        if (listError) throw listError;
+        const matches = rows.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value));
+        if (matches.length > 1) throw new Error(`Provider ${provider.name} returned multiple machines for agent ${a.id}; refusing to choose one while stopping.`);
+        if (matches.length === 1) {
+          a.sandbox = await provider.connect(matches[0].id);
+          a.provider = provider;
+        }
+      }
+      // A complete exact-label listing with no match confirms that this create left no machine.
+      a.uncertainCreate = undefined;
+      a.createAttempt = undefined;
+    }
+    if (a.createAttempt) throw new Error(`Machine creation for agent ${a.id} is still unresolved.`);
     if (a.sandbox) {
       try { await a.sandbox.kill(); }
       catch (e) {
@@ -498,14 +530,17 @@ async function turnOnce(a, message, ctx, t, deadline) {
 
   if (t.cancelled) return { cancelled: true, gone, ...(checkpointSha && { checkpointSha }), text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
-    const turnGone = gone || failure?.code === 'not_found' || failure?.status === 404;
+    // A remote command lookup can return 404 while the machine is still reachable. Only the
+    // independent safety push can confirm that the sandbox itself is gone.
+    const turnGone = !!gone;
+    const commandNotFound = failure?.code === 'not_found' || failure?.status === 404;
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const limit = failure.exitCode === undefined ? `\nThe turn may have hit its ${turnMs / 60_000}-minute limit (CLOUDY_CLOUD_TURN_MINUTES).` : '';
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone: turnGone, uncertainExecution: failure.exitCode === undefined && !turnGone, ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    return { error: true, gone: turnGone, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -671,11 +706,15 @@ async function setup(a, ctx) {
             if (!verified.ok || verified.sha !== a.recoveryRecord.checkpointSha) throw new Error(`Recovery checkpoint is no longer valid: ${verified.reason ?? 'origin branch changed'}; no replacement machine was started.`);
             a.recoveryCreateAttempted = true; // a transport error may hide a successful provider create
           }
+          const attempt = { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+          a.createAttempt = attempt;
           a.machineCreatingProvider = p;
           let sbx;
           try { sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p); }
           finally { delete a.machineCreatingProvider; }
           a.provider = p;
+          a.createAttempt = undefined;
+          a.uncertainCreate = undefined;
           a.envs = { ...envs, ...baseEnvs };
           a.deleteAt = Date.now() + deleteAfterSeconds * 1000;
           a.serverTtl = p.caps.hasServerTTL;
@@ -684,8 +723,15 @@ async function setup(a, ctx) {
           if (reasons.length) a.providerNote = `Started on ${p.name} because ${reasons.join('; ')}.`;
           return sbx;
         } catch (error) {
-          if (a.cancelled) throw new Error('cancelled');
+          if (error?.code === 'cleanup_unconfirmed' && error?.allocated === true && a.createAttempt?.provider === p) {
+            a.uncertainCreate = { ...a.createAttempt, cleanupUnconfirmed: true, ...(error.machineId && { machineId: error.machineId }) };
+            a.createAttempt = undefined;
+            if (a.cancelled) throw new Error('cancelled');
+            throw error;
+          }
           if (error?.credentialRefusal) {
+            if (a.createAttempt?.provider === p) a.createAttempt = undefined;
+            if (a.cancelled) throw new Error('cancelled');
             const why = line160(error.message);
             (a.skipped ??= []).push({ name: p.name, why });
             errors.push(error);
@@ -693,17 +739,33 @@ async function setup(a, ctx) {
             continue;
           }
           const how = failoverHow(error);
+          if (how === 'next') {
+            if (a.createAttempt?.provider === p) a.createAttempt = undefined;
+            if (a.uncertainCreate?.provider === p) a.uncertainCreate = undefined;
+          } else if (a.createAttempt?.provider === p) {
+            // An unclassified error or a transport error can arrive after the provider allocated the machine.
+            a.uncertainCreate = a.createAttempt;
+          }
+          if (a.cancelled) throw new Error('cancelled');
           if (!how) throw error;
           if (a.recoveryRecord && how === 'next') a.recoveryCreateAttempted = false; // the adapter classified this as a definite refusal
           if (how === 'reconcile') {
             // Transient transport failures may hide a successful create. Reconcile this stable agent label;
             // only one confirmed machine can be adopted. Zero, multiple, or unlistable matches fail closed.
             let matches;
-            try { matches = await p.list({ agent: a.id, ...(ctx.owner && { owner: ctx.owner }) }); }
+            let listError;
+            try {
+              const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+              matches = await p.list(attempt.labels, { onError: (e) => { listError ??= e; } });
+              if (listError) throw listError;
+              matches = matches.filter((machine) => Object.entries(attempt.labels).every(([key, value]) => machine.labels?.[key] === value));
+            }
             catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create and its machines could not be listed; refusing another create.`), { code: 'ambiguous' }); }
             if (matches.length !== 1) throw Object.assign(new Error(matches.length ? `Provider ${p.name} returned an uncertain create and multiple machines carry agent ${a.id}; refusing to select one.` : `Provider ${p.name} returned an uncertain create and no matching machine could be confirmed; refusing another create.`), { code: 'ambiguous' });
             try { a.sandbox = await p.connect(matches[0].id); }
             catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create; machine ${matches[0].id} could not be connected, so another create was refused.`), { code: 'ambiguous' }); }
+            a.createAttempt = undefined;
+            a.uncertainCreate = undefined;
             const { envs } = credentialsFor(p, a, env);
             a.provider = p;
             a.envs = { ...envs, ...baseEnvs };
