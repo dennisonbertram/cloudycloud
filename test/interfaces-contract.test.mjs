@@ -86,7 +86,7 @@ test('task completion preserves readable text and includes the same typed lifecy
     if (complete.result?.status === 'completed') break;
     await tick(50);
   }
-  assert.equal(complete.result.status, 'completed');
+  assert.equal(complete.result.status, 'completed', JSON.stringify(complete.result));
   assert.match(complete.result.result.content[0].text, /done OK/);
   assert.equal(complete.result.result.structuredContent.agent_id, task.taskId.split('-')[1]);
   assert.equal(complete.result.result.structuredContent.status, 'idle');

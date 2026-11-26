@@ -38,7 +38,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), owner: 'testowner', open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -422,7 +422,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  deleted at \\S+  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -612,7 +612,8 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
-  assert.match(c[0], /git fetch -q \.\.\/in\.bundle [0-9a-f]{40} && git checkout -q --detach [0-9a-f]{40}/);
+  const checkout = created[0].cmds.find((command) => command.includes('git fetch -q ../in.bundle'));
+  assert.match(checkout, /git fetch -q \.\.\/in\.bundle [0-9a-f]{40} && git checkout -q --detach [0-9a-f]{40}/);
 });
 
 test('a small repo uploads a full bundle and sets up in the original command order', async () => {
