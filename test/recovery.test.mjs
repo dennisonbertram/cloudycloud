@@ -375,6 +375,41 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
     assert.match(secondTask.id, new RegExp(`^cc-${id}-t3-[0-9a-f-]{36}$`));
     assert.notEqual(secondTask.id, replacementTask.id, 'a different session must not reuse the previous session task id');
     assert.equal(deps.tasks.get(replacementTask.id), replacementTask, 'starting in a second session must leave the first session result addressable');
+
+    const checkpointBeforeAuto = await readCheckpoint(f.env, id);
+    await old.delete(secondSession.open.get(id).sandbox.id);
+    const firstAlternate = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'first-alternate', hasProxySecrets: false, hasConsentedSecrets: true });
+    const secondAlternate = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'second-alternate', hasProxySecrets: false, hasConsentedSecrets: true });
+    let firstAttempts = 0;
+    firstAlternate.create = async () => {
+      firstAttempts++;
+      throw Object.assign(new Error('known capacity refusal'), { code: 'machine_no_capacity' });
+    };
+    const autoSession = {
+      ...secondSession, owner: 'owner-auto', provider: old,
+      providers: [old, firstAlternate, secondAlternate], open: new Map(), tasks: new Map(), count: { started: 0 },
+    };
+    const autoStarted = await recoverAgent({ agent_id: id, provider: 'auto', message: 'SHOW-NEW: inspect the restored file.' }, autoSession);
+    assert.equal(autoStarted.isError, undefined, autoStarted.content?.[0]?.text);
+    assert.match(autoStarted.content[0].text, new RegExp(`agent_id: ${id}`));
+    const autoResult = await waitAgents({ agent_ids: [id], timeout_seconds: 3 }, autoSession);
+    const autoAgent = autoSession.open.get(id);
+    assert.equal(autoAgent.id, id, 'automatic recovery must retain the original agent id');
+    assert.equal(autoAgent.provider, secondAlternate, 'placement must continue to the second eligible provider');
+    assert.equal(autoAgent.branch, checkpointBeforeAuto.branch);
+    assert.equal(autoAgent.workspaceRel, 'packages/api');
+    assert.equal(autoResult.structuredContent.agents[0].provider, 'second-alternate', 'the result must name the provider that actually placed the worker');
+    assert.match(autoResult.content[0].text, /a=changed/, 'the recovered worker must see checkpoint contents');
+    assert.doesNotMatch(autoResult.content[0].text, /EDIT-OLD-PROMPT/);
+    assert.equal(firstAttempts, 1, 'the first eligible provider must receive one definite refusal');
+    assert.equal(firstAlternate.machines.size, 0, 'the refused first provider must not create a machine');
+    assert.equal(secondAlternate.log.create.length, 1, 'only one replacement machine may be created');
+    assert.equal(secondAlternate.machines.size, 1, 'exactly one successful replacement worker must remain tracked');
+    const autoCheckpoint = await readCheckpoint(f.env, id);
+    assert.equal(autoCheckpoint.provider, 'second-alternate');
+    assert.equal(autoCheckpoint.machine, autoAgent.sandbox.id);
+    assert.equal(autoCheckpoint.checkpointSha, checkpointBeforeAuto.checkpointSha);
+    assert.equal(autoCheckpoint.workspaceRel, 'packages/api');
   } finally {
     for (const [k, v] of Object.entries(prevGit)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
