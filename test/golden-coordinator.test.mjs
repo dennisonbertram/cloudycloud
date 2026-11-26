@@ -8,6 +8,7 @@ import { cpSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/coordinator.mjs';
+import { installId } from '../src/config.mjs';
 import { golden, envNames } from './golden-util.mjs';
 
 const KEY = 'GOLDEN_API_KEY_0123456789';
@@ -86,6 +87,8 @@ test('coordinator calls are unchanged', async () => {
   const run = async (label, args, opts, extra = {}) => {
     const f = fixture(opts);
     Object.assign(f.deps, extra);
+    // Coordinators and image machines carry this installation's label; stamp it the way start/image do.
+    for (const m of opts?.machines ?? []) m.metadata.install ??= installId(f.deps.env);
     await main(args, f.deps);
     record[label] = { args, calls: f.calls, out: f.out };
   };

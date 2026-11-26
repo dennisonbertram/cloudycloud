@@ -117,9 +117,10 @@ const guides = {
     ['--json', 'Print the result as JSON (includes started: true)'],
   ], 'Run coordinator image once first. A new coordinator waits for its own Claude sign-in: finish it with coordinator login NAME. Stop the coordinator when you are done.'],
   attach: ['Open a coordinator\'s Claude session.', 'attach NAME', [], 'On a terminal it opens the session. When piped, it prints cloudy-cloud coordinator attach NAME instead; run that in your own terminal.'],
-  login: ['Finish a coordinator\'s Claude sign-in.', 'login NAME [--code CODE]', [
+  login: ['Finish a coordinator\'s Claude sign-in.', 'login NAME [--code CODE|-]', [
     ['NAME', 'The coordinator that waits for sign-in'],
     ['--code CODE', 'The code the browser sign-in showed, sent to the pane\'s prompt (letters, digits, #, _ and -)'],
+    ['--code -', 'Read the code from stdin (first line) — the recommended form for agents'],
   ], 'Without --code it attaches to the session so you sign in there. With --code it types the code for you — how an agent finishes a sign-in the user did in the browser.'],
   ls: ['List your cloud coordinators and whether one waits on a prompt.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, WAITING, or "No coordinators.". It reads each running coordinator\'s screen once. "waiting for Claude sign-in" finishes with coordinator login NAME.'],
   status: ['Show one coordinator: state, the prompt it waits on (if any) and the attach command.', 'status NAME [--json]', [], 'Read-only. Reads the screen once. A coordinator runs with permission checks off, so a waiting prompt is unexpected: attach and answer it. A coordinator waiting for its Claude sign-in shows the login command.'],

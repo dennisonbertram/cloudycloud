@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE] | ls | status NAME [--json] | stop NAME | finish [--force]
+// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -146,7 +146,9 @@ async function context(deps) {
   const now = deps.now ?? Date.now;
   // Prompts write to stderr, never stdout: --json and piped output stay machine-readable.
   const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stderr }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
-  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, cwd: deps.cwd };
+  // `login --code -` reads the code from stdin; an attached terminal blocks on it (the agent form is for pipes).
+  const stdin = deps.stdin ?? (async () => { const chunks = []; for await (const x of process.stdin) chunks.push(x); return Buffer.concat(chunks.map((x) => Buffer.from(x))).toString('utf8'); });
+  return { env, provider, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, stdin, cwd: deps.cwd };
 }
 
 // The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
@@ -200,17 +202,31 @@ async function installTool(sbx, root, note) {
 // The machine's name as the server reports it (the adapter fetches it on demand).
 const nameOf = async (sbx) => (await sbx.loadName?.()) ?? sbx.name;
 
-// True when the machine's Claude is signed in through the browser (a setup-token cannot open Remote Control
-// sessions); an unreadable status counts as not signed in.
+// The sign-in check and `claude auth login` must run under the same credential-free environment the session
+// itself gets: an API key or OAuth token in the session environment would otherwise satisfy `auth status`
+// (or silently pick a different sign-in method) without the claude.ai sign-in each coordinator needs.
+export const AUTH_STATUS = 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json';
+// True when the machine's Claude is signed in to claude.ai through the browser (a setup-token cannot open
+// Remote Control sessions); an unreadable status counts as not signed in.
 async function signedIn(sbx) {
   try {
-    const r = await sbx.commands.run('claude auth status --json', { timeoutMs: 60_000 });
+    const r = await sbx.commands.run(AUTH_STATUS, { timeoutMs: 60_000 });
     const j = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
     return j.loggedIn === true && j.authMethod === 'claude.ai';
   } catch { return false; }
 }
 
+// Is `claude auth login` actually running on the machine? launch.sh holds this marker file for exactly the
+// duration of the sign-in attempt — only then can a sign-in URL or a code prompt on the pane be a live login
+// attempt rather than transcript text. Any check failure reads as not active.
+const loginActive = async (sbx) => { try { await sbx.commands.run('test -f "$HOME/.config/cloudy-cloud/login-active"', { timeoutMs: 15_000 }); return true; } catch { return false; } };
+
 const PENDING_KEY = 'CLOUDY_CLOUD_PENDING_SNAPSHOT'; // MACHINE_ID:SNAPSHOT_ID of a snapshot still being saved, so a later run waits on it instead of starting another
+// Written with the pending record only after the image machine's credential was verified gone: a pending
+// record without it was started by an older cloudy-cloud and may still hold a sign-in.
+const PENDING_CLEAN_KEY = 'CLOUDY_CLOUD_PENDING_CLEAN';
+// Written with the saved snapshot id by finishSave: an image saved without it may still contain a sign-in.
+const SNAPSHOT_CLEAN_KEY = 'CLOUDY_CLOUD_SNAPSHOT_CLEAN';
 // The image-sign-in bookkeeping older versions wrote (CLOUDY_CLOUD_SNAPSHOT_ACCOUNT and
 // CLOUDY_CLOUD_PENDING_ACCOUNT) is dropped from the config on the next save; a leftover line is ignored.
 const LEGACY_ACCOUNT_KEYS = ['CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_PENDING_ACCOUNT'];
@@ -232,10 +248,10 @@ async function finishSave(c, sbx, snap) {
     if (half > shown) { shown = half; c.progress(`Saving the image snapshot... ${Math.floor(half / 2)} min`); }
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image --save' }); }
-  updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
+  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image --save' }); }
+  updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: '1' }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
-  updateConfig(c.configFile, {}, [PENDING_KEY, ...LEGACY_ACCOUNT_KEYS]);
+  updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
   if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${safeText(snap.id)}`, 'the image machine is deleted'),
     hintFit(c.ui, `Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
     c.ui.next('cloudy-cloud coordinator start NAME --repo URL')].join('\n'));
@@ -246,22 +262,30 @@ async function finishSave(c, sbx, snap) {
 async function resumePending(c) {
   const [mid, sid] = readKey(c.configFile, PENDING_KEY).split(':');
   if (!sid) return false;
+  // A pending record written without PENDING_CLEAN_KEY predates the credential check: that snapshot may still
+  // hold a sign-in, so it is never adopted as the image. The record is dropped but the snapshot and its
+  // machine are left alone (a shared workspace may still want the snapshot by hand).
+  if (readKey(c.configFile, PENDING_CLEAN_KEY) !== '1') {
+    updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+    guided(`The pending snapshot ${sid} was started by an older cloudy-cloud and may still contain a Claude sign-in, so it was not saved as the image (the snapshot and its machine were left alone).\nNext step: make a clean image with cloudy-cloud coordinator image`, { short: 'The pending snapshot may still contain a Claude sign-in.', reason: 'it was started by an older cloudy-cloud; the snapshot and its machine were left alone', next: 'cloudy-cloud coordinator image' });
+  }
   c.progress(`A snapshot (${sid}) is already being saved. Waiting for it.`);
   let snap;
   try { snap = await c.provider.getSnapshot(sid); } catch (e) {
     if (!gone(e)) throw e; // a transient error keeps the entry
-    updateConfig(c.configFile, {}, [PENDING_KEY, ...LEGACY_ACCOUNT_KEYS]);
+    updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
     guided(`The pending snapshot ${sid} no longer exists, so it was forgotten. Run: cloudy-cloud coordinator image`, { short: `The pending snapshot ${sid} no longer exists.`, reason: 'It was forgotten.', next: 'cloudy-cloud coordinator image' });
   }
   let sbx = null, foreign = false;
   // The recorded machine id is only a claim: connect (and so finishSave's delete) happens only when a fresh
-  // listing verifies it is still our image machine (purpose + role). A machine that exists but no longer verifies
-  // stays untouched and the pending record is kept, so a later --save can finish it; only a machine that is really
-  // gone falls through to finishSave, which clears the record after saving the snapshot id.
+  // listing verifies it is still our image machine — purpose, role AND this installation's install label.
+  // A machine that exists but no longer verifies stays untouched and the pending record is kept, so a later
+  // --save can finish it; only a machine that is really gone falls through to finishSave, which clears the
+  // record after saving the snapshot id.
   try {
     // Unfiltered: a role-filtered list would miss the machine entirely if its role label is what changed.
     const row = (await c.provider.list({}, { sdk: true })).find((m) => m.id === mid);
-    if (row && OUR_PURPOSES.has(row.labels?.purpose) && row.labels?.role === 'coordinator-image') sbx = await c.provider.connect(mid, { retry: false });
+    if (row && OUR_PURPOSES.has(row.labels?.purpose) && row.labels?.role === 'coordinator-image' && row.labels?.install === installId(c.env)) sbx = await c.provider.connect(mid, { retry: false });
     else foreign = !!row;
   } catch (e) { if (!gone(e)) throw e; }
   if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image --save again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
@@ -270,11 +294,13 @@ async function resumePending(c) {
 }
 
 async function saveNew(c, sbx) {
-  // No credential ever rides a snapshot: a sign-in the image machine still holds is removed first.
-  await sbx.commands.run('rm -f ~/.claude/.credentials.json', { timeoutMs: 30_000 });
+  // No credential ever rides a snapshot: a sign-in the image machine still holds is removed first, then
+  // verified gone — the same path launch.sh uses, so CLAUDE_CONFIG_DIR installs are covered too. The
+  // pending record carries PENDING_CLEAN_KEY only when this check passed: a record without it is not trusted.
+  await sbx.commands.run('c="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"; rm -f "$c" && [ ! -e "$c" ]', { timeoutMs: 30_000 });
   c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
   const snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
-  if (snap.status === 'pending') updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}` }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
+  if (snap.status === 'pending') updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}`, [PENDING_CLEAN_KEY]: '1' }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
   return finishSave(c, sbx, snap);
 }
 
@@ -329,11 +355,21 @@ async function storeCoordinatorSecret(c) {
 // sign-in ever rides a snapshot, snapshot, delete the image machine. Each coordinator signs in for
 // itself at `start` — there is no sign-in here anymore. A leftover image machine (the provider stops
 // these 2 hours after creation) is snapshotted by `image --save` instead of starting another machine.
+// Only an image machine of THIS installation is ever reused, wiped, snapshotted or deleted: the workspace
+// is shared, so a same-labelled machine of another installation — or one without an install label (made
+// before image machines carried one) — is left alone with a guided message naming it.
 async function image(c, args) {
   refuseEgress(c.env, 'image');
   const stored = await storeCoordinatorSecret(c); // repair the coordinator key on every path; a failed store is not silent
   if (await resumePending(c)) return storeNotice(c, stored);
-  const [img] = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
+  const mine = installId(c.env);
+  const imgs = (await find(c.provider, 'coordinator-image')).sort((a, b) => b.startedAt - a.startedAt);
+  const img = imgs.find((m) => m.labels?.install === mine);
+  const unlabeled = imgs.filter((m) => !m.labels?.install);
+  if (!img && unlabeled.length) {
+    const names = unlabeled.map((m) => safeText(mach(m) ?? m.id)).join(', ');
+    guided(`An image machine (${names}) is still running, but it has no installation label — it may belong to another cloudy-cloud installation or predate labelling, so it was left alone.\nNext step: check it with cloudy-cloud machines; if it is a leftover of yours, delete it and run cloudy-cloud coordinator image again`, { short: 'An unlabeled image machine was left alone.', reason: `machine ${names} has no installation label`, next: 'cloudy-cloud machines' });
+  }
   if (args.includes('--save')) {
     if (!img) guided('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image', { short: 'No image machine found.', reason: 'Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them.', next: 'cloudy-cloud coordinator image', neutral: true });
     const sbx = await c.provider.connect(img.id, { retry: false });
@@ -347,7 +383,7 @@ async function image(c, args) {
     sbx = await c.provider.connect(img.id, { retry: false });
   } else {
     c.progress('Creating the image machine...');
-    sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image' }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
+    sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image', install: mine }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
     try {
       c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
       await installTool(sbx, c.root);
@@ -426,6 +462,9 @@ async function start(c, args) {
   if (!(seconds >= 60 && seconds <= maxHours * 3600)) usageError(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).`, 'start', `--max-hours must be a number up to ${maxHours}.`, [`${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours.`]);
   const snapshot = c.env[SNAPSHOT_KEY];
   if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved image; each signs in to Claude at start.', next: 'cloudy-cloud coordinator image', neutral: true });
+  // An image saved before the credential check shipped still holds a Claude sign-in — one warning line (stderr),
+  // never a stop: launch.sh still removes its copy on each coordinator's first launch.
+  if (!c.env[SNAPSHOT_CLEAN_KEY]) c.note('Your coordinator image was saved by an older cloudy-cloud and still contains a Claude sign-in. Make a clean one with: cloudy-cloud coordinator image');
   if ((await find(c.provider, 'coordinator', name)).length) guided(`A coordinator named ${name} already exists. Stop it first: cloudy-cloud coordinator stop ${name}`, { short: `A coordinator named ${name} already exists.`, next: `cloudy-cloud coordinator stop ${name}` });
   // Peers for Remote Control messaging: the running coordinators this same installation made (the install-label
   // check `cloud` reattach uses), by name, excluding the one being started. A failed lookup never fails a start.
@@ -542,11 +581,13 @@ async function start(c, args) {
     // Remote Control link is read only once it is signed in.
     needsLogin = !(await signedIn(sbx));
     if (needsLogin) {
-      loginUrl = st.loginUrl;
+      // A sign-in URL is read back only while `claude auth login` is actually running (the login-active
+      // marker): an unrelated claude.ai link left on the pane must never reach the user as a sign-in link.
+      if (await loginActive(sbx)) loginUrl = st.loginUrl;
       // The sign-in URL can take a few seconds to appear on the pane; look again briefly, never longer.
       for (let i = 0; i < 3 && !loginUrl && screenRead; i++) {
         await c.sleep(3000);
-        try { loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '').loginUrl; } catch { break; }
+        try { if (await loginActive(sbx)) loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '').loginUrl; } catch { break; }
       }
     } else if (screenRead && !waiting) {
       // Remote Control can take a few seconds to connect: look again briefly, and stop if a prompt appears. A missing link never fails start.
@@ -564,7 +605,7 @@ async function start(c, args) {
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${name}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl }; }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${name}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx }; }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -600,12 +641,12 @@ async function start(c, args) {
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${name}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
   }
-  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? ' and has started on the task' : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
+  c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? (needsLogin ? ' and starts on the task once it is signed in' : ' and has started on the task') : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
     (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${name}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
       : `Reach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n  - Terminal: cloudy-cloud coordinator attach ${name}\n\n`) +
     `${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
-  return { needsLogin, loginUrl };
+  return { needsLogin, loginUrl, sbx };
 }
 
 async function attach(c, args, { noAttach = false, machine = null } = {}) {
@@ -632,16 +673,57 @@ async function attach(c, args, { noAttach = false, machine = null } = {}) {
 // The code the browser sign-in shows, typed into the pane's sign-in prompt: word characters only.
 const CODE_RE = /^[A-Za-z0-9#_-]{1,512}$/;
 
-// `coordinator login NAME [--code CODE]` finishes a coordinator's Claude sign-in. Without --code it attaches
+// The session-health check `start` runs on a new session, applied after a sign-in finishes (login --code or
+// an interactive attach): a session that exited, hit a spend or usage limit, or reports an invalid key gets
+// its machine deleted under start's own rule; a machine still waiting for sign-in (or a prompt) is never deleted.
+async function afterSignIn(c, sbx, name) {
+  let pane = '';
+  try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? ''; }
+  catch (e) {
+    if (typeof e?.exitCode !== 'number') return; // a transport failure is not a verdict: the machine stays
+    await sbx.kill().catch(() => {});
+    guided(`The Claude session on ${name} exited. The machine was deleted.\nLikely cause: the launcher or Claude exited.\nNext: run cloudy-cloud coordinator start ${name} again; if it repeats, run cloudy-cloud coordinator image for a fresh image.`, { short: `The Claude session on ${name} exited.`, reason: 'the launcher or Claude exited; the machine was deleted', next: `cloudy-cloud coordinator start ${name}` });
+  }
+  const line = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane)).blocked;
+  if (!line) return; // waiting on a prompt or still at the sign-in: the machine stays
+  const [code, cause, next, nextCmd] = /invalid api key/i.test(line)
+    ? ['coordinator_invalid_key', 'the session reports an invalid API key', `check the keys the image settings or your --env files send, then run cloudy-cloud coordinator start ${name} again`, `check the machine's Claude settings and your --env files, then start ${name} again`]
+    : ['spend_limit', 'the Claude account on the coordinator has hit its spend or usage limit', `check the plan at claude.ai, then run cloudy-cloud coordinator start ${name} again`, `check the plan at claude.ai, then start ${name} again`];
+  await sbx.kill().catch(() => {});
+  guided(`The coordinator session is not working after sign-in. Its screen shows: ${line}\nThe machine was deleted.\nLikely cause: ${cause}.\nNext: ${next}.`, { code, short: 'The coordinator session is not working after sign-in.', reason: `${cause}; the machine was deleted`, details: [`screen: ${fitCells(line, 40)}`], next: nextCmd });
+}
+
+// After an interactive attach returns: the post-sign-in health check above, then the Remote Control link (and
+// QR, as `status` prints it) once the coordinator is signed in. `get` connects the machine the caller already
+// validated — never a second lookup by name; the attach exit status passes through.
+async function postAttach(c, name, get, code) {
+  try {
+    const sbx = await get();
+    await afterSignIn(c, sbx, name);
+    if (await signedIn(sbx)) {
+      const url = await readLink(sbx);
+      if (url) { for (const l of linkLines(c.ui, url)) c.out(l); for (const l of qrLines(c.ui, url)) c.out(l); }
+      else c.out(`Signed in. The Remote Control link is not ready yet; get it with: cloudy-cloud coordinator status ${name}`);
+    } else c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
+  } catch (e) { if (e?.local) throw e; c.out(`Check the session with: cloudy-cloud coordinator status ${name}`); }
+  return code;
+}
+
+// `coordinator login NAME [--code CODE|-]` finishes a coordinator's Claude sign-in. Without --code it attaches
 // to the pane so a person signs in there; with --code it types the code into the pane's sign-in prompt — the
-// way a local agent completes a sign-in the user finished in the browser.
+// way a local agent completes a sign-in the user finished in the browser. `--code -` reads the code from
+// stdin (first line, trimmed): the recommended form for agents, since the code never appears in argv.
 async function login(c, args) {
   const name = args[0];
-  const code = flag(args, '--code');
-  if (code !== undefined && !CODE_RE.test(code)) usageError('--code takes 1 to 512 characters of letters, digits, #, _ and -.', 'login', '--code takes 1 to 512 characters of letters, digits, #, _ and -.');
+  let code = flag(args, '--code');
+  if (code === '-') code = (await c.stdin()).split('\n')[0].trim();
+  if (code !== undefined && !CODE_RE.test(code)) usageError('--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.', 'login', '--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.');
   const [m] = await find(c.provider, 'coordinator', name);
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   if (m.labels?.install && m.labels.install !== installId(c.env)) guided(`Coordinator ${name} belongs to a different cloudy-cloud installation, so it was not signed in.\nNext step: list this installation's coordinators with cloudy-cloud coordinator ls`, { short: `Coordinator ${name} belongs to a different cloudy-cloud installation.`, next: 'cloudy-cloud coordinator ls' });
+  // A machine with no install label cannot be verified as this installation's: a code is never typed into it.
+  // Signing in there by hand (attach, the same way `coordinator attach` stays open to legacy machines) remains.
+  if (code !== undefined && m.labels?.install !== installId(c.env)) guided(`Coordinator ${name} has no installation label, so cloudy-cloud cannot verify it is yours; the code was not sent.\nNext step: finish the sign-in on the machine itself — attach with cloudy-cloud coordinator attach ${name}`, { short: `Coordinator ${name} cannot be verified as yours.`, reason: 'it has no installation label; the code was not sent', next: `cloudy-cloud coordinator attach ${name}` });
   const sbx = await c.provider.connect(m.id, { retry: false });
   const paneOf = async () => {
     const raw = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? '';
@@ -656,14 +738,29 @@ async function login(c, args) {
     // A terminal is required: signing in means seeing the pane (the URL and the code prompt live there).
     if (!c.tty) guided(`coordinator login opens the session on a terminal. For a non-interactive finish, pass the code the browser showed: cloudy-cloud coordinator login ${name} --code CODE`, { short: 'coordinator login needs a terminal.', reason: 'the sign-in lives in the session pane', next: `cloudy-cloud coordinator login ${name} --code CODE` });
     if (/Login expired|\/login/i.test(st.signin)) c.out('Type /login and sign in.');
-    return attach(c, args, { machine: m });
+    const r = await attach(c, args, { machine: m });
+    // The person signs in inside the attach, then detaches: run the post-sign-in check and report the link.
+    return postAttach(c, name, async () => sbx, r);
   }
-  // The code reaches Claude only at the sign-in prompt: a pane anywhere else eats the keys.
-  if (!st.codePrompt) guided(`Coordinator ${name} is not waiting for a sign-in code. Check its screen with cloudy-cloud coordinator status ${name}; if Claude is already running in the pane, type /login in it first (attach with cloudy-cloud coordinator attach ${name})`, { short: `Coordinator ${name} is not waiting for a sign-in code.`, next: `cloudy-cloud coordinator status ${name}` });
-  await sbx.commands.run(`tmux send-keys -t claude -l -- ${q(code)} && tmux send-keys -t claude Enter`);
+  // The code reaches Claude only at a live sign-in prompt: `claude auth login` must be running on the machine
+  // (launch.sh's login-active marker) AND the pane's last lines must be the code prompt — transcript text that
+  // merely mentions a code, or a stale prompt, must not swallow the code.
+  if (!st.codePrompt || !(await loginActive(sbx))) guided(`Coordinator ${name} is not waiting for a sign-in code. Check its screen with cloudy-cloud coordinator status ${name}; if Claude is already running in the pane, type /login in it first (attach with cloudy-cloud coordinator attach ${name})`, { short: `Coordinator ${name} is not waiting for a sign-in code.`, next: `cloudy-cloud coordinator status ${name}` });
+  // The code travels by file, never in a remote command string (a command sits in the remote shell log):
+  // written to a mode-600 file in the 700 config dir, loaded into the tmux buffer, pasted, then removed.
+  const home = (await sbx.commands.run('printf %s "$HOME"', { timeoutMs: 15_000 })).stdout.trim();
+  const codeFile = `${home}/.config/cloudy-cloud/.signin-code`;
+  await sbx.commands.run(`umask 077 && : > ${q(codeFile)}`, { timeoutMs: 15_000 });
+  await sbx.files.write(codeFile, code);
+  await sbx.commands.run(`chmod 600 ${q(codeFile)} && tmux load-buffer ${q(codeFile)} && tmux paste-buffer -t claude && tmux send-keys -t claude Enter; tmux delete-buffer 2>/dev/null; rm -f ${q(codeFile)}`, { timeoutMs: 30_000 });
   const t0 = c.now();
   while (c.now() - t0 < 60_000) {
-    if (await signedIn(sbx)) return c.out(`Coordinator ${name} is signed in to Claude.`);
+    if (await signedIn(sbx)) {
+      // Signed in — run the post-sign-in health check, then report the Remote Control link.
+      await afterSignIn(c, sbx, name);
+      const url = await readLink(sbx);
+      return c.out(`Coordinator ${name} is signed in to Claude.${url ? `\nRemote Control: ${url}` : ''}`);
+    }
     await c.sleep(2000);
   }
   guided(`The code was sent, but Claude on ${name} is still not signed in after 60 seconds. Look at the session with cloudy-cloud coordinator login ${name}: the browser sign-in may not have finished, or the code may be wrong.`, { short: `Claude on ${name} is still not signed in.`, reason: 'the code was sent but the sign-in did not finish in 60 seconds', next: `cloudy-cloud coordinator login ${name}` });
@@ -674,6 +771,11 @@ async function login(c, args) {
 async function screenOf(c, m, { withLink = false } = {}) {
   const none = { read: false, waiting: '', signin: false, loginUrl: '', link: '' };
   if (m.state && m.state !== 'running') return none;
+  // The sign-in URL is read back only for a coordinator this installation made AND only while `claude auth
+  // login` is actually running there (the login-active marker): an unverified machine gets no loginUrl, and
+  // an unrelated claude.ai link left on the pane is never reported as the sign-in link.
+  let own = false;
+  try { own = m.labels?.install === installId(c.env); } catch { /* an unreadable install id verifies nothing */ }
   try {
     const sbx = await c.provider.connect(m.id, { retry: false });
     const raw = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? '';
@@ -681,8 +783,9 @@ async function screenOf(c, m, { withLink = false } = {}) {
     const pane = secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), raw);
     const st = paneState(pane);
     const signin = !!st.signin;
+    const loginUrl = own && signin && (await loginActive(sbx)) ? st.loginUrl : '';
     // No Remote Control link while the pane waits at the sign-in: there is no session to link to yet.
-    return { ...none, read: true, waiting: st.waiting || st.blocked, signin, loginUrl: st.loginUrl, link: withLink && !signin ? await readLink(sbx) : '' };
+    return { ...none, read: true, waiting: st.waiting || st.blocked, signin, loginUrl, link: withLink && !signin ? await readLink(sbx) : '' };
   } catch { return none; }
 }
 const screenText = (r) => (!r.read ? 'screen not read' : r.signin ? 'waiting for Claude sign-in' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
@@ -850,10 +953,10 @@ function validateArgs(cmd, args) {
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
   if (cmd === 'login') {
-    if (!NAME_RE.test(args[0] ?? '')) bad('Expected login NAME [--code CODE].');
+    if (!NAME_RE.test(args[0] ?? '')) bad('Expected login NAME [--code CODE|-].');
     const rest = args.slice(1);
     // The --code value is checked in login() itself (its own rule decides), so any code shape reaches it.
-    if (rest.length > 2 || (rest.length && rest[0] !== '--code') || (rest[0] === '--code' && rest[1] === undefined)) bad('Expected login NAME [--code CODE].');
+    if (rest.length > 2 || (rest.length && rest[0] !== '--code') || (rest[0] === '--code' && rest[1] === undefined)) bad('Expected login NAME [--code CODE|-].');
     return;
   }
   // The piped text always says what is wrong with the value; the terminal headline says start needs a NAME.
@@ -919,7 +1022,9 @@ async function cloud(c, args) {
     if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
     if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
     c.out(`Reattaching to ${name}`);
-    return attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
+    const code = await attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
+    if (!c.tty || args.includes('--no-attach')) return code;
+    return postAttach(c, name, async () => c.provider.connect(match.id, { retry: false }), code);
   }
   // A fresh start only: what the GitHub clone would not have — commits the branch has not pushed to
   // origin/<branch> (fetched first), plus edits to tracked files. Untracked files warn but never block.
@@ -948,22 +1053,13 @@ async function cloud(c, args) {
     ...(json ? ['--json'] : [])];
   const res = await start(c, startArgs);
   if (args.includes('--no-attach') || json || !c.tty) return undefined;
+  // The machine attach and the post-attach check act on is the one start just made — never a second lookup
+  // by name (a same-named machine created meanwhile is not this coordinator).
+  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}` };
   // A coordinator waiting for its Claude sign-in attaches to the sign-in pane, not to Claude: say so first.
-  if (res?.needsLogin) {
-    c.out('Sign in to Claude in the window that opens (each coordinator has its own sign-in).');
-    await attach(c, [name]);
-    // The Remote Control link exists only once the sign-in finished; report what happened on detach.
-    try {
-      const [m] = await find(c.provider, 'coordinator', name);
-      const sbx = m && await c.provider.connect(m.id, { retry: false });
-      if (sbx && await signedIn(sbx)) {
-        const url = await readLink(sbx);
-        return c.out(url ? `Remote Control: ${url}` : `Signed in. The Remote Control link is not ready yet; get it with: cloudy-cloud coordinator status ${name}`);
-      }
-      return c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
-    } catch { return c.out(`Check the session with: cloudy-cloud coordinator status ${name}`); }
-  }
-  return attach(c, [name]);
+  if (res?.needsLogin) c.out('Sign in to Claude in the window that opens (each coordinator has its own sign-in).');
+  const code = await attach(c, [name], { machine: own });
+  return postAttach(c, name, async () => res.sbx, code);
 }
 
 async function run(argv, deps) {
@@ -973,7 +1069,7 @@ async function run(argv, deps) {
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
     return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
+  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
   validateArgs(cmd, args);
   const c = await context(deps);
   // A provider that cannot run coordinators at all says so in its own words first (it may name a working alternative);

@@ -58,7 +58,7 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 
-A fresh coordinator then waits at `claude auth login` — a normal state the machine is never deleted for. On a terminal, `start` (and `cloudy-cloud cloud`) attaches you to the sign-in pane: open the URL it shows, sign in in your browser, and paste the code if asked. Off a terminal, `start` reports `needsLogin: true`, the `claude.ai` sign-in URL as `loginUrl` when the pane shows one, and `next: cloudy-cloud coordinator login NAME`. Finish the sign-in with `cloudy-cloud coordinator login NAME` (attaches to the pane on a terminal) or `cloudy-cloud coordinator login NAME --code CODE` (sends the code the browser showed; refused unless the pane is at the code prompt). `coordinator ls` and `coordinator status NAME` show `waiting for Claude sign-in` until then.
+A fresh coordinator then waits at `claude auth login` — a normal state the machine is never deleted for. `coordinator start` prints the sign-in command (and the `claude.ai` sign-in URL when the pane shows one); `cloudy-cloud cloud` on a terminal attaches you to the sign-in pane itself: open the URL it shows, sign in in your browser, and paste the code if asked. `start --json` reports `needsLogin: true`, the URL as `loginUrl`, and `next: cloudy-cloud coordinator login NAME`. Finish the sign-in with `cloudy-cloud coordinator login NAME` (attaches to the pane on a terminal) or `cloudy-cloud coordinator login NAME --code CODE` (sends the code the browser showed; `--code -` reads it from stdin, the recommended form for agents; refused unless the pane is at the code prompt while the sign-in runs). `coordinator ls` and `coordinator status NAME` show `waiting for Claude sign-in` until then.
 
 ### 3. Reach it
 
@@ -77,9 +77,9 @@ The first time, attach once and accept any trust or Remote Control prompts. To l
 
 ## Coordinators talking to each other
 
-Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it can greet them with `NAME started (repo REPO, branch BRANCH)`. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name.
+Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it greets each peer `ListAgents` shows as a Remote Control session with `NAME started`. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name and marks the ones this installation made.
 
-`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack: <first 8 words>` to each message received (never to one starting with `ack:`), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
+`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack` to each message received (never ack an ack), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
 
 ## Getting one result from many workers
 

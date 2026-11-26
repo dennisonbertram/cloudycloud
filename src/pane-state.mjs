@@ -16,11 +16,15 @@ export const WAITING = /^(?:.*Do you trust the files|.*trust this folder|New MCP
 const QUESTION = /^Do you want to /i, OPTION = /^1\.\s*Yes\b/i;
 
 // A sign-in URL `claude auth login` prints: only a claude.ai, claude.com or platform.claude.com URL counts,
-// and never a Remote Control link (those live under /code/). Nothing else on the screen is read back.
-export const LOGIN_URL = /https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com)\/(?!code\/)[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]{0,500}/;
+// and never a Remote Control link (those live under /code/). The whole URL is captured, then dropped when it
+// exceeds 4096 characters: a too-long URL is never silently truncated into a broken or wrong link.
+export const LOGIN_URL = /https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com)\/(?!code\/)[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/;
 // The prompt that takes the code the browser showed — `claude auth login` or the in-session /login dialog.
 // Its exact wording is unverified, so this matches an enter/paste ... code line loosely.
 const CODE_PROMPT = /(?:enter|paste|type|input)\b[^\n]{0,80}\bcode\b|\b(?:authorization|verification|sign-?in|login) code\b|\bcode\b[^\n]{0,40}\bfrom (?:your|the) browser\b/i;
+// Only the pane's last 5 non-empty lines can be the live code prompt: transcript text that merely mentions a
+// verification code (or an old prompt scrolled up) must not satisfy the `login --code` gate.
+const TAIL = 5;
 
 // What a pane shows: the first blocked and waiting lines (each redacted, '' when none); signin is the first
 // sign-in line, or 'sign-in' when the pane waits at the sign-in URL or code prompt instead — a coordinator
@@ -30,8 +34,8 @@ export function paneState(pane, task = '') {
   const lines = String(pane ?? '').split('\n').map((l) => l.replace(MARKS, '').trim()).filter((t) => t && !(t.length > 3 && task.includes(t)));
   const pick = (found) => (found ? redact(safeText(found)) : '');
   const asked = lines.find((l, i) => QUESTION.test(l) && lines.slice(i + 1, i + 9).some((o) => OPTION.test(o)));
-  const loginUrl = lines.map((l) => l.match(LOGIN_URL)?.[0]).find(Boolean) ?? '';
-  const codePrompt = lines.some((l) => CODE_PROMPT.test(l));
+  const loginUrl = lines.map((l) => { const u = l.match(LOGIN_URL)?.[0]; return u && u.length <= 4096 ? u : undefined; }).find(Boolean) ?? '';
+  const codePrompt = lines.slice(-TAIL).some((l) => CODE_PROMPT.test(l));
   const signin = lines.find((l) => SIGNIN.test(l));
   return {
     blocked: pick(lines.find((l) => BLOCKED.test(l))),

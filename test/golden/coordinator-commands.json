@@ -26,7 +26,8 @@
           "apiKey": "<API_KEY>",
           "metadata": {
             "purpose": "cloudy-cloud",
-            "role": "coordinator-image"
+            "role": "coordinator-image",
+            "install": "<INSTALL>"
           },
           "autoSuspendMs": 0
         }
@@ -79,7 +80,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "rm -f ~/.claude/.credentials.json",
+        "cmd": "c=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json\"; rm -f \"$c\" && [ ! -e \"$c\" ]",
         "timeoutMs": 30000
       },
       {
@@ -124,7 +125,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "rm -f ~/.claude/.credentials.json",
+        "cmd": "c=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json\"; rm -f \"$c\" && [ ! -e \"$c\" ]",
         "timeoutMs": 30000
       },
       {
@@ -321,7 +322,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "claude auth status --json",
+        "cmd": "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json",
         "timeoutMs": 60000
       },
       {
@@ -529,7 +530,7 @@
       },
       {
         "sdk": "commands.run",
-        "cmd": "claude auth status --json",
+        "cmd": "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json",
         "timeoutMs": 60000
       },
       {

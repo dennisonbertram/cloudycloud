@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow, installId } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, preflightProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
@@ -1257,12 +1257,17 @@ export async function waitAgents(args = {}, deps) {
 }
 
 // cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
-async function allMachines({ provider }) {
+// Coordinators of THIS installation (the same install label start stamps) are marked so a coordinator
+// reading the list can tell its own fleet from a teammate's machines in a shared workspace.
+async function allMachines({ provider, env }) {
   const rows = await provider.list({ purpose: 'cloudy-cloud' });
   if (!rows.length) return 'No cloudy-cloud machines.';
+  let mine = '';
+  try { mine = installId(env); } catch { /* an unreadable install id marks nothing */ }
+  const mark = (m) => (mine && m.labels?.role === 'coordinator' && m.labels?.install === mine ? '  (this installation)' : '');
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
-  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}${m.labels?.name ? `  name ${m.labels.name}` : ''}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}${m.labels?.name ? `  name ${m.labels.name}` : ''}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}${mark(m)}`).join('\n')}`).join('\n');
 }
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.

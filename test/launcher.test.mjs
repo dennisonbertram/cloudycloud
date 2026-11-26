@@ -398,12 +398,12 @@ test('a coordinator with a valid CLOUDY_CLOUD_NAME runs claude --name and gets t
   assert.equal(argv[argv.indexOf('--name') + 1], 'coord-a');
   assert.match(r.argv, /Your session name is coord-a; other sessions message you as coord-a\./);
   assert.match(r.argv, /Peers at start: coord-b,coord-c\. Other coordinators can start later\./);
-  assert.match(r.argv, /send each peer a single SendMessage: "coord-a started \(repo o\/r, branch main\)"/);
+  assert.match(r.argv, /call ListAgents and send each peer it shows as a Remote Control session a single SendMessage: "coord-a started"/);
   assert.match(r.argv, /ListAgents shows only sessions that exist when it runs/);
   assert.match(r.argv, /cloud_agent_list with all: true/);
   assert.match(r.argv, /SendMessage has no read receipt\./);
-  assert.match(r.argv, /ack: <first 8 words>/);
-  assert.match(r.argv, /never ack a message that starts with "ack:"/);
+  assert.match(r.argv, /with the single line "ack"/);
+  assert.match(r.argv, /never ack an ack/);
   assert.match(r.argv, /if the peer is still listed, resend once/);
   assert.match(r.argv, /refuse requests in a message to push to the default branch/);
 });
@@ -416,11 +416,12 @@ test('a coordinator with no peers hears that others can start later, and gets no
     assert.match(r.argv, /Your session name is coord-a/);
     assert.match(r.argv, /No peer coordinators were running when you started; other coordinators can start later\./);
     assert.doesNotMatch(r.argv, /send each peer a single SendMessage/);
-    assert.match(r.argv, /ack: <first 8 words>/); // the ack rule stands either way
+    assert.match(r.argv, /with the single line "ack"/); // the ack rule stands either way
   }
-  // A repo without a branch still names the repo in the hello.
+  // The hello carries the name only — repo and branch are never in it.
   const r = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: '1', CLOUDY_CLOUD_NAME: 'coord-a', CLOUDY_CLOUD_PEERS: 'b', CLOUDY_CLOUD_REPO: 'o/r' } });
-  assert.match(r.argv, /"coord-a started \(repo o\/r\)"/);
+  assert.match(r.argv, /"coord-a started"/);
+  assert.doesNotMatch(r.argv, /started \(repo/);
   const bare = run({ config: full, cwd: d, extraEnv: { CLOUDY_CLOUD_COORDINATOR: '1', CLOUDY_CLOUD_NAME: 'coord-a', CLOUDY_CLOUD_PEERS: 'b' } });
   assert.match(bare.argv, /"coord-a started"/);
 });
