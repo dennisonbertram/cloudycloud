@@ -602,7 +602,7 @@ const failoverHow = (e) => {
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env } = ctx;
-  const cands = a.providers?.length ? a.providers : [ctx.provider];
+  let cands = a.providers?.length ? a.providers : [ctx.provider];
   const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress, signal }, labels, p) => p.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }), ...(signal && { signal }) }));
   if (a.mcpError) throw new Error(a.mcpError);
   const branch = a.branch;
@@ -618,8 +618,17 @@ async function setup(a, ctx) {
       }
     }
     const head = a.base?.sha ?? await git(a.root, 'rev-parse', 'HEAD');
-    const max = ctx.bundleMax ?? Math.min(...cands.map((p) => p.caps.uploadMaxBytes ?? Infinity)) - BUNDLE_MARGIN;
+    const uploadLimit = (p) => p.caps.uploadMaxBytes ?? Infinity;
+    const usableLimit = (p) => Math.max(0, uploadLimit(p) - BUNDLE_MARGIN);
+    const max = ctx.bundleMax ?? Math.max(...cands.map(usableLimit));
     bundleSnapshot = await ctx.snapshots.acquire(a.root, head, snap, max);
+    if (ctx.bundleMax === undefined && Number.isFinite(bundleSnapshot.size)) {
+      const tooSmall = cands.filter((p) => bundleSnapshot.size > usableLimit(p));
+      cands = cands.filter((p) => bundleSnapshot.size <= usableLimit(p));
+      for (const p of tooSmall) (a.skipped ??= []).push({ name: p.name, why: `upload limit ${uploadLimit(p)} bytes is smaller than the ${bundleSnapshot.size}-byte repository bundle` });
+      if (!cands.length) throw new Error(`The repository bundle (${bundleSnapshot.size} bytes) exceeds the upload limit of every compatible provider. Push the branch to GitHub first, then start the agent again.`);
+      a.providers = cands;
+    }
     a.sha = bundleSnapshot.sha; // Equivalent captures share the same commit object as well as the bundle.
     const prereqs = bundleSnapshot.prereqs; // commits a thin bundle needs from a currently advertised origin ref
     let data;
@@ -1268,7 +1277,7 @@ export async function runSubagent(args, deps) {
   const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps;
   const { prompt, model, subagent_type: agent, description, profile: requestedProfile, role = 'worker', autofix: autofixOn = false, base, issue, preview_port, workspace } = args;
   const configuredProfile = ctx.env.CLOUDY_CLOUD_DEFAULT_PROFILE;
-  const profileName = requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
+  const profileName = requestedProfile === 'claude' ? undefined : requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
   if (recovery && (role !== 'worker' || (recovery.profile ?? null) !== (profileName ?? null) || !AGENT_ID.test(String(recovery.id ?? '')) || !/^cloudy-cloud\/[a-z0-9-]+$/.test(recovery.branch ?? '') || !recovery.branch.endsWith(recovery.id))) return fail('invalid internal recovery start');
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
@@ -1308,16 +1317,29 @@ export async function runSubagent(args, deps) {
     if (args.fallback !== undefined && !(Array.isArray(args.fallback) && args.fallback.every((n) => typeof n === 'string'))) return fail('invalid fallback: must be a list of profile names');
     let names = [profileName], tried = [];
     for (let i = 0; i < names.length; i++) {
-      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !cands[0].caps.localSecrets });
-      if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly.', next: 'call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
-      let err = r.error;
-      // caps.localSecrets: the provider swaps the local value into matching requests itself (like proxied),
-      // so a preflight from this computer would send the real key off-machine — skip it there too.
-      if (!err && args.preflight !== false && !cands[0].caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
-      if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
-      if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
-      tried.push({ name: names[i], why: ctx.scrub(err) });
-      if (i === names.length - 1) return fail(tried.length === 1 ? err : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
+      const eligible = [], rejected = [];
+      for (const p of cands) {
+        const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: Boolean(p.caps.hasProxySecrets && !p.caps.localSecrets) });
+        if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly.', next: 'call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
+        let err = r.error;
+        // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
+        if (!err && args.preflight !== false && !p.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
+        if (err) rejected.push({ provider: p, result: r, error: ctx.scrub(err) });
+        else eligible.push({ provider: p, profile: r.ok });
+      }
+      if (eligible.length) {
+        const accepted = new Set(eligible.map((x) => x.provider));
+        for (const x of rejected) skipped.push({ name: x.provider.name, why: `${names[i]}: ${x.error.split('\n')[0]}` });
+        cands = cands.filter((p) => accepted.has(p));
+        profile = eligible[0].profile;
+        if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`;
+        break;
+      }
+      const error = rejected[0]?.error ?? `Profile ${names[i]} could not run on any configured provider.`;
+      const fallback = rejected.find((x) => x.result?.fallback)?.result.fallback;
+      if (i === 0) names = [...names, ...(args.fallback ?? fallback ?? [])];
+      tried.push({ name: names[i], why: error });
+      if (i === names.length - 1) return fail(tried.length === 1 ? error : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
     }
   }
   const apt = aptPackages(ctx.env);

@@ -107,6 +107,18 @@ test('the configured default worker profile applies when omitted and an explicit
   await f.stop([defaultId, explicitId]);
 });
 
+test('an explicit built-in Claude profile overrides a saved named profile default', async () => {
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_DEFAULT_PROFILE: 'codex' } });
+  delete f.deps.createSandbox;
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'claude' }, f.deps);
+  assert.notEqual(r.isError, true, r.content?.[0]?.text);
+  const id = r.content[0].text.match(/agent_id: ([0-9a-f]{8})/)?.[1];
+  assert.ok(id, r.content[0].text);
+  await f.wait([id]);
+  assert.equal(f.deps.provider.log.create[0].labels.profile, 'claude');
+  assert.equal(f.deps.open.get(id).profile, undefined, 'built-in Claude is selected without resolving a named profile');
+});
+
 test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
   const events = [];
   const { start, wait, msg, stop } = await setup({ events: (e) => events.push(e) });
