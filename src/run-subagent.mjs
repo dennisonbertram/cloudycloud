@@ -25,10 +25,12 @@ import { redact, redactText, GH_PULL_URL } from './events.mjs';
 import { writeSecretFile } from './providers/index.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
+import { checkpointRecord, recoverFromCheckpoint, saveCheckpoint, updateCheckpointPlacement, verifyOriginCheckpoint } from './recovery.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENT_ID = /^[0-9a-f]{8}$/;
 export const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 
 // Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
@@ -235,7 +237,7 @@ async function safetyPush(a, ctx) {
   const branch = a.branch;
   try {
     const push = async () => (await a.sandbox.commands.run(
-      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
+      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')"; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
       ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
@@ -244,13 +246,15 @@ async function safetyPush(a, ctx) {
     if (!marker('PUSHOK') && !marker('NOCHANGE')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
-    const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
+    const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4);
     const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
     if (marker('NOCHANGE')) return { where: `No changes, no branch pushed.${dirty}` };
     if (marker('PUSHOK')) {
+      const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
       const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
       const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
-      return { where: `Pushed to origin ${branch} at ${sha}. ${get}${dirty}` };
+      return { sha, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
     return { failed: true, where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
@@ -376,9 +380,9 @@ async function turnOnce(a, message, ctx, t, deadline) {
   if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
   Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
   await writeMeta(a, ctx);
-  const { where, failed, gone } = await safetyPush(a, ctx);
+  const { where, failed, gone, sha: checkpointSha } = await safetyPush(a, ctx);
 
-  if (t.cancelled) return { cancelled: true, gone, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
+  if (t.cancelled) return { cancelled: true, gone, ...(checkpointSha && { checkpointSha }), text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const limit = failure.exitCode === undefined ? `\nThe turn may have hit its ${turnMs / 60_000}-minute limit (CLOUDY_CLOUD_TURN_MINUTES).` : '';
@@ -386,7 +390,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone, text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    return { error: true, gone, ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -410,7 +414,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to'), ...(!error && (failed || gone) ? { pushOnly: true } : {}) };
+  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to'), ...(checkpointSha && { checkpointSha }), ...(!error && (failed || gone) ? { pushOnly: true } : {}) };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -526,8 +530,13 @@ async function setup(a, ctx) {
     if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
     const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [] };
     if (coord.legacy?.length) throw refused(coord.legacy[0]);
+    if (a.recoveryRecord) {
+      const verified = await verifyOriginCheckpoint(a.root, a.recoveryRecord);
+      if (!verified.ok || verified.sha !== a.recoveryRecord.checkpointSha) throw new Error(`Recovery checkpoint is no longer valid: ${verified.reason ?? 'origin branch changed'}; no replacement machine was started.`);
+    }
     a.createAbort = new AbortController(); // agent-scoped: cancelQueue aborts an in-flight provider create too
     a.cancelQueue = () => { a.createAbort.abort(); ctx.queue.cancel(a); };
+    if (a.recoveryRecord) a.recoveryCreateAttempted = true; // a provider create error may have an unknown outcome
     try {
       a.sandbox = await ctx.queue.create(a, () => {
         const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
@@ -542,7 +551,12 @@ async function setup(a, ctx) {
     if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
-    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
+    a.provider ??= provider;
+    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt, provider: a.provider.name, branch: a.branch });
+    if (a.recoveryRecord) {
+      a.recoveryRecord = await updateCheckpointPlacement(env, a.id, { provider: a.provider.name, machine: a.sandbox.id, owner: ctx.owner });
+      await releaseRecoveryLock(a);
+    }
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
@@ -604,6 +618,12 @@ async function setup(a, ctx) {
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function releaseRecoveryLock(a) {
+  const release = a.recoveryLockRelease;
+  a.recoveryLockRelease = undefined;
+  await release?.();
 }
 
 // Puts cloudy-cloud on a coordinator's machine, at the commit the laptop runs, with the keys it needs in a mode-600 env file.
@@ -909,13 +929,24 @@ async function work(a, message, first, ctx, t) {
       r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
     }
   } catch (e) {
+    if (!a.recoveryCreateAttempted) await releaseRecoveryLock(a).catch(() => {});
     log('error:', ctx.scrub(e?.message));
     r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
   }
   if (a.status === 'stopped') return;
+  if (r.checkpointSha && a.role === 'worker') {
+    try {
+      a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
+      r = { ...r, text: `${r.text}\nRecovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.` };
+    } catch (e) {
+      log('recovery checkpoint could not be saved:', ctx.scrub(e?.message));
+      r = { ...r, text: `${r.text}\nRecovery checkpoint was not saved; cross-provider recovery is unavailable until a later verified push.` };
+    }
+  }
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
   const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
+  if (r.error && a.recoveryPreviousAgent?.result) r = { ...r, text: `${r.text}\n\nOriginal agent result retained from before recovery:\n${a.recoveryPreviousAgent.result.text}` };
   a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
@@ -1024,6 +1055,9 @@ export async function runSubagent(args, deps) {
   const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
   if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
   const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base, issue, preview_port } = args;
+  // Recovery context is supplied only by recoverAgent through private dependencies, never from MCP arguments.
+  const recovery = deps.recoveryStart;
+  if (recovery && (role !== 'worker' || (recovery.profile ?? null) !== (profileName ?? null) || !AGENT_ID.test(String(recovery.id ?? '')) || !/^cloudy-cloud\/[a-z0-9-]+$/.test(recovery.branch ?? '') || !recovery.branch.endsWith(recovery.id))) return fail('invalid internal recovery start');
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
   if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
@@ -1041,7 +1075,16 @@ export async function runSubagent(args, deps) {
     const re = name === 'model' && profileName !== undefined ? MODEL : SAFE; // profile models may contain "/"
     if (!(typeof v === 'string' && re.test(v))) return fail(`invalid ${name}: must match ${re}`);
   }
-  const egress = egressAllow(ctx.env);
+  let egress = egressAllow(ctx.env);
+  if (recovery) {
+    if (egress.error) return fail(egress.error, false, { local: true, short: egress.short, details: egress.details, next: egress.next });
+    const saved = recovery.egress ?? [];
+    if (saved.length) {
+      const list = egress.list.length ? saved.filter((h) => egress.list.includes(h)) : saved;
+      if (!list.length) return fail('The current network policy conflicts with the saved recovery allowlist; recovery was refused.');
+      egress = { list };
+    }
+  }
   if (egress.error) return fail(egress.error, false, { local: true, short: egress.short, details: egress.details, next: egress.next });
   if (egress.list.length && !ctx.provider.caps.hasEgressPolicy) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${ctx.provider.name} cannot limit where a machine connects, so the agent was not started.\nNext step: remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again.`, false, { local: true, short: `CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${ctx.provider.name} cannot limit where a machine connects, so the agent was not started.`, next: 'remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again' });
   let profile, fallbackNote;
@@ -1182,8 +1225,10 @@ export async function runSubagent(args, deps) {
   // Awaited calls above (issue fetch, coordinator repo checks) let a parallel call win the slot; check again with no await before the increment.
   if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
   count.started++;
-  const id = randomUUID().slice(0, 8);
-  const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch: issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, waiters: [], result: null, idleSince: Date.now(),
+  const id = recovery?.id ?? randomUUID().slice(0, 8);
+  if (ctx.open.has(id)) return fail(`Agent ${id} is already open in this session.`);
+  const branch = recovery?.branch ?? (issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`);
+  const a = { ...(baseInfo && { base: baseInfo }), ...(recovery && { recoveryRecord: recovery.recoveryRecord, recoveryLockRelease: recovery.release, recoveryPreviousAgent: deps.recoveryPreviousAgent }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, egressPolicy: egress.list, waiters: [], result: null, idleSince: Date.now(),
     serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
   ctx.open.set(id, a);
   if (mcp) a.mcp = mcp;
@@ -1204,6 +1249,21 @@ export async function runSubagent(args, deps) {
   if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
   const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
   return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+}
+
+// Recover only the verified branch checkpoint, then start a fresh conversation with the user's new message.
+export async function recoverAgent(args, deps) {
+  return recoverFromCheckpoint(args, {
+    ...deps,
+    startRecovery: async (r, provider, control) => {
+      if (control.previous) deps.open?.delete(r.id);
+      const started = await runSubagent({ prompt: r.prompt, description: r.description, role: 'worker', profile: r.profile, model: r.model, base: r.base, machine: r.machine, size: r.size, fallback: [] }, {
+        ...deps, provider, providers: [provider], recoveryStart: { ...r, release: control.release }, recoveryPreviousAgent: control.previous,
+      });
+      if (started?.isError && control.previous) deps.open.set(r.id, control.previous);
+      return started;
+    },
+  });
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
