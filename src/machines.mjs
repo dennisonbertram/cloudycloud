@@ -104,17 +104,24 @@ const nameList = (names, room) => {
 async function ls(c) {
   const rows = await c.list();
   if (!rows.length) return c.out('No Cloudy Cloud machines running.');
+  const showProvider = rows.providerNames.length > 1;
   if (!c.ui.term) {
-    c.out(['NAME', 'PROVIDER', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'].join('\t'));
-    for (const m of rows) c.out([m.name, m.provider ?? '', m.role, m.state, when(m.startedAt), deleted(m), one(m.id)].join('\t'));
+    const headers = showProvider ? ['NAME', 'PROVIDER', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'] : ['NAME', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'];
+    c.out(headers.join('\t'));
+    for (const m of rows) c.out((showProvider
+      ? [m.name, m.provider ?? '', m.role, m.state, when(m.startedAt), deleted(m), one(m.id)]
+      : [m.name, m.role, m.state, when(m.startedAt), deleted(m), one(m.id)]).join('\t'));
     return;
   }
   const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, starting: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
   const rel = (v) => (Number.isFinite(new Date(v).getTime()) ? u.rel(v) : 'unknown');
-  const cells = rows.map((m) => [m.name, m.provider ?? '', m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
+  const headers = showProvider ? ['NAME', 'PROVIDER', 'ROLE', 'STATE', 'AGE', 'DELETES'] : ['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'];
+  const cells = rows.map((m) => showProvider
+    ? [m.name, m.provider ?? '', m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]
+    : [m.name, m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
   // NAME takes the cells the fixed columns leave, so it uses the whole terminal width.
   const wOf = (v) => (Array.isArray(v) ? v : [[String(v)]]).reduce((n, [t]) => n + cellWidth(t), 0);
-  const fixed = ['PROVIDER', 'ROLE', 'STATE', 'AGE', 'DELETES'].map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
+  const fixed = headers.slice(1).map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
   const nameRoom = u.width - 2 - 3 * 4 - fixed.reduce((a, b) => a + b, 0);
   const running = rows.filter((m) => m.status === 'running').length;
   const count = running === rows.length ? `${running} running.` : `${running} of ${rows.length} running.`;
@@ -123,11 +130,11 @@ async function ls(c) {
     // Too narrow for the table: a fitted line per machine, the id on a wrapped sub-line.
     return c.out([...rows.flatMap((m) => [
       `  ${fitCells(m.name, Math.max(4, u.width - 3 - cellWidth(m.state)))} ${u.paint(color[m.state] ?? u.col.err, m.state)}`,
-      ...wrapText(u, `${m.provider ? `${m.provider} ` : ''}id ${one(m.id)}`, u.width - 4).map((l) => `    ${u.dim(l)}`),
+      ...wrapText(u, `${showProvider && m.provider ? `${m.provider} ` : ''}id ${one(m.id)}`, u.width - 4).map((l) => `    ${u.dim(l)}`),
     ]), ...foot].join('\n'));
   }
   const fitted = cells.map((r) => [fitCells(r[0], nameRoom), ...r.slice(1)]);
-  c.out([u.table(['NAME', 'PROVIDER', 'ROLE', 'STATE', 'AGE', 'DELETES'], fitted), ...foot].join('\n'));
+  c.out([u.table(headers, fitted), ...foot].join('\n'));
 }
 
 // The one machine a token means, in precedence order: an exact machine id first (so a machine can

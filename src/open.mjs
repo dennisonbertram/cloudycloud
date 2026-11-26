@@ -77,7 +77,7 @@ export async function run(argv, deps = {}) {
     const machineId = machine.id;
     const selectedName = selected.name[0].toUpperCase() + selected.name.slice(1);
     const signIn = `If ${selectedName} is not signed in, run: cloudy-cloud setup`;
-    const need = (cap, what) => selected.caps[cap] || fail(`${selected.name} does not support ${what}.`);
+    const need = (cap, what) => selected.caps[cap] || fail(`${selectedName} does not support ${what}.`);
     if (a.unshare) { need('hasPublish', 'published links'); return await selected.unpublishPort(machineId, a.port); }
     if (a.share) {
       need('hasPublish', 'published links');

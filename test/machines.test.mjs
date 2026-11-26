@@ -34,9 +34,9 @@ test('ls piped prints a TSV header and one row per machine', async () => {
   await make(provider, { name: 'w-one' });
   await make(provider, { name: 'c-one', role: 'coordinator', labels: { name: 'boss' } });
   assert.equal(await run(['ls'], d), 0);
-  assert.equal(out[0], 'NAME\tPROVIDER\tROLE\tSTATE\tSTARTED\tDELETES\tID');
-  assert.match(out[1], /^w-one\tfake\tworker\trunning\t\d{4}-\d{2}-\d{2}T.*\tfake-1$/);
-  assert.match(out[2], /^boss\tfake\tcoordinator\trunning\t.*\tfake-2$/);
+  assert.equal(out[0], 'NAME\tROLE\tSTATE\tSTARTED\tDELETES\tID');
+  assert.match(out[1], /^w-one\tworker\trunning\t\d{4}-\d{2}-\d{2}T.*\tfake-1$/);
+  assert.match(out[2], /^boss\tcoordinator\trunning\t.*\tfake-2$/);
   assert.equal(out.length, 3, out.join('\n'));
 });
 
@@ -46,8 +46,8 @@ test('ls on a terminal prints a table ending with the count and a Next', async (
   await make(provider, { name: 'w-two' });
   assert.equal(await run([], d), 0);
   const text = out.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(text, /NAME\s+PROVIDER\s+ROLE\s+STATE\s+AGE\s+DELETES/);
-  assert.match(text, /w-one\s+fake\s+worker\s+running/);
+  assert.match(text, /NAME\s+ROLE\s+STATE\s+AGE\s+DELETES/);
+  assert.match(text, /w-one\s+worker\s+running/);
   assert.match(text, /2 running\./);
   assert.match(text, /Next: cloudy-cloud machines stop/);
 });
@@ -58,6 +58,20 @@ test('ls with no machines prints the empty line in both modes', async () => {
     assert.equal(await run(['ls'], { ...d, out: (s) => out.push(s) }), 0);
     assert.deepEqual(out, ['No Cloudy Cloud machines running.']);
   }
+});
+
+test('multi-provider machines TSV includes the owning provider column', async () => {
+  const { out, d } = deps({
+    provider: { name: 'combined', providers: [{ name: 'fake' }, { name: 'boat' }] },
+    list: async () => {
+      const rows = [{ id: 'boat-1', provider: 'boat', name: 'worker', labels: { purpose: 'cloudy-cloud', role: 'worker' }, state: 'running', status: 'running', startedAt: Date.now() }];
+      Object.defineProperties(rows, { providerNames: { value: ['fake', 'boat'] } });
+      return rows;
+    },
+  });
+  assert.equal(await run(['ls'], d), 0);
+  assert.equal(out[0], 'NAME\tPROVIDER\tROLE\tSTATE\tSTARTED\tDELETES\tID');
+  assert.match(out[1], /^worker\tboat\tworker\trunning\t/);
 });
 
 test('an image machine shows the image role and a machine without a role shows machine', async () => {
