@@ -666,6 +666,100 @@ test('a failed turn reports error, scrubs secrets, still pushes commits; agent w
   assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'changed');
 });
 
+test('a known first-turn failure keeps the worker when uncommitted edits remain', async () => {
+  let sandbox;
+  const { start, wait, stop, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (/claude -p /.test(cmd)) {
+          try { return await run(cmd, opts); }
+          catch (error) {
+            await writeFile(join(sandbox.dir, 'home', 'repo', 'uncommitted.txt'), 'keep me\n');
+            throw error;
+          }
+        }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Uncommitted changes left in the sandbox.*uncommitted\.txt/);
+  assert.doesNotMatch(r, /ask the agent to commit and push/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, true);
+  assert.equal(agent.result.push_status, 'pushed');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(open.has(id), false);
+  assert.equal(sandbox.killed, true);
+});
+
+test('a known first-turn failure keeps the worker when git status is unconfirmed', async () => {
+  let sandbox;
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('PUSHOK')
+        ? Promise.resolve({ stdout: 'PUSHOK\nREMOTE_SHA abc\nSHA abc\nSTATUS_FAIL\nSTATUSERR status unavailable\n', stderr: '', exitCode: 0 })
+        : run(cmd, opts);
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Git status could not be confirmed/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, null);
+  assert.equal(agent.result.push_status, 'pushed');
+  assert.equal(sandbox.killed, false);
+});
+
+test('a known first-turn failure keeps the worker when its safety push fails', async () => {
+  let sandbox, pushes = 0;
+  const { start, wait, open } = await setup({
+    sleep: async () => {},
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('PUSHOK')
+        ? Promise.resolve({ stdout: `PUSHFAIL\nERR remote denied\nSHA ${'a'.repeat(40)}\nSTATUS_OK\n`, stderr: '', exitCode: 0, attempt: ++pushes })
+        : run(cmd, opts);
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Push failed: remote denied/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, false);
+  assert.equal(agent.result.push_status, 'failed');
+  assert.equal(pushes, 2);
+  assert.equal(sandbox.killed, false);
+});
+
 test('a failed follow-up keeps the agent open (idle) and pushes changes', async () => {
   const { start, wait, msg, created, open } = await setup();
   const id = await start();
