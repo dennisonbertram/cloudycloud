@@ -208,7 +208,7 @@ test('golden: exact docker commands for create, run, write, list and delete; no 
   await provider.deleteSnapshot(snap.id);
   await c.kill();
   await s.kill();
-  const strip = (argv) => argv.map((a) => a.replace(/cc-[0-9a-f]{12}/g, 'cc-ID').replace(/[0-9a-f]{16}(?=;| )/g, 'MARKER')
+  const strip = (argv) => argv.map((a) => (a === `cloudy-cloud-worker:${VERSION}` ? 'cloudy-cloud-worker:VERSION' : a).replace(/cc-[0-9a-f]{12}/g, 'cc-ID').replace(/[0-9a-f]{16}(?=;| )/g, 'MARKER')
     .replace(/(deleteAt|startedAt)=\S+/g, '$1=ISO').replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, 'ISO').replace(/^[0-9a-f]{12}$/, 'ID'));
   const flat = box.log.flat().join('\n');
   for (const v of ['ghp_SECRETVALUE', 'env-value-123']) assert.ok(!flat.includes(v), `${v} must not appear in argv`);
