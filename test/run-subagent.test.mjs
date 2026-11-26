@@ -38,7 +38,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), /* preflight must never reach the network */ ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -63,6 +63,38 @@ test('start returns at once with starting, before the sandbox exists', async () 
   assert.match(text(r), /agent_id: [0-9a-f]{8}\nstatus: starting/);
   assert.equal([...deps.open.values()][0].status, 'starting');
   release();
+});
+
+test('cancelling while provider create is pending releases the shared disk snapshot', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { start, stop, deps } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); } });
+  const id = await start();
+  for (let i = 0; i < 50 && !deps.snapshots?.size; i++) await tick(10);
+  assert.equal(deps.snapshots?.size, 1, 'bundle preparation finished before the provider create');
+  await stop([id]);
+  release();
+  for (let i = 0; i < 50 && deps.snapshots?.size; i++) await tick(10);
+  assert.equal(deps.snapshots?.size, 0, 'cancelled setup releases the bundle and its temporary directory');
+});
+
+test('concurrent public starts with the same repo prepare one shared snapshot', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let creates = 0;
+  const { wait, deps } = await setup({ createSandbox: async () => { creates++; await gate; return fakeSandbox(); } });
+  const server = buildServer(deps);
+  const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
+  const launch = async () => (await call('cloud_agent', { description: 'd', prompt: 'hi' })).content[0].text.match(/agent_id: ([0-9a-f]{8})/)?.[1];
+  const first = await launch();
+  const second = await launch();
+  for (let i = 0; i < 100 && creates < 2; i++) await tick(10);
+  assert.equal(creates, 2, 'both public starts reached provider creation after snapshot preparation');
+  assert.equal(deps.snapshots.preparations, 1, 'the server shares equivalent snapshots across tool calls');
+  assert.equal(deps.snapshots.size, 1);
+  release();
+  await wait([first, second]);
+  assert.equal(deps.snapshots.size, 0, 'the shared bundle is removed after both setups finish');
 });
 
 test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
@@ -422,6 +454,7 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+  assert.match(c[0], /git fetch -q \.\.\/in\.bundle [0-9a-f]{40} && git checkout -q --detach [0-9a-f]{40}/);
 });
 
 test('a small repo uploads a full bundle and sets up in the original command order', async () => {
