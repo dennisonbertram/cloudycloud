@@ -428,12 +428,12 @@ check_proxy_secrets() { # optional $1: the Instabox key
 
 # check_setup: setup --check-only. Runs every check without asking or changing anything, and ends with a verdict.
 # Exit status is 1 when something needs fixing; warnings (a check that could not run) do not fail it.
-check_setup() {
+check_setup_provider() {
   local fails=0 more= setupfix= coord_hint= cps code state host provider key st org pct pset ov cap prov="" root msb v egerr egv l rc=0
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ -z "${PREREQ_FAIL:-}" ] || { fails=1; setupfix=1; }
-  provider=$(eff CLOUDY_CLOUD_PROVIDER); provider=${provider:-instabox} # unset means the default
-  case $provider in self-hosted|boat|e2b) prov=" --provider $provider" ;; esac
+  provider=${1:-$(eff CLOUDY_CLOUD_PROVIDER)}; provider=${provider:-instabox} # unset means the default
+  [ "$provider" = instabox ] || prov=" --provider $provider"
   step 2 "Provider"
   if [ "$provider" = microsandbox ]; then
     msb=$(msb_bin)
@@ -707,6 +707,22 @@ check_setup() {
   else bad "Check failed: fix the items above" "$([ -n "$setupfix" ] && printf 'run %s%s%s' "$(rerun_cmd)" "${more:+ --more}" "$prov")"; fi
   [ -z "$coord_hint" ] || [ "$fails" != 0 ] || hint "Run: $(rerun_cmd) --more"
   return "$fails"
+}
+
+# Check every configured provider. Legacy single-provider installs keep their existing path.
+check_setup() {
+  local configured name rc=0 seen=' '
+  configured=$(eff CLOUDY_CLOUD_PROVIDERS)
+  if [ -z "$configured" ]; then check_setup_provider "$(eff CLOUDY_CLOUD_PROVIDER)"; return $?; fi
+  configured=${configured//,/ }
+  for name in $configured; do
+    case $name in instabox|self-hosted|microsandbox|boat|e2b) ;; *) bad "Unknown provider \"$name\"" "remove it from CLOUDY_CLOUD_PROVIDERS"; rc=1; continue ;; esac
+    case $seen in *" $name "*) continue ;; esac
+    seen="$seen$name "
+    check_setup_provider "$name" || rc=1
+  done
+  [ "$seen" != ' ' ] || { bad "CLOUDY_CLOUD_PROVIDERS is empty" "set at least one provider name"; rc=1; }
+  return "$rc"
 }
 
 # clean_paste TEXT: prints TEXT without whitespace, control characters and terminal escape sequences
@@ -1678,13 +1694,14 @@ ask_worker_keys() {
   setup_provider OPENROUTER_API_KEY OpenRouter https://openrouter.ai/keys
 }
 
-usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat|e2b] [--check-only]" >&2; }
+usage() { echo "usage: install.sh [--more] [--provider instabox|self-hosted|microsandbox|boat|e2b] [--default-profile NAME] [--check-only]" >&2; }
 
 main() {
-  local provider_arg="" host acct more=0 check_only=0 saved_provider tools_out root
+  local provider_arg="" provider_explicit=0 default_profile_arg="" host acct more=0 check_only=0 saved_provider tools_out root
   while [ $# -gt 0 ]; do
     case $1 in
-      --provider) [ $# -ge 2 ] || { usage; exit 2; }; provider_arg=$2; shift 2 ;;
+      --provider) [ $# -ge 2 ] || { usage; exit 2; }; provider_arg=$2; provider_explicit=1; shift 2 ;;
+      --default-profile) [ $# -ge 2 ] || { usage; exit 2; }; default_profile_arg=$2; shift 2 ;;
       --more) more=1; shift ;;
       --check-only) check_only=1; shift ;;
       *) usage; exit 2 ;;
@@ -1692,8 +1709,12 @@ main() {
   done
   provider_arg=${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-}} # an exported name resolves like the flag, so the launcher's setup offer follows the shell's provider
   case $provider_arg in ""|instabox|self-hosted|microsandbox|boat|e2b) ;; *) bad "Unknown provider \"$provider_arg\"" "use --provider instabox, self-hosted, microsandbox, boat or e2b" >&2; exit 2 ;; esac
+  if [ -n "$default_profile_arg" ]; then
+    if [ "$default_profile_arg" != claude ] && ! [[ $default_profile_arg =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]]; then bad "Invalid default profile name" "use claude or a profile name from profiles.json" >&2; exit 2; fi
+  fi
   MORE=$more
   [ -z "$provider_arg" ] || export CLOUDY_CLOUD_PROVIDER=$provider_arg # --check-only checks the provider you name
+  if [ "$check_only" = 1 ] && [ "$provider_explicit" = 1 ]; then export CLOUDY_CLOUD_PROVIDERS=$provider_arg; fi
   root=$(cd "$(dirname "$0")" && pwd)
   # The saved provider is read only after the legacy-name migration (which --check-only skips: it changes nothing).
   [ "$check_only" = 1 ] || { . "$root/bin/migrate-config.sh"; migrate_config; }
@@ -1701,6 +1722,9 @@ main() {
   # microsandbox keeps every credential on this computer in the env file, so setup has nothing to ask or save.
   # --provider beats an exported CLOUDY_CLOUD_PROVIDER, which beats the saved line.
   if [ "$check_only" = 0 ] && [ "${provider_arg:-${CLOUDY_CLOUD_PROVIDER:-$saved_provider}}" = microsandbox ]; then
+    if [ -n "$default_profile_arg" ]; then
+      write_env CLOUDY_CLOUD_DEFAULT_PROFILE "$default_profile_arg" || { bad "Could not update $(cfg)." >&2; exit 1; }
+    fi
     ok "The provider is microsandbox" "setup does not configure it"
     hint "Keys stay on this computer in the env file:"
     hint "$(cfg)"
@@ -1711,6 +1735,9 @@ main() {
   if [ "$check_only" = 0 ] && [ ! -t 0 ]; then
     case $0 in */node_modules/*) echo "Setup asks for keys, so run it in a terminal: cloudy-cloud setup" ;;
       *) echo "install.sh asks for keys, so run it in a terminal: ./install.sh" ;; esac; exit 1
+  fi
+  if [ -n "$default_profile_arg" ] && [ "$check_only" = 0 ]; then
+    write_env CLOUDY_CLOUD_DEFAULT_PROFILE "$default_profile_arg" || { bad "Could not update $(cfg)." >&2; exit 1; }
   fi
   trap 'cleanup_capture; ui_cleanup; stty echo 2>/dev/null' EXIT
   trap 'exit 130' INT TERM

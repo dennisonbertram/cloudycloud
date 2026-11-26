@@ -34,7 +34,7 @@ function words(s) {
 }
 
 // A fake box: an in-memory container table behind a fake `ssh`; `exec` runs the command locally under a temp root.
-function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
+function fakeBox({ imageVersion = VERSION, daemonDown = false, rmFails = false, raceSlot = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cc-sh-'));
   roots.push(root);
   const table = new Map();
@@ -54,6 +54,7 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
       const labels = {};
       rest.forEach((a, i) => { if (a === '--label') { const [k, ...v] = rest[i + 1].split('='); labels[k] = v.join('='); } });
       const name = opt('--name');
+      if (raceSlot) table.set('cc-racer', { Args: [], Id: randomBytes(32).toString('hex'), Name: '/cc-racer', Config: { Labels: { 'cloudy-cloud.purpose': 'cloudy-cloud' } }, State: { Status: 'running', StartedAt: new Date().toISOString() }, NetworkSettings: { IPAddress: '172.17.0.99' } });
       table.set(name, { Args: rest, Id: randomBytes(32).toString('hex'), Name: `/${name}`, Config: { Labels: labels }, State: { Status: 'running', StartedAt: new Date().toISOString() }, NetworkSettings: { IPAddress: `172.17.0.${table.size + 2}` } });
       return done(0, `${table.get(name).Id}\n`);
     }
@@ -81,6 +82,7 @@ function fakeBox({ imageVersion = VERSION, daemonDown = false } = {}) {
       return done(0, JSON.stringify(cs));
     }
     if (cmd === 'rm') {
+      if (rmFails) return done(1, '', 'temporary Docker cleanup failure');
       const c = find(rest.at(-1));
       if (!c) return done(1, '', `Error response from daemon: No such container: ${rest.at(-1)}`);
       table.delete(c.Name.slice(1));
@@ -194,6 +196,12 @@ test('#92 shellArgv: every argument is quoted for each shell layer; nothing is i
 
 const mk = (p, extra = {}) => p.create({ image: 'x', envs: {}, labels: { purpose: 'cloudy-cloud', owner: 'o1' }, ttlSeconds: 600, ...extra });
 
+test('an allocated self-hosted container with unconfirmed cleanup is typed for stop retry', async () => {
+  const { box, provider } = make({ CLOUDY_CLOUD_SELF_HOSTED_SLOTS: '1' }, { rmFails: true, raceSlot: true });
+  await assert.rejects(mk(provider), (e) => e.code === 'cleanup_unconfirmed' && e.provider === 'self-hosted' && e.machineId?.startsWith('cc-') && e.allocated === true);
+  assert.ok([...box.table.keys()].some((id) => id.startsWith('cc-')));
+});
+
 test('golden: exact docker commands for create, run, write, list and delete; no secret in any argv or label', async () => {
   const { box, provider } = make({ GH_TOKEN: 'ghp_SECRETVALUE', CLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX: 'yes', ...CONSENT });
   assert.equal(provider.caps.hasConsentedSecrets, true);
@@ -208,7 +216,7 @@ test('golden: exact docker commands for create, run, write, list and delete; no 
   await provider.deleteSnapshot(snap.id);
   await c.kill();
   await s.kill();
-  const strip = (argv) => argv.map((a) => a.replace(/cc-[0-9a-f]{12}/g, 'cc-ID').replace(/[0-9a-f]{16}(?=;| )/g, 'MARKER')
+  const strip = (argv) => argv.map((a) => (a === `cloudy-cloud-worker:${VERSION}` ? 'cloudy-cloud-worker:VERSION' : a).replace(/cc-[0-9a-f]{12}/g, 'cc-ID').replace(/[0-9a-f]{16}(?=;| )/g, 'MARKER')
     .replace(/(deleteAt|startedAt)=\S+/g, '$1=ISO').replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, 'ISO').replace(/^[0-9a-f]{12}$/, 'ID'));
   const flat = box.log.flat().join('\n');
   for (const v of ['ghp_SECRETVALUE', 'env-value-123']) assert.ok(!flat.includes(v), `${v} must not appear in argv`);

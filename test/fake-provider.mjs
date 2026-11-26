@@ -24,8 +24,10 @@ commit() { git add -A; git -c user.name=x -c user.email=x@x commit -qm "$1"; }
 case "$p" in
   OWN-*) n=\${p#OWN-}; echo "$n" > "own-$n.txt"; commit "own $n"; git push -q origin HEAD; reply "own $n" ;;
   UNPUSHED*) echo unpushed > unpushed.txt; commit unpushed; reply "\${resumed}committed only" ;;
+  PUSH_DIRTY*) echo pushed > pushed.txt; commit pushed; git push -q origin HEAD; echo dirty > dirty-after-push.txt; reply "pushed with dirty changes" ;;
   DIRTY*) echo newfile > notes.txt; echo dirty >> a.txt; reply "dirty" ;;
   EDIT2*) echo more > b.txt; commit two; git push -q origin HEAD; reply "\${resumed}edited2" ;;
+  LARGE*) payload=$(printf '%*s' 2097152 '' | tr ' ' x); reply "$payload" ;;
   EDIT*) echo changed > a.txt; commit edit; git push -q origin HEAD; reply "edited" ;;
   SHOW*) reply "a=$(cat a.txt) untracked=$(ls untracked.txt 2>&1 | tr -d '\\n')" ;;
   SLOW*) sleep 0.5; reply "slow done" ;;
@@ -90,8 +92,12 @@ export async function fakeSandbox(github = currentGithub) {
         assert.ok(timeoutMs > 0, 'timeoutMs must be set');
         sbx.cmds.push(cmd);
         try {
-          const r = await exec('sh', ['-c', map(cmd)], {
+          const command = process.env.CLOUDY_CLOUD_TEST_STATUS_FAILURE === '1' && cmd.includes('git status --porcelain')
+            ? cmd.replace('git status --porcelain', 'false')
+            : cmd;
+          const r = await exec('sh', ['-c', map(command)], {
             cwd: map(cwd),
+            maxBuffer: 1 << 24,
             env: { ...process.env, HOME: map('/home/user'), ...(github && { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${github}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' }), PATH: `${bin}:${process.env.PATH}`, ANTHROPIC_API_KEY: sbx.envs?.ANTHROPIC_API_KEY ?? '', LEAK1: 'ghp_secret', LEAK2: 'ghp_other' },
           });
           await onStdout?.(r.stdout);
@@ -110,15 +116,16 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, hasSudo, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { name = 'fake', hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, hasSudo, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false, deleteFailures = 0 } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
+  let deleteFailuresRemaining = deleteFailures;
   let n = 0;
   const needKey = () => { if (!env.FAKE_API_KEY) throw Object.assign(new Error('FAKE_API_KEY is not set.'), { code: 'no_key' }); };
   const wrap = (sbx, id, name) => Object.assign(sbx, { id, name, home: '/home/user' });
   return {
-    name: 'fake', keyName: 'FAKE_API_KEY', log, machines,
+    name, keyName: 'FAKE_API_KEY', log, machines,
     caps: { hasServerTTL: true, hasProxySecrets, hasConsentedSecrets, hasSnapshots, hasPortForward: true, hasPublish: true, ...(hasSudo !== undefined && { hasSudo }),
       maxForegroundMs: 600_000, maxTtlSeconds: 86_400, startsPerMin: 25, maxConcurrentCalls: 24, uploadMaxBytes: 10_485_760, machineKinds, hasShell: true, hasDisplay: true, hasMetrics: true, hasSizes: true, hasEgressPolicy },
     async create(opts) {
@@ -127,16 +134,19 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
       const k = opts.kind?.name ?? 'linux';
       if (!machineKinds.includes(k)) throw Object.assign(new Error(`fake does not offer ${k} machines`), { code: 'machine_kind_unsupported' });
       log.create.push(opts);
-      const id = `fake-${++n}`, name = opts.name ?? `sbx-${n}`;
-      const sbx = wrap(await fakeSandbox(), id, name);
+      const id = `${name}-${++n}`, machineName = opts.name ?? `sbx-${n}`;
+      const sbx = wrap(await fakeSandbox(), id, machineName);
       sbx.envs = opts.envs;
       const write = sbx.files.write, run = sbx.commands.run;
       sbx.files.write = (p, d) => { log.writes.push({ id, p, d: String(d) }); return write(p, d); };
       sbx.commands.run = (cmd, o) => { log.cmds.push({ id, cmd }); return run(cmd, o); };
-      machines.set(id, { id, name, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
+      machines.set(id, { id, name: machineName, labels: { ...opts.labels }, state: 'running', status: 'running', startedAt: Date.now(), deleteAt: new Date(Date.now() + opts.ttlSeconds * 1000).toISOString() });
       sandboxes.set(id, sbx);
       const kill = sbx.kill;
-      sbx.kill = async () => { await kill(); machines.delete(id); };
+      sbx.kill = async () => {
+        if (deleteFailuresRemaining > 0) { deleteFailuresRemaining--; throw new Error('temporary delete failure'); }
+        await kill(); machines.delete(id);
+      };
       return sbx;
     },
     async connect(id) {
@@ -174,7 +184,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { hasSnap
     async plan(o) { if (o?.refresh) log.planRefresh = (log.planRefresh ?? 0) + 1; return typeof plan === 'function' ? plan(o) : plan; },
     async revokeDisplayLinks(id) { log.display.push({ op: 'revoke', id }); },
     async screenshot(id) { log.display.push({ op: 'screenshot', id }); return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); },
-    localMachineName: (hostname) => (hostname.startsWith('fake-') ? hostname.slice(5) : ''),
+    localMachineName: (hostname) => (hostname.startsWith(`${name}-`) ? hostname.slice(name.length + 1) : ''),
     text: {
       ssh: (machine, cmd) => `fake ssh ${machine} -- ${cmd}`, listMachines: 'fake ls',
       noKeyFix: 'Set FAKE_API_KEY.', apiFix: 'Check FAKE_API_KEY.', githubTokenHelp: 'Create the GH_TOKEN secret.',

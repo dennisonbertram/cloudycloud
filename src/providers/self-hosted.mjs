@@ -17,6 +17,7 @@ const COORD = 'cloudy-cloud-coordinator:'; // coordinator images made by snapsho
 const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 const GONE = /No such (container|object|image)/i;
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
+const cleanupUnconfirmed = (id) => fail('cleanup_unconfirmed', `self-hosted container ${id} failed setup and cleanup could not be confirmed; refusing to use it or start another provider.`, { provider: 'self-hosted', machineId: id, allocated: true });
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote
 const SOCK_IN = '/var/run/docker.sock'; // where a coordinator container sees the box's Docker socket
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -158,12 +159,20 @@ export function createProvider(env = process.env, deps = {}) {
         // Laptop and coordinators each do this, so none can take a slot another already holds. ponytail: two losers can briefly both
         // count a third that is itself rolling back and lose together; the caller retries on quota_exceeded.
         if ((await labelled()).indexOf(id) >= slots) throw full(); // the catch below removes our container
-      } catch (e) { if (id) await api.delete(id).catch(() => {}); throw e; }
+      } catch (e) {
+        if (id) {
+          try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
+        }
+        throw e;
+      }
       const sb = sandbox(id, name ?? id);
       try {
         await writeEnv(sb, vars);
         await sb.commands.run(`chmod 600 ${SECRETS}`);
-      } catch (e) { await api.delete(id).catch(() => {}); throw e; }
+      } catch (e) {
+        try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
+        throw e;
+      }
       return sb;
     },
 

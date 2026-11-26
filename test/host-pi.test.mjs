@@ -75,7 +75,10 @@ test('missingSetup: Instabox key or self-hosted machine is needed, a Claude toke
 
 test('prompt tells the model to delegate through the cloud_agent tools and keep keys private', () => {
   assert.match(HOST_PROMPT, /cloud_agent_wait/);
-  assert.match(HOST_PROMPT, /pi-glm/);
+  assert.match(HOST_PROMPT, /cloud_agent_capabilities/);
+  assert.match(HOST_PROMPT, /configured default profile/);
+  assert.match(HOST_PROMPT, /cloud_agent_recover only with a fresh user-authored message/);
+  assert.match(HOST_PROMPT, /cloudy-cloud\/issue-<number>-<id>/);
   assert.match(HOST_PROMPT, /never print|Never print/);
   assert.ok(!HOST_PROMPT.includes('Agent tool is disabled'));
 });

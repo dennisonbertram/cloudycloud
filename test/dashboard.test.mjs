@@ -132,6 +132,43 @@ test('a missing key or API failure becomes an error with a fix, and never leaks 
   assert.ok(!JSON.stringify(down).includes('ibk_supersecretvalue'));
 });
 
+test('liveState retains event history and setup guidance when inventory fails with a reader configured', async () => {
+  const env = {}, provider = createFakeProvider(env);
+  provider.caps.hasMetrics = false;
+  const dir = mkdtempSync(join(tmpdir(), 'cc-dashboard-inventory-'));
+  const file = join(dir, 'events.jsonl');
+  const events = [
+    { type: 'agent', id: 'aaaa1111', t: 1, description: 'Keep this history' },
+    { type: 'machine', id: 'aaaa1111', t: 2, machine: 'missing-machine' },
+    { type: 'message', id: 'aaaa1111', t: 3, text: 'Previous session message' },
+    { type: 'status', id: 'aaaa1111', t: 4, status: 'running' },
+  ];
+  writeFileSync(file, `${events.map((e) => JSON.stringify(e)).join('\n')}\n`);
+  const readerCalls = [];
+  const reader = { async readTail(machine, _name, from) { readerCalls.push(machine); return { from, next: from, size: from, data: '', source: 'live', fetchedAt: 1 }; } };
+  const getReader = async () => reader;
+  const noInventory = liveState(env, {
+    provider, file, cacheMs: 0, getReader,
+    list: async () => { throw Object.assign(new Error('FAKE_API_KEY is not set.'), { code: 'no_key' }); },
+  });
+
+  const unavailable = await noInventory();
+  assert.deepEqual(unavailable.machines, { ok: false, code: 'no_key', message: 'FAKE_API_KEY is not set.', fix: 'Set FAKE_API_KEY.' });
+  assert.equal(unavailable.hasLog, true);
+  assert.deepEqual(unavailable.boxes.map((b) => [b.id, b.title, b.status, b.messages.map((m) => m.text)]), [
+    ['aaaa1111', 'Keep this history', 'running', ['Previous session message']],
+  ]);
+  assert.deepEqual(readerCalls, []);
+
+  const partialMachines = [{ id: 'coord-1', name: 'coord', labels: { role: 'coordinator' }, state: 'running', status: 'running' }];
+  Object.defineProperty(partialMachines, 'providerErrors', { value: [{ provider: 'fake', code: 'transient', message: 'One listing failed' }] });
+  const partialState = liveState(env, { provider, file, cacheMs: 0, getReader, list: async () => partialMachines });
+  const partial = await partialState();
+  assert.deepEqual(readerCalls, ['coord-1']);
+  assert.deepEqual(partial.machines, { ok: true, providerErrors: partialMachines.providerErrors });
+  assert.equal(partial.boxes.find((b) => b.id === 'aaaa1111')?.status, 'running');
+});
+
 test('pushOf reads the push sentence the safety push writes; the last one wins', () => {
   assert.deepEqual(pushOf('Done.\n\nPushed to origin cloudy-cloud/a1 at 9d2e7b4. Fetch with: git fetch origin cloudy-cloud/a1.\nModel: m\nTotal: 3 tool uses'), { sha: '9d2e7b4', branch: 'cloudy-cloud/a1' });
   assert.deepEqual(pushOf('x\n\nPush failed: rejected\nhint: pull first; the agent is still open, ask it to push.\nModel: m'), { failed: true });
@@ -216,8 +253,50 @@ test('listMachines maps the provider list, status included, and needs the key', 
   provider.machines.set('m2', { id: 'm2', name: 'other', labels: { purpose: 'else' }, state: 'running', status: 'running', startedAt: 6 });
   const rows = await listMachines({ FAKE_API_KEY: 'k' }, provider);
   assert.deepEqual(provider.log.list, [{ purpose: 'cloudy-cloud' }]);
-  assert.deepEqual(rows, [{ id: 'm1', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
+  assert.deepEqual(rows, [{ id: 'm1', provider: 'fake', name: 'box', role: 'coordinator', owner: 'o1', labels: { purpose: 'cloudy-cloud', role: 'coordinator', owner: 'o1' }, state: 'creating', status: 'starting', startedAt: 5, archiveAt: 9 }]);
   await assert.rejects(listMachines({}, provider), { code: 'no_key', message: 'FAKE_API_KEY is not set.' });
+});
+
+test('liveState uses the last owner in a multi-owner registry for this-session labels', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-dashboard-owner-'));
+  const config = join(dir, 'env');
+  writeFileSync(join(dir, 'owner'), 'aaaaaaaa-aaa\n\nbbbbbbbb-bbb\n');
+  const machines = [
+    { id: 'old', name: 'old', provider: 'fake', owner: 'aaaaaaaa-aaa', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'aaaaaaaa-aaa' }, state: 'running', status: 'running' },
+    { id: 'current', name: 'current', provider: 'fake', owner: 'bbbbbbbb-bbb', labels: { purpose: 'cloudy-cloud', role: 'worker', owner: 'bbbbbbbb-bbb' }, state: 'running', status: 'running' },
+  ];
+  const state = await liveState({ CLOUDY_CLOUD_CONFIG: config }, {
+    provider: createFakeProvider(), list: async () => machines, file: join(dir, 'events.jsonl'), cacheMs: 0,
+  })();
+  const byId = Object.fromEntries(state.boxes.map((box) => [box.machine, box]));
+  assert.equal(byId.old.startedBy, 'aaaaaaaa-aaa');
+  assert.equal(byId.current.startedBy, 'this session');
+});
+
+test('listMachines keeps provider identity and partial provider errors', async () => {
+  const provider = {
+    name: 'instabox', keyName: 'INSTABOX_API_KEY', providers: [{ name: 'instabox' }, { name: 'boat' }],
+    async list(_labels, opts) {
+      opts.onError(Object.assign(new Error('Boat unavailable'), { provider: 'boat', code: 'transient' }));
+      return [{ id: 'shared', provider: 'instabox', name: 'host-a', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: 1 }];
+    },
+  };
+  const rows = await listMachines({}, provider);
+  assert.equal(rows[0].provider, 'instabox');
+  assert.deepEqual(rows.providerErrors, [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }]);
+});
+
+test('buildState maps a same-id machine only to the provider in its machine event', () => {
+  const machines = [
+    { id: 'shared', provider: 'instabox', name: 'box-a', state: 'running', status: 'running' },
+    { id: 'shared', provider: 'boat', name: 'box-b', state: 'stopped', status: 'stopped' },
+  ];
+  const events = [{ type: 'agent', id: 'agent-1', t: 1 }, { type: 'machine', id: 'agent-1', t: 2, provider: 'boat', machine: 'shared' }];
+  const state = buildState({ events, machines, now: 3, alive: () => true });
+  const agent = state.boxes.find((b) => b.id === 'agent-1');
+  assert.equal(agent.provider, 'boat');
+  assert.equal(agent.machineState, 'stopped');
+  assert.ok(state.boxes.some((b) => b.id === 'instabox:box-a' && b.provider === 'instabox'));
 });
 
 test('listMachines honours an auto-discovered msb (no CLOUDY_CLOUD_MSB_BIN)', async () => {
@@ -230,6 +309,7 @@ test('listMachines honours an auto-discovered msb (no CLOUDY_CLOUD_MSB_BIN)', as
   const env = { PATH: dir, HOME: mkdtempSync(join(tmpdir(), 'cc-dshhome-')) };
   const rows = await listMachines(env, provider);
   assert.equal(rows[0].id, 'm1');
+  assert.equal(rows[0].provider, 'microsandbox');
   await assert.rejects(listMachines({ PATH: '', HOME: env.HOME }, provider), { code: 'no_key' });
 });
 
@@ -788,6 +868,41 @@ test('boxes carry machineKind from the kind label (absent is linux), and state c
   assert.equal(buildState({ events: [], machines: [], now: 1000, alive: () => true }).caps, undefined);
 });
 
+test('provider-owned boxes keep their own capabilities and partial provider errors', () => {
+  const instabox = { name: 'instabox', caps: { hasShell: true, hasDisplay: true, hasPortForward: true, hasPublish: true, hasMetrics: true } };
+  const boat = { name: 'boat', caps: { hasShell: false, hasDisplay: false, hasPortForward: false, hasPublish: false, hasMetrics: false } };
+  const provider = { name: 'instabox', caps: instabox.caps, providers: [instabox, boat], for: (machine) => [instabox, boat].find((p) => p.name === machine.provider) };
+  const machines = [
+    { id: 'shared', provider: 'instabox', labels: { agent: 'aaaa1111' }, state: 'running', status: 'running' },
+    { id: 'shared', provider: 'boat', labels: { agent: 'bbbb2222' }, state: 'running', status: 'running' },
+  ];
+  Object.defineProperty(machines, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }] });
+  const events = [
+    { type: 'agent', id: 'aaaa1111', t: 1 }, { type: 'machine', id: 'aaaa1111', t: 2, machine: 'shared', provider: 'instabox' },
+    { type: 'agent', id: 'bbbb2222', t: 3 }, { type: 'machine', id: 'bbbb2222', t: 4, machine: 'shared', provider: 'boat' },
+  ];
+  const state = buildState({ events, machines, provider, alive: () => true });
+  const by = Object.fromEntries(state.boxes.map((b) => [b.id, b]));
+  assert.deepEqual([by.aaaa1111.capabilities.hasShell, by.aaaa1111.capabilities.hasMetrics], [true, true]);
+  assert.deepEqual([by.bbbb2222.capabilities.hasShell, by.bbbb2222.capabilities.hasMetrics], [false, false]);
+  assert.deepEqual(state.providers.map((p) => [p.name, p.ready]), [['instabox', true], ['boat', false]]);
+  assert.deepEqual(state.machines.providerErrors, machines.providerErrors);
+});
+
+test('a partial owner inventory leaves a missing live agent unknown', () => {
+  const machines = [{ id: 'other', provider: 'instabox', name: 'other', state: 'running', status: 'running' }];
+  Object.defineProperty(machines, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'Boat unavailable' }] });
+  const events = [
+    { type: 'agent', id: 'aaaa1111', status: 'running', t: 1 },
+    { type: 'machine', id: 'aaaa1111', provider: 'boat', machine: 'missing', t: 2 },
+    { type: 'status', id: 'aaaa1111', status: 'running', t: 3 },
+  ];
+  const state = buildState({ events, machines, alive: () => true });
+  const agent = state.boxes.find((b) => b.id === 'aaaa1111');
+  assert.equal(agent.status, 'running');
+  assert.equal(agent.machineState, undefined);
+});
+
 test('demo has android and gpu boxes, and no linux demo box has a kind', () => {
   const d = demoState(), by = (id) => d.boxes.find((b) => b.id === id);
   assert.equal(by('c3d4e5f6').machineKind, 'android');
@@ -810,8 +925,8 @@ test('the page shows kind badges, shell and display command rows once each, hide
 
 test('shell and display commands use an id the CLI resolves, and a kind or caps change re-renders the rail and the panel', () => {
   const html = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
-  // a local agent (source log) uses its agent id; any other box uses its machine id, since a label-only agent id is unknown to the CLI
-  assert.match(html, /const cliId = \(b\) => b\.source === 'log' \|\| !b\.machine \? b\.id : b\.machine;/);
+  // A local agent uses its agent id; a machine with provider ownership uses provider:id so duplicate ids stay unambiguous.
+  assert.match(html, /const cliId = \(b\) => b\.source === 'log' \|\| !b\.machine \? b\.id : \(b\.provider \? b\.provider \+ ':' \+ b\.machine : b\.machine\);/);
   assert.match(html, /shellCmd\(cliId\(b\)\)/);
   assert.match(html, /displayCmd\(cliId\(b\)\)/);
   assert.doesNotMatch(html, /shellCmd\(b\.id\)|displayCmd\(b\.id\)/);
@@ -867,6 +982,18 @@ test('usage is read once per running machine per 30 s, from the newest sample, a
   assert.equal('usage' in boxOf(s, 'm3'), false);
   clock.t += 2_000; await fresh(getState);
   assert.equal(calls.length, 4);
+});
+
+test('usage and quiet status join a logged agent by its machine id, not its agent id', async () => {
+  const { clock, getState, machines } = usageEnv({ metrics: async () => ({
+    samples: Array.from({ length: 21 }, (_, i) => ({ t: clock.t - 600_000 + i * 30_000, cpuPct: 1, cpuCount: 2, memUsed: 1, memTotal: 4 })),
+    fetchedAt: clock.t,
+  }) });
+  machines[0].labels = { agent: 'aaaa1111' };
+  const worker = (await fresh(getState)).boxes.find((b) => b.id === 'aaaa1111');
+  assert.equal(worker.machine, 'm1');
+  assert.equal(worker.usage.cpuPct, 1);
+  assert.equal(worker.usage.quiet, true);
 });
 
 test('at most 4 usage reads are in flight at once', async () => {
@@ -1078,7 +1205,8 @@ test('page: the copied metrics command is shown only for a safe machine id, and 
   for (const bad of ['m1; printf INJECTED #', 'a b', '$(x)', '`x`', "a'b", '-rf', '', 'a\nb', undefined]) assert.equal(pure.metricsCmdFor(bad), null, String(bad));
   assert.equal(pure.safeId('x;y'), null);
   assert.match(PAGE, /if \(!safeId\(cliId\(b\)\)\) return null/, 'Shell and Screen rows use it too');
-  assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\)\) return null/);
+  assert.match(PAGE, /metricsCmdFor\(b\.provider \? b\.provider \+ ':' \+ b\.machine : b\.machine\)/);
+  assert.match(PAGE, /openApp = \(b\) => \{\s*if \(!safeId\(b\.id\) \|\| b\.capabilities\?\.hasPortForward === false\) return null/);
 });
 
 test('server: quiet needs 10 continuous minutes under 3 % CPU, a fresh newest sample, and low network where it is reported', () => {

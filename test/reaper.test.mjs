@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { watch, reaperSpawn, startReaper, providerKey } from '../src/reaper.mjs';
+import { combine } from '../src/providers/index.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
 const KEY = 'sk-secret-key';
@@ -36,6 +37,17 @@ test('after the parent exits, deletes only machines with a matching owner', asyn
   assert.deepEqual(s.provider.log.delete, ['m1']);
 });
 
+test('reaper deletes matching owner machines from every configured provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('a-1', { id: 'a-1', name: 'a', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  b.machines.set('b-1', { id: 'b-1', name: 'b', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  const provider = combine([a, b]);
+  await watch({ pid: 1, owner: OWNER, provider, alive: () => false, sleep: async () => {}, maxMs: 1, pollMs: 1 });
+  assert.deepEqual(a.log.delete, ['a-1']);
+  assert.deepEqual(b.log.delete, ['b-1']);
+});
+
 test('a failed list or delete is logged without the key, and reaping continues', async () => {
   const s = await setup([{ owner: OWNER }, { owner: OWNER }]);
   const del = s.provider.delete;
@@ -50,9 +62,30 @@ test('a failed list or delete is logged without the key, and reaping continues',
   assert.match(bad.logs[0], /list failed/);
 });
 
+test('the reaper retries temporary list and delete failures after the parent exits', async () => {
+  const s = await setup([{ owner: OWNER }]);
+  const list = s.provider.list;
+  let listCalls = 0, deleteCalls = 0;
+  s.provider.list = async (...args) => {
+    if (++listCalls === 1) throw new Error('temporary list failure');
+    return list(...args);
+  };
+  const del = s.provider.delete;
+  s.provider.delete = async (id, opts) => {
+    if (++deleteCalls === 1) throw new Error('temporary delete failure');
+    return del(id, opts);
+  };
+  await watch({ pid: 1, owner: OWNER, provider: s.provider, alive: () => false, log: (m) => s.log(m), retryMs: 0, sleep: async () => {}, maxMs: 20 });
+  assert.equal(listCalls, 3, 'retries a failed listing and then a failed delete');
+  assert.equal(deleteCalls, 2);
+  assert.deepEqual(s.provider.log.delete, ['m1']);
+  assert.match(s.logs.join('\n'), /temporary list failure/);
+  assert.match(s.logs.join('\n'), /temporary delete failure/);
+});
+
 test('spawn options pass the key and provider only in env', () => {
   const provider = createFakeProvider();
-  const { args, options } = reaperSpawn(42, OWNER, KEY, provider, { PATH: '/bin' });
+  const { args, options } = reaperSpawn(42, OWNER, { FAKE_API_KEY: KEY }, provider, { PATH: '/bin' });
   assert.ok(!JSON.stringify(args).includes(KEY));
   assert.deepEqual(args.slice(1), ['42', OWNER]);
   assert.equal(options.env.FAKE_API_KEY, KEY);
@@ -116,7 +149,7 @@ test('the reaper never loads the SDK: reap through the real adapter, and exit 1 
   assert.equal(full.stdout.trim(), '1', full.stderr);
 });
 
-test('the reaper deletes the machines of page 1 when page 2 of the list fails, and logs the error', async () => {
+test('the reaper does not delete a partial inventory when page 2 of the list fails', async () => {
   const { reap } = await import('../src/reaper.mjs');
   const { createProvider } = await import('../src/providers/instabox.mjs');
   const deleted = [], logs = [];
@@ -126,9 +159,35 @@ test('the reaper deletes the machines of page 1 when page 2 of the list fails, a
     return Response.json({ machines: [{ id: 'm1', metadata: { owner: OWNER }, state: 'running' }], nextCursor: 'c2' });
   };
   const n = await reap({ owner: OWNER, provider: createProvider({ INSTABOX_API_KEY: KEY }, { fetchFn }), log: (l) => logs.push(l) });
-  assert.equal(n, 1);
-  assert.deepEqual(deleted, ['m1']);
+  assert.equal(n, 0);
+  assert.deepEqual(deleted, []);
   assert.match(logs.join('\n'), /list failed.*HTTP 500/);
+});
+
+test('the reaper does not report success or delete from surviving providers after a provider list rejection', async () => {
+  const { reap } = await import('../src/reaper.mjs');
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('m1', { id: 'm1', name: 'owned', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  b.list = async () => { throw Object.assign(new Error('provider unavailable'), { code: 'transient' }); };
+  const logs = [], provider = combine([a, b]);
+  assert.equal(await reap({ owner: OWNER, provider, log: (line) => logs.push(line) }), 0);
+  assert.deepEqual(a.log.delete, []);
+  assert.match(logs.join('\n'), /list failed on b.*provider unavailable/);
+});
+
+test('the reaper retries a partial combined inventory before deleting any owned machine', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  a.machines.set('m1', { id: 'm1', name: 'owned', labels: { owner: OWNER }, state: 'running', status: 'running', startedAt: 1 });
+  const listB = b.list;
+  let calls = 0;
+  b.list = async (...args) => { if (++calls === 1) throw Object.assign(new Error('temporary provider outage'), { code: 'transient' }); return listB(...args); };
+  const logs = [];
+  await watch({ owner: OWNER, provider: combine([a, b]), alive: () => false, log: (line) => logs.push(line), retryMs: 0, sleep: async () => {}, maxMs: 20 });
+  assert.equal(calls, 2, 'the partial first result is retried');
+  assert.deepEqual(a.log.delete, ['m1'], 'deletion occurs only after a complete second inventory');
+  assert.match(logs.join('\n'), /list failed on b.*temporary provider outage/);
 });
 
 // server.mjs may start without the provider key (cloudy-cloud mcp-server before setup). A key saved later
@@ -206,6 +265,19 @@ test('startReaper passes the adapter-resolved key under the canonical name', () 
   startReaper(42, OWNER, { CLOUDY_CLOUD_INSTABOX_API_KEY: 'proxy-placeholder' }, instabox, (cmd, args, options) => { seen.push(options); return child; });
   assert.equal(seen[0].env.INSTABOX_API_KEY, 'proxy-placeholder');
   assert.equal(seen[1], 'unref');
+});
+
+test('the detached reaper receives every configured provider and each key in its own environment variable', () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'b' });
+  const calls = [];
+  const child = { on() { return this; }, unref() {} };
+  startReaper(42, OWNER, { FAKE_API_KEY: 'key-a', B_FAKE_API_KEY: 'key-b' }, { ...a, providers: [a, { ...b, keyName: 'B_FAKE_API_KEY' }] }, (cmd, args, options) => { calls.push({ args, options }); return child; });
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDERS, 'a,b');
+  assert.equal(calls[0].options.env.CLOUDY_CLOUD_PROVIDER, 'a');
+  assert.equal(calls[0].options.env.FAKE_API_KEY, 'key-a');
+  assert.equal(calls[0].options.env.B_FAKE_API_KEY, 'key-b');
+  assert.deepEqual(calls[0].args.slice(1), ['42', OWNER]);
 });
 
 const serverPath = fileURLToPath(new URL('../src/server.mjs', import.meta.url));

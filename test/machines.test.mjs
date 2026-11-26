@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/machines.mjs';
+import { combine } from '../src/providers/index.mjs';
 import { cellWidth, makeUi } from '../src/ui.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
 
@@ -60,6 +61,20 @@ test('ls with no machines prints the empty line in both modes', async () => {
   }
 });
 
+test('multi-provider machines TSV includes the owning provider column', async () => {
+  const { out, d } = deps({
+    provider: { name: 'combined', providers: [{ name: 'fake' }, { name: 'boat' }] },
+    list: async () => {
+      const rows = [{ id: 'boat-1', provider: 'boat', name: 'worker', labels: { purpose: 'cloudy-cloud', role: 'worker' }, state: 'running', status: 'running', startedAt: Date.now() }];
+      Object.defineProperties(rows, { providerNames: { value: ['fake', 'boat'] } });
+      return rows;
+    },
+  });
+  assert.equal(await run(['ls'], d), 0);
+  assert.equal(out[0], 'NAME\tPROVIDER\tROLE\tSTATE\tSTARTED\tDELETES\tID');
+  assert.match(out[1], /^worker\tboat\tworker\trunning\t/);
+});
+
 test('an image machine shows the image role and a machine without a role shows machine', async () => {
   const { provider, out, d } = deps();
   await make(provider, { name: 'img', role: 'coordinator-image' });
@@ -111,6 +126,49 @@ test('stop --all --yes deletes every listed machine and says so', async () => {
   assert.equal(provider.log.delete.length, 2);
   assert.match(out.join('\n'), /Deleted w-one/);
   assert.match(out.join('\n'), /Deleted 2 machines\./);
+});
+
+test('stop --all refuses a partial provider list and deletes nothing', async () => {
+  const { provider, err, d } = deps();
+  d.list = async () => {
+    const rows = [{ id: 'one', name: 'one', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running' }];
+    Object.defineProperties(rows, { providerNames: { value: ['fake', 'boat'] }, providerErrors: { value: [{ provider: 'boat', code: 'transient', message: 'unavailable' }] } });
+    return rows;
+  };
+  assert.equal(await run(['stop', '--all', '--yes'], d), 1);
+  assert.match(err.join('\n'), /Could not list boat/);
+  assert.deepEqual(provider.log.delete, []);
+});
+
+test('stop by a shared bare name refuses when one provider rejects its list', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'fake' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'boat' });
+  const machine = { id: 'fake-1', name: 'shared', labels: { purpose: 'cloudy-cloud', role: 'worker', name: 'shared' }, state: 'running', status: 'running', startedAt: Date.now() };
+  a.machines.set(machine.id, machine);
+  b.list = async () => { throw Object.assign(new Error('provider unavailable'), { code: 'transient' }); };
+  const provider = combine([a, b]), errors = [];
+  const result = await run(['stop', 'shared'], {
+    provider, env: { FAKE_API_KEY: 'a' }, events: () => [], tty: false, ui: pipeUi(),
+    out: () => {}, err: (s) => errors.push(s),
+  });
+  assert.equal(result, 1);
+  assert.deepEqual(a.log.delete, []);
+  assert.match(errors.join('\n'), /boat/);
+});
+
+test('provider-qualified stop uses its complete provider and reports another provider failure once', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'a' }, { name: 'fake' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'b' }, { name: 'boat' });
+  a.machines.set('fake-1', { id: 'fake-1', name: 'shared', labels: { purpose: 'cloudy-cloud', role: 'worker', name: 'shared' }, state: 'running', status: 'running', startedAt: Date.now() });
+  b.list = async () => { throw Object.assign(new Error('provider unavailable'), { code: 'transient' }); };
+  const provider = combine([a, b]), errors = [];
+  const result = await run(['stop', 'fake:shared'], {
+    provider, env: { FAKE_API_KEY: 'a' }, events: () => [], tty: false, ui: pipeUi(),
+    out: () => {}, err: (s) => errors.push(s),
+  });
+  assert.equal(result, 0);
+  assert.deepEqual(a.log.delete, ['fake-1']);
+  assert.equal((errors.join('\n').match(/could not list boat/g) ?? []).length, 1);
 });
 
 test('stop --all on a terminal asks once; n deletes nothing, y deletes all', async () => {
@@ -168,6 +226,23 @@ test('stop checks the list again right before deleting one machine', async () =>
   assert.match(out.join('\n'), /already gone/);
 });
 
+test('stop refuses a partial provider list between the target lookup and delete', async () => {
+  const { provider, err, d } = deps();
+  const a = await make(provider, { name: 'w-one' });
+  const row = { id: a.id, provider: 'fake', name: a.name, labels: { purpose: 'cloudy-cloud', role: 'worker' }, state: 'running', status: 'running', startedAt: a.startedAt };
+  let calls = 0;
+  d.list = async () => {
+    const rows = [row];
+    Object.defineProperty(rows, 'providerNames', { value: ['fake', 'boat'] });
+    if (++calls > 1) Object.defineProperty(rows, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'unavailable' }] });
+    return rows;
+  };
+  assert.equal(await run(['stop', 'w-one'], d), 1);
+  assert.deepEqual(provider.log.delete, []);
+  assert.doesNotMatch(err.join('\n'), /already gone/);
+  assert.match(err.join('\n'), /boat/);
+});
+
 test('stop --all deletes only ids still present after the prompt', async () => {
   const { provider, d } = deps({ tty: true, ui: ttyUi() });
   const a = await make(provider, { name: 'w-one' });
@@ -179,6 +254,22 @@ test('stop --all deletes only ids still present after the prompt', async () => {
   assert.equal(await run(['stop', '--all'], { ...d, out: (s) => out.push(s), ask: async () => 'y' }), 0);
   assert.deepEqual(provider.log.delete, [a.id]);
   assert.match(out.join('\n'), /Deleted 1 machine\./);
+});
+
+test('stop --all refuses a partial recheck after confirmation', async () => {
+  const { provider, err, d } = deps({ tty: true, ui: ttyUi() });
+  const a = await make(provider, { name: 'w-one' });
+  let calls = 0;
+  d.list = async () => {
+    const rows = [{ id: a.id, provider: 'fake', name: a.name, labels: { purpose: 'cloudy-cloud', role: 'worker' }, state: 'running', status: 'running', startedAt: a.startedAt }];
+    Object.defineProperty(rows, 'providerNames', { value: ['fake', 'boat'] });
+    if (++calls > 1) Object.defineProperty(rows, 'providerErrors', { value: [{ provider: 'boat', code: 'transient', message: 'unavailable' }] });
+    return rows;
+  };
+  assert.equal(await run(['stop', '--all'], { ...d, ask: async () => 'y' }), 1);
+  assert.deepEqual(provider.log.delete, []);
+  assert.match(err.join('\n'), /boat/);
+  assert.doesNotMatch(err.join('\n'), /already deleted|Deleted 1 machine/);
 });
 
 test('machine fields with control characters print on one line', async () => {

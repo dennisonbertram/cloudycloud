@@ -23,16 +23,20 @@ export const providerKey = (env, provider) =>
   || '';
 
 // The key goes only in the child's environment, never in argv (argv is visible in `ps`).
-export const reaperSpawn = (pid, owner, apiKey, provider, baseEnv = process.env) => ({
-  command: process.execPath,
-  args: [REAPER, String(pid), owner],
-  options: { detached: true, stdio: 'ignore', env: { ...baseEnv, [provider.keyName]: apiKey, CLOUDY_CLOUD_PROVIDER: provider.name } },
-});
+export const reaperSpawn = (pid, owner, env, provider, baseEnv = process.env) => {
+  const providers = provider.providers ?? [provider];
+  const childEnv = { ...baseEnv, CLOUDY_CLOUD_PROVIDERS: providers.map((p) => p.name).join(','), CLOUDY_CLOUD_PROVIDER: providers[0].name };
+  for (const p of providers) {
+    const key = providerKey(env, p);
+    if (key) childEnv[p.keyName] = key;
+  }
+  return { command: process.execPath, args: [REAPER, String(pid), owner], options: { detached: true, stdio: 'ignore', env: childEnv } };
+};
 
 // Starts the detached reaper for the server and returns the child (null when the spawn itself threw),
-// so the server can start a new one once this child is gone. The key comes from providerKey.
+// so the server can start a new one once this child is gone. Every provider key is passed in its env variable.
 export function startReaper(pid, owner, env, provider, spawnFn = nodeSpawn) {
-  const { command, args, options } = reaperSpawn(pid, owner, providerKey(env, provider), provider);
+  const { command, args, options } = reaperSpawn(pid, owner, env, provider);
   let child;
   try { child = spawnFn(command, args, options); } catch { return null; }
   child.on('error', () => {}).unref();
@@ -44,22 +48,42 @@ export const isAlive = (pid) => {
 };
 
 // Deletes the machines owned by `owner`. Returns the number deleted. provider.delete retries and treats 404 as deleted.
-export async function reap({ owner, provider, log = () => {} }) {
+async function reapAttempt({ owner, provider, log = () => {} }) {
+  let failed = false;
   let machines;
-  try { machines = await provider.list({ owner }, { onError: (e) => log(`list failed: ${e.message}`) }); } catch (e) { log(`list failed: ${e.message}`); return 0; }
+  const listFailed = (e) => { failed = true; log(`list failed${e.provider ? ` on ${e.provider}` : ''}: ${e.message}`); };
+  try { machines = await provider.list({ owner }, { onError: listFailed }); }
+  catch (e) { if (!failed) listFailed(e); return { deleted: 0, failed: true }; }
+  // Do not act on a partial inventory: a provider may still hold owned machines that the
+  // reaper cannot see. The watcher retries after a failed attempt.
+  if (failed) return { deleted: 0, failed: true };
   let deleted = 0;
   for (const m of machines) {
     if (m?.labels?.owner !== owner || !m.id) continue;
     let logged = false; // the adapter logs each failed attempt itself; log the final error only if it did not
-    try { await provider.delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; } catch (e) { if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
+    try { await (provider.for ? provider.for(m) : provider).delete(m.id, { retries: 2, log: (l) => { logged = true; log(l); } }); deleted++; }
+    catch (e) { failed = true; if (!logged) log(`delete ${m.id} failed: ${e.message}`); }
   }
-  return deleted;
+  return { deleted, failed };
 }
 
+export async function reap(args) { return (await reapAttempt(args)).deleted; }
+
 // Polls until the parent is gone, then reaps. Resolves when done (or after the lifetime backstop).
-export async function watch({ pid, owner, provider, alive = isAlive, log, pollMs = 2000, maxMs = MAX_LIFETIME_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function watch({ pid, owner, provider, alive = isAlive, log, pollMs = 2000, retryMs = 5000, maxMs = MAX_LIFETIME_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   for (let waited = 0; waited < maxMs; waited += pollMs) {
-    if (!alive(pid)) return reap({ owner, provider, log });
+    if (!alive(pid)) {
+      let retry = 0;
+      for (let elapsed = 0; elapsed < maxMs; retry++) {
+        const result = await reapAttempt({ owner, provider, log });
+        if (!result.failed) return result.deleted;
+        const delay = Math.min(retryMs * 2 ** Math.min(retry, 4), 60_000, maxMs - elapsed);
+        if (delay < 0) return result.deleted;
+        await sleep(delay);
+        elapsed += delay || 1;
+      }
+      return 0;
+    }
     await sleep(pollMs);
   }
 }
@@ -70,7 +94,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = loadEnv(process.env);
   const provider = await loadProvider(env, { owner }).catch(() => null);
   // The same resolution the server used (a coordinator's proxy-secret name counts, msb is found by the ladder).
-  const ready = provider && providerKey(env, provider);
+  const ready = provider && (provider.providers ?? [provider]).some((p) => providerKey(env, p));
   if (!provider || !ready || !(Number(pid) > 0) || !owner) process.exit(1);
   watch({ pid: Number(pid), owner, provider }).finally(() => process.exit(0));
 }

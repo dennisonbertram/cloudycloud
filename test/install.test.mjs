@@ -985,6 +985,16 @@ const checkOnly = (cfgText, env = {}, { stub = npxStub({ secrets: '[]' }), path 
   return spawnSync('/bin/bash', [script, '--check-only'], { encoding: 'utf8', env: { PATH: path ?? stub.path, HOME: tmp(), CLOUDY_CLOUD_CONFIG: cfg, ...env } });
 };
 
+test('setup --check-only checks every provider in CLOUDY_CLOUD_PROVIDERS', () => {
+  const msb = msbStub();
+  const cfg = 'CLOUDY_CLOUD_PROVIDERS=microsandbox,self-hosted\nCLOUDY_CLOUD_SSH_HOST=agent@studio\nCLOUDY_CLOUD_SELF_HOSTED_TOKEN_ON_BOX=yes\nGH_TOKEN=ghp_x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n';
+  const tools = stubDir(all, { node: `#!/bin/sh\nexec "${process.execPath}" "$@"\n` });
+  const r = checkOnly(cfg, {}, { path: `${tools}:${msb.dir}:/usr/bin:/bin` });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /The microsandbox CLI works/);
+  assert.match(r.stdout, /Your own machine is set to agent@studio/);
+});
+
 test('check-only on Instabox fails a plain Claude token that is not a proxy secret, as the runtime does', () => {
   const gh = JSON.stringify([{ name: 'GH_TOKEN', hosts: ['github.com', 'api.github.com'] }]);
   const r = checkOnly(`INSTABOX_API_KEY=${KEY}\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n`, {}, { stub: npxStub({ secrets: gh }) });
@@ -1315,10 +1325,10 @@ test('pty: plain setup on a configured machine never asks about the --more items
 
 // ---- arguments, saved provider, --more details ----
 test('arguments: unknown ones print usage and exit 2 before any work, in any order with --check-only', () => {
-  for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider']]) {
+  for (const args of [['--bogus'], ['--more', '--bogus', '--check-only'], ['--check-only', '--bogus'], ['--provider'], ['--default-profile']]) {
     const r = spawnSync('/bin/bash', [script, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmp(), CLOUDY_CLOUD_CONFIG: join(tmp(), 'env') } });
     assert.equal(r.status, 2, args.join(' ') + r.stdout + r.stderr);
-    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\|boat\|e2b\] \[--check-only\]/);
+    assert.match(r.stderr, /usage: install\.sh \[--more\] \[--provider instabox\|self-hosted\|microsandbox\|boat\|e2b\] \[--default-profile NAME\] \[--check-only\]/);
     assert.doesNotMatch(r.stdout, /\[1\/4\]/);
   }
 });

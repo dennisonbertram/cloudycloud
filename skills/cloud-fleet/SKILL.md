@@ -1,11 +1,11 @@
 ---
 name: cloud-fleet
-description: How to run fleets of cloudy-cloud subagents (Instabox cloud machines that push cloudy-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.
+description: How to run fleets of Cloudy Cloud subagents (sandbox machines that push cloudy-cloud/<id> branches to GitHub) and keep the output manageable. Use when starting many cloud_agent workers, fanning out a swarm, using coordinators or sub-coordinators, merging many worker branches into one trunk, or avoiding a flood of PRs.
 ---
 
 # Managing a Cloudy Cloud fleet
 
-This skill applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Each `cloud_agent` is a full coding agent (Claude Code by default) on its own Instabox machine. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
+This skill applies to the built-in main-session commands (Claude Code, Codex, opencode, pi, free-pi) and worker agents (Claude Code, pi, oh-my-pi, Codex, opencode). Each `cloud_agent` runs a full coding agent on an eligible configured sandbox provider. It works on a copy of the repo and pushes `cloudy-cloud/<id>` to GitHub. The saved default worker profile is Claude Code unless setup changed it; a request can override it. Starting 100 agents is easy. Reviewing 100 PRs is not. This skill is about getting one reviewable result out of many agents.
 
 Tools: `cloud_agent(prompt, description, model?, subagent_type?, profile?, machine?)` (a coordinator also takes `role: "coordinator"` where available), `cloud_agent_message`, `cloud_agent_wait`, `cloud_agent_result` (reads the latest result again), `cloud_agent_list`, `cloud_agent_stop`. In an opencode session the tools are named `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on. Codex, opencode and pi sessions cannot receive MCP task results, so call `cloud_agent_wait` for results.
 
@@ -48,7 +48,7 @@ The default `linux` machine is right for almost everything. Pass `machine` only 
 
 Start the main session from inside the repo: `cloudy-cloud` (Claude Code), `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`. Codex needs `npm install -g @openai/codex` and opencode needs `npm install -g opencode-ai`; pi and free-pi run through `npx` if they are not installed. Sign in to the agent itself first (`codex login`); Cloudy Cloud does not do that.
 
-Setup asks which agents the user runs locally (claude, codex, opencode, pi, free-pi) and then asks only for what those need: the Instabox key and the GitHub token always, a Claude token only if claude is chosen (as the main session or for Claude workers), an OpenAI key if codex is chosen, and optional Particle.ai and OpenRouter keys. Workers use the Claude harness unless `cloud_agent` gets a `profile`, so with no Claude token saved always pass one, and when a tool refuses a call, follow its Next step. Credentials per agent, to set up once (the user does this, not you):
+Setup asks which agents the user runs locally (claude, codex, opencode, pi, free-pi) and then asks only for the credentials those workers need. The user can select a saved default worker profile with `cloudy-cloud setup --default-profile NAME`; Claude Code is the initial default. Check `cloud_agent_capabilities` before choosing a worker profile or relying on provider availability, and when a tool refuses a call, follow its Next step. Credentials per agent, to set up once (the user does this, not you):
 - Claude Code workers (no profile): `claude setup-token`, then `cloudy-cloud setup` and answer claude.
 - `codex`: setup asks for the OpenAI key when codex is chosen and stores it as the Instabox secret `OPENAI_API_KEY` (host `api.openai.com`). By hand: `printf %s "$OPENAI_API_KEY" | npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in `~/.config/cloudy-cloud/env`.
 - `codex-chatgpt`: run `codex login` with "Sign in with ChatGPT", then `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`.

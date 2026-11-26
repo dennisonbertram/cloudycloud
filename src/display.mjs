@@ -10,6 +10,7 @@ import { listMachines } from './dashboard.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { ID_RE, ID_ERR, resolveTarget } from './open.mjs';
 import { guide, CODES } from './errors.mjs';
+import { providerFor } from './provider-lookup.mjs';
 
 export const USAGE = helpText('display', true);
 
@@ -54,27 +55,30 @@ export async function run(argv, deps = {}) {
       if (/is not running/.test(e.message)) fail(`${e.message}\n${guide('machine_not_running', { id: a.id })}`);
       throw e;
     }
-    const row = machines.find((m) => m.id === machine); // by the resolved machine id: a is an agent id, a machine name or a machine id
-    if (!provider.caps.hasDisplay) fail(guide('display_unsupported', { provider: provider.name }));
+    const row = machine;
+    const selected = providerFor(provider, machine);
+    const machineId = machine.id;
+    const selectedName = selected.name[0].toUpperCase() + selected.name.slice(1);
+    if (!selected.caps.hasDisplay) fail(guide('display_unsupported', { provider: selected.name }));
     if (!a.unshare && row?.labels?.kind === 'omarchy') fail(guide('desktop_unavailable', { kind: 'omarchy' }));
     // Provider errors with a display code get that code's plain next step; the raw message never carries the link.
     const call = async (fn) => {
       try { return await fn(); } catch (e) {
         // Never print the provider's own text: it can carry the link. Use the guide for its code, or a fixed message.
         if (['desktop_unavailable', 'display_forbidden'].includes(e.code)) fail(guide(e.code, { kind: e.kind }));
-        if (CODES.includes(e.code) && e.code !== 'unknown') fail(guide(e.code, { provider: provider.name, id: a.id }));
+        if (CODES.includes(e.code) && e.code !== 'unknown') fail(guide(e.code, { provider: selected.name, id: a.id }));
         // A display request runs through the SDK, never the provider CLI — naming one would be wrong
         // (Instabox's would suggest npx, a whole different install). doctor checks self-hosted boxes only.
-        fail(`${Name} could not complete the display request. Try again${provider.name === 'self-hosted' ? ', or run: cloudy-cloud doctor' : ''}.`);
+        fail(`${selectedName} could not complete the display request. Try again${selected.name === 'self-hosted' ? ', or run: cloudy-cloud doctor' : ''}.`);
       }
     };
     if (a.unshare) {
-      await call(() => provider.revokeDisplayLinks(machine));
+      await call(() => selected.revokeDisplayLinks(machineId));
       err(`Revoked every display link for ${a.id}.`);
       return 0;
     }
     if (a.screenshot) {
-      const png = await call(() => provider.screenshot(machine));
+      const png = await call(() => selected.screenshot(machineId));
       // 'wx' creates the file exclusively: it refuses an existing file and any symlink, so nothing is overwritten.
       try { await writeFile(a.screenshot, png, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0) }); } catch (e) {
         fail(e.code === 'EEXIST' || e.code === 'ELOOP' ? `${a.screenshot} already exists (or is a symlink); choose a new file name.` : `Could not write ${a.screenshot} (${e.code ?? 'error'}).`);
@@ -88,7 +92,7 @@ export async function run(argv, deps = {}) {
     if (row?.labels?.kind === 'gpu') slow();
     const timer = setTimeout(slow, deps.slowMs ?? 5000);
     let r;
-    try { r = await call(() => provider.displayLink(machine, { control: a.control, ttlSeconds: a.ttl })); } finally { clearTimeout(timer); }
+    try { r = await call(() => selected.displayLink(machineId, { control: a.control, ttlSeconds: a.ttl })); } finally { clearTimeout(timer); }
     out(r.url);
     err(`Anyone with the link can ${a.control ? 'view and control' : 'view'} the screen. The link stops working for new viewers at ${new Date(r.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })} (${new Date(r.expiresAt).toLocaleDateString()}). To cut off anyone already connected, run: cloudy-cloud display ${a.id} --unshare`);
     return 0;

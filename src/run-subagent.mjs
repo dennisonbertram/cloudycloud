@@ -2,11 +2,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail } from './limits.mjs';
+import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail, isRateLimited, isQuotaExceeded } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
 import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
@@ -25,10 +25,13 @@ import { redact, redactText, GH_PULL_URL } from './events.mjs';
 import { writeSecretFile } from './providers/index.mjs';
 import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
+import { createSnapshotManager } from './snapshot.mjs';
+import { checkpointRecord, recoverFromCheckpoint, saveCheckpoint, updateCheckpointPlacement, verifyOriginCheckpoint } from './recovery.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENT_ID = /^[0-9a-f]{8}$/;
 export const SECRETS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 
 // Seconds a worker machine lives: CLOUDY_CLOUD_WORKER_HOURS, default 6, at most the provider's TTL cap (hours).
@@ -40,7 +43,7 @@ const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.g
 const GITHUB_SSH = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?$/;
 const NO_ORIGIN = guide('no_origin');
 // A real key was about to go to a machine whose provider keeps keys off machines.
-export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused' });
+export const refused = (name) => Object.assign(new Error(`${name} is set as a real value, not as a proxy secret.\n${guide('key_on_machine_refused')}`), { code: 'key_on_machine_refused', credentialRefusal: true });
 const IDLE_MS = 60 * 60_000;
 const SETUP_MS = 120_000;
 const WAIT_DEFAULT_S = 600;
@@ -70,13 +73,29 @@ const githubUrl = (raw) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const AUTH_FAIL = /403|Permission to|denied|Authentication failed|could not read Username|invalid credentials/i;
 const tail = (s) => String(s ?? '').replace(/:\/\/[^/@\s]+@/g, '://[redacted]@').trim().slice(-1500);
+const beforeTotals = (text, note) => {
+  const totalAt = text.lastIndexOf('\nTotal:');
+  const footerAt = totalAt < 0 ? -1 : text.lastIndexOf('\n', totalAt - 1);
+  return footerAt < 0 ? `${text}\n${note}` : `${text.slice(0, footerAt)}\n${note}${text.slice(footerAt)}`;
+};
+const pushLifecycle = (value = {}) => ({
+  ...(value.push_status !== undefined && { push_status: value.push_status }),
+  ...(value.workspace_dirty !== undefined && { workspace_dirty: value.workspace_dirty }),
+  ...(value.preserve_worker !== undefined && { preserve_worker: value.preserve_worker }),
+});
+
+export const withLatestCheckpoint = (turnResult, autofixResult) => ({
+  ...turnResult,
+  ...(autofixResult?.checkpointSha && { checkpointSha: autofixResult.checkpointSha }),
+  ...pushLifecycle(autofixResult),
+});
 
 // deps: { createSandbox(envs), env, cwd, open: Map<id, agent>, tasks: Map<taskId, turn>, asTask, idleMs }.
 // asTask is true when the MCP client can take a task answer (see server.mjs); then cloud_agent and cloud_agent_message
 // answer with a task and the result arrives through getTask. Otherwise they answer at once and cloud_agent_wait collects.
-// Agent: { id, description, status: queued|starting|running|idle|failed|stopped, result: {text, error, reported},
+// Agent: { id, description, status: queued|starting|running|idle|failed|stop-pending|stopped, result: {text, error, reported},
 //          sandbox, home, root, sha, sessionId, model, agent, idleSince, turn (the latest), turns, timers... }.
-// Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>', n, agent, status: working|completed|failed|cancelled,
+// Turn (one claude run, and the MCP task for it): { id: 'cc-<agent>-t<n>[-<recovery incarnation>]', n, agent, status: working|completed|failed|cancelled,
 //          progress, result, createdAt, updatedAt, cancelled, abort, done }.
 // `literals`: exact token values the user consented to put on the machines (see agentMcp); filled when an agent starts.
 // Exact secret values to remove from any text: the known key names, provider keys, MCP tokens, plus consented literals.
@@ -84,19 +103,29 @@ const MCP_TOKEN = /^MCP_[A-Z0-9_]+_TOKEN$/;
 export const secretValues = (env, keyName, literals = []) => [...[...SECRETS, keyName, ...Object.keys(env).filter((k) => PROVIDER_KEY.test(k) || MCP_TOKEN.test(k))].map((k) => env[k]).filter(Boolean), ...literals].filter((v) => typeof v === 'string' && v.length >= 4); // a shorter value would over-redact
 function helpers(env, literals, keyName, tool) {
   const scrub = (s) => secretValues(env, keyName, literals).reduce((t, v) => t.split(v).join('[redacted]'), String(s ?? ''));
-  const ok = (text) => ({ content: [{ type: 'text', text: scrub(text) }] });
+  const cleanValue = (value) => typeof value === 'string' ? scrub(value) : Array.isArray(value) ? value.map(cleanValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cleanValue(item)])) : value;
+  const ok = (text, structuredContent) => ({ content: [{ type: 'text', text: scrub(text) }], ...(structuredContent && { structuredContent: cleanValue(structuredContent) }) });
   // Our own error texts may carry trusted guidance fields (local, short, next) — the same fields errorScreen
   // renders when one of these errors reaches a terminal; provider-returned text never goes into them.
-  return { scrub, ok, fail: (text, bare, fields) => ({ ...ok(bare || /^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`), isError: true, ...fields }) };
+  return { scrub, cleanValue, ok, fail: (text, bare, fields = {}) => ({ ...ok(bare || /^What happened:/.test(text) ? text : `${text}\n${guide('invalid_args', { tool })}`, { status: 'failed', error: true, message: scrub(text), ...((fields.next ?? /Next step: ([^\n]+)/.exec(text)?.[1]) && { action: scrub(fields.next ?? /Next step: ([^\n]+)/.exec(text)[1]) }) }), isError: true, ...fields }) };
 }
 // The start queue paces every machine create of one server, so it must be one object for all tool calls.
 // The pace is the env setting if set, else the plan's starts a minute less a 10 % reserve, else the provider default (25).
 // q.learnPlan() reads the plan once (fire and forget from runSubagent); a failed read keeps the default.
 export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
-  const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
-  // This server's other agents holding or creating a machine. Admission counts a start whose create is still in flight; the count shown to people (shown) counts only agents that own a machine.
-  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || (a.status === 'starting' && !(shown && !a.sandbox)))).length;
+  const providers = provider?.providers?.length ? provider.providers : provider ? [provider] : [];
+  const multi = providers.length > 1;
+  const providerPlans = new Map();
+  const providerStamps = new Map();
+  const planRate = (p) => providerPlans.get(p)?.startsPerMinute > 0
+    ? Math.max(1, providerPlans.get(p).startsPerMinute - Math.ceil(providerPlans.get(p).startsPerMinute / 10))
+    : p?.caps?.startsPerMin || 25;
+  const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN)
+    || (multi ? providers.reduce((sum, p) => sum + planRate(p), 0) : plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10)))
+    || provider?.caps.startsPerMin || 25;
+  // Snapshot preparation is not a machine slot. Admission also counts a provider create in flight so concurrent creates cannot exceed the plan cap.
+  const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'stop-pending' || (a.status === 'starting' && (shown ? !!a.sandbox : !!a.sandbox || !!a.machineCreating)))).length;
   // Per-profile cap (#55): profiles.json maxConcurrent, else CLOUDY_CLOUD_PROFILE_MAX, else none. The count is this server's own agents plus,
   // best effort, the machines the provider lists for the profile (other sessions); the list is eventually consistent, so it is approximate.
   const listed = new Map(); // profile name -> { n, at }
@@ -108,23 +137,62 @@ export const startQueue = (env, provider, open, opts) => {
       listed.set(name, { n: l?.n ?? 0, at: Date.now() });
       Promise.resolve(provider.list({ purpose: 'cloudy-cloud', profile: name })).then((m) => listed.set(name, { n: Array.isArray(m) ? m.filter((x) => (x.status ?? x.state) === 'running' || (x.status ?? x.state) === 'starting').length : 0, at: Date.now() })).catch(() => {});
     }
-    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && ['running', 'idle', 'starting'].includes(x.status)).length;
+    const local = [...(open?.() ?? [])].filter((x) => x !== a && x.profile?.name === name && (x.status === 'running' || x.status === 'idle' || x.status === 'stop-pending' || (x.status === 'starting' && (x.sandbox || x.machineCreating)))).length;
     const n = Math.max(local, listed.get(name)?.n ?? 0);
     return n >= max ? `waiting for a free ${name} slot (${n} of ${max} running; cap set by maxConcurrent or CLOUDY_CLOUD_PROFILE_MAX)` : undefined;
   };
-  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
+  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => multi ? undefined : plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
   q.plan = () => plan;
-  q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
-    if (!p) return;
-    plan = p;
-    q.poke(); // starts already waiting for the old, lower rate may go now
-    const per = (n) => (n > 0 ? `${n}` : 'no limit');
-    log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${p.tier}: ${per(p.startsPerMinute)} starts/min (using ${pace()}), ${per(p.maxRunning)} running at once, sizes ${p.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
+  q.learnPlan = () => (learning ??= Promise.all(providers.map((p) => Promise.resolve().then(() => p.plan?.()).catch(() => null).then((value) => {
+    if (value) providerPlans.set(p, value);
+    return value;
+  }))).then((values) => {
+    plan = values[0] ?? null; // legacy plan guidance remains tied to the primary provider
+    q.poke(); // starts already waiting for the old rate may now use learned provider rates
+    if (plan) {
+      const per = (n) => (n > 0 ? `${n}` : 'no limit');
+      log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${plan.tier}: ${per(plan.startsPerMinute)} starts/min (using ${pace()}), ${per(plan.maxRunning)} running at once, sizes ${plan.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
+    }
   }).catch(() => {}));
+  q.planFor = async (p) => { await q.learnPlan(); return providerPlans.get(p) ?? null; };
+  // For multiple providers, reserve per-adapter start rates and skip a provider whose own running cap is known full.
+  // Listing failures or unreadable plans remain unknown and are left to the adapter's normal refusal path.
+  q.providerFull = async (agent, p) => {
+    const currentPlan = providerPlans.get(p) ?? await p.plan?.().catch(() => null);
+    if (currentPlan && !providerPlans.has(p)) providerPlans.set(p, currentPlan);
+    const max = currentPlan?.maxRunning;
+    if (!(max > 0)) return false;
+    let rows;
+    try { rows = await p.list({ purpose: 'cloudy-cloud' }); } catch { return false; }
+    const running = rows.filter((m) => ['running', 'starting'].includes(m.status ?? m.state)).length;
+    const local = [...(open?.() ?? [])].filter((a) => a !== agent && (a.provider === p || a.machineCreatingProvider === p)
+      && ['running', 'idle', 'starting', 'stop-pending'].includes(a.status)).length;
+    return Math.max(running, local) >= max;
+  };
+  q.providerRateSlot = (p) => {
+    const learned = providerPlans.get(p);
+    if (learned && !(learned.startsPerMinute > 0)) return true; // the provider reports no plan start-rate limit
+    const cap = planRate(p);
+    if (!(cap > 0)) return true;
+    const nowMs = (opts?.now ?? Date.now)();
+    const recent = (providerStamps.get(p) ?? []).filter((at) => nowMs - at < 60_000);
+    if (recent.length >= cap) { providerStamps.set(p, recent); return false; }
+    recent.push(nowMs);
+    providerStamps.set(p, recent);
+    return true;
+  };
+  q.providerRateWait = async () => {
+    const nowMs = (opts?.now ?? Date.now)();
+    const waits = [...providerStamps.values()].flat().filter((at) => nowMs - at < 60_000).map((at) => at + 60_000 - nowMs);
+    if (waits.length) await (opts?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(Math.min(...waits));
+  };
   return q;
 };
 // One shared queue per server, built the same way for every caller (buildServer and the tool handlers).
-export const sharedQueue = (deps) => (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
+export const sharedQueue = (deps) => {
+  deps.snapshots ??= createSnapshotManager({ git, remoteRefs: deps.bundleRemoteRefs });
+  return (deps.queue ??= startQueue(deps.env, deps.provider, () => deps.open?.values()));
+};
 const ctxOf = (deps, tool) => {
   deps.tasks ??= new Map();
   sharedQueue(deps);
@@ -133,6 +201,8 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
+const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
+const remoteWorkspace = (a) => `${a.home}/repo${a.workspaceRel ? `/${a.workspaceRel.split(/[\\/]/).join('/')}` : ''}`;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
 const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
 const PARSE = { claude: parseStream, pi: parsePiStream, omp: parseOmpStream, codex: parseCodexStream, opencode: parseOpencodeStream };
@@ -185,6 +255,27 @@ function agentMcp(env, proxy = true) {
 }
 const active = (a) => a.status === 'queued' || a.status === 'starting' || a.status === 'running';
 
+export async function resolveWorkspace(boundPath, workspace) {
+  let boundRoot;
+  try { boundRoot = await git(boundPath, 'rev-parse', '--show-toplevel'); }
+  catch { throw new Error('cloudy-cloud needs a bound git repository with at least one commit. Run `git init` and commit your files, then retry.'); }
+  if (workspace !== undefined && (typeof workspace !== 'string' || !workspace.trim())) throw new Error('workspace must be a non-empty path inside the bound repo');
+  const target = resolve(boundRoot, workspace ?? '.');
+  const rel = relative(boundRoot, target);
+  if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel)) throw new Error('workspace must stay inside the bound repo');
+  let actual;
+  try { actual = await realpath(target); }
+  catch { throw new Error('workspace does not exist inside the bound repo'); }
+  const actualRel = relative(boundRoot, actual);
+  if (actualRel === '..' || actualRel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(actualRel)) throw new Error('workspace must stay inside the bound repo');
+  let root;
+  try { root = await git(actual, 'rev-parse', '--show-toplevel'); }
+  catch { throw new Error('workspace must be a directory inside the bound git repo'); }
+  if (resolve(root) !== resolve(boundRoot)) throw new Error('workspace must resolve to the bound repo');
+  await git(root, 'rev-parse', '--verify', 'HEAD');
+  return { root, cwd: actual, relative: actualRel };
+}
+
 function wake(a) {
   const w = a.waiters.splice(0);
   for (const r of w) r();
@@ -196,13 +287,67 @@ async function stop(a, open, gone) {
   clearTimeout(a.idleTimer);
   a.cancelled = true;
   a.cancelQueue?.();
-  if (open.get(a.id) === a) open.delete(a.id);
-  if (gone && a.branch) { if (gone.size >= 500) gone.delete(gone.keys().next().value); gone.set(a.id, a.branch); }
-  a.status = 'stopped';
-  a.emit?.({ type: 'status', status: 'stopped' });
-  if (a.turn?.status === 'working') endTurn(a.turn, 'cancelled', { text: 'Agent stopped.', error: false, reported: true });
+  if (a.status === 'stopped') return;
+  a.stopPending = true;
+  a.status = 'stop-pending';
+  a.emit?.({ type: 'status', status: 'stop-pending' });
+  if (a.turn?.status === 'working') {
+    a.turn.cancelled = true;
+    a.turn.abort.abort();
+    endTurn(a.turn, 'cancelled', { text: 'Agent stop is pending.', error: false, reported: true });
+  }
   wake(a);
-  await a.sandbox?.kill().catch(() => {});
+  if (a.stopPromise) return a.stopPromise;
+  const attempt = async () => {
+    if (a.setupPromise) await a.setupPromise.catch(() => {});
+    if (!a.sandbox && (a.uncertainCreate || a.createAttempt)) {
+      const created = a.uncertainCreate ?? a.createAttempt;
+      const { provider, labels } = created;
+      if (created.cleanupUnconfirmed) {
+        // Adapters use this for a machine they allocated but could not finish provisioning.
+        // Delete it directly; it must never be adopted as a runnable worker.
+        let machineId = created.machineId;
+        if (!machineId) {
+          let listError;
+          const rows = await provider.list(labels, { onError: (e) => { listError ??= e; } });
+          if (listError) throw listError;
+          const matches = rows.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value));
+          if (matches.length > 1) throw new Error(`Provider ${provider.name} returned multiple machines for agent ${a.id}; refusing to choose one while cleaning up.`);
+          machineId = matches[0]?.id;
+        }
+        if (machineId) await provider.delete(machineId);
+      } else {
+        let listError;
+        const rows = await provider.list(labels, { onError: (e) => { listError ??= e; } });
+        if (listError) throw listError;
+        const matches = rows.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value));
+        if (matches.length > 1) throw new Error(`Provider ${provider.name} returned multiple machines for agent ${a.id}; refusing to choose one while stopping.`);
+        if (matches.length === 1) {
+          a.sandbox = await provider.connect(matches[0].id);
+          a.provider = provider;
+        }
+      }
+      // A complete exact-label listing with no match confirms that this create left no machine.
+      a.uncertainCreate = undefined;
+      a.createAttempt = undefined;
+    }
+    if (a.createAttempt) throw new Error(`Machine creation for agent ${a.id} is still unresolved.`);
+    if (a.sandbox) {
+      try { await a.sandbox.kill(); }
+      catch (e) {
+        if (e?.code !== 'not_found' && e?.status !== 404) throw e;
+      }
+    }
+    a.stopPending = false;
+    a.status = 'stopped';
+    if (open.get(a.id) === a) open.delete(a.id);
+    if (gone && a.branch) { if (gone.size >= 500) gone.delete(gone.keys().next().value); gone.set(a.id, a.branch); }
+    a.emit?.({ type: 'status', status: 'stopped' });
+    wake(a);
+  };
+  a.stopPromise = attempt();
+  try { await a.stopPromise; }
+  finally { a.stopPromise = undefined; }
 }
 
 function endTurn(t, status, result) {
@@ -217,15 +362,19 @@ function newTurn(a) {
   a.turns = (a.turns ?? 0) + 1;
   let resolve;
   const done = new Promise((r) => { resolve = r; });
-  const t = { id: `cc-${a.id}-t${a.turns}`, n: a.turns, agent: a, status: 'working', progress: PROGRESS[harnessOf(a)](), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
+  const t = { id: `cc-${a.id}-t${a.turns}${a.taskIdSuffix ?? ''}`, n: a.turns, agent: a, status: 'working', progress: PROGRESS[harnessOf(a)](), createdAt: Date.now(), updatedAt: Date.now(), abort: new AbortController(), done, resolve };
   a.turn = t;
   return t;
 }
 
 function armIdle(a, ctx) {
   clearTimeout(a.idleTimer);
+  if (a.stopPending || a.status === 'stopped') return;
   a.idleSince = Date.now();
-  a.idleTimer = setTimeout(() => { log(`agent ${a.id} idle, stopping`); stop(a, ctx.open, ctx.stoppedBranches); }, ctx.idleMs ?? IDLE_MS);
+  a.idleTimer = setTimeout(() => {
+    log(`agent ${a.id} idle, stopping`);
+    stop(a, ctx.open, ctx.stoppedBranches).catch((e) => log(`idle stop failed for ${a.id}: ${ctx.scrub(e?.message)}`));
+  }, ctx.idleMs ?? IDLE_MS);
   a.idleTimer.unref?.();
 }
 
@@ -235,28 +384,48 @@ async function safetyPush(a, ctx) {
   const branch = a.branch;
   try {
     const push = async () => (await a.sandbox.commands.run(
-      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
-      ` echo "SHA $(git rev-parse HEAD)"; git status --porcelain | head -20 | sed 's/^/ST /'; true`,
+      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')"; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
+      ` echo "SHA $(git rev-parse HEAD)"; if status=$(git status --porcelain 2>&1); then echo STATUS_OK; if [ -n "$status" ]; then printf '%s\n' "$status" | head -20 | sed 's/^/ST /'; fi; else echo STATUS_FAIL; printf '%s\n' "$status" | tail -n 8 | sed 's/^/STATUSERR /'; fi; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
     let out = await push();
     const marker = (m) => new RegExp(`^${m}$`, 'm').test(out); // whole lines only: a file or error text may hold the same word
-    if (!marker('PUSHOK') && !marker('NOCHANGE')) { await (ctx.sleep ?? sleep)(5000); out = await push(); } // one retry: GitHub rejects pushes transiently
+    if (!marker('PUSHOK') && !marker('NOCHANGE') && marker('PUSHFAIL')) {
+      await (ctx.sleep ?? sleep)(5000);
+      out = await push();
+    }
     const lines = out.split('\n');
     const paths = lines.filter((l) => l.startsWith('ST ')).map((l) => l.slice(6));
-    const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4, 11);
-    const dirty = paths.length ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
-    if (marker('NOCHANGE')) return { where: `No changes, no branch pushed.${dirty}` };
+    const sha = lines.find((l) => l.startsWith('SHA '))?.slice(4);
+    const statusOk = marker('STATUS_OK');
+    const statusErrors = tail(lines.filter((l) => l.startsWith('STATUSERR ')).map((l) => l.slice(10)).join('\n'));
+    const hasDirtyPaths = paths.length > 0;
+    const dirty = hasDirtyPaths ? ` Uncommitted changes left in the sandbox (ask the agent to commit and push): ${paths.join(', ')}.` : '';
+    const pushStatus = marker('PUSHOK') ? 'pushed' : marker('NOCHANGE') ? 'no-change' : marker('PUSHFAIL') ? 'failed' : 'unknown';
+    if (!statusOk) {
+      const noCommitText = pushStatus === 'no-change' ? 'No new commits. ' : '';
+      return {
+        error: true, preserve_worker: true, workspace_dirty: null, push_status: pushStatus,
+        where: `${noCommitText}Git status could not be confirmed${statusErrors ? ` (${statusErrors})` : ''}; the worker stays open because uncommitted work may remain. Retry a message or inspect the workspace before stopping it.${marker('PUSHOK') ? ` The push to origin ${branch} succeeded, but its resulting workspace state is unknown.` : ''}`,
+      };
+    }
+    if (marker('NOCHANGE')) return dirty
+      ? { error: true, preserve_worker: true, workspace_dirty: true, push_status: 'no-change', where: `No new commits.${dirty}` }
+      : { where: 'No changes, no branch pushed.', workspace_dirty: false, push_status: 'no-change', preserve_worker: false };
     if (marker('PUSHOK')) {
+      const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
       const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
       const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
-      return { where: `Pushed to origin ${branch} at ${sha}. ${get}${dirty}` };
+      return { sha, ...(hasDirtyPaths && { error: true, preserve_worker: true }), workspace_dirty: hasDirtyPaths, push_status: 'pushed', preserve_worker: hasDirtyPaths, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
-    return { failed: true, where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
+    if (!marker('PUSHFAIL')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
+    return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'failed', where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
-    log('safety push failed:', e?.message);
-    return { gone: true, where: `The sandbox could not be reached to push. Only work the agent already pushed to origin ${branch} survives.` };
+    log('safety push failed:', ctx.scrub(e?.message));
+    if (e?.code === 'not_found' || e?.status === 404) return { gone: true, error: true, preserve_worker: false, workspace_dirty: null, push_status: 'unknown', where: `The sandbox is confirmed gone before the safety push (${ctx.scrub(e?.message)}). Only work already pushed to origin ${branch} survives.` };
+    return { failed: true, error: true, preserve_worker: true, workspace_dirty: null, push_status: 'unknown', where: `The sandbox could not be reached to push (${ctx.scrub(e?.message)}). The agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.` };
   }
 }
 
@@ -302,7 +471,7 @@ const RETRY_MIN_LEFT_MS = 5 * 60_000; // no attempt starts with less than this l
 // One deadline covers the whole caller-visible turn: each attempt, retries included, gets only the time left of it.
 async function turn(a, message, ctx, t) {
   const max = a.profile && harnessOf(a) !== 'claude' ? (ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES !== undefined && Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) >= 0 ? Number(ctx.env.CLOUDY_CLOUD_PROVIDER_RETRIES) : 3) : 0;
-  const deadline = Date.now() + (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000;
+  const deadline = Date.now() + (turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000;
   const giveUp = (r, c, n) => {
     const why = !c.retryable ? '' : c.kind === 'model_not_found' && !answered.has(a.profile.name) ? `\nThe model is not available to this key (profile ${a.profile.name} has not answered in this session).\n${guide('model_not_found', { profiles: a.profile.name })}` : `\nGave up after ${n + 1} attempt${n ? 's' : ''}.\n${guide('provider_unavailable', { id: a.id, profile: a.profile.name })}`;
     return { ...r, text: ctx.scrub(`${r.text}\n${providerDetail(r.text)}${why}`) };
@@ -315,12 +484,12 @@ async function turn(a, message, ctx, t) {
     const c = classifyProviderError(r.text);
     if (!c) return r;
     const ok = c.retryable && (c.kind !== 'model_not_found' || answered.has(a.profile.name));
-    if (!ok || n >= max || t.cancelled || a.status === 'stopped' || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
+    if (!ok || r.uncertainExecution || n >= max || t.cancelled || a.status === 'stopped' || a.stopPending || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
     t.progress = PROGRESS[harnessOf(a)]();
     const wait = Math.min(RETRY_WAIT_MS[Math.min(n, 2)], Math.max(deadline - Date.now(), 0));
     a.emit?.({ type: 'progress', text: `provider error (${providerDetail(r.text).replace('Provider status: ', '')}), retrying in ${wait / 1000}s (attempt ${n + 2} of ${max + 1})` });
     await nap(wait, t, ctx.sleep); // the wait ends early on cancel or stop
-    if (t.cancelled || a.status === 'stopped') return { cancelled: true, text: `Turn cancelled. The agent is still open.` };
+    if (t.cancelled || a.status === 'stopped' || a.stopPending) return { cancelled: true, text: `Turn cancelled. The agent is still open.` };
     if (deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
   }
 }
@@ -331,7 +500,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
   try {
     await a.sandbox.files.write(`${a.home}/prompt.txt`, message);
   } catch (e) {
-    return { error: true, gone: true, text: `The sandbox is no longer reachable (${scrub(e?.message)}). Only work the agent already pushed to origin ${a.branch} survives.` };
+    if (e?.code === 'not_found' || e?.status === 404) return { error: true, gone: true, text: `The sandbox is confirmed gone (${scrub(e?.message)}). Only work already pushed to origin ${a.branch} survives.` };
+    return { error: true, retryableTransport: true, text: `The prompt could not be written to the sandbox (${scrub(e?.message)}). The agent remains open; send the message again when the sandbox is reachable.` };
   }
   // model, agent and session id are validated, so they are safe inside the command string.
   // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS stops Claude Code moving long commands to the background, which ends a one-shot -p turn.
@@ -366,7 +536,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
     if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
     stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
-      cwd: `${a.home}/repo`, timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
     })).stdout;
   } catch (e) {
     failure = e;
@@ -376,17 +546,31 @@ async function turnOnce(a, message, ctx, t, deadline) {
   if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
   Object.assign(t.meta, { endedAt: Date.now(), exit: failure ? (failure.exitCode ?? null) : 0 });
   await writeMeta(a, ctx);
-  const { where, failed, gone } = await safetyPush(a, ctx);
+  const { where, failed, gone, sha: checkpointSha, error: pushError, preserve_worker, workspace_dirty, push_status } = await safetyPush(a, ctx);
 
-  if (t.cancelled) return { cancelled: true, gone, text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
+  if (t.cancelled) return { cancelled: true, gone, ...(checkpointSha && { checkpointSha }), text: `Turn cancelled. The agent is still open.\n${where}\n${totals(a, t)}` };
   if (failure) {
+    // A remote command lookup can return 404 while the machine is still reachable. Only the
+    // independent safety push can confirm that the sandbox itself is gone.
+    const turnGone = !!gone;
+    const commandNotFound = failure?.code === 'not_found' || failure?.status === 404;
     const code = failure.exitCode ?? 'none (timeout or sandbox error)';
     const limit = failure.exitCode === undefined ? `\nThe turn may have hit its ${turnMs / 60_000}-minute limit (CLOUDY_CLOUD_TURN_MINUTES).` : '';
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
-    return { error: true, gone, text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${where}\n${totals(a, t)}`) };
+    const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
+    const failureWhere = retainedWithoutSession
+      ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')
+        .replace(/Retry a message or stop the agent after the connection recovers\./g, '')
+        .replace(/Retry a message or inspect the workspace before stopping it\./g, 'Inspect the workspace or explicitly stop the agent.')
+        .replace(/the agent is still open, ask it to push\./g, 'The sandbox is retained for inspection.')
+      : where;
+    const noSessionNote = retainedWithoutSession
+      ? '\nThe sandbox is retained because workspace or push state may be uncommitted or unconfirmed. No session ID was reported, so this conversation cannot be resumed. Inspect the workspace or explicitly stop the agent.'
+      : '';
+    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -410,7 +594,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
       else { text = 'Sandbox returned an invalid session_id, so it was not used.'; error = true; }
     }
   }
-  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: error || failed || gone, gone, pushed: where.startsWith('Pushed to'), ...(!error && (failed || gone) ? { pushOnly: true } : {}) };
+  const resultError = error || failed || gone || pushError;
+  return { text: pat(`${text}\n\n${where}\n${totals(a, t)}`), error: resultError, gone, pushed: where.startsWith('Pushed to'), preserve_worker, workspace_dirty, push_status, ...(checkpointSha && { checkpointSha }), ...(!error && (failed || gone || pushError) ? { pushOnly: true } : {}) };
 }
 
 // Stay 1 MiB under the provider's upload limit. Over that, upload only the commits GitHub lacks.
@@ -456,13 +641,42 @@ async function checkTools(a) {
   if (missing.length) throw Object.assign(new Error(`${a.kind.label} machine lacks ${missing.join(', ')}`), { guideText: guide('machine_missing_tools', { kind: a.kind.label, tools: missing.join(', ') }) });
 }
 
+// Resolve credentials separately for each provider. A key value is never copied to a provider that promises
+// proxy secrets; local-secret providers receive only the secret name and substitute the local value themselves.
+function credentialsFor(candidate, a, env) {
+  const envs = {}, keySecrets = [], named = proxySecrets(env);
+  const proxied = candidate.caps.hasProxySecrets ? named : new Set();
+  const keyName = a.profile ? a.profile.keyName
+    : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!candidate.caps.localSecrets && proxied.has(n)))
+      ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
+  const refusal = (message) => Object.assign(new Error(message), { credentialRefusal: true });
+  if (keyName && candidate.caps.localSecrets) {
+    if (env[keyName]) keySecrets.push(keyName);
+    else throw refusal(`${keyName} is named in CLOUDY_CLOUD_PROXY_SECRETS but has no value. On the ${candidate.name} provider the value stays on this computer: add ${keyName}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+  } else if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
+  else if (keyName && !env[keyName]) throw refusal(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${candidate.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
+  else if (keyName && candidate.caps.hasProxySecrets) throw refused(keyName);
+  else if (keyName) envs[keyName] = env[keyName];
+  const coord = a.role === 'coordinator' ? coordinatorKeys(env, candidate, { single: true }) : { secrets: [] };
+  if (coord.legacy?.length) throw refused(coord.legacy[0]);
+  return { envs, keySecrets, coord };
+}
+
+const failoverHow = (e) => {
+  const code = String(e?.code ?? '');
+  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity'
+    || code === 'size_not_allowed' || code === 'machine_not_on_plan' || code === 'machine_gpu_limit') return 'next';
+  if (code === 'transient' || code === 'create_unknown' || code === 'ambiguous' || (!code && classifyProviderError(e?.message)?.kind === 'connection')) return 'reconcile';
+};
+
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
-  const { env, provider } = ctx;
-  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress, signal }, labels) => provider.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }), ...(signal && { signal }) })); // role and egress are options, not labels: Instabox's wire request stays the same
+  const { env } = ctx;
+  let cands = a.providers?.length ? a.providers : [ctx.provider];
+  const createSandbox = ctx.createSandbox ?? ((envs, { deleteAfterSeconds, secrets, role, kind, size, egress, signal }, labels, p) => p.create({ image: 'agent-browser', kind: kind ?? parseMachine(), ...(size && { size }), envs, labels: { purpose: 'cloudy-cloud', owner: ctx.owner, ...labels }, ttlSeconds: deleteAfterSeconds, secrets: secrets ?? [], ...(role && { role }), ...(egress && { egress }), ...(signal && { signal }) }));
   if (a.mcpError) throw new Error(a.mcpError);
-  const tmp = await mkdtemp(join(tmpdir(), 'cloudy-cloud-'));
   const branch = a.branch;
+  let bundleSnapshot;
   try {
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     // Many agents starting together can collide on index.lock here; wait and retry.
@@ -473,78 +687,166 @@ async function setup(a, ctx) {
         await new Promise((r) => setTimeout(r, 100 * i));
       }
     }
-    a.sha = a.base?.sha ?? (snap || (await git(a.root, 'rev-parse', 'HEAD')));
-    const ref = `refs/cc-keep/${a.id}`; // temporary: only so `git bundle` can name the snapshot
-    const bundle = join(tmp, 'in.bundle');
-    await git(a.root, 'update-ref', ref, a.sha);
-    let prereqs = []; // commits a thin bundle needs from GitHub; empty means the bundle is full
+    const head = a.base?.sha ?? await git(a.root, 'rev-parse', 'HEAD');
+    const uploadLimit = (p) => p.caps.uploadMaxBytes ?? Infinity;
+    const usableLimit = (p) => Math.max(0, uploadLimit(p) - BUNDLE_MARGIN);
+    const max = ctx.bundleMax ?? Math.max(...cands.map(usableLimit));
+    bundleSnapshot = await ctx.snapshots.acquire(a.root, head, snap, max);
+    if (ctx.bundleMax === undefined && Number.isFinite(bundleSnapshot.size)) {
+      const tooSmall = cands.filter((p) => bundleSnapshot.size > usableLimit(p));
+      cands = cands.filter((p) => bundleSnapshot.size <= usableLimit(p));
+      for (const p of tooSmall) (a.skipped ??= []).push({ name: p.name, why: `upload limit ${uploadLimit(p)} bytes is smaller than the ${bundleSnapshot.size}-byte repository bundle` });
+      if (!cands.length) throw new Error(`The repository bundle (${bundleSnapshot.size} bytes) exceeds the upload limit of every compatible provider. Push the branch to GitHub first, then start the agent again.`);
+      a.providers = cands;
+    }
+    a.sha = bundleSnapshot.sha; // Equivalent captures share the same commit object as well as the bundle.
+    const prereqs = bundleSnapshot.prereqs; // commits a thin bundle needs from a currently advertised origin ref
     let data;
-    const max = ctx.bundleMax ?? provider.caps.uploadMaxBytes - BUNDLE_MARGIN;
-    try {
-      await git(a.root, 'bundle', 'create', bundle, ref);
-      data = await readFile(bundle);
-      if (data.length > max) {
-        const tooBig = () => new Error(`The uncommitted/unpushed changes are too large to upload (${data?.length ?? 0} bytes, limit ${max}). Push the branch to GitHub first, then start the agent again.`);
-        // The bundle header lists each prerequisite commit on a line starting with "-".
-        const thin = await git(a.root, 'bundle', 'create', bundle, ref, '--not', '--remotes=origin').then(() => true, (e) => {
-          if (/empty bundle/i.test(`${e?.stderr ?? ''}`)) return false; // everything is already on GitHub
-          throw e;
-        });
-        data = thin ? await readFile(bundle) : null;
-        if (thin) prereqs = data.toString('latin1', 0, data.indexOf('\n\n')).split('\n').filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41));
-        else prereqs = [a.sha];
-        if (!prereqs.length || data?.length > max) throw tooBig();
-      }
-    } finally {
-      await git(a.root, 'update-ref', '-d', ref).catch(() => {});
-    }
-    const envs = {};
-    // A profile worker gets only its provider key, never the Claude login. Otherwise prefer the subscription token;
-    // sending both would make Claude Code bill the API key.
-    // With proxy secrets (Instabox) a key named in CLOUDY_CLOUD_PROXY_SECRETS goes as a secret name; the machine sees a placeholder.
-    const named = proxySecrets(env);
-    const proxied = provider.caps.hasProxySecrets ? named : new Set();
-    // On a provider that cannot attach a proxy-secret name (no proxy secrets, or localSecrets where the
-    // name has nothing to substitute) a credential with a local value wins over a bare name in
-    // CLOUDY_CLOUD_PROXY_SECRETS; a valueless name is still picked last (and errors below).
-    const keyName = a.profile ? a.profile.keyName
-      : ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => env[n] || (!provider.caps.localSecrets && proxied.has(n)))
-        ?? ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'].find((n) => named.has(n));
-    const keySecrets = [];
-    if (keyName && provider.caps.localSecrets) {
-      // The provider substitutes the local value into matching requests itself (microsandbox --secret), so a
-      // plain value is attached by name: no CLOUDY_CLOUD_PROXY_SECRETS line, no real value on the machine.
-      if (env[keyName]) keySecrets.push(keyName);
-      else throw new Error(`${keyName} is named in CLOUDY_CLOUD_PROXY_SECRETS but has no value. On the ${provider.name} provider the value stays on this computer: add ${keyName}=... to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
-    }
-    else if (keyName && proxied.has(keyName)) keySecrets.push(keyName);
-    else if (keyName && !env[keyName]) throw new Error(`${keyName} is only named in CLOUDY_CLOUD_PROXY_SECRETS, and provider ${provider.name} cannot attach proxy secrets. Put ${keyName}=... in ~/.config/cloudy-cloud/env, or use the Instabox provider and store it as a secret.`);
-    else if (keyName && provider.caps.hasProxySecrets) throw refused(keyName); // never copy a real key to such a machine
-    else if (keyName) envs[keyName] = env[keyName]; // a provider without proxy secrets (self-hosted) keeps the env-file path
-    // LiteLLM refuses to start without a master key; the worker uses the same random key to reach it.
-    if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') envs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
-    if (a.role === 'coordinator') Object.assign(envs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
-    const coord = a.role === 'coordinator' ? coordinatorKeys(env, provider, { single: true }) : { secrets: [] };
-    if (coord.legacy?.length) throw refused(coord.legacy[0]);
-    a.createAbort = new AbortController(); // agent-scoped: cancelQueue aborts an in-flight provider create too
+    const baseEnvs = {};
+    if (a.profile?.format === 'openai' && harnessOf(a) === 'claude') baseEnvs.LITELLM_MASTER_KEY = `sk-${randomBytes(24).toString('hex')}`;
+    if (a.role === 'coordinator') Object.assign(baseEnvs, { CLOUDY_CLOUD_DEPTH: String(a.depth), CLOUDY_CLOUD_MAX_DEPTH: String(a.maxDepth), CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION: String(a.maxAgents) });
+    const labels = machineLabels(a, ctx); // agent id is stable across retries and is the create reconciliation key
+    const line160 = (s) => ctx.scrub(String(s ?? '')).split('\n')[0].slice(0, 160);
+    a.createAbort = new AbortController();
     a.cancelQueue = () => { a.createAbort.abort(); ctx.queue.cancel(a); };
+    const place = async () => {
+      const tried = [], errors = [];
+      for (;;) {
+       let rateBlocked = false, capacityBlocked = false;
+       for (const [index, p] of cands.entries()) {
+        const next = cands[index + 1];
+        if (await ctx.queue.providerFull?.(a, p)) {
+          capacityBlocked = true;
+          const why = `${p.name} is at its known running-machine limit`;
+          (a.skipped ??= []).push({ name: p.name, why });
+          a.emit?.({ type: 'progress', text: `${why}${next ? `; trying ${next.name}` : ''}` });
+          continue;
+        }
+        try {
+          const { envs, keySecrets, coord } = credentialsFor(p, a, env);
+          if (ctx.queue.providerRateSlot && !ctx.queue.providerRateSlot(p)) {
+            rateBlocked = true;
+            const why = `${p.name} has reached its start rate for this minute`;
+            (a.skipped ??= []).push({ name: p.name, why });
+            continue;
+          }
+          const deleteAfterSeconds = workerSeconds(env, p.caps.maxTtlSeconds);
+          const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
+          if (a.recoveryRecord) {
+            const verified = await verifyOriginCheckpoint(a.root, a.recoveryRecord);
+            if (!verified.ok || verified.sha !== a.recoveryRecord.checkpointSha) throw new Error(`Recovery checkpoint is no longer valid: ${verified.reason ?? 'origin branch changed'}; no replacement machine was started.`);
+            a.recoveryCreateAttempted = true; // a transport error may hide a successful provider create
+          }
+          const attempt = { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+          a.createAttempt = attempt;
+          a.machineCreatingProvider = p;
+          let sbx;
+          try { sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p); }
+          finally { delete a.machineCreatingProvider; }
+          a.provider = p;
+          a.createAttempt = undefined;
+          a.uncertainCreate = undefined;
+          a.envs = { ...envs, ...baseEnvs };
+          a.deleteAt = Date.now() + deleteAfterSeconds * 1000;
+          a.serverTtl = p.caps.hasServerTTL;
+          a.tokenOnBox = !p.caps.hasProxySecrets && p.caps.hasConsentedSecrets ? (p.text?.hostLabel ?? p.name) : '';
+          const reasons = [...(a.skipped ?? []).map((s) => `${s.name} cannot run this request (${s.why})`), ...tried.map((t) => `${t.name} could not start it (${[t.code, t.message].filter(Boolean).join(': ')})`)];
+          if (reasons.length) a.providerNote = `Started on ${p.name} because ${reasons.join('; ')}.`;
+          return sbx;
+        } catch (error) {
+          if (error?.code === 'cleanup_unconfirmed' && error?.allocated === true && a.createAttempt?.provider === p) {
+            a.uncertainCreate = { ...a.createAttempt, cleanupUnconfirmed: true, ...(error.machineId && { machineId: error.machineId }) };
+            a.createAttempt = undefined;
+            if (a.cancelled) throw new Error('cancelled');
+            throw error;
+          }
+          if (error?.credentialRefusal) {
+            if (a.createAttempt?.provider === p) a.createAttempt = undefined;
+            if (a.cancelled) throw new Error('cancelled');
+            const why = line160(error.message);
+            (a.skipped ??= []).push({ name: p.name, why });
+            errors.push(error);
+            if (next) a.emit?.({ type: 'progress', text: `${p.name} cannot run this request (${why}); trying ${next.name}` });
+            continue;
+          }
+          const how = failoverHow(error);
+          if (how === 'next') {
+            if (a.createAttempt?.provider === p) a.createAttempt = undefined;
+            if (a.uncertainCreate?.provider === p) a.uncertainCreate = undefined;
+          } else if (a.createAttempt?.provider === p) {
+            // An unclassified error or a transport error can arrive after the provider allocated the machine.
+            a.uncertainCreate = a.createAttempt;
+          }
+          if (a.cancelled) throw new Error('cancelled');
+          if (!how) throw error;
+          if (a.recoveryRecord && how === 'next') a.recoveryCreateAttempted = false; // the adapter classified this as a definite refusal
+          if (how === 'reconcile') {
+            // Transient transport failures may hide a successful create. Reconcile this stable agent label;
+            // only one confirmed machine can be adopted. Zero, multiple, or unlistable matches fail closed.
+            let matches;
+            let listError;
+            try {
+              const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+              matches = await p.list(attempt.labels, { onError: (e) => { listError ??= e; } });
+              if (listError) throw listError;
+              matches = matches.filter((machine) => Object.entries(attempt.labels).every(([key, value]) => machine.labels?.[key] === value));
+            }
+            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create and its machines could not be listed; refusing another create.`), { code: 'ambiguous' }); }
+            if (matches.length !== 1) throw Object.assign(new Error(matches.length ? `Provider ${p.name} returned an uncertain create and multiple machines carry agent ${a.id}; refusing to select one.` : `Provider ${p.name} returned an uncertain create and no matching machine could be confirmed; refusing another create.`), { code: 'ambiguous' });
+            try { a.sandbox = await p.connect(matches[0].id); }
+            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create; machine ${matches[0].id} could not be connected, so another create was refused.`), { code: 'ambiguous' }); }
+            a.createAttempt = undefined;
+            a.uncertainCreate = undefined;
+            const { envs } = credentialsFor(p, a, env);
+            a.provider = p;
+            a.envs = { ...envs, ...baseEnvs };
+            a.deleteAt = matches[0].deleteAt ? new Date(matches[0].deleteAt).getTime() : Date.now() + workerSeconds(env, p.caps.maxTtlSeconds) * 1000;
+            a.serverTtl = p.caps.hasServerTTL;
+            a.tokenOnBox = !p.caps.hasProxySecrets && p.caps.hasConsentedSecrets ? (p.text?.hostLabel ?? p.name) : '';
+            a.providerNote = `Recovered the existing machine on ${p.name} after an uncertain create response.`;
+            return a.sandbox;
+          }
+          tried.push({ name: p.name, code: error?.code, message: line160(error?.message) });
+          errors.push(error);
+          a.emit?.({ type: 'progress', text: `${p.name} could not start a machine (${error?.code ?? 'connection failed'})${next ? `; trying ${next.name}` : ''}` });
+          if (next) log(`agent ${a.id}: ${p.name} -> ${next.name} (${error?.code ?? 'connection'})`);
+        }
+       }
+       if (rateBlocked && !capacityBlocked && !errors.length) {
+         await ctx.queue.providerRateWait?.();
+         if (a.cancelled) throw new Error('cancelled');
+         continue;
+       }
+       if (capacityBlocked && !errors.length) {
+         throw Object.assign(new Error('Every compatible provider is at its known running-machine limit; waiting before retrying placement.'), { code: 'quota_exceeded' });
+       }
+       break;
+      }
+      const error = errors.find((e) => isRateLimited(e) || isQuotaExceeded(e)) ?? errors.at(-1) ?? new Error('No configured provider can run this request.');
+      error.tried = tried;
+      throw error;
+    };
     try {
-      a.sandbox = await ctx.queue.create(a, () => {
-        const deleteAfterSeconds = workerSeconds(env, provider.caps.maxTtlSeconds);
-        a.deleteAt = Date.now() + deleteAfterSeconds * 1000; // the server deletes the machine then, whatever happens to this process
-        const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-        return createSandbox(envs, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, machineLabels(a, ctx));
+      a.sandbox = await ctx.queue.create(a, async () => {
+        a.machineCreating = true;
+        try { return await place(); }
+        finally { a.machineCreating = false; }
       });
-    } catch (e) {
-      if (a.cancelled) throw new Error('cancelled'); // an abort mid-create reads as a stop, not a provider error
-      throw e;
+    } catch (error) {
+      if (a.cancelled) throw new Error('cancelled');
+      throw error;
     }
-    if (a.cancelled) { await a.sandbox.kill().catch(() => {}); throw new Error('cancelled'); }
+    if (a.cancelled) throw new Error('cancelled'); // stop owns deletion once this setup settles
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
-    a.emit?.({ type: 'machine', machine: a.sandbox.id, deleteAt: a.deleteAt });
+    a.emit?.({ type: 'machine', machine: a.sandbox.id, provider: a.provider?.name, branch: a.branch, deleteAt: a.deleteAt });
+    if (a.recoveryRecord) {
+      a.recoveryRecord = await updateCheckpointPlacement(env, a.id, { provider: a.provider.name, machine: a.sandbox.id, owner: ctx.owner, turnSequence: a.turns });
+      await releaseRecoveryLock(a);
+    }
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
+    data = await bundleSnapshot.read(); // Do not retain bundle bytes while waiting for provider capacity.
     if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
     const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
@@ -554,7 +856,7 @@ async function setup(a, ctx) {
     // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
     if (!prereqs.length) {
       await a.sandbox.commands.run(
-        `${init} && git fetch -q ../in.bundle ${ref} && git checkout -q --detach ${a.sha} &&` +
+        `${init} && git fetch -q ../in.bundle ${a.sha} && git checkout -q --detach ${a.sha} &&` +
         ` git remote add origin '${a.origin}' && git checkout -q -b ${branch}`,
         { cwd: a.home, timeoutMs: SETUP_MS },
       );
@@ -564,7 +866,7 @@ async function setup(a, ctx) {
       await a.sandbox.commands.run(`${init} && git remote add origin '${a.origin}'`, { cwd: a.home, timeoutMs: SETUP_MS });
       await ghAuth();
       await a.sandbox.commands.run(
-        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${ref}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
+        `git fetch -q origin ${prereqs.join(' ')}${data ? ` && git fetch -q ../in.bundle ${a.sha}` : ''} && git checkout -q --detach ${a.sha} && git checkout -q -b ${branch}`,
         repo,
       );
     }
@@ -576,7 +878,7 @@ async function setup(a, ctx) {
         break;
       } catch (e) {
         const said = tail(e?.stderr ?? e?.message);
-        if (AUTH_FAIL.test(said) && !provider.caps.hasProxySecrets) throw new Error(`The GitHub access check for origin ${branch} failed. ${provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
+        if (AUTH_FAIL.test(said) && !a.provider.caps.hasProxySecrets) throw new Error(`The GitHub access check for origin ${branch} failed. ${a.provider.text.githubTokenHelp} Also check that the token has write access to this repo. Git said: ${said}`);
         if (AUTH_FAIL.test(said)) throw new Error(`The GitHub access check for origin ${branch} failed. Usual causes: the GH_TOKEN Instabox secret is missing (see https://github.com/dennisonbertram/cloudycloud/blob/HEAD/docs/RUNBOOK.md, step 2.4) or the token has no write access to this repo. Git said: ${said}`);
         if (n === 3) throw new Error(`The GitHub access check for origin ${branch} failed after 3 attempts. Git said: ${said}`);
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
@@ -584,7 +886,7 @@ async function setup(a, ctx) {
     }
     const apt = aptPackages(env).list; // validated at start
     if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
-    if (a.role === 'coordinator') await installCoordinator(a, ctx, envs);
+    if (a.role === 'coordinator') await installCoordinator(a, ctx, a.envs);
     if (hasMcp(a) && !['codex', 'opencode'].includes(harnessOf(a))) { // codex gets its servers in config.toml (setupCodex), opencode in opencode.json. References only, except servers the user allowed to carry a real value
       // pi and omp read mcp.json from their agent dir (PI_CODING_AGENT_DIR), written here; Claude reads the other one.
       const dir = { pi: `${a.home}/pi-agent`, omp: `${a.home}/omp-agent` }[harnessOf(a)] ?? `${a.home}/.config/cloudy-cloud`;
@@ -602,8 +904,14 @@ async function setup(a, ctx) {
     else if (harnessOf(a) === 'opencode') await setupOpencode(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
   } finally {
-    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    await bundleSnapshot?.release();
   }
+}
+
+async function releaseRecoveryLock(a) {
+  const release = a.recoveryLockRelease;
+  a.recoveryLockRelease = undefined;
+  await release?.();
 }
 
 // Puts cloudy-cloud on a coordinator's machine, at the commit the laptop runs, with the keys it needs in a mode-600 env file.
@@ -620,7 +928,7 @@ async function installCoordinator(a, ctx, envs) {
   // Keys named in CLOUDY_CLOUD_PROXY_SECRETS were attached at create time; the file holds their names and the settings only.
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
-  const { lines } = coordinatorKeys(env, ctx.provider, { single: true });
+  const { lines } = coordinatorKeys(env, a.provider ?? ctx.provider, { single: true });
   lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
@@ -693,11 +1001,11 @@ function autofix(a, ctx, t) {
   const left = () => (a.deleteAt ? a.deleteAt - Date.now() : Infinity);
   const safe = (x) => redactText(scrub(x)); // before any cut, so a secret cannot be split by the cut
   const seen = (a.autofixSeen ??= new Set());
-  let fixes = 0, lastPush = '', ignored = 0, n;
+  let fixes = 0, lastPush = '', latestCheckpointSha, latestDisposition = {}, ignored = 0, n;
   const say = (note) => { t.prefix = `autofix ${n ? `PR #${n} ` : ''}round ${fixes}/${cap}: `; t.note = note; a.emit?.({ type: 'progress', text: `${t.prefix}${note}`, af: { state: 'running', round: fixes, cap } }); };
   const fixByHand = `open or fix the pull request by hand (git fetch origin ${branch})`;
   const hand = `${fixByHand}, or send cloud_agent_message to agent ${a.id} asking it to run \`gh auth status\` and report.`;
-  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
+  const done = (text, st) => ({ text: safe(`${text}${lastPush ? `\n${lastPush}` : ''}${ignored ? `\n${ignored} comment${ignored === 1 ? '' : 's'} from people without write access ${ignored === 1 ? 'was' : 'were'} ignored.` : ''}`), ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition, af: { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }), ...st } });
   const stop = (why) => /Resource not accessible by (personal access token|integration)/i.test(why)
     ? done(`Autofix stopped: ${why} The GitHub token (Instabox secret GH_TOKEN) lacks a permission. At https://github.com/settings/personal-access-tokens open the cloudy-cloud token and set Pull requests to read and write and Actions and Commit statuses to read, then save; the token value does not change.\nNext step: ${fixByHand}.`)
     : done(`Autofix stopped: ${why}\nNext step: ${hand}`);
@@ -852,15 +1160,17 @@ function autofix(a, ctx, t) {
       const list = problems.map((p) => `- ${p}`).join('\n');
       const next = `Next step: send cloud_agent_message to agent ${a.id} saying what to fix, or fix it by hand (git fetch origin ${branch}).`;
       if (fixes >= cap) return done(`Autofix: pull request ${pr.url} is NOT clean after ${fixes} fix round${fixes === 1 ? '' : 's'} (the cap, CLOUDY_CLOUD_AUTOFIX_ROUNDS=${cap}). Still failing:\n${list}${why}\n${next}`, { state: 'not clean', round: fixes, cap });
-      if (left() <= (turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
+      if (left() <= (turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes ?? 29) * 60_000 + AUTOFIX_MARGIN_MS) return done(`Autofix stopped: the machine is deleted at ${new Date(a.deleteAt).toISOString()}, too soon for another fix round. Still failing on ${pr.url}:\n${list}${why}\n${next}`);
       fixes++;
       say('worker is fixing');
       t.note = '';
       t.progress = PROGRESS[harnessOf(a)]();
       if (halted()) return { cancelled: true };
       const res = await turn(a, scrub(`Autofix round ${fixes} of ${cap}. Pull request ${pr.url} has these problems. Fix them, commit, and push to your branch ${branch}. Do not open a new pull request or push to another branch.\n\n${list}`), ctx, t);
-      if (res.cancelled || halted()) return { cancelled: true };
-      if (res.gone) return { gone: true, text: res.text };
+      latestCheckpointSha = res.checkpointSha ?? latestCheckpointSha;
+      latestDisposition = pushLifecycle(res);
+      if (res.cancelled || halted()) return { cancelled: true, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition };
+      if (res.gone) return { gone: true, text: res.text, ...(latestCheckpointSha && { checkpointSha: latestCheckpointSha }), ...latestDisposition };
       lastPush = /^(Pushed to origin|Push failed).*$/m.exec(res.text)?.[0] ?? lastPush;
       if (res.error || !res.pushed) return done(`Autofix stopped: the fix turn ${res.error ? 'failed' : 'did not push'}. Still failing on ${pr.url}:\n${list}\nWorker said: ${tail(res.text)}\n${next}`);
       const was = sha;
@@ -880,18 +1190,24 @@ function autofix(a, ctx, t) {
 async function work(a, message, first, ctx, t) {
   let r;
   try {
-    if (first) await setup(a, ctx);
+    if (first) {
+      a.setupPromise = setup(a, ctx);
+      try { await a.setupPromise; }
+      finally { a.setupPromise = undefined; }
+    }
+    if (a.stopPending || a.status === 'stopped') return;
     a.status = 'running';
     a.emit?.({ type: 'status', status: 'running' });
     r = await turn(a, message, ctx, t);
     if (first && a.fallbackNote) r = { ...r, text: `${a.fallbackNote}\n${r.text}` };
+    if (first && a.providerNote) r = { ...r, text: `${a.providerNote}\n${r.text}` };
     if (first && a.notice) r = { ...r, text: r.error ? `${r.text}\n\n${a.notice}` : `${a.notice}\n\n${r.text}` }; // before the reply, so the totals stay last
     if (first && !r.error && !a.sessionId) r = { error: true, text: `${r.text}\n\nNo valid session_id came back, so the agent cannot be resumed.` };
     // preview_port: publish the app's port once per agent, after a turn that pushed, before autofix. The link is private: it shows only in the result, never in the PR body.
     if (a.previewPort && !r.error && !r.cancelled && !r.gone && r.pushed && a.status !== 'stopped' && !t.cancelled) {
       if (!a.previewUrl) {
         try {
-          const { url } = await ctx.provider.publishPort(a.sandbox.id, String(a.previewPort));
+          const { url } = await (a.provider ?? ctx.provider).publishPort(a.sandbox.id, String(a.previewPort));
           if (PREVIEW_URL.test(String(url))) a.previewUrl = url;
           else throw new Error('the provider returned no usable link');
         } catch (e) {
@@ -906,23 +1222,38 @@ async function work(a, message, first, ctx, t) {
       // no af of its own, so emit the terminal "stopped" here — it must never stay displayed as "running".
       a.emit?.({ type: 'autofix', af: f.af ?? { state: 'stopped', ...(a.prUrl && { pr: a.prUrl }) } });
       t.prefix = t.note = '';
-      r = { ...r, text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
+      r = { ...withLatestCheckpoint(r, f), text: f.cancelled ? `${r.text}\n\nAutofix cancelled. The agent is still open.` : `${r.text}\n\n${f.text}`, ...(f.gone && { error: true, gone: true }), ...(f.cancelled && { cancelled: true }) };
     }
   } catch (e) {
+    if (!a.recoveryCreateAttempted) await releaseRecoveryLock(a).catch(() => {});
     log('error:', ctx.scrub(e?.message));
-    r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
+    r = { error: true, text: limitText(e, ctx.queue.plan?.(), a.kind?.label) ?? e?.guideText ?? (e?.code === 'size_not_allowed' && a.size ? await sizeGuide(a.size, a.provider ?? ctx.provider, true) : guide(classify(e?.message), { message: e?.message })) };
+    if (e?.tried?.length && (a.providers?.length ?? 0) > 1) r = { ...r, text: `${r.text}\nProviders tried: ${e.tried.map((t) => `${t.name} (${[t.code, t.message].filter(Boolean).join(': ')})`).join(', ')}` };
   }
-  if (a.status === 'stopped') return;
+  if (a.status === 'stopped' || a.stopPending) return;
+  if (r.checkpointSha && a.role === 'worker') {
+    try {
+      a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, workspaceRel: a.workspaceRel, turnSequence: a.turns, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
+      r = { ...r, text: beforeTotals(r.text, `Recovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.`) };
+    } catch (e) {
+      log('recovery checkpoint could not be saved:', ctx.scrub(e?.message));
+      r = { ...r, text: beforeTotals(r.text, 'Recovery checkpoint was not saved; cross-provider recovery is unavailable until a later verified push.') };
+    }
+  }
   // A failed turn fails the agent only when it cannot be resumed: its sandbox is gone, or the first turn never announced a session id.
-  const dead = first ? r.error && (r.gone || !a.sessionId) : r.gone;
-  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, ctx.provider?.caps?.maxTtlSeconds).minutes })}` };
-  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false };
+  const dead = first ? r.error && !r.retryableTransport && !r.uncertainExecution && !r.pushOnly && (r.gone || !a.sessionId) : r.gone;
+  if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes })}` };
+  if (r.error && a.recoveryPreviousAgent?.result) r = { ...r, text: `${r.text}\n\nOriginal agent result retained from before recovery:\n${a.recoveryPreviousAgent.result.text}` };
+  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, ...pushLifecycle(r) };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
   a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
   a.emit?.({ type: 'status', status: a.status });
   endTurn(t, r.cancelled ? 'cancelled' : r.error ? 'failed' : 'completed', a.result);
-  if (dead) await a.sandbox?.kill().catch(() => {});
+  // A first-turn failure can make the conversation unusable before it can report
+  // a session ID. Keep the sandbox when safetyPush found dirty or unconfirmed
+  // state; the user can inspect it or explicitly stop it.
+  if (dead && !r.preserve_worker) await a.sandbox?.kill().catch(() => {});
   armIdle(a, ctx);
   wake(a);
 }
@@ -990,8 +1321,9 @@ export function getTask(taskId, deps) {
   else t.result.reported = true;
   // Claude needs the agent id for cloud_agent_message and cloud_agent_stop, and the task result is all it sees.
   const text = `agent_id: ${t.agent.id} (turn ${t.n})\n${priceNote(t) ? `${priceNote(t)}\n` : ''}\n${t.result?.text}`;
-  if (t.status === 'completed') v.result = { content: [{ type: 'text', text }] };
-  if (t.status === 'failed') v.error = { code: -32000, message: text, data: null };
+  const structuredContent = ctx.cleanValue(lifecycle(t.agent, { result: t.result?.text, error: !!t.result?.error }));
+  if (t.status === 'completed') v.result = { content: [{ type: 'text', text }], structuredContent };
+  if (t.status === 'failed') v.error = { code: -32000, message: text, data: structuredContent };
   return v;
 }
 
@@ -1004,7 +1336,14 @@ export async function cancelTask(taskId, deps) {
   if (!t) return undefined;
   if (t.status === 'working') {
     t.cancelled = true;
-    if (t.n === 1) await stop(t.agent, ctx.open, ctx.stoppedBranches);
+    if (t.n === 1) {
+      try { await stop(t.agent, ctx.open, ctx.stoppedBranches); }
+      catch (e) {
+        const detail = ctx.scrub(e?.message);
+        log(`task cancellation stop failed for ${t.agent.id}: ${detail}`);
+        t.result = { text: `Turn cancelled, but sandbox deletion failed (${detail}). The agent remains tracked as stop-pending; retry cloud_agent_stop for ${t.agent.id}.`, error: true, reported: true };
+      }
+    }
     else {
       t.abort.abort();
       let timer;
@@ -1021,9 +1360,28 @@ export async function runSubagent(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent');
   ctx.queue.learnPlan?.(); // fire and forget; the pace follows once the plan arrives
   const { fail, ok } = ctx;
-  const { hasProxySecrets, hasConsentedSecrets } = ctx.provider.caps;
-  if (!hasProxySecrets && !hasConsentedSecrets) return fail(`Provider ${ctx.provider.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`);
-  const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base, issue, preview_port } = args;
+  // Only recoverAgent can pass this context through deps; public MCP arguments cannot override it.
+  const recovery = deps.recoveryStart;
+  let cands = ctx.providers?.length ? [...ctx.providers] : ctx.provider?.providers?.length ? [...ctx.provider.providers] : [ctx.provider];
+  if (recovery && (!recovery.recoveryRecord || cands.length !== 1 || cands[0]?.name !== recovery.targetProvider || recovery.targetProvider === recovery.recoveryRecord.provider)) return fail('invalid internal recovery target');
+  const skipped = [];
+  const narrow = (keep, why) => {
+    const dropped = cands.filter((p) => !keep(p));
+    const kept = cands.filter(keep);
+    if (!kept.length) return why(cands[0]);
+    for (const p of dropped) skipped.push({ name: p.name, why: ctx.scrub(why(p)).split('\n')[0].slice(0, 160) });
+    cands = kept;
+  };
+  let why;
+  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`))) return fail(why);
+  const proxyMode = Boolean(cands[0].caps.hasProxySecrets);
+  if ((why = narrow((p) => Boolean(p.caps.hasProxySecrets) === proxyMode, (p) => `${p.name} uses a different credential model than ${cands[0].name}; failover cannot cross credential models.`))) return fail(why);
+  const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps;
+  const { prompt, model, subagent_type: agent, description, profile: requestedProfile, role = 'worker', autofix: autofixOn = false, base, issue, preview_port, workspace } = args;
+  const configuredProfile = ctx.env.CLOUDY_CLOUD_DEFAULT_PROFILE;
+  const savedProfile = recovery?.recoveryRecord?.profile ?? null;
+  const profileName = recovery ? savedProfile ?? undefined : requestedProfile === 'claude' ? undefined : requestedProfile ?? (role === 'worker' && configuredProfile !== 'claude' ? configuredProfile || undefined : undefined);
+  if (recovery && (role !== 'worker' || (recovery.profile ?? null) !== savedProfile || recovery.harness !== recovery.recoveryRecord.harness || (savedProfile === null && recovery.harness !== 'claude') || !AGENT_ID.test(String(recovery.id ?? '')) || !/^cloudy-cloud\/[a-z0-9-]+$/.test(recovery.branch ?? '') || !recovery.branch.endsWith(recovery.id))) return fail('invalid internal recovery start');
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
   if (typeof autofixOn !== 'boolean') return fail('invalid autofix: must be true or false');
   if (autofixOn && role === 'coordinator') return fail('autofix works for workers only, because a coordinator does not own a branch with a pull request. Call cloud_agent again with role "worker" and autofix, or start the coordinator without autofix and start a worker with autofix for the code change.');
@@ -1033,48 +1391,78 @@ export async function runSubagent(args, deps) {
     const p = typeof preview_port === 'number' ? preview_port : typeof preview_port === 'string' && /^\d+$/.test(preview_port) ? Number(preview_port) : NaN;
     if (!Number.isInteger(p) || p < 1 || p > 65535) return fail('invalid preview_port: pass a port number from 1 to 65535, such as 3000.');
     previewPort = p;
-    if (!ctx.provider.caps.hasPublish) return fail(`${ctx.provider.name[0].toUpperCase() + ctx.provider.name.slice(1)} does not support published links.`);
+    if ((why = narrow((p) => p.caps.hasPublish, (p) => `${p.name[0].toUpperCase() + p.name.slice(1)} does not support published links.`))) return fail(why);
   }
   if (typeof prompt !== 'string' || !prompt) return fail('prompt is required');
+  let workspaceInfo;
+  try { workspaceInfo = await resolveWorkspace(deps.cwd ?? process.cwd(), workspace); }
+  catch (e) { return fail(e.message, true); }
   for (const [name, v] of [['model', model], ['subagent_type', agent]]) {
     if (v === undefined) continue;
     const re = name === 'model' && profileName !== undefined ? MODEL : SAFE; // profile models may contain "/"
     if (!(typeof v === 'string' && re.test(v))) return fail(`invalid ${name}: must match ${re}`);
   }
-  const egress = egressAllow(ctx.env);
+  let egress = egressAllow(ctx.env);
+  if (recovery) {
+    if (egress.error) return fail(egress.error, false, { local: true, short: egress.short, details: egress.details, next: egress.next });
+    const saved = recovery.egress ?? [];
+    if (saved.length) {
+      const list = egress.list.length ? saved.filter((h) => egress.list.includes(h)) : saved;
+      if (!list.length) return fail('The current network policy conflicts with the saved recovery allowlist; recovery was refused.');
+      egress = { list };
+    }
+  }
   if (egress.error) return fail(egress.error, false, { local: true, short: egress.short, details: egress.details, next: egress.next });
-  if (egress.list.length && !ctx.provider.caps.hasEgressPolicy) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${ctx.provider.name} cannot limit where a machine connects, so the agent was not started.\nNext step: remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again.`, false, { local: true, short: `CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${ctx.provider.name} cannot limit where a machine connects, so the agent was not started.`, next: 'remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again' });
+  if (egress.list.length && (why = narrow((p) => p.caps.hasEgressPolicy, (p) => `CLOUDY_CLOUD_EGRESS_ALLOW is set, but provider ${p.name} cannot limit where a machine connects, so the agent was not started.\nNext step: remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env to run without an egress limit, or set CLOUDY_CLOUD_PROVIDER=microsandbox to run agents in local microVMs that enforce it, then call cloud_agent again.`))) return fail(why);
   let profile, fallbackNote;
   if (profileName !== undefined) {
     // Try the profile, then each fallback in order. A start-time failure (no key, or a refused one-token check) moves on; the result says which one ran.
     if (args.fallback !== undefined && !(Array.isArray(args.fallback) && args.fallback.every((n) => typeof n === 'string'))) return fail('invalid fallback: must be a list of profile names');
     let names = [profileName], tried = [];
     for (let i = 0; i < names.length; i++) {
-      const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: hasProxySecrets && !ctx.provider.caps.localSecrets });
-      if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly.', next: 'call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
-      let err = r.error;
-      // caps.localSecrets: the provider swaps the local value into matching requests itself (like proxied),
-      // so a preflight from this computer would send the real key off-machine — skip it there too.
-      if (!err && args.preflight !== false && !ctx.provider.caps.localSecrets) { const pf = await preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn }); if (!pf.ok) err = pf.error; }
-      if (!err) { profile = r.ok; if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`; break; }
-      if (i === 0) names = [...names, ...(args.fallback ?? r.fallback ?? r.ok?.fallback ?? [])];
-      tried.push({ name: names[i], why: ctx.scrub(err) });
-      if (i === names.length - 1) return fail(tried.length === 1 ? err : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
+      const eligible = [], rejected = [];
+      let preflightPromise;
+      for (const p of cands) {
+        const r = resolveProfile(names[i], i ? undefined : model, ctx.env, { proxyOnly: Boolean(p.caps.hasProxySecrets && !p.caps.localSecrets) });
+        if (!r.error && egress.list.length && (r.ok.harness !== 'claude' || r.ok.format === 'openai')) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly. Profile ${r.ok.name} installs ${r.ok.harness !== 'claude' ? `its agent (${r.ok.harness})` : 'its model gateway (LiteLLM)'} from the internet at start, which the egress limit would block.\nNext step: call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW works only for Claude Code workers that reach their model host directly.', next: 'call cloud_agent without a profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
+        let err = r.error;
+        // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
+        if (!err && args.preflight !== false && !p.caps.localSecrets) {
+          preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
+          const pf = await preflightPromise;
+          if (!pf.ok) err = pf.error;
+        }
+        if (err) rejected.push({ provider: p, result: r, error: ctx.scrub(err) });
+        else eligible.push({ provider: p, profile: r.ok });
+      }
+      if (eligible.length) {
+        const accepted = new Set(eligible.map((x) => x.provider));
+        for (const x of rejected) skipped.push({ name: x.provider.name, why: `${names[i]}: ${x.error.split('\n')[0]}` });
+        cands = cands.filter((p) => accepted.has(p));
+        profile = eligible[0].profile;
+        if (i) fallbackNote = `ran on ${profile.name} (${tried.map((x) => `${x.name} unavailable: ${x.why.split('\n')[0]}`).join('; ')})`;
+        break;
+      }
+      const error = rejected[0]?.error ?? `Profile ${names[i]} could not run on any configured provider.`;
+      const fallbackResult = rejected.find((x) => x.result?.fallback || x.result?.ok?.fallback)?.result;
+      const fallback = fallbackResult?.fallback ?? fallbackResult?.ok?.fallback;
+      if (i === 0) names = [...names, ...(args.fallback ?? fallback ?? [])];
+      tried.push({ name: names[i], why: error });
+      if (i === names.length - 1) return fail(tried.length === 1 ? error : `No profile could start. ${tried.map((x) => `${x.name}: ${x.why}`).join('\n')}`);
     }
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
-  const turnLimit = turnMinutes(ctx.env, ctx.provider.caps.maxTtlSeconds);
-  if (turnLimit.error) return fail(turnLimit.error, true);
-  if (apt.list.length && !(ctx.provider.caps.hasSudo ?? ctx.provider.caps.hasProxySecrets)) return fail(`CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${ctx.provider.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`);
+  const turnChecks = new Map(cands.map((p) => [p, turnMinutes(ctx.env, p.caps.maxTtlSeconds)]));
+  if ((why = narrow((p) => !turnChecks.get(p).error, (p) => turnChecks.get(p).error))) return fail(why, true);
+  if (apt.list.length && (why = narrow((p) => p.caps.hasSudo ?? p.caps.hasProxySecrets, (p) => `CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${p.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`))) return fail(why);
   if (egress.list.length) {
     if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker".', false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: 'start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker"' });
     if (profile?.baseUrl && !URL.canParse(profile.baseUrl)) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl "${String(profile.baseUrl).slice(0, 80)}". Fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env.`, false, { local: true, short: `CLOUDY_CLOUD_EGRESS_ALLOW needs the model's baseUrl to name its host, but profile ${profile.name} has an invalid baseUrl.`, next: 'fix the profile, or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env' });
   }
   const kind = parseMachine(args.machine);
   if (kind.error) return fail(guide('machine_kind_unknown', { message: String(args.machine).slice(0, 60) }));
-  const offered = ctx.provider.caps.machineKinds ?? ['linux'];
-  if (!offered.includes(kind.name)) return fail(guide('machine_kind_unsupported', { provider: ctx.provider.name, kind: kind.name, kinds: offered.join(', ') }));
+  if ((why = narrow((p) => (p.caps.machineKinds ?? ['linux']).includes(kind.name), (p) => guide('machine_kind_unsupported', { provider: p.name, kind: kind.name, kinds: (p.caps.machineKinds ?? ['linux']).join(', ') })))) return fail(why);
   if (EXPENSIVE.includes(kind.name) && !String(ctx.env.CLOUDY_CLOUD_ALLOW_MACHINE_KINDS ?? '').split(/[\s,]+/).includes(kind.name)) return fail(guide('machine_needs_consent', { kind: kind.name, price: PRICE[kind.name] }));
   if (apt.list.length && ['omarchy', 'macos'].includes(kind.name)) return fail(`CLOUDY_CLOUD_APT_PACKAGES cannot be installed on a ${kind.name} machine (it has no apt-get). Call cloud_agent again with machine "linux" or "android", or clear CLOUDY_CLOUD_APT_PACKAGES.`);
   const size = parseSize(args.size);
@@ -1082,24 +1470,23 @@ export async function runSubagent(args, deps) {
   if (size?.error) return fail(size.error, true);
   if (size) {
     if (EXPENSIVE.includes(kind.name)) return fail('gpu and macos machines have their own sizes, so size cannot be used with them. Call cloud_agent again without size.');
-    if (!ctx.provider.caps.hasSizes) return fail(`size is not available: the ${ctx.provider.name} provider has one machine size. Call cloud_agent again without size.`);
+    if ((why = narrow((p) => p.caps.hasSizes, (p) => `size is not available: the ${p.name} provider has one machine size. Call cloud_agent again without size.`))) return fail(why);
     const has = (p) => p?.specs?.some((s) => s.vcpus === size.vcpus && s.memMiB === size.memMiB);
-    let plan = await ctx.provider.plan?.().catch(() => null);
-    if (plan?.specs && !has(plan)) plan = await ctx.provider.plan({ refresh: true }).catch(() => null); // the plan may have been upgraded since it was cached
-    if (plan?.specs && !has(plan)) {
-      return fail(sizeGuide(size, plan));
-    }
-    if (!plan?.specs) sizeNote = `Your Instabox plan could not be read, so size ${size.label} was not checked against it and Instabox may refuse it (read the reason with cloud_agent_result).`;
+    const plans = new Map(await Promise.all(cands.map(async (p) => {
+      let plan = await ctx.queue.planFor?.(p) ?? await p.plan?.().catch(() => null);
+      if (plan?.specs && !has(plan)) plan = await p.plan({ refresh: true }).catch(() => null);
+      return [p, plan];
+    })));
+    const rejected = cands.filter((p) => plans.get(p)?.specs && !has(plans.get(p)));
+    const compatible = cands.filter((p) => !rejected.includes(p));
+    if (!compatible.length) return fail(sizeGuide(size, plans.get(cands[0])));
+    for (const p of rejected) skipped.push({ name: p.name, why: `${p.name} plan does not offer size ${size.label}` });
+    cands = compatible;
+    if (!plans.get(cands[0])?.specs) sizeNote = `The ${cands[0].name} plan could not be read, so size ${size.label} was not checked and the provider may refuse it (read the reason with cloud_agent_result).`;
   }
-  if (role === 'coordinator' && ctx.provider.text?.coordinatorRefusal) return fail(ctx.provider.text.coordinatorRefusal);
+  if (role === 'coordinator' && (why = narrow((p) => !p.text?.coordinatorRefusal, (p) => p.text.coordinatorRefusal))) return fail(why);
   if (role === 'coordinator' && ['pi', 'omp', 'codex', 'opencode'].includes(profile?.harness)) return fail('A coordinator cannot use a pi, omp, codex or opencode profile, because coordinators run Claude Code. Use such a profile for workers only.');
-  let root;
-  try {
-    root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
-    await git(root, 'rev-parse', '--verify', 'HEAD');
-  } catch {
-    return fail('cloudy-cloud needs a git repository with at least one commit. Run `git init` and commit your files, then retry.');
-  }
+  const { root } = workspaceInfo;
   const origin = githubUrl(await git(root, 'config', '--get', 'remote.origin.url').catch(() => ''));
   if (!origin) return fail(NO_ORIGIN);
   let baseInfo;
@@ -1180,11 +1567,13 @@ export async function runSubagent(args, deps) {
     allowList = egressHosts(profile, mcp, ctx.env, egress.list);
   }
   // Awaited calls above (issue fetch, coordinator repo checks) let a parallel call win the slot; check again with no await before the increment.
+  const id = recovery?.id ?? randomUUID().slice(0, 8);
+  if (ctx.open.has(id)) return fail(`Agent ${id} is already open in this session.`);
   if (count.started >= maxAgents) return fail(`This session has already started ${count.started} agents, the limit (CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION is ${maxAgents}). Stop idle agents or raise the limit.`);
   count.started++;
-  const id = randomUUID().slice(0, 8);
-  const a = { ...(baseInfo && { base: baseInfo }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch: issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, waiters: [], result: null, idleSince: Date.now(),
-    serverTtl: ctx.provider.caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (ctx.provider.text?.hostLabel ?? ctx.provider.name) : '' };
+  const branch = recovery?.branch ?? (issueNum ? `cloudy-cloud/issue-${issueNum}-${id}` : `cloudy-cloud/${id}`);
+  const a = { ...(baseInfo && { base: baseInfo }), ...(recovery && { recoveryRecord: recovery.recoveryRecord, recoveryLockRelease: recovery.release, recoveryPreviousAgent: deps.recoveryPreviousAgent, turns: recovery.turnSequence ?? 1, taskIdSuffix: `-${randomUUID()}` }), role, autofix: autofixOn, kind, ...(size && { size, sizeNote }), depth, maxDepth, maxAgents, tool, id, issue: issueNum, previewPort, branch, description: description ?? '', status: 'starting', root, origin, model, agent, profile, fallbackNote, workspace: workspaceInfo.cwd, workspaceRel: workspaceInfo.relative, waiters: [], result: null, idleSince: Date.now(), egressPolicy: egress.list,
+    serverTtl: cands[0].caps.hasServerTTL, tokenOnBox: !hasProxySecrets && hasConsentedSecrets ? (cands[0].text?.hostLabel ?? cands[0].name) : '', providers: cands, skipped };
   ctx.open.set(id, a);
   if (mcp) a.mcp = mcp;
   if (mcpError) a.mcpError = mcpError;
@@ -1195,15 +1584,36 @@ export async function runSubagent(args, deps) {
     const clean = (s) => { const t = ctx.scrub(s); return a.previewUrl ? t.split(a.previewUrl).join('a private preview link was returned to the caller') : t; };
     return ctx.events?.({ id, ...e, ...(e.text && { text: clean(e.text) }), ...(e.description && { description: clean(e.description) }) });
   };
-  a.emit({ type: 'agent', description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: a.branch, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
+  a.emit({ type: 'agent', agent_id: id, description: a.description, profile: profile?.name, harness: harnessOf(a), role, ...(kind.name !== 'linux' && { machine: kind.label }), model: profile ? profile.model : model, branch: a.branch, ...(hasMcp(a) && { mcp: Object.keys(a.mcp.servers) }) });
   const msg = `${prompt}${issueBlock ?? ''}`;
   a.emit({ type: 'message', text: msg });
   const t = newTurn(a);
   ctx.tasks.set(t.id, t);
   work(a, msg, true, ctx, t);
-  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to cloudy-cloud/${id}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
-  const skipped = role === 'coordinator' ? coordinatorKeys(ctx.env, ctx.provider, { single: true }).skipped ?? [] : [];
-  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to cloudy-cloud/${id}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`);
+  if (ctx.asTask) return taskAnswer(t, ctx, `It will push to ${a.branch}.${a.egressAllow ? ` Network: only ${a.egressAllow.join(', ')}.` : ''}`);
+  const skippedCoordinatorKeys = role === 'coordinator' ? coordinatorKeys(ctx.env, cands[0], { single: true }).skipped ?? [] : [];
+  return ok(`agent_id: ${id}\nstatus: starting\nIt will push to ${a.branch}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skippedCoordinatorKeys.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skippedCoordinatorKeys.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`, lifecycle(a));
+}
+
+// Recover only the verified branch checkpoint, then start a fresh conversation with the user's new message.
+export async function recoverAgent(args, deps) {
+  return recoverFromCheckpoint(args, {
+    ...deps,
+    validateWorkspace: (workspace) => resolveWorkspace(deps.cwd ?? process.cwd(), workspace || undefined),
+    startRecovery: async (r, provider, control) => {
+      if (control.previous) deps.open?.delete(r.id);
+      const started = await runSubagent({ prompt: r.prompt, description: r.description, role: 'worker', profile: r.profile, model: r.model, base: r.base, machine: r.machine, size: r.size, workspace: r.workspace || undefined, fallback: [] }, {
+        ...deps,
+        provider,
+        providers: [provider],
+        asTask: false,
+        recoveryStart: { ...r, targetProvider: provider.name, release: control.release },
+        recoveryPreviousAgent: control.previous,
+      });
+      if (started?.isError && control.previous) deps.open.set(r.id, control.previous);
+      return started;
+    },
+  });
 }
 
 // cloud_agent_message: returns at once; the turn runs in the background.
@@ -1213,6 +1623,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   if (typeof message !== 'string' || !message) return fail('message is required');
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a) return fail(guide('agent_gone', { id }));
+  if (a.stopPending) return fail(`Agent ${id} is stopping because its sandbox deletion has not been confirmed. Retry cloud_agent_stop before sending another message.`);
   if (active(a)) return fail(guide('agent_busy', { id }));
   if (a.status === 'failed') return fail(guide('agent_failed', { id }));
   clearTimeout(a.idleTimer);
@@ -1223,7 +1634,7 @@ export async function messageAgent({ agent_id: id, message } = {}, deps) {
   ctx.tasks.set(t.id, t);
   work(a, message, false, ctx, t);
   if (ctx.asTask) return taskAnswer(t, ctx);
-  return ok(`agent_id: ${id}\nstatus: running\nCall cloud_agent_wait with the agent_ids to get the reply.`);
+  return ok(`agent_id: ${id}\nstatus: running\nCall cloud_agent_wait with the agent_ids to get the reply.`, lifecycle(a));
 }
 
 // cloud_agent_wait: read-only. Waits for every listed agent to finish its current turn, or the timeout.
@@ -1244,25 +1655,46 @@ export async function waitAgents(args = {}, deps) {
     timeout,
   ]);
   clearTimeout(timer);
+  const states = [];
   const parts = ids.map((id, i) => {
     const a = agents[i];
-    if (!a || a.status === 'stopped') return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`;
+    if (!a || a.status === 'stopped') { states.push({ status: 'stopped', agent_id: id, message: 'Not open (stopped, idle for 60 minutes, or never existed).' }); return `## ${id}\nstatus: stopped\nNot open (stopped, idle for 60 minutes, or never existed).`; }
     const head = `## ${id}${a.description ? ` (${a.description})` : ''}\nstatus: ${a.status}`;
-    if (active(a) || !a.result) return a.status === 'queued' ? `${head}\n${queuedText(a, ctx.queue)}` : head;
-    if (a.result.reported) return `${head}\nresult already delivered; call cloud_agent_result to read it again`;
+    if (active(a) || !a.result) { states.push(lifecycle(a)); return a.status === 'queued' ? `${head}\n${queuedText(a, ctx.queue)}` : head; }
+    if (a.result.reported) { states.push(lifecycle(a, { reported: true })); return `${head}\nresult already delivered; call cloud_agent_result to read it again`; }
     a.result.reported = true;
+    states.push(lifecycle(a, { reported: true }));
     return `${head}\n${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`;
   });
-  return ctx.ok(parts.join('\n\n'));
+  return ctx.ok(parts.join('\n\n'), { agents: states });
 }
 
 // cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
 async function allMachines({ provider }) {
-  const rows = await provider.list({ purpose: 'cloudy-cloud' });
-  if (!rows.length) return 'No cloudy-cloud machines.';
+  const providerErrors = [];
+  const rows = await provider.list({ purpose: 'cloudy-cloud' }, { onError: (error) => providerErrors.push(error) });
+  if (!rows.length) return { text: 'No cloudy-cloud machines.', agents: [], providerErrors };
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
-  return [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  const agents = rows.map((m) => {
+    const labels = m.labels ?? {};
+    return {
+      id: m.id,
+      ...(m.name && { name: m.name }),
+      ...(m.provider && { provider: m.provider }),
+      state: m.state ?? m.status,
+      status: m.status ?? m.state,
+      parent: labels.parent || labels.owner || 'unknown',
+      role: labels.role ?? null,
+      profile: labels.profile ?? null,
+      kind: labels.kind ?? null,
+      ...(typeof labels.agent === 'string' && { agent_id: labels.agent }),
+      description: labels.description ?? null,
+    };
+  });
+  let text = [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}${m.provider ? `  provider ${m.provider}` : ''}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  if (providerErrors.length) text += `\nProvider listing is incomplete: ${providerErrors.map((error) => `${error.provider ?? 'unknown provider'} (${error.code ?? 'error'})`).join(', ')}`;
+  return { text, agents, providerErrors };
 }
 
 // cloud_agent_result: read-only. Returns the latest result as often as asked.
@@ -1271,39 +1703,50 @@ export async function resultAgent(args = {}, deps) {
   const id = idList(args)[0];
   const a = typeof id === 'string' ? ctx.open.get(id) : undefined;
   if (!a || a.status === 'stopped') return ctx.fail(guide('agent_gone', { id, branch: a?.branch ?? ctx.stoppedBranches?.get(id) }));
-  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`);
-  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`);
+  if (!a.result) return ctx.ok(`${guide('agent_result_pending', { id, status: a.status })}\nno result yet, status ${a.status}`, lifecycle(a, { message: 'no result yet' }));
+  return ctx.ok(`${active(a) ? `(status ${a.status}: a newer turn is running; this is the previous result)\n` : ''}${a.result.error ? 'ERROR: ' : ''}${a.result.text}${priceOf(a) ? `\n${priceOf(a)}` : ''}`, lifecycle(a, { result: a.result.text, error: !!a.result.error }));
 }
 
 // cloud_agent_list: read-only.
 export async function listAgents(args, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_list');
   const { ok, open } = ctx;
-  const spend = usageLine(planSnapshot(ctx.provider)), tail = (t) => ok(spend ? `${t}\n${spend}` : t);
-  if (args?.all === true) return tail(await allMachines(ctx));
-  if (!open.size) return tail('No agents.');
+  const spend = usageLine(planSnapshot(ctx.provider)), tail = (t, structured) => ok(spend ? `${t}\n${spend}` : t, structured);
+  if (args?.all === true) {
+    let fleet;
+    try { fleet = await allMachines(ctx); }
+    catch (error) {
+      const message = ctx.scrub(`Could not list cloudy-cloud machines${error?.provider ? ` on ${error.provider}` : ''}: ${error?.message ?? error}`);
+      const failed = ctx.fail(message, true);
+      return { ...failed, structuredContent: ctx.cleanValue({ ...failed.structuredContent, scope: 'provider', agents: [], provider_errors: [{ provider: error?.provider ?? null, code: error?.code ?? 'provider_list_failed', message }] }) };
+    }
+    return tail(fleet.text, { agents: fleet.agents, scope: 'provider', provider_errors: fleet.providerErrors.map((error) => ({ provider: error?.provider ?? null, code: error?.code ?? 'provider_list_failed', message: ctx.scrub(error?.message ?? error) })) });
+  }
+  if (!open.size) return tail('No agents.', { agents: [] });
   const usage = await usageOf([...open.values()], ctx);
   const seg = (a) => usage.get(a) ?? '';
-  return ok([[...open.values()].map((a) => (
-    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
+  const agents = [...open.values()];
+  return ok([agents.map((a) => (
+    `${a.id}  ${a.status}${a.profile ? `  profile ${a.profile.name}` : ''}${a.kind.name !== 'linux' ? `  machine ${a.kind.label}` : ''}${a.role === 'coordinator' ? '  role coordinator' : ''}${a.provider?.name ? `  provider ${a.provider.name}` : ''}  idle ${active(a) ? 0 : Math.floor((Date.now() - a.idleSince) / 60_000)} min${a.deleteAt ? `  deleted at ${new Date(a.deleteAt).toISOString()}` : ''}${seg(a)}  ${a.description}` +
     (hasMcp(a) ? `\n    mcp ${Object.keys(a.mcp.servers).join(', ')}` : '') +
     (a.turn?.progress.model || a.profile ? `\n    ${modelLine(a.turn?.progress ?? { model: '' }, a.profile && { model: a.profile.model, host: profileHost(a.profile), name: a.profile.name })}` : '') +
-    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'), ...(spend ? [spend] : [])].join('\n'));
+    (a.turn ? `\n    ${a.turn.id}: ${statusOf(a.turn, ctx)}` : ''))).join('\n'), ...(spend ? [spend] : [])].join('\n'), { agents: agents.map((a) => lifecycle(a, { description: a.description })) });
 }
 
 // Usage segment per running or idle agent, placed before the description. Never throws; a failure reads "usage n/a (unavailable)", slowness "(timeout)", no samples "(none yet)".
 // At most 4 reads at once (the provider's own limiter paces the calls), 3 s in total. Stopped and queued agents are never touched.
 async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
   const out = new Map();
+  const providerFor = (a) => a.provider ?? provider;
   const eligible = (a) => a.sandbox?.id && (a.status === 'running' || a.status === 'idle');
-  const todo = provider?.caps?.hasMetrics ? agents.filter(eligible) : [];
+  const todo = agents.filter((a) => eligible(a) && providerFor(a)?.caps?.hasMetrics);
   for (const a of todo) out.set(a, '  usage n/a (timeout)');
   let next = 0, timer;
   const read = async () => {
     for (let a; (a = todo[next++]);) {
       if (!eligible(a)) { out.delete(a); continue; } // stopped while it waited for a slot: no call, no segment
       try {
-        const { samples } = await provider.metrics(a.sandbox.id, { since: Date.now() - 120_000 });
+        const { samples } = await providerFor(a).metrics(a.sandbox.id, { since: Date.now() - 120_000 });
         const s = samples?.at(-1);
         if (s && Number.isFinite(s.cpuPct) && s.memTotal > 0) {
           const gib = (n) => (n / 2 ** 30).toFixed(1).replace(/\.0$/, ''), sec = Math.max(0, Math.round((Date.now() - s.t) / 1000));
@@ -1324,13 +1767,25 @@ export async function stopAgents(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_stop');
   const ids = idList(args);
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return ctx.fail('agent_ids must be an array of strings');
-  const lines = await Promise.all(ids.map(async (id) => {
+  const conditional = args.expected_turn_id !== undefined || args.expected_status !== undefined;
+  if (conditional && (ids.length !== 1 || typeof args.expected_turn_id !== 'string' || args.expected_status !== 'idle')) return ctx.fail('conditional stop requires one agent id, an expected_turn_id, and expected_status "idle"');
+  const outcomes = await Promise.all(ids.map(async (id) => {
     const a = ctx.open.get(id);
-    if (!a) return `${id}: not open (already stopped or never existed)`;
-    await stop(a, ctx.open, ctx.stoppedBranches);
-    return `${id}: stopped`;
+    if (!a) return { state: { agent_id: id, status: 'not-open', message: 'not open (already stopped or never existed)' }, text: `${id}: not open (already stopped or never existed)` };
+    if (conditional && (!(a.status === 'idle' || a.status === 'stop-pending') || a.turn?.id !== args.expected_turn_id || a.turn?.status !== 'completed')) {
+      const action = 'The worker has changed state since this result was collected. Inspect it with cloud_agent_list and decide whether to wait, message, or stop it.';
+      return { state: lifecycle(a, { status: 'not-stopped', error: false, message: 'The completed turn is no longer idle; no stop was attempted.', action }), text: `${id}: not stopped (the completed turn is no longer idle).\nNext step: ${action}` };
+    }
+    try {
+      await stop(a, ctx.open, ctx.stoppedBranches);
+      return { state: lifecycle(a, { status: 'stopped', error: false }), text: `${id}: stopped` };
+    } catch (error) {
+      const message = ctx.scrub(error?.stderr ?? error?.message ?? 'provider did not confirm deletion');
+      const action = 'retry cloud_agent_stop after the provider is reachable; the server reaper will also retry cleanup';
+      return { state: lifecycle(a, { status: 'stop-pending', error: true, message, action }), text: `${id}: stop pending (${message})\nNext step: ${action}` };
+    }
   }));
-  return ctx.ok(lines.join('\n') || 'No agent ids given.');
+  return ctx.ok(outcomes.map((outcome) => outcome.text).join('\n') || 'No agent ids given.', { agents: outcomes.map((outcome) => outcome.state) });
 }
 
 // Server shutdown: kill every open sandbox.

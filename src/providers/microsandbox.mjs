@@ -41,6 +41,7 @@ export const egressOk = (h) => {
   return !IPV4.test(bare) && !bare.includes(':') && bare.length <= 253 && parts.length > 1 && parts.every((l) => DNS_LABEL.test(l));
 };
 const fail = (code, message, extra) => Object.assign(new Error(message), { code }, extra);
+const cleanupUnconfirmed = (id) => fail('cleanup_unconfirmed', `microsandbox ${id} failed setup and cleanup could not be confirmed; refusing to use it or start another provider.`, { provider: 'microsandbox', machineId: id, allocated: true });
 const q = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`; // POSIX single-quote, for commands inside the guest
 const dq = (s) => (/^[\w@%+=:,./-]+$/.test(String(s)) ? String(s) : q(s)); // host-shell word, quoted only when it needs it
 
@@ -286,9 +287,12 @@ export function createProvider(env = process.env, deps = {}) {
         return e;
       };
       await msb(['create', IMAGE, '--name', id, '-c', '2', '-m', '4G', '--max-duration', `${ttl}s`, ...label, ...enva, ...sargs, ...net], { env: cenv })
-        .catch(async (e) => { await api.delete(id).catch(() => {}); throw scrub(e); }); // a half-created VM must not leak
+        .catch(async (e) => {
+          try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
+          throw scrub(e);
+        }); // a half-created VM must not leak
       if (await aliveCount() > slots) { // a parallel create may have won the last slot while ours spawned
-        await api.delete(id).catch(() => {});
+        try { await api.delete(id); } catch { throw cleanupUnconfirmed(id); }
         throw slotsFull();
       }
       return sandbox(id, name ?? id, all.deleteAt);

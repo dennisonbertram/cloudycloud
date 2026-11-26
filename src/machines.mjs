@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { loadEnv } from './config.mjs';
 import { eventsFile, readEvents } from './events.mjs';
 import { loadProvider } from './providers/index.mjs';
+import { providerFor, machineKey, qualifiedMachine, assertProviderListed } from './provider-lookup.mjs';
 import { resolveMsbBin } from './providers/microsandbox.mjs';
 import { safeText } from './terminal.mjs';
 import { cellWidth, fitCells, makeUi, nextFit, statusLine, wrapText } from './ui.mjs';
@@ -26,21 +27,28 @@ const one = (v) => safeText(v ?? '').replace(/[\r\n]+/g, ' ');
 // listMachines uses, so machines works everywhere shell, display and open do.
 const OUR_PURPOSES = ['cloudy-cloud', 'claude-cloud'];
 const ours = async (env, provider) => {
-  if (!env[provider.keyName] && !env[`CLOUDY_CLOUD_${provider.keyName}`] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  if (!provider.providers && !env[provider.keyName] && !env[`CLOUDY_CLOUD_${provider.keyName}`] && !(provider.name === 'microsandbox' && resolveMsbBin(env))) throw Object.assign(new Error(`${provider.keyName} is not set.`), { code: 'no_key' });
+  const errors = [];
   const rows = [];
-  for (const purpose of OUR_PURPOSES) rows.push(...await provider.list({ purpose }, { sdk: true }));
+  for (const purpose of OUR_PURPOSES) rows.push(...await provider.list({ purpose }, { sdk: true, onError: (e) => errors.push(e) }));
+  Object.defineProperty(rows, 'providerErrors', { value: errors });
+  Object.defineProperty(rows, 'providerNames', { value: (provider.providers ?? [provider]).map((p) => p.name) });
   return rows;
 };
 
 // The label is checked again on the rows, so a provider that ignored the list filter still cannot
 // put a foreign machine in the list, and every displayed field is normalised and safe to print.
 // `id` stays raw: it is the value provider.delete is called with.
-const clean = (rows) => rows.filter((m) => OUR_PURPOSES.includes(m.labels?.purpose)).map((m) => ({
-  id: m.id, name: one(m.labels?.name ?? m.name ?? m.id) || one(m.id),
-  agent: m.labels?.agent, cname: one(m.labels?.name), machineName: one(m.name ?? m.id),
-  role: m.labels?.role === 'coordinator-image' ? 'image' : one(m.labels?.role ?? 'machine'),
-  state: one(m.state ?? '') || 'unknown', status: m.status, startedAt: m.startedAt, deleteAt: m.deleteAt,
-}));
+const clean = (rows, defaultProvider) => {
+  const out = rows.filter((m) => OUR_PURPOSES.includes(m.labels?.purpose)).map((m) => ({
+    id: m.id, provider: m.provider ?? defaultProvider, name: one(m.labels?.name ?? m.name ?? m.id) || one(m.id),
+    agent: m.labels?.agent, cname: one(m.labels?.name), machineName: one(m.name ?? m.id),
+    role: m.labels?.role === 'coordinator-image' ? 'image' : one(m.labels?.role ?? 'machine'),
+    state: one(m.state ?? '') || 'unknown', status: m.status, startedAt: m.startedAt, deleteAt: m.deleteAt,
+  }));
+  Object.defineProperties(out, { providerErrors: { value: rows.providerErrors ?? [] }, providerNames: { value: rows.providerNames ?? [defaultProvider] } });
+  return out;
+};
 
 const when = (v) => { const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : 'unknown'; };
 const deleted = (m) => (m.deleteAt ? when(m.deleteAt) : 'never');
@@ -96,17 +104,24 @@ const nameList = (names, room) => {
 async function ls(c) {
   const rows = await c.list();
   if (!rows.length) return c.out('No Cloudy Cloud machines running.');
+  const showProvider = rows.providerNames.length > 1;
   if (!c.ui.term) {
-    c.out(['NAME', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'].join('\t'));
-    for (const m of rows) c.out([m.name, m.role, m.state, when(m.startedAt), deleted(m), one(m.id)].join('\t'));
+    const headers = showProvider ? ['NAME', 'PROVIDER', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'] : ['NAME', 'ROLE', 'STATE', 'STARTED', 'DELETES', 'ID'];
+    c.out(headers.join('\t'));
+    for (const m of rows) c.out((showProvider
+      ? [m.name, m.provider ?? '', m.role, m.state, when(m.startedAt), deleted(m), one(m.id)]
+      : [m.name, m.role, m.state, when(m.startedAt), deleted(m), one(m.id)]).join('\t'));
     return;
   }
   const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, starting: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
   const rel = (v) => (Number.isFinite(new Date(v).getTime()) ? u.rel(v) : 'unknown');
-  const cells = rows.map((m) => [m.name, m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
+  const headers = showProvider ? ['NAME', 'PROVIDER', 'ROLE', 'STATE', 'AGE', 'DELETES'] : ['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'];
+  const cells = rows.map((m) => showProvider
+    ? [m.name, m.provider ?? '', m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]
+    : [m.name, m.role, [[m.state, color[m.state] ?? u.col.err]], rel(m.startedAt), m.deleteAt ? [[rel(m.deleteAt)]] : [['never', u.col.dim]]]);
   // NAME takes the cells the fixed columns leave, so it uses the whole terminal width.
   const wOf = (v) => (Array.isArray(v) ? v : [[String(v)]]).reduce((n, [t]) => n + cellWidth(t), 0);
-  const fixed = ['ROLE', 'STATE', 'AGE', 'DELETES'].map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
+  const fixed = headers.slice(1).map((h, i) => Math.max(h.length, ...cells.map((r) => wOf(r[i + 1]))));
   const nameRoom = u.width - 2 - 3 * 4 - fixed.reduce((a, b) => a + b, 0);
   const running = rows.filter((m) => m.status === 'running').length;
   const count = running === rows.length ? `${running} running.` : `${running} of ${rows.length} running.`;
@@ -115,11 +130,11 @@ async function ls(c) {
     // Too narrow for the table: a fitted line per machine, the id on a wrapped sub-line.
     return c.out([...rows.flatMap((m) => [
       `  ${fitCells(m.name, Math.max(4, u.width - 3 - cellWidth(m.state)))} ${u.paint(color[m.state] ?? u.col.err, m.state)}`,
-      ...wrapText(u, `id ${one(m.id)}`, u.width - 4).map((l) => `    ${u.dim(l)}`),
+      ...wrapText(u, `${showProvider && m.provider ? `${m.provider} ` : ''}id ${one(m.id)}`, u.width - 4).map((l) => `    ${u.dim(l)}`),
     ]), ...foot].join('\n'));
   }
   const fitted = cells.map((r) => [fitCells(r[0], nameRoom), ...r.slice(1)]);
-  c.out([u.table(['NAME', 'ROLE', 'STATE', 'AGE', 'DELETES'], fitted), ...foot].join('\n'));
+  c.out([u.table(headers, fitted), ...foot].join('\n'));
 }
 
 // The one machine a token means, in precedence order: an exact machine id first (so a machine can
@@ -127,15 +142,33 @@ async function ls(c) {
 // agent→machine record), then a name (the coordinator `name` label or the provider's machine
 // name). A name matching more than one machine is refused, not guessed. Any listed state matches:
 // machines are deleted, not connected to, so a non-running state is not a reason to refuse.
+const placementFor = (token, events) => {
+  let placement;
+  for (const e of events) if (e.type === 'machine' && e.id === token && e.machine) placement = { machine: e.machine, provider: e.provider };
+  return placement;
+};
+const lookupScope = (token, rows, placement) => {
+  if (token.includes(':')) return token.slice(0, token.indexOf(':'));
+  if (rows.some((m) => m.id === token)) return undefined; // a bare native ID may belong to any provider
+  return placement?.provider;
+};
 function resolve(token, rows, events) {
-  const byId = rows.find((m) => m.id === token);
+  const placement = placementFor(token, events);
+  const scope = lookupScope(token, rows, placement);
+  assertProviderListed(rows, scope, `machine target "${one(token)}"`);
+  const qualified = qualifiedMachine(token, rows);
+  if (qualified) return qualified;
+  const unique = (found, kind) => {
+    if (found.length > 1) fail(`"${one(token)}" matches multiple machines by ${kind}; use the provider shown in the machine list.`, { next: 'cloudy-cloud machines ls' });
+    return found[0];
+  };
+  const byId = unique(rows.filter((m) => m.id === token), 'id');
   if (byId) return byId;
-  const byAgent = rows.find((m) => m.agent === token);
+  const byAgent = unique(rows.filter((m) => m.agent === token), 'agent id');
   if (byAgent) return byAgent;
-  let machineId;
-  for (const e of events) if (e.type === 'machine' && e.id === token && e.machine) machineId = e.machine;
+  const machineId = placement?.machine;
   if (machineId) {
-    const m = rows.find((x) => x.id === machineId);
+    const m = unique(rows.filter((x) => x.id === machineId && (!placement.provider || x.provider === placement.provider)), 'recorded machine id');
     if (m) return m;
     fail(`Agent ${one(token)} is not running (its machine is gone).`, { next: 'cloudy-cloud machines ls' });
   }
@@ -154,14 +187,33 @@ const oneDeleted = (c, m) => (c.ui.term
 const WORKER_HINT = 'Its workers go with its cleanup or at their own deadline.';
 const workerHint = (c) => { if (c.ui.term) c.out(c.ui.hint(WORKER_HINT)); };
 
+const reportOtherProviderErrors = (c, rows, owner, reported) => {
+  for (const e of rows.providerErrors ?? []) {
+    if (owner && e.provider === owner) continue;
+    const key = `${e.provider ?? ''}:${e.code ?? ''}`;
+    if (reported.has(key)) continue;
+    reported.add(key);
+    c.err(`cloudy-cloud machines: could not list ${one(e.provider ?? 'a provider')}: ${one(e.message)}`);
+  }
+};
+
 async function stop(c, { all, yes, pos }) {
-  const rows = await c.list();
+  const rows = await c.list({ reportErrors: false });
+  if (all) assertProviderListed(rows, undefined, 'stop --all');
   if (!all) {
-    const m = resolve(pos[0], rows, c.events());
+    const events = c.events();
+    const placement = placementFor(pos[0], events);
+    const m = resolve(pos[0], rows, events);
+    const scope = lookupScope(pos[0], rows, placement);
+    const reported = new Set();
+    reportOtherProviderErrors(c, rows, scope, reported);
     // List again right before deleting: the resolved row may have changed or gone since it was read.
-    const still = (await c.list()).find((x) => x.id === m.id);
+    const refreshed = await c.list({ reportErrors: false });
+    assertProviderListed(refreshed, scope, `machine target "${one(pos[0])}"`);
+    reportOtherProviderErrors(c, refreshed, scope, reported);
+    const still = refreshed.find((x) => machineKey(x) === machineKey(m));
     if (!still) return c.out(`${m.name} (${one(m.id)}) is already gone; nothing to delete.`);
-    try { await c.provider.delete(still.id, { sdk: true }); }
+    try { await providerFor(c.provider, still).delete(still.id, { sdk: true }); }
     catch (e) { fail(`Could not delete ${still.name}.\n${one(e.message)}`, { next: 'cloudy-cloud machines ls' }); }
     oneDeleted(c, still);
     if (still.role === 'coordinator') workerHint(c);
@@ -177,12 +229,14 @@ async function stop(c, { all, yes, pos }) {
   }
   // The confirmed list can be stale by the time the user answers: re-list and delete only the
   // shown ids that are still there (still purpose-filtered by list()).
-  const shown = new Set(rows.map((m) => m.id));
-  const del = (await c.list()).filter((m) => shown.has(m.id));
+  const shown = new Set(rows.map(machineKey));
+  const refreshed = await c.list({ reportErrors: false });
+  assertProviderListed(refreshed, undefined, 'stop --all');
+  const del = refreshed.filter((m) => shown.has(machineKey(m)));
   if (!del.length) return c.out('All those machines were already deleted.');
   let failed = 0, coord = false;
   for (const m of del) {
-    try { await c.provider.delete(m.id, { sdk: true }); coord ||= m.role === 'coordinator'; oneDeleted(c, m); }
+    try { await providerFor(c.provider, m).delete(m.id, { sdk: true }); coord ||= m.role === 'coordinator'; oneDeleted(c, m); }
     catch (e) {
       failed++;
       if (!c.ui.term) c.err(`cloudy-cloud machines: could not delete ${m.name} (${one(m.id)}): ${one(e.message)}`);
@@ -230,7 +284,7 @@ export async function run(argv, deps = {}) {
       tty: deps.tty ?? !!process.stdin.isTTY,
       ask: deps.ask ?? askOnce,
       events: deps.events ?? (() => readEvents(eventsFile(env))),
-      list: async () => {
+      list: async ({ reportErrors = true } = {}) => {
         let rows;
         try { rows = await (deps.list ?? ours)(env, provider); }
         catch (e) {
@@ -239,7 +293,16 @@ export async function run(argv, deps = {}) {
           if (e.code === 'no_key') fail(provider.text.noKeyFix, { fallback: 'cloudy-cloud setup' });
           fail(`Could not list your machines (${one(e.message)}). Check your internet connection and that ${provider.keyName} is still valid.`, { next: 'cloudy-cloud machines ls' });
         }
-        return clean(rows);
+        if (reportErrors) {
+          const reported = new Set();
+          for (const e of rows.providerErrors ?? []) {
+            const key = `${e.provider ?? ''}:${e.code ?? ''}`;
+            if (reported.has(key)) continue;
+            reported.add(key);
+            err(`cloudy-cloud machines: could not list ${one(e.provider ?? 'a provider')}: ${one(e.message)}`);
+          }
+        }
+        return clean(rows, provider.name);
       },
     };
     if (cmd === 'stop') await stop(c, { all, yes, pos });
