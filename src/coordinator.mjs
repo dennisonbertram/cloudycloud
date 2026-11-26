@@ -842,8 +842,8 @@ function validateArgs(cmd, args) {
   if (cmd === 'status') { if (!SELECTOR_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
-  // The piped text always says what is wrong with the value; the terminal headline says start needs a NAME.
-  if (!(cmd === 'start' ? NAME_RE : SELECTOR_RE).test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters), with an optional provider: prefix.', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters), with an optional provider: prefix.');
+  // Keep the original scripted error text. Selector prefixes are accepted by attach/stop here; start still uses NAME_RE.
+  if (!(cmd === 'start' ? NAME_RE : SELECTOR_RE).test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
   if (cmd !== 'start') { if (args.length !== 1) bad(`${cmd} takes exactly one NAME.`); return; }
   const seen = new Set();
   for (let i = 1; i < args.length; i++) {

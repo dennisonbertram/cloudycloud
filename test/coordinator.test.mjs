@@ -2473,6 +2473,8 @@ test('coordinator start with no NAME says the NAME is missing', async () => {
   const e = await main(['start'], { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.equal(e.short, 'start needs a NAME.'); // the terminal headline
   assert.match(e.message, /^NAME must use lowercase letters, digits and hyphens \(1 to 40 characters\)\./); // the piped text keeps the origin/main wording
+  const qualified = await main(['start', 'provider-b:boss'], { env: {}, out: () => {} }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(qualified.message, /^NAME must use lowercase letters, digits and hyphens \(1 to 40 characters\)\./); // provider selectors are for existing coordinators, not creation
 });
 
 // ---- `cloudy-cloud cloud` and the --env bridge ----
