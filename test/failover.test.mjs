@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
 import { setGithub, createFakeProvider } from './fake-provider.mjs';
-import { runSubagent, waitAgents, listAgents, stopAgents } from '../src/run-subagent.mjs';
+import { runSubagent, waitAgents, listAgents, stopAgents, startQueue } from '../src/run-subagent.mjs';
+import { combine } from '../src/providers/index.mjs';
 
 const exec = promisify(execFile);
 const sh = (cwd, cmd) => exec('sh', ['-c', cmd], { cwd }).then((r) => r.stdout.trim());
@@ -33,7 +34,7 @@ async function setup(over = {}) {
   const a = over.a ?? createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a' });
   const b = over.b ?? createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b' });
   const deps = {
-    provider: a,
+    provider: over.provider ?? a,
     providers: [a, b],
     open: new Map(),
     cwd: repo,
@@ -204,6 +205,82 @@ test('a machine kind the primary lacks runs on the provider that offers it', asy
   assert.equal(b.log.create[0].kind.name, 'gpu');
   assert.equal(a.log.create.length, 0);
   assert.match(r, /Started on b because a cannot run this request \(What happened: The provider a cannot start a gpu machine \(it offers: linux\)\.\)\./);
+});
+
+test('a provider with a full known machine cap is skipped promptly for a secondary with capacity', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a', plan: { tier: 'a', specs: [], startsPerMinute: 10, maxRunning: 1, maxMachines: 10 } });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b', plan: { tier: 'b', specs: [], startsPerMinute: 10, maxRunning: 10, maxMachines: 20 } });
+  a.machines.set('a-existing', { id: 'a-existing', labels: { purpose: 'cloudy-cloud' }, state: 'running', status: 'running', startedAt: Date.now() });
+  const provider = combine([a, b]);
+  const x = await setup({ a, b, provider, env: { CLOUDY_CLOUD_STARTS_PER_MIN: '20' } });
+  x.deps.queue = startQueue(x.deps.env, provider, () => x.deps.open.values(), { sleep: async () => {} });
+  await x.deps.queue.learnPlan();
+  const r = await x.wait([await x.start()]);
+  assert.equal(a.log.create.length, 0, 'the known-full primary is never asked to create');
+  assert.equal(b.log.create.length, 1);
+  assert.match(r, /Started on b/);
+});
+
+test('a provider at its own start-rate limit is skipped when another candidate has a slot', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a', plan: { tier: 'a', specs: [], startsPerMinute: 1, maxRunning: 10, maxMachines: 20 } });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b', plan: { tier: 'b', specs: [], startsPerMinute: 10, maxRunning: 10, maxMachines: 20 } });
+  const provider = combine([a, b]);
+  const x = await setup({ a, b, provider, env: { CLOUDY_CLOUD_STARTS_PER_MIN: '20' } });
+  x.deps.queue = startQueue(x.deps.env, provider, () => x.deps.open.values(), { sleep: async () => {} });
+  await x.deps.queue.learnPlan();
+  const first = await x.start();
+  await x.wait([first]);
+  const second = await x.start();
+  const r = await x.wait([second]);
+  assert.equal(a.log.create.length, 1, 'the primary plan allows only one start in the window');
+  assert.equal(b.log.create.length, 1, 'the secondary serves the start-rate overflow');
+  assert.match(r, /Started on b/);
+});
+
+test('size admission accepts a size offered by a secondary provider', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a', plan: { tier: 'a', specs: [{ vcpus: 2, memMiB: 4096 }], startsPerMinute: 10, maxRunning: 10 } });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b', plan: { tier: 'b', specs: [{ vcpus: 4, memMiB: 8192 }], startsPerMinute: 10, maxRunning: 10 } });
+  const x = await setup({ a, b });
+  const r = await x.wait([await x.start({ size: '4x8' })]);
+  assert.equal(a.log.create.length, 0);
+  assert.equal(b.log.create.length, 1);
+  assert.match(r, /Started on b/);
+});
+
+test('a definitive primary size refusal falls through to a provider that offers the requested size', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a', plan: null });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b', plan: { tier: 'b', specs: [{ vcpus: 4, memMiB: 8192 }], startsPerMinute: 10, maxRunning: 10 } });
+  let primaryAttempts = 0;
+  a.create = async () => { primaryAttempts++; throw Object.assign(new Error('size rejected'), { code: 'size_not_allowed' }); };
+  const provider = combine([a, b]);
+  const x = await setup({ a, b, provider });
+  const r = await x.wait([await x.start({ size: '4x8' })]);
+  assert.equal(primaryAttempts, 1, 'the primary refusal is definite and happens before machine acceptance');
+  assert.equal(b.log.create.length, 1);
+  assert.match(r, /Started on b/);
+});
+
+test('a turn limit rejected by the primary remains available on a provider with a longer TTL', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b' });
+  a.caps.maxTtlSeconds = 3600;
+  b.caps.maxTtlSeconds = 86_400;
+  const x = await setup({ a, b, env: { CLOUDY_CLOUD_TURN_MINUTES: '60' } });
+  const r = await x.wait([await x.start()]);
+  assert.equal(a.log.create.length, 0);
+  assert.equal(b.log.create.length, 1);
+  assert.match(r, /Started on b/);
+});
+
+test('failover does not cross between local substitution and provider proxy credential modes', async () => {
+  const a = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'a' });
+  const b = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'b' });
+  a.caps.localSecrets = true;
+  a.create = async () => { throw Object.assign(new Error('full'), { code: 'quota_exceeded' }); };
+  const provider = combine([a, b]);
+  const x = await setup({ a, b, provider });
+  await x.wait([await x.start()]);
+  assert.equal(b.log.create.length, 0, 'a provider with a different token-handling mode is not an alternate candidate');
 });
 
 test('a coordinator lands on the provider that does not refuse coordinators', async () => {

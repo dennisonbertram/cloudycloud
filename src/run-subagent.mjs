@@ -95,7 +95,16 @@ function helpers(env, literals, keyName, tool) {
 // q.learnPlan() reads the plan once (fire and forget from runSubagent); a failed read keeps the default.
 export const startQueue = (env, provider, open, opts) => {
   let plan, learning;
-  const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN) || (plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10))) || provider?.caps.startsPerMin || 25;
+  const providers = provider?.providers?.length ? provider.providers : provider ? [provider] : [];
+  const multi = providers.length > 1;
+  const providerPlans = new Map();
+  const providerStamps = new Map();
+  const planRate = (p) => providerPlans.get(p)?.startsPerMinute > 0
+    ? Math.max(1, providerPlans.get(p).startsPerMinute - Math.ceil(providerPlans.get(p).startsPerMinute / 10))
+    : p?.caps?.startsPerMin || 25;
+  const pace = () => Number(env?.CLOUDY_CLOUD_STARTS_PER_MIN)
+    || (multi ? providers.reduce((sum, p) => sum + planRate(p), 0) : plan?.startsPerMinute > 0 && Math.max(1, plan.startsPerMinute - Math.ceil(plan.startsPerMinute / 10)))
+    || provider?.caps.startsPerMin || 25;
   // Snapshot preparation is not a machine slot. Admission also counts a provider create in flight so concurrent creates cannot exceed the plan cap.
   const live = (me, shown) => [...(open?.() ?? [])].filter((a) => a !== me && (a.status === 'running' || a.status === 'idle' || a.status === 'stop-pending' || (a.status === 'starting' && (shown ? !!a.sandbox : !!a.sandbox || !!a.machineCreating)))).length;
   // Per-profile cap (#55): profiles.json maxConcurrent, else CLOUDY_CLOUD_PROFILE_MAX, else none. The count is this server's own agents plus,
@@ -113,15 +122,51 @@ export const startQueue = (env, provider, open, opts) => {
     const n = Math.max(local, listed.get(name)?.n ?? 0);
     return n >= max ? `waiting for a free ${name} slot (${n} of ${max} running; cap set by maxConcurrent or CLOUDY_CLOUD_PROFILE_MAX)` : undefined;
   };
-  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
+  const q = createStartQueue({ perMin: pace, liveCount: live, maxRunning: () => multi ? undefined : plan?.maxRunning, tierName: () => plan?.tier, profileBusy, ...opts });
   q.plan = () => plan;
-  q.learnPlan = () => (learning ??= Promise.resolve().then(() => provider?.plan?.()).then((p) => {
-    if (!p) return;
-    plan = p;
-    q.poke(); // starts already waiting for the old, lower rate may go now
-    const per = (n) => (n > 0 ? `${n}` : 'no limit');
-    log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${p.tier}: ${per(p.startsPerMinute)} starts/min (using ${pace()}), ${per(p.maxRunning)} running at once, sizes ${p.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
+  q.learnPlan = () => (learning ??= Promise.all(providers.map(async (p) => {
+    const value = await p.plan?.().catch(() => null);
+    if (value) providerPlans.set(p, value);
+    return value;
+  })).then((values) => {
+    plan = values[0] ?? null; // legacy plan guidance remains tied to the primary provider
+    q.poke(); // starts already waiting for the old rate may now use learned provider rates
+    if (plan) {
+      const per = (n) => (n > 0 ? `${n}` : 'no limit');
+      log(`${provider.name === 'instabox' ? 'Instabox' : provider.name} plan ${plan.tier}: ${per(plan.startsPerMinute)} starts/min (using ${pace()}), ${per(plan.maxRunning)} running at once, sizes ${plan.specs.map((x) => `${x.vcpus}x${x.memMiB / 1024}`).join(' ')}`);
+    }
   }).catch(() => {}));
+  // For multiple providers, reserve per-adapter start rates and skip a provider whose own running cap is known full.
+  // Listing failures or unreadable plans remain unknown and are left to the adapter's normal refusal path.
+  q.providerFull = async (agent, p) => {
+    const currentPlan = providerPlans.get(p) ?? await p.plan?.().catch(() => null);
+    if (currentPlan && !providerPlans.has(p)) providerPlans.set(p, currentPlan);
+    const max = currentPlan?.maxRunning;
+    if (!(max > 0)) return false;
+    let rows;
+    try { rows = await p.list({ purpose: 'cloudy-cloud' }); } catch { return false; }
+    const running = rows.filter((m) => ['running', 'starting'].includes(m.status ?? m.state)).length;
+    const local = [...(open?.() ?? [])].filter((a) => a !== agent && (a.provider === p || a.machineCreatingProvider === p)
+      && ['running', 'idle', 'starting', 'stop-pending'].includes(a.status)).length;
+    return Math.max(running, local) >= max;
+  };
+  q.providerRateSlot = (p) => {
+    const learned = providerPlans.get(p);
+    if (learned && !(learned.startsPerMinute > 0)) return true; // the provider reports no plan start-rate limit
+    const cap = planRate(p);
+    if (!(cap > 0)) return true;
+    const nowMs = (opts?.now ?? Date.now)();
+    const recent = (providerStamps.get(p) ?? []).filter((at) => nowMs - at < 60_000);
+    if (recent.length >= cap) { providerStamps.set(p, recent); return false; }
+    recent.push(nowMs);
+    providerStamps.set(p, recent);
+    return true;
+  };
+  q.providerRateWait = async () => {
+    const nowMs = (opts?.now ?? Date.now)();
+    const waits = [...providerStamps.values()].flat().filter((at) => nowMs - at < 60_000).map((at) => at + 60_000 - nowMs);
+    if (waits.length) await (opts?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(Math.min(...waits));
+  };
   return q;
 };
 // One shared queue per server, built the same way for every caller (buildServer and the tool handlers).
@@ -516,7 +561,8 @@ function credentialsFor(candidate, a, env) {
 
 const failoverHow = (e) => {
   const code = String(e?.code ?? '');
-  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity') return 'next';
+  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity'
+    || code === 'size_not_allowed' || code === 'machine_not_on_plan' || code === 'machine_gpu_limit') return 'next';
   if (code === 'transient' || code === 'create_unknown' || code === 'ambiguous' || (!code && classifyProviderError(e?.message)?.kind === 'connection')) return 'reconcile';
 };
 
@@ -553,13 +599,31 @@ async function setup(a, ctx) {
     a.cancelQueue = () => { a.createAbort.abort(); ctx.queue.cancel(a); };
     const place = async () => {
       const tried = [], errors = [];
-      for (const [index, p] of cands.entries()) {
+      for (;;) {
+       let rateBlocked = false, capacityBlocked = false;
+       for (const [index, p] of cands.entries()) {
         const next = cands[index + 1];
+        if (await ctx.queue.providerFull?.(a, p)) {
+          capacityBlocked = true;
+          const why = `${p.name} is at its known running-machine limit`;
+          (a.skipped ??= []).push({ name: p.name, why });
+          a.emit?.({ type: 'progress', text: `${why}${next ? `; trying ${next.name}` : ''}` });
+          continue;
+        }
         try {
           const { envs, keySecrets, coord } = credentialsFor(p, a, env);
+          if (ctx.queue.providerRateSlot && !ctx.queue.providerRateSlot(p)) {
+            rateBlocked = true;
+            const why = `${p.name} has reached its start rate for this minute`;
+            (a.skipped ??= []).push({ name: p.name, why });
+            continue;
+          }
           const deleteAfterSeconds = workerSeconds(env, p.caps.maxTtlSeconds);
           const secrets = [...new Set([...keySecrets, ...coord.secrets, ...(hasMcp(a) ? a.mcp.secrets : [])])];
-          const sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p);
+          a.machineCreatingProvider = p;
+          let sbx;
+          try { sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p); }
+          finally { delete a.machineCreatingProvider; }
           a.provider = p;
           a.envs = { ...envs, ...baseEnvs };
           a.deleteAt = Date.now() + deleteAfterSeconds * 1000;
@@ -602,6 +666,16 @@ async function setup(a, ctx) {
           a.emit?.({ type: 'progress', text: `${p.name} could not start a machine (${error?.code ?? 'connection failed'})${next ? `; trying ${next.name}` : ''}` });
           if (next) log(`agent ${a.id}: ${p.name} -> ${next.name} (${error?.code ?? 'connection'})`);
         }
+       }
+       if (rateBlocked && !capacityBlocked && !errors.length) {
+         await ctx.queue.providerRateWait?.();
+         if (a.cancelled) throw new Error('cancelled');
+         continue;
+       }
+       if (capacityBlocked && !errors.length) {
+         throw Object.assign(new Error('Every compatible provider is at its known running-machine limit; waiting before retrying placement.'), { code: 'quota_exceeded' });
+       }
+       break;
       }
       const error = errors.find((e) => isRateLimited(e) || isQuotaExceeded(e)) ?? errors.at(-1) ?? new Error('No configured provider can run this request.');
       error.tried = tried;
@@ -1124,7 +1198,10 @@ export async function runSubagent(args, deps) {
     cands = kept;
   };
   let why;
-  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine; cloudy-cloud only runs on providers with proxy secrets. On your own machine you can allow it: run cloudy-cloud setup and answer yes to the GitHub token question. That means the token is stored on your machine (in memory only, never on disk) while an agent runs.`))) return fail(why);
+  if ((why = narrow((p) => p.caps.hasProxySecrets || p.caps.hasConsentedSecrets, (p) => `Provider ${p.name} cannot keep the GitHub token off the machine without explicit consent. Run cloudy-cloud setup and answer yes to the GitHub token question to allow on-machine storage; the token stays in memory on your computer, never on disk.`))) return fail(why);
+  const credentialMode = (p) => p.caps.localSecrets ? 'local-substitution' : p.caps.hasProxySecrets ? 'provider-proxy' : 'consented-on-box';
+  const selectedCredentialMode = credentialMode(cands[0]);
+  narrow((p) => credentialMode(p) === selectedCredentialMode, (p) => `${p.name} uses a different credential mode than ${cands[0].name}; failover cannot change how the model token is stored.`);
   const { hasProxySecrets, hasConsentedSecrets } = cands[0].caps;
   const { prompt, model, subagent_type: agent, description, profile: profileName, role = 'worker', autofix: autofixOn = false, base, issue, preview_port } = args;
   if (!ROLES.includes(role)) return fail(`invalid role: must be one of ${ROLES.join(', ')}`);
@@ -1167,8 +1244,8 @@ export async function runSubagent(args, deps) {
   }
   const apt = aptPackages(ctx.env);
   if (apt.error) return fail(apt.error);
-  const turnLimit = turnMinutes(ctx.env, cands[0].caps.maxTtlSeconds);
-  if (turnLimit.error) return fail(turnLimit.error, true);
+  const turnChecks = new Map(cands.map((p) => [p, turnMinutes(ctx.env, p.caps.maxTtlSeconds)]));
+  if ((why = narrow((p) => !turnChecks.get(p).error, (p) => turnChecks.get(p).error))) return fail(why, true);
   if (apt.list.length && (why = narrow((p) => p.caps.hasSudo ?? p.caps.hasProxySecrets, (p) => `CLOUDY_CLOUD_APT_PACKAGES needs sudo on the worker, and the ${p.name} image has none. Add the packages to the image (docker/worker.Dockerfile) and rebuild it, then clear CLOUDY_CLOUD_APT_PACKAGES.`))) return fail(why);
   if (egress.list.length) {
     if (role === 'coordinator') return fail('CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only. Next step: start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker".', false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW applies to workers only.', next: 'start the coordinator without it — for one command, prefix it: CLOUDY_CLOUD_EGRESS_ALLOW=off cloudy-cloud coordinator start — or call cloud_agent with role "worker"' });
@@ -1186,16 +1263,20 @@ export async function runSubagent(args, deps) {
     if (EXPENSIVE.includes(kind.name)) return fail('gpu and macos machines have their own sizes, so size cannot be used with them. Call cloud_agent again without size.');
     if ((why = narrow((p) => p.caps.hasSizes, (p) => `size is not available: the ${p.name} provider has one machine size. Call cloud_agent again without size.`))) return fail(why);
     const has = (p) => p?.specs?.some((s) => s.vcpus === size.vcpus && s.memMiB === size.memMiB);
-    let plan = await cands[0].plan?.().catch(() => null);
-    if (plan?.specs && !has(plan)) plan = await cands[0].plan({ refresh: true }).catch(() => null);
-    if (plan?.specs && !has(plan)) {
-      return fail(sizeGuide(size, plan));
-    }
-    if (!plan?.specs) sizeNote = `Your Instabox plan could not be read, so size ${size.label} was not checked against it and Instabox may refuse it (read the reason with cloud_agent_result).`;
+    const plans = new Map(await Promise.all(cands.map(async (p) => {
+      let plan = await p.plan?.().catch(() => null);
+      if (plan?.specs && !has(plan)) plan = await p.plan({ refresh: true }).catch(() => null);
+      return [p, plan];
+    })));
+    const rejected = cands.filter((p) => plans.get(p)?.specs && !has(plans.get(p)));
+    const compatible = cands.filter((p) => !rejected.includes(p));
+    if (!compatible.length) return fail(sizeGuide(size, plans.get(cands[0])));
+    for (const p of rejected) skipped.push({ name: p.name, why: `${p.name} plan does not offer size ${size.label}` });
+    cands = compatible;
+    if (!plans.get(cands[0])?.specs) sizeNote = `The ${cands[0].name} plan could not be read, so size ${size.label} was not checked and the provider may refuse it (read the reason with cloud_agent_result).`;
   }
   if (role === 'coordinator' && (why = narrow((p) => !p.text?.coordinatorRefusal, (p) => p.text.coordinatorRefusal))) return fail(why);
   if (role === 'coordinator' && ['pi', 'omp', 'codex', 'opencode'].includes(profile?.harness)) return fail('A coordinator cannot use a pi, omp, codex or opencode profile, because coordinators run Claude Code. Use such a profile for workers only.');
-  narrow((p) => Boolean(p.caps.hasProxySecrets) === Boolean(cands[0].caps.hasProxySecrets), (p) => `${p.name} uses a different credential model than ${cands[0].name}; failover cannot cross credential models.`);
   let root;
   try {
     root = await git(deps.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel');
