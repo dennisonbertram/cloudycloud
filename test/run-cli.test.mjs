@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -15,13 +15,13 @@ const root = resolve(new URL('..', import.meta.url).pathname);
 const TEST_PATH = process.env.PATH || '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 const git = (args, options = {}) => exec('/bin/sh', ['-c', 'git "$@"', 'git', ...args], { ...options, env: { ...process.env, PATH: TEST_PATH, ...options.env } });
 
-async function fixture(t) {
+async function fixture(t, { currentConfig = true } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'cc-run-cli-home-'));
   const repo = await mkdtemp(join(tmpdir(), 'cc-run-cli-repo-'));
   const remoteRoot = await mkdtemp(join(tmpdir(), 'cc-run-cli-remote-'));
   const remote = join(remoteRoot, 'test', 'run-cli.git');
   await mkdir(remote, { recursive: true });
-  await mkdir(join(home, '.config', 'cloudy-cloud'), { recursive: true });
+  if (currentConfig) await mkdir(join(home, '.config', 'cloudy-cloud'), { recursive: true });
   await git(['init', '--bare', '-q'], { cwd: remote });
   await git(['init', '-q', '-b', 'main'], { cwd: repo });
   await git(['config', 'user.name', 'test'], { cwd: repo });
@@ -95,4 +95,40 @@ test('CLI returns a recoverable worker after failure and a separate MCP stdio co
   const cleanResult = JSON.parse(clean.stdout.trim());
   assert.equal(cleanResult.status, 'completed');
   assert.equal(cleanResult.error, false);
+});
+
+test('run migrates legacy config before creating the named owner and keeps its notice off JSON stdout', async (t) => {
+  const f = await fixture(t, { currentConfig: false });
+  const legacy = join(f.home, '.config', 'claude-cloud');
+  await mkdir(legacy, { recursive: true });
+  const original = 'CLAUDE_CLOUD_MIGRATION_SENTINEL=keep-me\n';
+  await writeFile(join(legacy, 'env'), original, { mode: 0o600 });
+  await writeFile(join(legacy, 'legacy-marker'), 'preserve this directory\n');
+  t.after(() => stopOwner(f.session, f.repo, f.home));
+
+  const result = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '1', '--json', '--', 'FAIL keep this worker'], { env: f.env, timeout: 20_000 }).catch((error) => error);
+  assert.equal(result.code, 1, `expected failed worker result; stdout=${result.stdout} stderr=${result.stderr}`);
+  assert.doesNotThrow(() => JSON.parse(result.stdout.trim()), 'stdout must contain only the JSON result');
+  assert.match(result.stderr, /Moved your saved keys from ~\/\.config\/claude-cloud/);
+  assert.equal(await readFile(join(f.home, '.config', 'cloudy-cloud', 'env'), 'utf8'), 'CLOUDY_CLOUD_MIGRATION_SENTINEL=keep-me\n');
+  assert.equal(await readFile(join(legacy, 'env'), 'utf8'), original);
+  assert.equal(await readFile(join(legacy, 'legacy-marker'), 'utf8'), 'preserve this directory\n');
+  await access(sessionPaths({ name: f.session, repo: f.repo, home: f.home }).metadata);
+});
+
+test('run help documents required repo and does not migrate legacy config', async (t) => {
+  const f = await fixture(t, { currentConfig: false });
+  const legacy = join(f.home, '.config', 'claude-cloud');
+  await mkdir(legacy, { recursive: true });
+  const original = 'CLAUDE_CLOUD_LEGACY=value\n';
+  await writeFile(join(legacy, 'env'), original, { mode: 0o600 });
+
+  const result = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--help'], { env: f.env });
+  assert.match(result.stdout, /Required repository with a github\.com origin/);
+  assert.equal(result.stderr, '');
+  const topLevel = await exec(resolve(root, 'bin/cloudy-cloud'), ['--help'], { env: f.env });
+  assert.match(topLevel.stdout, /run --repo PATH/);
+  assert.doesNotMatch(topLevel.stdout, /run \[--repo PATH\]/);
+  await assert.rejects(access(join(f.home, '.config', 'cloudy-cloud')));
+  assert.equal(await readFile(join(legacy, 'env'), 'utf8'), original);
 });

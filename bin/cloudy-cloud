@@ -41,6 +41,8 @@ fi
 # `cloudy-cloud run --repo PATH [--profile NAME] [--session NAME] [--json] -- PROMPT` runs one worker to completion.
 if [ "${1:-}" = run ]; then
   shift
+  # Migrate before a named owner creates ~/.config/cloudy-cloud; notices go to stderr so --json stays machine-readable.
+  . "$root/bin/migrate-config.sh"; migrate_config >&2
   exec node "$root/src/run.mjs" "$@"
 fi
 
@@ -154,7 +156,7 @@ Usage: cloudy-cloud [command] [options]
   free-pi [args]          Start free-pi as the main session (with cloud_agent)
   setup [--more] [--check-only]  Check tools and save keys
   setup --default-profile NAME  Choose the default worker profile
-  run [--repo PATH] [--profile NAME] -- PROMPT  Run one worker to completion
+  run --repo PATH [--profile NAME] -- PROMPT  Run one worker to completion
   cloud [options]         Start a cloud coordinator and attach to it
   coordinator             Manage always-on cloud coordinators
   shell <agent> [-- cmd]  Open a shell on a cloud machine, or run one command
