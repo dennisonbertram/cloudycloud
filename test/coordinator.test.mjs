@@ -3008,7 +3008,7 @@ test('login --code sends the code by file into the pane\'s sign-in prompt and wa
   assert.ok(f.log.writes.some((w) => w.p === file && w.d === 'OK-code_#9'), 'the code reaches the machine as a file');
   assert.ok(!f.log.cmds.some((c) => c.includes('OK-code_#9')), 'the code is never in a remote command string');
   const send = f.log.cmds.find((c) => /load-buffer/.test(c));
-  assert.equal(send, `chmod 600 '${file}' && tmux load-buffer '${file}' && tmux paste-buffer -t claude && tmux send-keys -t claude Enter; rm -f '${file}'`);
+  assert.equal(send, `chmod 600 '${file}' && tmux load-buffer '${file}' && tmux paste-buffer -t claude && tmux send-keys -t claude Enter; tmux delete-buffer 2>/dev/null; rm -f '${file}'`);
   assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
 });
 
