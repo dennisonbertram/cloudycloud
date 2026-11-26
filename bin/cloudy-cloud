@@ -153,7 +153,7 @@ Usage: cloudy-cloud [command] [options]
   display <agent>         Print a link to a cloud machine's desktop
   open <agent> <port>     Reach an app running on a cloud machine
   mcp add|ls|rm           Choose which MCP servers cloud subagents get
-  mcp-server              Run the MCP server on stdio (for other MCP clients)
+  mcp-server              Run the MCP server on stdio (optional --repo PATH --session NAME)
   branches prune          Delete empty or merged cloudy-cloud/* branches
   dashboard               Open a read-only web page about your cloud machines
   machines                List or delete your Cloudy Cloud machines
