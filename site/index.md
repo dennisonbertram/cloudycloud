@@ -1,6 +1,6 @@
 # Cloudy Cloud: keep your coding agent, give it a cloud fleet
 
-> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.
+> Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives coding agents MCP tools for running workers in separate sandbox workspaces and Git branches.
 
 Source: https://cloudycloud.tech/
 
@@ -26,7 +26,7 @@ Each subagent commits and pushes to its own branch on your GitHub repo, named `c
 
 ## Keep the conversation going.
 
-A subagent stays open after it answers. Send it another message and it carries on with the same context. It stops on its own after 60 idle minutes, or when your session ends.
+A subagent stays open after it answers. Send it another message and it carries on with the same context. It stops after 60 idle minutes; default ephemeral sessions also stop when their MCP session ends. Named MCP sessions let separate client connections reconnect to a local owner.
 
 - Same context for every follow-up
 - Idle machines stop by themselves
@@ -148,7 +148,7 @@ When your coding agent (Claude Code, Codex, opencode, pi or free-pi) hands a pie
 
 ### What do I need?
 
-An account with a cloud sandbox provider (Instabox is supported today), a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default), or the provider key for a profile.
+An account with a configured sandbox provider, a GitHub repo you can push to, Node.js 20 or later, and a credential for each agent your workers use: a Claude subscription or API key for Claude Code workers (the default unless you set another worker profile), or the provider key for a profile.
 
 ### What can a subagent see?
 
@@ -156,7 +156,7 @@ Files tracked by git in your repo, including uncommitted edits. It can't see unt
 
 ### What happens to the machines?
 
-A subagent stops after 60 idle minutes or when your session ends. Its machine is deleted after 6 hours by default, 24 at most. Only work pushed to GitHub is kept.
+A subagent stops after 60 idle minutes. Default ephemeral sessions also stop workers when the MCP session ends; named MCP sessions can reconnect to a local owner across client connections. The provider deletes machines at their configured deadline. Only work pushed to GitHub is kept.
 
 ### Is it safe?
 
@@ -164,7 +164,7 @@ Your GitHub token never reaches the cloud machine. Subagents run with permission
 
 ### Does it change plain `claude`?
 
-No. Only sessions you start with `cloudy-cloud` use the cloud.
+Launching `cloudy-cloud` does not change ordinary `claude` sessions. Cloudy Cloud runs only in sessions where its MCP server is configured.
 
 ### Is there a hosted version?
 

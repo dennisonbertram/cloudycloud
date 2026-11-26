@@ -73,15 +73,15 @@
   <main id="content" tabindex="-1">
     <article>
 <h1>Models and keys</h1>
-<p class="lede">Cloudy Cloud uses your own keys. By default each subagent runs Claude Code. You can run a subagent on another agent or model by naming a profile.</p>
-<p>This page covers every worker agent: Claude Code (the default), pi, oh-my-pi (<code>omp</code>), Codex and opencode. Each section says which credential that agent needs. The main session, which you start with <code>cloudy-cloud</code>, <code>cloudy-cloud codex</code>, <code>cloudy-cloud opencode</code>, <code>cloudy-cloud pi</code> or <code>cloudy-cloud free-pi</code>, is covered in <a href="index.html#other-hosts">Getting started</a>.</p>
+<p class="lede">Cloudy Cloud uses your own keys. Workers use the configured default profile (Claude Code unless you changed it), or a request can name a profile.</p>
+<p>This page covers the supported worker profiles: Claude Code, pi, oh-my-pi (<code>omp</code>), Codex and opencode. Each section says which credential that agent needs. The main session, which you start with a built-in launcher or connect through the standalone MCP server, is covered in <a href="index.html#other-hosts">Getting started</a>.</p>
 
 <h2 id="bring-your-own-keys">Bring your own keys</h2>
 <p>Each user supplies their own credentials, because Anthropic's terms require each end user to use their own.</p>
 <p>You pay your providers directly. Cloudy Cloud does not resell model access, and this page gives no prices.</p>
 
 <h2 id="claude-credentials">Claude credentials</h2>
-<p>Applies to: workers that run Claude Code (no profile, or <code>glm</code>, <code>deepseek</code>, <code>particle</code>, <code>openrouter</code>) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it only if you choose claude or want Claude workers. See <a href="index.html#agent-credentials">Getting started</a>.</p>
+<p>Applies to workers whose selected profile runs Claude Code (including the saved default when it resolves to Claude), and to a Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it if you choose Claude workers. See <a href="index.html#agent-credentials">Getting started</a>.</p>
 <p>Claude Code subagents need one Claude credential. The setup step (<code>cloudy-cloud setup</code>) asks for it when you choose claude (or want Claude workers); it does not ask if you run only Codex, opencode or pi. Two kinds work:</p>
 <ul>
 <li><strong>A token from <code>claude setup-token</code></strong> (starts with <code>sk-ant-oat01-</code>). This uses your Claude subscription. At the Claude step, press Enter and setup runs <code>claude setup-token</code> for you, or paste a token you made yourself. Setup checks the token with one small Claude request. It is saved as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.</li>
@@ -91,7 +91,7 @@
 <p>Setup saves all keys to <code>~/.config/cloudy-cloud/env</code>. Setup creates the folder with mode 700 and writes the file so that only your user account can read it. The file is plain text with one <code>NAME=value</code> line per key. To use another location, set <code>CLOUDY_CLOUD_CONFIG</code>.</p>
 
 <h2 id="default-model">Default model and choosing another</h2>
-<p>With no <code>profile</code>, a subagent runs Claude Code. To pick a Claude model, pass the optional <code>model</code> argument of <code>cloud_agent</code>, for example <code>haiku</code>.</p>
+<p>When a request has no <code>profile</code>, Cloudy Cloud uses the saved default worker profile. It is Claude Code unless you set another profile with <code>cloudy-cloud setup --default-profile NAME</code>. To pick a Claude model, pass the optional <code>model</code> argument of <code>cloud_agent</code>, for example <code>haiku</code>.</p>
 <p>To run a subagent on another agent or a non-Claude model, pass the <code>profile</code> argument of <code>cloud_agent</code>. Do not use <code>model</code> for non-Claude models, except as noted for <code>openrouter</code>, <code>codex-openrouter</code> and <code>opencode-openrouter</code>. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.</p>
 
 <h2 id="verified">What has been verified</h2>

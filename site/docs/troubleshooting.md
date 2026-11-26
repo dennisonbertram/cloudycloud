@@ -171,7 +171,7 @@ Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-
 
 ### Which credentials reach the cloud machine
 
-- **Claude token:** placed on each Claude Code worker without a profile (and on cloud coordinators). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
+- **Worker credential:** Cloudy Cloud provides the credential required by the selected profile (and a Claude credential to cloud coordinators). Which credential is needed depends on the worker profile and configured sandbox provider.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
@@ -206,7 +206,7 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 ### Which models can subagents use?
 
-Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Workers use the saved default profile (Claude Code unless changed with `cloudy-cloud setup --default-profile NAME`). A request can select a profile for one worker. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Does it copy untracked files?
 

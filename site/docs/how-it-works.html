@@ -74,16 +74,16 @@
     <article>
 <h1>How it works</h1>
 <p class="lede">The <code>cloudy-cloud</code> command starts your coding agent with its built-in subagents turned off. Every subagent runs on its own cloud machine and pushes its work to a branch on GitHub.</p>
-<p>This page applies to every main session (Claude Code, Codex, opencode, pi, free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex, opencode). Differences are marked.</p>
+<p>The built-in host commands cover Claude Code, Codex, opencode, pi and free-pi; other MCP clients can use the standalone server. Workers can use Claude Code, pi, oh-my-pi, Codex or opencode. Live verification differs by client and worker; see <a href="models.html#verified">the status table</a>.</p>
 
 <h2 id="one-subagent">One subagent, start to finish</h2>
 <ol>
-<li><strong>You start <code>cloudy-cloud</code> in a git repo.</strong> With no subcommand it launches Claude Code with the built-in <code>Agent</code> and <code>Workflow</code> tools disabled, an extra system prompt, and an MCP server that provides the <code>cloud_agent</code> tools. The system prompt tells the session to use <code>cloud_agent</code> for anything that would have used a subagent. <code>cloudy-cloud codex</code>, <code>cloudy-cloud opencode</code>, <code>cloudy-cloud pi</code> and <code>cloudy-cloud free-pi</code> do the same for those agents with the same MCP server, added for that session only. Codex, opencode and pi cannot receive MCP task results, so they use <code>cloud_agent_wait</code>.</li>
+<li><strong>You start Cloudy Cloud in a git repo.</strong> The built-in host commands launch Claude Code, Codex, opencode, pi or free-pi with Cloudy Cloud's MCP tools. Another MCP client can connect to <code>cloudy-cloud mcp-server --repo PATH</code>. The repository is bound when that server starts; a call's <code>workspace</code> can select a directory only inside that repository. A named server session uses <code>--session NAME</code> to let separate MCP connections reconnect to the same local worker owner.</li>
 <li><strong>The main session calls <code>cloud_agent</code></strong> (Claude Code, Codex, opencode or pi, whichever you started) with a prompt and a short description. The call returns at once while the machine starts.</li>
 <li><strong>A snapshot of your repo is made.</strong> It holds the committed files plus your uncommitted edits to tracked files. It is made without touching your working tree or index.</li>
-<li><strong>A machine is created</strong> from the Instabox <code>agent-browser</code> image, and the GitHub token is attached to it as a proxy secret (see <a href="#secrets">Secrets</a>).</li>
+<li><strong>A provider is selected</strong> from the configured provider order. The first provider eligible for the request is tried. If creation fails in a recoverable way, Cloudy Cloud may try the next eligible provider; it does not start a second worker after a machine has been returned. Ambiguous creation results are reconciled before proceeding.</li>
 <li><strong>The snapshot is uploaded</strong> as a git bundle and checked out on a new branch, <code>cloudy-cloud/&lt;id&gt;</code>. The branch is pushed to your <code>origin</code> remote right away. If the bundle is over about 9 MB, only the commits GitHub does not already have are uploaded. If that is still too large, the start fails and asks you to push the branch first.</li>
-<li><strong>The worker agent runs on the machine</strong> in the repo folder. With no profile that is <code>claude -p</code>. A profile can pick another agent: <code>pi --mode json</code> (pi profiles), <code>omp -p --mode json</code> (oh-my-pi), <code>codex exec --json</code> (Codex) or <code>opencode run --format json</code> (opencode). Each is installed on the machine from a pinned version when it is not part of the image. The subagent is told to commit after each meaningful step and to push to its own branch only.</li>
+<li><strong>The selected worker agent runs on the machine</strong> in the repo folder. The saved default is Claude Code unless setup changed it. A per-request <code>profile</code> overrides that default and can select <code>pi --mode json</code>, <code>omp -p --mode json</code> (oh-my-pi), <code>codex exec --json</code> or <code>opencode run --format json</code>. Each is installed on the machine from a pinned version when it is not part of the image. The subagent is told to commit after each meaningful step and to push to its own branch only.</li>
 <li><strong>After the turn, the tool pushes once more</strong> in case the subagent forgot (and retries once if GitHub rejects it). It never commits for the subagent. If files were left uncommitted, the reply lists them.</li>
 <li><strong>The result comes back</strong> with the branch name and commit, and token and tool-use totals.</li>
 </ol>
@@ -94,9 +94,9 @@
 <li><strong>Task mode.</strong> When your Claude Code supports MCP tasks, <code>cloud_agent</code> becomes a background task. Its progress shows in <code>/tasks</code> and the result arrives on its own.</li>
 <li><strong>Otherwise,</strong> <code>cloud_agent</code> returns an <code>agent_id</code> and the main session calls <code>cloud_agent_wait</code> to collect the result. The default wait is 600 seconds and the maximum is 1500. Each result is marked as reported, so a later wait does not repeat it.</li>
 </ul>
-<p>One task is stopped after 29 minutes.</p>
+<p>One task is stopped after 29 minutes by default. Provider eligibility and machine limits vary; use <code>cloud_agent_capabilities</code> to inspect the configured worker profiles and providers without creating a machine or calling a model provider.</p>
 
-<h2 id="tools">The six tools</h2>
+<h2 id="tools">MCP tools</h2>
 <table>
 <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
 <tbody>
@@ -104,7 +104,8 @@
 <tr><td><code>cloud_agent_message</code></td><td>Sends a follow-up to an open, idle agent. It continues the same session of whichever agent the worker runs, on the same machine: Claude Code resumes its session, pi and oh-my-pi use their session ID, Codex runs <code>codex exec resume ID</code>, and opencode passes <code>--session ses_...</code>. It is rejected if the agent is busy or gone.</td></tr>
 <tr><td><code>cloud_agent_wait</code></td><td>Waits for agents to finish their current turn and returns their results.</td></tr>
 <tr><td><code>cloud_agent_list</code></td><td>Lists every agent with its status, idle minutes and progress (tool uses, tokens, elapsed time, current step).</td></tr>
-<tr><td><code>cloud_agent_stop</code></td><td>Stops agents and deletes their machines. It is safe to repeat.</td></tr>
+<tr><td><code>cloud_agent_stop</code></td><td>Stops this server's agents after the provider confirms deletion or confirms the machine is absent. A transient failure leaves the agent tracked for retry.</td></tr>
+<tr><td><code>cloud_agent_capabilities</code></td><td>Reports configured profiles, providers and machine kinds without creating a machine or calling a model provider.</td></tr>
 </tbody>
 </table>
 <p>An agent's status is one of <code>queued</code>, <code>starting</code>, <code>running</code>, <code>idle</code>, <code>failed</code> or <code>stopped</code>. After a turn ends, the agent is <code>idle</code> and its machine stays open for follow-ups.</p>
@@ -113,17 +114,17 @@
 <table>
 <thead><tr><th>What ends it</th><th>When</th></tr></thead>
 <tbody>
-<tr><td>You or the main session call <code>cloud_agent_stop</code></td><td>Immediately.</td></tr>
+<tr><td>You or the main session call <code>cloud_agent_stop</code></td><td>After the provider confirms deletion or confirms the machine is absent.</td></tr>
 <tr><td>Idle timeout</td><td>60 minutes after the agent went idle.</td></tr>
-<tr><td>Session end</td><td>When you quit your main session, <code>cloudy-cloud</code> deletes every open machine.</td></tr>
-<tr><td>Cleanup process</td><td>A separate process deletes the session's machines after the session is gone, even after a hard kill. It checks every 2 seconds.</td></tr>
+<tr><td>Ephemeral session end</td><td>Without <code>--session</code>, quitting the MCP server ends its workers. A separate cleanup process handles a hard kill.</td></tr>
+<tr><td>Named MCP session</td><td>With <code>mcp-server --session NAME --repo PATH</code>, separate stdio connections can reconnect to the same local owner. The owner remains while workers run and exits after workers finish or idle-expire and clients disconnect.</td></tr>
 <tr><td>Delete deadline</td><td>Instabox deletes the machine at a fixed time in any state. The default is 6 hours. Set <code>CLOUDY_CLOUD_WORKER_HOURS</code> to change it, up to 24.</td></tr>
 </tbody>
 </table>
 <div class="warn"><p>Only work that a subagent has pushed to GitHub survives if its machine is lost. The deadline cannot be extended, and the subagent is told its deadline so it can push in time.</p></div>
 
 <h2 id="queueing">Starting many at once</h2>
-<p>You can start many subagents at once. <code>cloudy-cloud</code> paces the starts for Instabox's limits.</p>
+<p>You can start many subagents at once. Cloudy Cloud applies provider-specific start pacing and capacity limits.</p>
 <ul>
 <li>At most 25 machines start per minute, in the order requested. Set <code>CLOUDY_CLOUD_STARTS_PER_MIN</code> to change this. A waiting subagent shows the status <code>queued</code>, for example <code>queued for a machine (12 ahead)</code>.</li>
 <li>If Instabox answers <code>rate_limited</code>, the start is retried after the delay Instabox gives, up to 5 tries.</li>
@@ -136,7 +137,7 @@
 <h2 id="secrets">What reaches the machine</h2>
 <ul>
 <li><strong>GitHub token:</strong> not sent to the machine. The machine gets a placeholder named <code>GH_TOKEN</code>, and Instabox's proxy swaps in the real token for requests to <code>github.com</code> and <code>api.github.com</code>.</li>
-<li><strong>Claude credential:</strong> sent to the machine, as <code>CLAUDE_CODE_OAUTH_TOKEN</code> or <code>ANTHROPIC_API_KEY</code>, for Claude Code workers with no profile. For a subagent on a profile, the provider key for that profile is sent instead of your Claude credential: <code>PARTICLE_API_KEY</code>, <code>OPENROUTER_API_KEY</code> or <code>OPENAI_API_KEY</code>. The <code>codex-chatgpt</code> profile sends your ChatGPT login file (<code>codex-auth.json</code>) to the machine as a file, even on Instabox.</li>
+<li><strong>Worker credential:</strong> the credential for the selected profile is sent to the machine in the provider-specific form. Claude Code workers use <code>CLAUDE_CODE_OAUTH_TOKEN</code> or <code>ANTHROPIC_API_KEY</code>; other profiles use their configured provider key. The <code>codex-chatgpt</code> profile sends your ChatGPT login file (<code>codex-auth.json</code>) to the machine as a file. Credential handling varies by sandbox provider; see the provider guides.</li>
 <li><strong>MCP server tokens:</strong> only if you added a server that needs one. The token stays in Instabox as a secret named <code>MCP_&lt;NAME&gt;_TOKEN</code>, and the machine sees a placeholder that Instabox replaces in request headers to the host you chose. With <code>mcp add --allow-literal</code> the real value is on the machine instead.</li>
 <li><strong>Instabox API key:</strong> not sent to the machine. It stays in your config file and the local server.</li>
 </ul>
