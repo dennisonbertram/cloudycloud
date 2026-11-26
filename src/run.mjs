@@ -70,6 +70,7 @@ function rpcClient(transport) {
 
 const toolCall = async (client, name, args) => client.request('tools/call', { name, arguments: args }, name === 'cloud_agent_wait' ? ((args.timeout_seconds ?? 600) * 1000 + 5000) : 15_000);
 const outputText = (result) => result?.content?.find((block) => block.type === 'text')?.text ?? '';
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function run(options) {
   const repo = await realpath(options.repo).catch(() => { throw new Error(`repo does not exist: ${options.repo}`); });
@@ -115,6 +116,12 @@ async function run(options) {
     }
 
     const reconnect = `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)}, then call cloud_agent_result or cloud_agent_wait for agent ${agentId} and stop it after you have preserved the result.`;
+    const preserveAction = (agent) => agent?.workspace_dirty === true
+      ? `Keep the worker open. Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)}, call cloud_agent_message for ${agentId} to ask it to commit and push the remaining workspace changes, then inspect cloud_agent_result before stopping it.`
+      : `Keep the worker open. Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_result and cloud_agent_list for ${agentId}; workspace status was not confirmed, so do not stop it until you have checked for uncommitted work.`;
+    const preserveFailure = (agent) => ({ ...agent, status: 'failed', error: true, preserve_worker: true, recoverable: true, session: name, repo,
+      message: agent.workspace_dirty === true ? 'The worker left uncommitted workspace changes; the CLI kept it open for recovery.' : 'The worker workspace status could not be confirmed; the CLI kept it open for inspection.',
+      action: preserveAction(agent) });
     const deadline = Date.now() + options.timeout * 1000;
     while (Date.now() < deadline) {
       const seconds = Math.max(1, Math.min(1500, Math.ceil((deadline - Date.now()) / 1000)));
@@ -128,6 +135,7 @@ async function run(options) {
       if (agent && ['idle', 'failed', 'stopped'].includes(agent.status)) {
         if (waited?.isError || !agent.result || agent.error || agent.status !== 'idle') {
           final = { ...agent, status: 'failed', error: true, recoverable: true, session: name, repo, action: reconnect };
+          if (agent.preserve_worker) final = preserveFailure(agent);
           break;
         }
         final = { ...agent, status: 'completed', error: false };
@@ -139,14 +147,35 @@ async function run(options) {
       final = { status: 'failed', agent_id: agentId, branch: startData?.branch, profile: startData?.profile, error: true, recoverable: true, session: name, repo, message: `Worker did not finish within ${options.timeout} seconds.`, action: `${reconnect} To wait longer next time, increase the limit with --timeout ${Math.min(MAX_TIMEOUT_SECONDS, options.timeout * 2)}.` };
     }
     if (final.status === 'completed') {
-      try {
-        const stopped = await toolCall(client, 'cloud_agent_stop', { agent_ids: [agentId] });
-        const outcome = stopped?.structuredContent?.agents?.[0];
-        if (stopped?.isError || !outcome || outcome.status !== 'stopped' || outcome.error) {
-          final = { ...final, status: 'failed', error: true, cleanup_error: true, message: outcome?.message ?? outputText(stopped) ?? 'the provider did not confirm machine deletion', action: outcome?.action ?? `run cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and call cloud_agent_stop for ${agentId}; the server reaper will also retry cleanup` };
+      if (final.preserve_worker) {
+        final = preserveFailure(final);
+      } else if (!final.turn_id) {
+        final = { ...final, status: 'failed', error: true, preserve_worker: true, recoverable: true, session: name, repo,
+          message: 'The result did not identify its completed turn, so the CLI kept the worker open instead of stopping a possibly resumed task.',
+          action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list before stopping ${agentId}.` };
+      } else {
+        let outcome, stopText = '', stopError;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const stopped = await toolCall(client, 'cloud_agent_stop', { agent_ids: [agentId], expected_turn_id: final.turn_id, expected_status: 'idle' });
+            outcome = stopped?.structuredContent?.agents?.[0];
+            stopText = outputText(stopped);
+            if (stopped?.isError) stopError = stopText || 'the stop request failed';
+            else if (outcome?.status === 'stopped' || outcome?.status === 'not-open') { stopError = undefined; break; }
+            else if (outcome?.status === 'not-stopped') { stopError = outcome.message ?? 'the worker changed state before automatic cleanup'; break; }
+            else stopError = outcome?.message ?? stopText ?? 'the provider did not confirm machine deletion';
+          } catch (error) { stopError = error.message; }
+          if (attempt < 2) await pause(250 * (attempt + 1));
         }
-      } catch (error) {
-        final = { ...final, status: 'failed', error: true, cleanup_error: true, message: `The worker finished, but cleanup was not confirmed: ${error.message}`, action: `reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and call cloud_agent_stop for ${agentId}; the server reaper will also retry cleanup` };
+        if (stopError) {
+          const changedTurn = outcome?.status === 'not-stopped';
+          const action = changedTurn
+            ? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${agentId}; a newer turn may be running, so decide manually whether to stop it.`
+            : `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${agentId}. The worker remains tracked while deletion is unconfirmed.`;
+          final = { ...final, status: 'failed', error: true, cleanup_error: true, preserve_worker: !changedTurn, recoverable: true, session: name, repo,
+            message: changedTurn ? 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.' : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`,
+            action };
+        }
       }
     }
     return final;
@@ -187,4 +216,4 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exit(await main());
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = await main();

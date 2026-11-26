@@ -38,7 +38,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), owner: 'testowner', open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), owner: 'testowner', open, tasks: new Map(), cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -595,6 +595,20 @@ test('stop reports independent structured outcomes when one provider deletion fa
   assert.match(r.content[0].text, /unknown1: not open/);
 });
 
+test('conditional automatic stop leaves a worker alone after a newer turn starts', async () => {
+  const { start, wait, msg, deps, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const completedTurn = deps.open.get(id).turn.id;
+  await msg(id, 'OK follow-up');
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: completedTurn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(deps.open.get(id).status, 'running');
+  assert.equal(created[0].killed, false);
+  await wait([id]);
+  await stopAgents({ agent_ids: [id] }, deps);
+});
+
 
 test('follow-up resumes the same session; both turns push to the same GitHub branch', async () => {
   const { start, wait, msg, created, text, remote } = await setup();
@@ -896,7 +910,7 @@ test('the safety push retries once', async () => {
       const s = await fakeSandbox();
       const run = s.commands.run;
       s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') && pushes++ === 0
-        ? Promise.resolve({ stdout: 'PUSHFAIL\nERR missing necessary objects\nSHA abc1234\n' })
+        ? Promise.resolve({ stdout: 'PUSHFAIL\nERR missing necessary objects\nSHA abc1234\nSTATUS_OK\n' })
         : run(cmd, o));
       return s;
     },
@@ -909,7 +923,7 @@ test('the safety push retries once', async () => {
 
 test('the safety push retry uses the normal NOCHANGE and dirty-file result parser', async () => {
   let pushes = 0;
-  const { start, wait } = await setup({
+  const { start, wait, deps } = await setup({
     sleep: async () => {},
     createSandbox: async () => {
       const s = await fakeSandbox();
@@ -917,16 +931,56 @@ test('the safety push retry uses the normal NOCHANGE and dirty-file result parse
       s.commands.run = (cmd, o) => {
         if (!cmd.includes('PUSHOK')) return run(cmd, o);
         return Promise.resolve({ stdout: pushes++ === 0
-          ? 'PUSHFAIL\nERR temporary remote failure\nSHA abc1234\nST ?? untracked.txt\n'
-          : 'NOCHANGE\nSHA abc1234\nST  M a.txt\nST ?? notes.txt\n', stderr: '', exitCode: 0 });
+          ? 'PUSHFAIL\nERR temporary remote failure\nSHA abc1234\nSTATUS_OK\nST ?? untracked.txt\n'
+          : 'NOCHANGE\nSHA abc1234\nSTATUS_OK\nST  M a.txt\nST ?? notes.txt\n', stderr: '', exitCode: 0 });
       };
       return s;
     },
   });
   const r = await wait([await start({ prompt: 'DIRTY' })]);
-  assert.match(r, /No changes, no branch pushed/);
+  assert.match(r, /No new commits/);
   assert.match(r, /Uncommitted changes left in the sandbox.*a\.txt.*notes\.txt/);
+  const id = [...deps.open.keys()][0];
+  assert.equal(deps.open.get(id).result.preserve_worker, true);
+  assert.equal(deps.open.get(id).result.workspace_dirty, true);
+  assert.equal(deps.open.get(id).result.push_status, 'no-change');
   assert.equal(pushes, 2);
+});
+
+test('a failed git status check marks workspace state unknown and keeps the worker open', async () => {
+  const { start, wait, deps } = await setup({
+    createSandbox: async () => {
+      const s = await fakeSandbox(getGithub());
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => cmd.includes('git status --porcelain')
+        ? Promise.resolve({ stdout: 'NOCHANGE\nSHA abc1234\nSTATUS_FAIL\nSTATUSERR status unavailable\n', stderr: '', exitCode: 0 })
+        : run(cmd, o);
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  const agent = deps.open.get(id);
+  assert.match(r, /No new commits\. Git status could not be confirmed/);
+  assert.equal(agent.status, 'idle');
+  assert.equal(agent.result.error, true);
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, null);
+  assert.equal(agent.result.push_status, 'no-change');
+});
+
+test('a dirty task result carries typed preservation fields for MCP clients', async () => {
+  const { deps } = await setup();
+  const started = await runSubagent({ prompt: 'DIRTY leave edits', description: 'dirty result' }, { ...deps, asTask: true });
+  const turn = deps.tasks.get(started.taskId);
+  await turn.done;
+  const completed = getTask(started.taskId, deps);
+  assert.equal(completed.status, 'failed');
+  assert.equal(completed.error.data.preserve_worker, true);
+  assert.equal(completed.error.data.workspace_dirty, true);
+  assert.equal(completed.error.data.push_status, 'no-change');
+  assert.match(completed.error.message, /No new commits/);
+  assert.equal(deps.open.get(turn.agent.id).status, 'idle');
 });
 
 test('a finished turn whose safety push loses contact stays open without replaying the turn', async () => {
@@ -959,7 +1013,7 @@ test('a file name containing NOCHANGE is not read as the push result', async () 
       const s = await fakeSandbox(getGithub());
       s.envs = envs;
       const run = s.commands.run;
-      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nSTATUS_OK\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
       return s;
     },
   });
@@ -2755,7 +2809,7 @@ test('a push failure after a successful pi turn is not rerun as a provider retry
       const real = sbx.commands.run;
       sbx.commands.run = async (cmd, o) => {
         if (cmd.includes('pi --mode json')) piRuns++;
-        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\n', stderr: '', exitCode: 0 }; }
+        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\nSTATUS_OK\n', stderr: '', exitCode: 0 }; }
         return real(cmd, o);
       };
       return sbx;

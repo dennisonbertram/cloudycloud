@@ -24,7 +24,7 @@ const createSandbox = async () => {
     commands: {
       async run(cmd, { onStdout, signal } = {}) {
         // The post-turn safety check confirms both the local 40-char commit and origin's exact ref.
-        if (!cmd.includes('claude -p')) return { stdout: cmd.includes('PUSHOK') ? `PUSHOK\nREMOTE_SHA ${FAKE_COMMIT_SHA}\nSHA ${FAKE_COMMIT_SHA}\n` : '', stderr: '', exitCode: 0 };
+        if (!cmd.includes('claude -p')) return { stdout: cmd.includes('PUSHOK') ? `PUSHOK\nREMOTE_SHA ${FAKE_COMMIT_SHA}\nSHA ${FAKE_COMMIT_SHA}\nSTATUS_OK\n` : '', stderr: '', exitCode: 0 };
         const out = [];
         const emit = async (l) => { out.push(l); await onStdout?.(`${l}\n`); };
         await emit(tool(1, 'Read', { file_path: 'src/a.ts' }));
