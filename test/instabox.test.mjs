@@ -95,10 +95,10 @@ test('timeout above 10 minutes runs in background, at or below runs in foregroun
   assert.equal(calls.run[1].opts.cwd, '/c');
 });
 
-test('background non-zero exit throws exitCode and stderr', async () => {
+test('background non-zero exit throws exitCode and keeps the merged log in stdout only', async () => {
   const { sdk } = fakeSdk({ waitImpl: async () => { throw Object.assign(new Error('x'), { exitCode: 3, stdout: 'log text', stderr: '' }); } });
   const sbx = await createInstaboxSandbox({ INSTABOX_API_KEY: KEY }, sdk, fast())({}, 1);
-  await assert.rejects(sbx.commands.run('x', { timeoutMs: 1_740_000 }), (e) => e.exitCode === 3 && e.stderr === 'log text');
+  await assert.rejects(sbx.commands.run('x', { timeoutMs: 1_740_000 }), (e) => e.exitCode === 3 && e.stdout === 'log text' && !e.stderr);
 });
 
 test('background timeout kills the job and throws', async () => {

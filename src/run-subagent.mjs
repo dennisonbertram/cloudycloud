@@ -406,9 +406,20 @@ function armIdle(a, ctx) {
 async function safetyPush(a, ctx) {
   const branch = a.branch;
   try {
+    // H is HEAD, BT the local tip of the worker branch (it can move without HEAD, e.g. branch -f or a commit
+    // checked out detached), RT its remote tip. The branch ref is pushed first when it drifted, then HEAD when it
+    // is newer and the branch does not already contain it; TIP is the commit origin must then name. DIVERGED marks
+    // a branch tip unrelated to HEAD, whose unique commits a HEAD push cannot cover.
     const push = async () => (await a.sandbox.commands.run(
-      `if [ "$(git rev-parse HEAD)" = ${a.sha} ]; then echo NOCHANGE; elif err=$(git push -q origin HEAD:refs/heads/${branch} 2>&1); then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')"; else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
-      ` echo "SHA $(git rev-parse HEAD)"; if status=$(git status --porcelain 2>&1); then echo STATUS_OK; if [ -n "$status" ]; then printf '%s\n' "$status" | head -20 | sed 's/^/ST /'; fi; else echo STATUS_FAIL; printf '%s\n' "$status" | tail -n 8 | sed 's/^/STATUSERR /'; fi; true`,
+      `H=$(git rev-parse HEAD); BT=$(git rev-parse --verify --quiet refs/heads/${branch} || true); RT=$(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}');` +
+      ` if [ "$H" = ${a.sha} ] && { [ -z "$BT" ] || [ "$BT" = "$H" ]; }; then echo NOCHANGE; echo "REMOTE_SHA $RT";` +
+      ` elif err=$( { if [ -n "$BT" ] && [ "$BT" != "$RT" ] && ! { [ "$BT" != "$H" ] && git merge-base --is-ancestor "$BT" "$H"; } && ! git merge-base --is-ancestor "$BT" "$RT"; then git push -q origin refs/heads/${branch}:refs/heads/${branch} || exit; fi;` +
+      ` if [ "$H" != ${a.sha} ] && { [ -z "$BT" ] || ! git merge-base --is-ancestor "$H" "$BT"; }; then git push -q origin HEAD:refs/heads/${branch}; fi; } 2>&1 );` +
+      ` then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')";` +
+      ` else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
+      ` if [ -n "$BT" ] && [ "$H" != ${a.sha} ] && [ "$BT" != "$H" ] && ! git merge-base --is-ancestor "$H" "$BT" && ! git merge-base --is-ancestor "$BT" "$H"; then echo DIVERGED; fi;` +
+      ` if [ -n "$BT" ] && ! git merge-base --is-ancestor "$BT" "$H" && { [ "$H" = ${a.sha} ] || git merge-base --is-ancestor "$H" "$BT"; }; then TIP=$BT; else TIP=$H; fi; echo "SHA $TIP";` +
+      ` if status=$(git status --porcelain 2>&1); then echo STATUS_OK; if [ -n "$status" ]; then printf '%s\n' "$status" | head -20 | sed 's/^/ST /'; fi; else echo STATUS_FAIL; printf '%s\n' "$status" | tail -n 8 | sed 's/^/STATUSERR /'; fi; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
     let out = await push();
@@ -432,18 +443,26 @@ async function safetyPush(a, ctx) {
         where: `${noCommitText}Git status could not be confirmed${statusErrors ? ` (${statusErrors})` : ''}; the worker stays open because uncommitted work may remain. Retry a message or inspect the workspace before stopping it.${marker('PUSHOK') ? ` The push to origin ${branch} succeeded, but its resulting workspace state is unknown.` : ''}`,
       };
     }
-    if (marker('NOCHANGE')) return dirty
-      ? { error: true, preserve_worker: true, workspace_dirty: true, push_status: 'no-change', where: `No new commits.${dirty}` }
-      : { where: 'No changes, no branch pushed.', workspace_dirty: false, push_status: 'no-change', preserve_worker: false };
+    if (marker('NOCHANGE')) {
+      // The remote tip read at the top of the probe is the confirmed origin state: it is the right
+      // recovery checkpoint so a no-change stop never leaves a stale (or missing) one behind.
+      const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
+      const confirmed = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(remoteSha ?? '') ? { sha: remoteSha } : {};
+      return dirty
+        ? { ...confirmed, error: true, preserve_worker: true, workspace_dirty: true, push_status: 'no-change', where: `No new commits.${dirty}` }
+        : { ...confirmed, where: 'No changes, no branch pushed.', workspace_dirty: false, push_status: 'no-change', preserve_worker: false };
+    }
     if (marker('PUSHOK')) {
       const remoteSha = lines.find((l) => l.startsWith('REMOTE_SHA '))?.slice(11);
       if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha ?? '') || remoteSha !== sha) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push succeeded, but the exact commit on origin could not be confirmed. No recovery checkpoint was saved; check origin ${branch} before trying again.${dirty}` };
+      if (marker('DIVERGED')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `HEAD was pushed to origin ${branch} at ${remoteSha.slice(0, 7)}, but the local tip of refs/heads/${branch} diverged from HEAD, so commits on that branch ref are not on origin. Preserve refs/heads/${branch} before deleting the worker.${dirty}` };
       const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(a.origin ?? '')?.[1]; // GitHub compares against the default branch
       const get = repo ? `Review: https://github.com/${repo}/compare/${branch}?expand=1 Or fetch: git fetch origin ${branch}.` : `Fetch with: git fetch origin ${branch}.`;
       return { sha, ...(hasDirtyPaths && { error: true, preserve_worker: true }), workspace_dirty: hasDirtyPaths, push_status: 'pushed', preserve_worker: hasDirtyPaths, where: `Pushed to origin ${branch} at ${sha.slice(0, 7)}. ${get}${dirty}` };
     }
     const err = tail(lines.filter((l) => l.startsWith('ERR ')).map((l) => l.slice(4)).join('\n'));
     if (!marker('PUSHFAIL')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'unknown', where: `Push status could not be confirmed (${err || 'the sandbox returned no push result'}); the agent remains tracked, but push status and sandbox file availability are unconfirmed. Retry a message or stop the agent after the connection recovers.${dirty}` };
+    if (marker('DIVERGED')) return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'failed', where: `The local tip of refs/heads/${branch} diverged from HEAD, so no single push can preserve both; commits on only one side of that fork may not be on origin. Inspect the workspace, then push refs/heads/${branch} and HEAD before deleting the worker.${err ? ` (${err})` : ''}${dirty}` };
     return { failed: true, error: true, preserve_worker: true, workspace_dirty: hasDirtyPaths, push_status: 'failed', where: `Push failed: ${err}; the agent is still open, ask it to push.${dirty}` };
   } catch (e) {
     log('safety push failed:', ctx.scrub(e?.message));
@@ -504,7 +523,7 @@ async function turn(a, message, ctx, t) {
     if (!max) return r;
     if (!r.error || r.pushOnly) { answered.add(a.profile.name); return r; } // any finished run counts as answered; a push failure after one must not rerun the task
     if (r.cancelled || r.gone) return r;
-    const c = classifyProviderError(r.text);
+    const c = classifyProviderError(r.classText ?? r.text);
     if (!c) return r;
     const ok = c.retryable && (c.kind !== 'model_not_found' || answered.has(a.profile.name));
     if (!ok || r.uncertainExecution || n >= max || t.cancelled || a.status === 'stopped' || a.stopPending || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
@@ -592,7 +611,10 @@ async function turnOnce(a, message, ctx, t, deadline) {
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
-    const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
+    const stderr = `${said}${String(failure.stderr || failure.stdout || failure.message || '')}`.slice(-4000);
+    // The retry classifier reads only diagnostics: a worker transcript on stdout can quote any provider keyword.
+    // Instabox returns one merged log as stdout with empty stderr: its last lines hold the error, so use only those.
+    const classified = `${said}${String(failure.stderr || `${failure.message || ''}\n${String(failure.stdout || '').split('\n').slice(-20).join('\n')}`)}`.slice(-4000);
     const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
     const failureWhere = retainedWithoutSession
       ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')
@@ -603,7 +625,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const noSessionNote = retainedWithoutSession
       ? '\nThe sandbox is retained because workspace or push state may be uncommitted or unconfirmed. No session ID was reported, so this conversation cannot be resumed. Inspect the workspace or explicitly stop the agent.'
       : '';
-    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
+    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`),
+      classText: pat(`Subagent failed, exit code ${code}.${limit}\n${classified}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -1229,6 +1252,12 @@ function autofix(a, ctx, t) {
   return go().catch((e) => { if (e?.result) return e.result; throw e; });
 }
 
+// The verified origin tip a recovery rebuilds from; written after every confirmed push, including the
+// conditional-stop recheck (which can push a commit the turn result did not know about).
+async function saveWorkerCheckpoint(a, ctx, checkpointSha) {
+  a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, workspaceRel: a.workspaceRel, turnSequence: a.turns, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model ?? '', machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
+}
+
 // Background job for one turn. Never throws; records the outcome and wakes waiters.
 async function work(a, message, first, ctx, t) {
   let r;
@@ -1276,7 +1305,7 @@ async function work(a, message, first, ctx, t) {
   if (a.status === 'stopped' || a.stopPending) return;
   if (r.checkpointSha && a.role === 'worker') {
     try {
-      a.recoveryRecord = await saveCheckpoint(ctx.env, checkpointRecord({ id: a.id, branch: a.branch, workspace: a.root, workspaceRel: a.workspaceRel, turnSequence: a.turns, origin: a.origin, harness: harnessOf(a), profile: a.profile?.name, model: a.profile?.model ?? a.model, machineKind: a.kind?.label ?? 'linux', size: a.size?.label, egress: a.egressPolicy ?? [], checkpointSha: r.checkpointSha, provider: (a.provider ?? ctx.provider).name, machine: a.sandbox?.id, owner: ctx.owner }));
+      await saveWorkerCheckpoint(a, ctx, r.checkpointSha);
       r = { ...r, text: beforeTotals(r.text, `Recovery checkpoint saved at ${r.checkpointSha.slice(0, 7)}.`) };
     } catch (e) {
       log('recovery checkpoint could not be saved:', ctx.scrub(e?.message));
@@ -1480,9 +1509,9 @@ export async function runSubagent(args, deps) {
         let err = r.error;
         // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
         if (!err && args.preflight !== false && !p.caps.localSecrets) {
-          preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
           if (explainOnly) unknownChecks.push(`profile preflight on ${p.name} (one-token model request)`);
           else {
+            preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
             const pf = await preflightPromise;
             if (!pf.ok) err = pf.error;
           }
@@ -1849,6 +1878,57 @@ async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
   return new Map(out); // snapshot: a read that finishes after the budget cannot change the output
 }
 
+// Conditional stop rechecks the live workspace before deleting: the turn-idle guard cannot see work
+// added after the result was collected (e.g. through cloudy-cloud shell). The check pushes any new
+// commit to the agent's branch (safetyPush does), and flags uncommitted files plus repository state
+// outside the reported branch — linked worktrees and local refs — so nothing local-only is deleted.
+async function recheckWorkspace(a, ctx) {
+  if (!a.sandbox) return { safe: false, detail: 'the worker has no live machine to inspect' };
+  const check = await safetyPush(a, ctx);
+  if (check.gone) {
+    // A command-level not_found can also mean "not ready" (Boat maps sandbox_not_ready to it): only an
+    // independent provider lookup that reports the machine gone authorizes deletion.
+    let confirm;
+    try { await (a.provider ?? ctx.provider).connect(a.sandbox.id); }
+    catch (e) { confirm = e; }
+    if (confirm === undefined) return { safe: false, detail: 'the workspace could not be inspected, but the provider still reaches the machine — it is not confirmed gone', check };
+    if (confirm?.code === 'not_found' && !confirm.foreign && !confirm.exists) return { safe: true, check };
+    return { safe: false, detail: `the machine state could not be confirmed (${ctx.scrub(confirm?.message)})`, check };
+  }
+  if (check?.sha && a.role === 'worker' && a.recoveryRecord?.checkpointSha !== check.sha) {
+    // The recheck pushed a commit the turn result did not know about: the cached recovery state must name it.
+    try { await saveWorkerCheckpoint(a, ctx, check.sha); }
+    catch (e) { log('recheck checkpoint could not be saved:', ctx.scrub(e?.message)); }
+  }
+  if (check.error || check.failed || check.preserve_worker !== false || check.workspace_dirty !== false) {
+    return { safe: false, detail: check.where ?? 'the workspace could not be verified', check };
+  }
+  let extra;
+  try {
+    // Linked worktrees and local refs other than the worker branch hold work no branch push covers. The
+    // && chain makes any git failure reject the whole command instead of reading as "clean".
+    const out = String((await a.sandbox.commands.run(
+      `git worktree list --porcelain && printf '\\n--CC-REFS--\\n' && git for-each-ref --format='%(refname)' && printf '\\n--CC-IGN--\\n' && git status --porcelain --untracked-files=all --ignored=matching`,
+      { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
+    )).stdout ?? '');
+    const markerAt = out.indexOf('\n--CC-REFS--\n');
+    if (markerAt < 0) return { safe: false, detail: 'the workspace probe did not finish (its ref listing is missing)', check };
+    const ignAt = out.indexOf('\n--CC-IGN--\n');
+    if (ignAt < 0) return { safe: false, detail: 'the workspace probe did not finish (its ignored-file listing is missing)', check };
+    const ignored = out.slice(ignAt).split('\n').filter((l) => l.startsWith('!! ')).map((l) => l.slice(3));
+    const worktrees = out.slice(0, markerAt).split('\n').filter((l) => l.startsWith('worktree ')).length;
+    extra = [
+      ...(worktrees !== 1 ? [worktrees > 1 ? 'a linked worktree' : 'an unreadable worktree list'] : []),
+      ...(ignored.length ? [`Git-ignored files ${ignored.slice(0, 20).join(', ')}`] : []),
+      ...out.slice(markerAt + '\n--CC-REFS--\n'.length, ignAt).split('\n').filter((l) => l && !l.startsWith('refs/remotes/') && l !== `refs/heads/${a.branch}`).map((l) => `local ref ${l}`),
+    ];
+  } catch (e) {
+    return { safe: false, detail: `the workspace could not be fully inspected (${ctx.scrub(e?.message)})`, check };
+  }
+  if (extra.length) return { safe: false, detail: `state outside the reported branch remains (${extra.join(', ')})`, check };
+  return { safe: true, check };
+}
+
 // cloud_agent_stop: idempotent.
 export async function stopAgents(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_stop');
@@ -1859,9 +1939,22 @@ export async function stopAgents(args = {}, deps) {
   const outcomes = await Promise.all(ids.map(async (id) => {
     const a = ctx.open.get(id);
     if (!a) return { state: { agent_id: id, status: 'not-open', message: 'not open (already stopped or never existed)' }, text: `${id}: not open (already stopped or never existed)` };
-    if (conditional && (!(a.status === 'idle' || a.status === 'stop-pending') || a.turn?.id !== args.expected_turn_id || a.turn?.status !== 'completed')) {
+    // The completed-turn guard is evaluated before the workspace probe and again synchronously before
+    // stop() (no await between), so a turn that moved on while the probe awaited is never deleted.
+    const staleTurn = () => conditional && (!(a.status === 'idle' || a.status === 'stop-pending') || a.turn?.id !== args.expected_turn_id || a.turn?.status !== 'completed');
+    const stale = () => {
       const action = 'The worker has changed state since this result was collected. Inspect it with cloud_agent_list and decide whether to wait, message, or stop it.';
       return { state: lifecycle(a, { status: 'not-stopped', error: false, message: 'The completed turn is no longer idle; no stop was attempted.', action }), text: `${id}: not stopped (the completed turn is no longer idle).\nNext step: ${action}` };
+    };
+    if (staleTurn()) return stale();
+    if (conditional && !a.stopPromise) {
+      const live = await recheckWorkspace(a, ctx);
+      if (!live.safe) {
+        const message = `The worker workspace changed after this result was collected: ${live.detail}. The worker stays open.`;
+        const action = 'Inspect the workspace with cloudy-cloud shell or cloud_agent_list, preserve or push the new work, then call cloud_agent_stop again without the turn guard.';
+        return { state: lifecycle(a, { status: 'not-stopped', error: false, message, action, ...(live.check?.workspace_dirty !== undefined && { workspace_dirty: live.check.workspace_dirty }) }), text: `${id}: not stopped (the workspace changed after this result was collected).\nNext step: ${action}` };
+      }
+      if (staleTurn()) return stale();
     }
     try {
       await stop(a, ctx.open, ctx.stoppedBranches);

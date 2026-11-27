@@ -212,6 +212,39 @@ test('CLI retries cleanup while the named owner is connected and reports reconne
   assert.equal(stopped.result.structuredContent.agents[0].status, 'stopped');
 });
 
+test('run persists the completed result before requesting worker cleanup', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-prestop`;
+  t.after(() => stopOwner(session, f.repo, f.home));
+  const child = spawn(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', 'OK quick task'], {
+    cwd: f.repo, env: { ...f.env, CLOUDY_CLOUD_TEST_HANG_KILL: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => child.kill('SIGKILL'));
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const runId = await new Promise((resolveId, reject) => {
+    const timer = setTimeout(() => reject(new Error(`run handle was not printed; stderr=${stderr}`)), 10_000);
+    const poll = () => {
+      const match = /Run ID: ([0-9a-f-]{36})/.exec(stderr);
+      if (match) { clearTimeout(timer); resolveId(match[1]); return; }
+      if (child.exitCode !== null) { clearTimeout(timer); reject(new Error(`run exited before printing its handle; stderr=${stderr}`)); return; }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+  // The sandbox deletion hangs inside the first stop attempt, so a cached_result present in the
+  // record can only have been written before the stop request — never by the post-cleanup write.
+  const recordPath = join(f.home, '.config', 'cloudy-cloud', 'runs', `${runId}.json`);
+  let record;
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline && !record?.cached_result;) {
+    try { record = JSON.parse(await readFile(recordPath, 'utf8')); } catch { /* the record may not exist yet */ }
+    if (!record?.cached_result) await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  }
+  assert.equal(record?.cached_result?.status, 'completed', `the completed result must be persisted before the stop request; record=${JSON.stringify(record)} stderr=${stderr}`);
+  assert.equal(record.cached_result.agent_id, record.agent_id);
+  assert.equal(record.cleanup_error, true, 'the pending cleanup is recorded with the cached result, so an interrupted CLI makes resume re-check');
+});
+
 test('CLI drains large JSON output before exiting', async (t) => {
   const f = await fixture(t);
   const session = `${f.session}-large-output`;
@@ -316,6 +349,90 @@ test('resume with a stale run record fails without starting a new named owner', 
   assert.equal(result.error, true);
   assert.match(result.message, /stale or unavailable|No live named session owner/);
   await assert.rejects(access(sessionPaths({ name: session, repo: f.repo, home: f.home }).metadata), 'resume must not create an owner for a stale run');
+});
+
+test('resume retries recorded cleanup against an upgraded owner and settles it', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-settle`;
+  const runId = '00000000-0000-4000-8000-000000000061';
+  const records = join(f.home, '.config', 'cloudy-cloud', 'runs');
+  await mkdir(records, { recursive: true, mode: 0o700 });
+  // A record shaped like an older run: the worker result was cached, deletion was never confirmed.
+  await writeFile(join(records, `${runId}.json`), JSON.stringify({
+    id: runId, uid: process.getuid?.() ?? 0, repo: f.repo, session, agent_id: 'deadbeef', turn_id: 'turn-1',
+    cached_result: { status: 'completed', error: false, result: 'worker output preserved', agent_id: 'deadbeef', turn_id: 'turn-1', run_id: runId },
+    cleanup_error: true, status: 'failed', created_at: Date.now(), updated_at: Date.now(),
+  }), { mode: 0o600 });
+  const owner = spawn(process.execPath, [resolve(root, 'src/server.mjs'), '--session-owner', '--session', session, '--repo', f.repo], {
+    cwd: f.repo, env: f.env, stdio: 'ignore', detached: true,
+  });
+  t.after(() => owner.kill('SIGTERM'));
+  const metadataFile = sessionPaths({ name: session, repo: f.repo, home: f.home }).metadata;
+  for (const deadline = Date.now() + 10_000; ; await new Promise((r) => setTimeout(r, 50))) {
+    try { await access(metadataFile); break; } catch { assert.ok(Date.now() < deadline, 'the named owner never registered'); }
+  }
+  const resumed = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--json'], { cwd: tmpdir(), env: f.env, timeout: 30_000 }).catch((error) => error);
+  assert.equal(resumed.code ?? 0, 0, `resume failed; stdout=${resumed.stdout} stderr=${resumed.stderr}`);
+  const result = JSON.parse(resumed.stdout.trim());
+  assert.equal(result.status, 'completed');
+  assert.equal(result.result, 'worker output preserved');
+  assert.equal(result.cleanup_error, undefined);
+  const record = JSON.parse(await readFile(join(records, `${runId}.json`), 'utf8'));
+  assert.equal(record.cleanup_error, undefined, 'the settled retry clears the pending cleanup flag');
+  assert.equal(record.status, 'completed');
+});
+
+test('resume keeps the worker when the session owner predates the workspace-verifying stop', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-oldowner`;
+  const runId = '00000000-0000-4000-8000-000000000062';
+  const records = join(f.home, '.config', 'cloudy-cloud', 'runs');
+  await mkdir(records, { recursive: true, mode: 0o700 });
+  await writeFile(join(records, `${runId}.json`), JSON.stringify({
+    id: runId, uid: process.getuid?.() ?? 0, repo: f.repo, session, agent_id: 'deadbeef', turn_id: 'turn-1',
+    cached_result: { status: 'completed', error: false, result: 'worker output preserved', agent_id: 'deadbeef', turn_id: 'turn-1', run_id: runId },
+    cleanup_error: true, status: 'failed', created_at: Date.now(), updated_at: Date.now(),
+  }), { mode: 0o600 });
+  // A 0.6.0-shaped owner: it answers initialize without the conditional-stop capability, so the
+  // conditional-stop request (which it would honour without a workspace probe) is never sent.
+  const entry = join(f.home, 'old-owner.mjs');
+  await writeFile(entry, `
+import { serveNamedSession } from ${JSON.stringify(resolve(root, 'src/session-transport.mjs'))};
+import { parseServerArgs } from ${JSON.stringify(resolve(root, 'src/session-args.mjs'))};
+const options = parseServerArgs(process.argv.slice(2));
+await serveNamedSession({
+  name: options.session, repo: options.repo, owner: 'old-owner',
+  deps: { open: new Map() },
+  idleCheckMs: 60000,
+  onConnection: (socket) => {
+    socket.setEncoding('utf8');
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split('\\n'); buffer = lines.pop();
+      for (const line of lines.filter(Boolean)) {
+        const m = JSON.parse(line);
+        if (m.id === undefined) continue;
+        if (m.method === 'initialize') socket.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'old', version: '0.6.0' } } }) + '\\n');
+        else socket.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'an old owner must never receive a conditional stop' } }) + '\\n');
+      }
+    });
+  },
+});
+`, { mode: 0o600 });
+  const owner = spawn(process.execPath, [entry, '--session-owner', '--session', session, '--repo', f.repo], { cwd: f.repo, env: f.env, stdio: 'ignore', detached: true });
+  t.after(() => owner.kill('SIGTERM'));
+  const metadataFile = sessionPaths({ name: session, repo: f.repo, home: f.home }).metadata;
+  for (const deadline = Date.now() + 10_000; ; await new Promise((r) => setTimeout(r, 50))) {
+    try { await access(metadataFile); break; } catch { assert.ok(Date.now() < deadline, 'the fake old owner never registered'); }
+  }
+  const resumed = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--json'], { cwd: tmpdir(), env: f.env, timeout: 20_000 }).catch((error) => error);
+  assert.equal(resumed.code, 1, `resume should keep the worker and fail; stdout=${resumed.stdout} stderr=${resumed.stderr}`);
+  const result = JSON.parse(resumed.stdout.trim());
+  assert.equal(result.cleanup_error, true);
+  assert.equal(result.preserve_worker, true);
+  assert.match(result.message, /predates the workspace-verifying/);
+  assert.match(result.action, new RegExp(`mcp-server --session ${session}`));
 });
 
 test('transient run timeout remains resumable and is not cached as a final result', async (t) => {

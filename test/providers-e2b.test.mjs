@@ -169,7 +169,12 @@ function fakeE2b() {
       if (u.pathname === '/process.Process/Connect') {
         const sel = body[0].json.process;
         if (!sel?.tag?.startsWith('cc-')) return respond(200, enc({ error: { code: 'not_found', message: 'process not found' } }, 2), { 'Content-Type': 'application/connect+json' });
-        return respond(200, stream([{ end: { ...(z.execState.code ? { exitCode: z.execState.code } : {}), exited: true, status: 'exited' } }]), { 'Content-Type': 'application/connect+json' });
+        const c = z.connectState ?? {}; // what envd replayed after the reattach: only post-gap output
+        return respond(200, stream([
+          ...(c.out ? [{ data: { stdout: b64(c.out) } }] : []),
+          ...(c.err ? [{ data: { stderr: b64(c.err) } }] : []),
+          { end: { ...(z.execState.code ? { exitCode: z.execState.code } : {}), exited: true, status: 'exited' } },
+        ]), { 'Content-Type': 'application/connect+json' });
       }
       if (u.pathname === '/process.Process/SendSignal') return respond(200, {});
       return respond(404, { code: 404, message: 'unknown route' });
@@ -665,6 +670,37 @@ test('e2b: a dropped command stream reattaches and recovers the complete transcr
     assert.equal(streamedErr, 'warned\n', 'readback emits only stderr missing from the dropped stream');
     const connects = z.log.filter((l) => l.path === '/process.Process/Connect');
     assert.equal(connects.length, 1, 'the dropped stream was re-attached once');
+  } finally { await s.kill(); }
+});
+
+test('e2b: post-gap output after a reattach is not duplicated and the gap window is recovered', async () => {
+  const z = fakeE2b();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    z.execState = { code: 0, out: 'part1\n', err: 'w1\n', dropMid: true, ioOut: 'part1\npart2\npart3\n', ioErr: 'w1\nw2\nw3\n' };
+    z.connectState = { out: 'part3\n', err: 'w3\n' }; // envd only replays output after the reattach
+    let streamed = '', streamedErr = '';
+    const r = await s.commands.run('work', { onStdout: (c) => { streamed += c; }, onStderr: (c) => { streamedErr += c; } });
+    assert.equal(r.stdout, 'part1\npart2\npart3\n');
+    assert.equal(r.stderr, 'w1\nw2\nw3\n');
+    assert.equal(r.exitCode, 0);
+    // The callbacks see pre, post, then the recovered gap window — each piece exactly once.
+    assert.equal(streamed, 'part1\npart3\npart2\n');
+    assert.equal(streamedErr, 'w1\nw3\nw2\n');
+  } finally { await s.kill(); }
+});
+
+test('e2b: a credential-free create needs no token-on-box consent', async () => {
+  const z = fakeE2b();
+  const p = mk(z, { CLOUDY_CLOUD_CONFIG: cfgFile('E2B_API_KEY=x\n') }); // no consent anywhere
+  const s = await create(p, { includeGithubToken: false });
+  try {
+    const post = z.log.find((l) => l.method === 'POST' && l.path === '/v2/sandboxes');
+    assert.ok(post, 'the create POST ran without consent');
+    assert.deepEqual(post.body.envVars ?? {}, {}, 'a credential-free create attaches no env values');
+    const envFile = z.files.get(s.id)?.get('/home/user/.cloudy-cloud-env') ?? '';
+    assert.ok(!envFile.includes(GH) && !envFile.includes(OAT), 'no credential reached the env file');
   } finally { await s.kill(); }
 });
 
