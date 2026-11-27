@@ -26,8 +26,8 @@ const alive = () => true;
 test('worker rows come from progress events; stopped agents are left out', () => {
   const rows = workerRows(events, { alive, now: NOW });
   assert.equal(rows.length, 1);
-  assert.deepEqual({ id: rows[0].id, state: rows[0].state, step: rows[0].step, t: rows[0].t }, { id: 'aaaa1111', state: 'working', step: 'Bash npm test', t: NOW - 20_000 });
-  assert.deepEqual(rows[0].steps.map((s) => s.step), ['Edit src/parser.ts', 'Bash npm test']);
+  assert.deepEqual({ id: rows[0].id, state: rows[0].state, step: rows[0].step, t: rows[0].t }, { id: 'aaaa1111', state: 'working', step: 'Bash npm', t: NOW - 20_000 });
+  assert.deepEqual(rows[0].steps.map((s) => s.step), ['Edit src/parser.ts', 'Bash npm']);
   assert.equal(rows[0].quietMin, undefined);
 });
 
@@ -346,7 +346,7 @@ test('dashboard state carries the activity rows', async () => {
   try {
     const r = await fetch(`http://127.0.0.1:${s.address().port}/api/state?t=t`);
     const j = await r.json();
-    assert.equal(j.activity[0].step, 'Bash npm test');
+    assert.equal(j.activity[0].step, 'Bash npm');
     assert.equal(j.activity[0].state, 'working');
     assert.ok(j.activity[0].t);
   } finally { s.close(); }
@@ -406,14 +406,34 @@ test('the poller also reads the coordinator machine\'s own event log, from a sav
   await poller.poll();
   const act = env.CLOUDY_CLOUD_ACTIVITY, rows = coordinatorRows(act, NOW + 1000, INSTALL);
   assert.deepEqual(rows.map((r) => [r.kind, r.name, r.state]), [['coordinator', 'boss', 'working'], ['worker', 'boss › Report node version', 'working']]);
-  assert.deepEqual(rows[1].steps.map((s) => s.step), ['Bash node', 'Bash echo [redacted]']);
-  assert.equal(rows[1].step, 'Bash echo [redacted]');
+  assert.deepEqual(rows[1].steps.map((s) => s.step), ['Bash node', 'Bash echo']);
+  assert.equal(rows[1].step, 'Bash echo');
   assert.doesNotMatch(readdirSync(act).map((n) => readFileSync(join(act, n), 'utf8')).join(''), /EXACTSECRET99/);
   const before = f.state.evBytes;
   await poller.poll(); // nothing new: no bytes read
   assert.equal(f.state.evBytes, before);
   f.state.events += e({ id: 'aaaa1111', t: NOW - 1000, type: 'progress', text: 'Read b.ts' });
   await poller.poll();
-  assert.deepEqual(coordinatorRows(act, NOW + 1000, INSTALL)[1].steps.map((s) => s.step), ['Bash node', 'Bash echo [redacted]', 'Read b.ts']);
+  assert.deepEqual(coordinatorRows(act, NOW + 1000, INSTALL)[1].steps.map((s) => s.step), ['Bash node', 'Bash echo', 'Read b.ts']);
   assert.ok(f.state.evBytes - before < 400, 'only the new line is read');
+});
+
+test('worker steps keep only the allowlisted summary: Bash is the program name, a secret or URL never shows, and an empty step is dropped', async () => {
+  const texts = ['Bash sleep 20; node --version', 'Bash FOO=1 curl https://user:Zx9pQw2LmNb@example.com/x?k=EXACTSECRET99', 'Bash export API_KEY=supersecretvalue123',
+    'Edit src/a.ts', 'WebFetch https://example.com/?token=EXACTSECRET99', 'Grep EXACTSECRET99 src', 'thinking', '', '   '];
+  const evs = [ev('dddd4444', NOW - 9000, { type: 'agent', description: 'w' }), ev('dddd4444', NOW - 8000, { type: 'status', status: 'running' }),
+    ...texts.map((text, i) => ev('dddd4444', NOW - 7000 + i, { type: 'progress', text }))];
+  const row = workerRows(evs, { alive, now: NOW })[0];
+  assert.deepEqual(row.steps.map((s) => s.step), ['Bash sleep', 'Bash curl', 'Bash export', 'Edit src/a.ts', 'WebFetch', 'Grep', 'thinking']);
+  assert.doesNotMatch(JSON.stringify(row), /EXACTSECRET99|supersecretvalue123|Zx9pQw2LmNb|node --version/);
+  // the same through the coordinator machine's event log
+  const dir = tmp(), env = ENV(dir), e = (o) => `${JSON.stringify({ pid: 1, ...o })}\n`;
+  const f = fakeMachine({ transcript: asst('t1', 'Edit', { file_path: 'a.ts' }) });
+  f.state.events = e({ id: 'eeee5555', t: NOW - 5000, type: 'agent', description: 'w', role: 'worker' }) + e({ id: 'eeee5555', t: NOW - 4000, type: 'status', status: 'running' })
+    + texts.map((text, i) => e({ id: 'eeee5555', t: NOW - 3000 + i, type: 'progress', text })).join('');
+  const poller = createCoordinatorPoller({ provider: f.provider, env, now: () => NOW });
+  await poller.poll();
+  const act = env.CLOUDY_CLOUD_ACTIVITY, w = coordinatorRows(act, NOW + 1000, INSTALL)[1];
+  assert.deepEqual(w.steps.map((s) => s.step), ['Bash sleep', 'Bash curl', 'Bash export', 'Edit src/a.ts', 'WebFetch', 'Grep', 'thinking']);
+  assert.doesNotMatch(readdirSync(act).map((n) => readFileSync(join(act, n), 'utf8')).join(''), /EXACTSECRET99|supersecretvalue123|Zx9pQw2LmNb|node --version/);
 });

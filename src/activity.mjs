@@ -58,12 +58,23 @@ export function stepFor(e, clean = redactText) {
   if (e.kind === 'result') return e.isError ? 'turn failed' : 'turn finished';
 }
 
+// A worker's progress text ("Bash <command>", "Edit <path>", "thinking") reduced to the same allowlist as stepFor: Bash keeps the
+// program name only, a file tool keeps its path, any other "Tool args" keeps the tool name, a plain status note stays. Empty: undefined.
+export function stepFromText(text, clean = redactText) {
+  const c = (s, n = 100) => tidy(clean(String(s)), n), t = safeText(String(text ?? '')).trim(), m = /^([A-Za-z][\w.:-]{0,63})\s+(\S[\s\S]*)$/.exec(t);
+  if (!m) return c(t) || undefined;
+  const [, name, rest] = m;
+  if (FILE_TOOLS.has(name)) return `${name} ${c(rest)}`;
+  if (/^bash$/i.test(name)) { const prog = rest.split(/\s+/).find((w) => !/^\w+=/.test(w)); return prog && /^[\w./+-]{1,40}$/.test(prog) ? `${name} ${c(prog, 40)}` : name; }
+  return /^[A-Z]/.test(name) || /^(grep|glob|task|list|patch|webfetch|websearch|fetch|skill)$/i.test(name) ? name : c(t); // other tools keep the name only; status notes are plain text
+}
+
 const withQuiet = (row, now) => (row.state === 'working' && row.t && now - row.t >= QUIET_MS ? { ...row, quietMin: Math.floor((now - row.t) / 60_000) } : row);
 
 // Rows for workers (and coordinators started with cloud_agent), newest first, from the event log.
 export function workerRows(events, { alive, now = Date.now() } = {}) {
   return foldAgents(events, { alive, now }).filter((a) => STATES[a.status]).map((a) => {
-    const steps = a.messages.filter((m) => m.kind === 'progress').slice(-KEEP).map((m) => ({ t: m.t, step: m.text }));
+    const steps = a.messages.filter((m) => m.kind === 'progress').slice(-KEEP).map((m) => ({ t: m.t, step: stepFromText(m.text) })).filter((s) => s.step);
     const last = steps.at(-1);
     return withQuiet({ id: a.id, name: a.description || a.id, kind: a.role === 'coordinator' ? 'coordinator' : 'worker', state: STATES[a.status],
       step: last?.step ?? (a.status === 'running' ? 'thinking' : ''), t: last?.t ?? a.lastActivity, steps }, now);
@@ -95,12 +106,12 @@ export function coordinatorRows(dir, now = Date.now(), install = '') {
     try {
       const j = JSON.parse(readFileSync(join(dir, f), 'utf8'));
       if (j?.v !== 1 || j.install !== install || !(now - j.t <= FRESH_MS) || typeof j.machine !== 'string') return [];
-      const steps = (Array.isArray(j.steps) ? j.steps : []).slice(-KEEP).map((s) => ({ n: s.n, t: s.t, step: String(s.step) }));
+      const steps = (Array.isArray(j.steps) ? j.steps : []).slice(-KEEP).map((s) => ({ n: s.n, t: s.t, step: String(s.step) })).filter((s) => s.step);
       const st = j.state ?? { state: 'working', t: j.t }, last = steps.at(-1), signal = !['working', 'idle'].includes(st.state);
       const name = tidy(j.name ?? j.machine, 64);
       // The coordinator's own workers, from its machine's event log: marked with their coordinator ("boss › fix parser").
       const workers = Object.entries(j.workers ?? {}).filter(([, w]) => STATES[w?.status]).map(([id, w]) => {
-        const ws = (Array.isArray(w.steps) ? w.steps : []).slice(-KEEP).map((x) => ({ t: x.t, step: String(x.step) })), wl = ws.at(-1);
+        const ws = (Array.isArray(w.steps) ? w.steps : []).slice(-KEEP).map((x) => ({ t: x.t, step: String(x.step) })).filter((x) => x.step), wl = ws.at(-1);
         return withQuiet({ id: tidy(id, 64), name: `${name} › ${tidy(w.description || id, 64)}`, kind: 'worker', state: STATES[w.status], step: wl?.step ?? (w.status === 'running' ? 'thinking' : ''), t: wl?.t ?? w.t, steps: ws }, now);
       });
       return [withQuiet({ id: j.machine, name, kind: 'coordinator', state: String(st.state), step: signal ? tidy(st.note || st.state) : (last?.step ?? ''),
@@ -176,7 +187,7 @@ async function readWorkers(run, snap, t, clean) {
     w.t = e.t;
     if (e.type === 'agent' && typeof e.description === 'string') w.description = tidy(clean(e.description), 64);
     else if (e.type === 'status' && typeof e.status === 'string') w.status = e.status;
-    else if (e.type === 'progress' && typeof e.text === 'string') { w.steps.push({ t: e.t, step: tidy(clean(e.text), 100) }); w.steps = w.steps.slice(-KEEP); w.status ??= 'running'; }
+    else if (e.type === 'progress' && typeof e.text === 'string') { { const step = stepFromText(e.text, clean); if (step) w.steps.push({ t: e.t, step }); } w.steps = w.steps.slice(-KEEP); w.status ??= 'running'; }
   }
   for (const [id, w] of Object.entries(workers)) if (t - w.t > 25 * 3_600_000) delete workers[id]; // a worker lives 24 h at most
   const ids = Object.keys(workers);
