@@ -3453,7 +3453,7 @@ test('a nonzero turn with empty stderr is classified on its error, not on the wo
       sbx.envs = envs;
       const real = sbx.commands.run;
       sbx.commands.run = async (cmd, o) => {
-        if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('503 overloaded'), { exitCode: 1, stdout: '{"type":"user","text":"investigate model_not_found handling"}\n', stderr: '' });
+        if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('503 overloaded'), { exitCode: 1, stdout: '{"type":"user","text":"investigate model_not_found handling"}\n' + 'progress line\n'.repeat(30), stderr: '' });
         return real(cmd, o);
       };
       return sbx;
@@ -3462,6 +3462,41 @@ test('a nonzero turn with empty stderr is classified on its error, not on the wo
   const r = await wait([await start({ profile: 'pi-glm' })]);
   assert.equal(piRuns, 2, 'the 503 is retried');
   assert.match(r, /status: idle/);
+});
+
+function emptyStderrTurn(tail) {
+  return async () => {
+    let piRuns = 0;
+    const { start, wait } = await setup({
+      env: pEnv, sleep: async () => {},
+      createSandbox: async (envs) => {
+        const sbx = await fakeSandbox(getGithub());
+        sbx.envs = envs;
+        const real = sbx.commands.run;
+        sbx.commands.run = async (cmd, o) => {
+          if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: 'progress line\n'.repeat(30) + tail + '\n', stderr: '' });
+          return real(cmd, o);
+        };
+        return sbx;
+      },
+    });
+    const r = await wait([await start({ profile: 'pi-glm' })]);
+    return { piRuns, r };
+  };
+}
+
+test('an Instabox-style turn (empty stderr, merged log on stdout) that ends with a 503 is retried', async () => {
+  answeredProfiles.delete('pi-glm');
+  const { piRuns, r } = await emptyStderrTurn('503 service unavailable')();
+  assert.equal(piRuns, 2);
+  assert.match(r, /status: idle/);
+});
+
+test('an empty-stderr turn whose stdout ends with a real model_not_found line is not retried', async () => {
+  answeredProfiles.delete('pi-glm');
+  const { piRuns, r } = await emptyStderrTurn(NOT_FOUND)();
+  assert.equal(piRuns, 1);
+  assert.match(r, /ERROR/);
 });
 
 test('a lost command transport with a retryable provider status is not replayed automatically', async () => {

@@ -613,7 +613,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr || failure.stdout || failure.message || '')}`.slice(-4000);
     // The retry classifier reads only diagnostics: a worker transcript on stdout can quote any provider keyword.
-    const classified = `${said}${String(failure.stderr || failure.message || '')}`.slice(-4000);
+    // Instabox returns one merged log as stdout with empty stderr: its last lines hold the error, so use only those.
+    const classified = `${said}${String(failure.stderr || `${failure.message || ''}\n${String(failure.stdout || '').split('\n').slice(-20).join('\n')}`)}`.slice(-4000);
     const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
     const failureWhere = retainedWithoutSession
       ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')
