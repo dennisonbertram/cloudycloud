@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { main, toolRepoUrl, FIRST_RUN_SCRIPT, errorScreen } from '../src/coordinator.mjs';
+import { LAUNCH_SCRIPT } from '../src/coordinator-launch.mjs';
 import { safeText } from '../src/terminal.mjs';
 import { installId } from '../src/config.mjs';
 import { redact } from '../src/events.mjs';
@@ -20,7 +21,7 @@ const OTHER = 'sk_live_UNRELATED0123'; // an *_API_KEY in the shell that no prof
 const applied = { proxy: { revision: 2, appliedRevision: 2 }, guest: { revision: 2, appliedRevision: 2 } };
 
 test('coordinator help is local, with a guide for each command', async () => {
-  for (const args of [['--help'], ['-h'], ...['image', 'start', 'attach', 'ls', 'stop', 'finish'].map((cmd) => [cmd, '--help'])]) {
+  for (const args of [['--help'], ['-h'], ...['image', 'start', 'attach', 'login', 'ls', 'stop', 'finish'].map((cmd) => [cmd, '--help'])]) {
     const output = [];
     await main(args, { env: {}, out: (s) => output.push(s), get sdk() { throw new Error('must not load SDK'); } });
     assert.match(output.join('\n'), /Usage: cloudy-cloud coordinator/);
@@ -46,7 +47,7 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
 });
 
 const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true });
-function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready' } = {}) {
+function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready', loginActive = true, task = '' } = {}) {
   const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
@@ -56,6 +57,8 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     getInfo: async () => ({ name }),
     files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; } },
     commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
+      if (/test -f .*login-active/.test(cmd)) { if (!loginActive) throw Object.assign(new Error('no login-active'), { exitCode: 1 }); return { stdout: '', stderr: '', exitCode: 0 }; }
+      if (/task\.md/.test(cmd)) return { stdout: task, stderr: '', exitCode: 0 };
       return { stdout: /pane_pid/.test(cmd) ? link : /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
@@ -87,70 +90,70 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     return store.fail ? { code: 1, stdout: '', stderr: typeof store.fail === 'string' ? store.fail : 'denied' } : { code: 0, stdout: '', stderr: '' };
   };
   const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s), cliSpawn };
-  return { log, deps, configFile, mk, machines, store };
+  // This installation's id: machines of "ours" carry it as the `install` label.
+  const iid = installId(env);
+  return { log, deps, configFile, mk, machines, store, iid };
 }
 
-test('image creates a labelled machine, installs cloudy-cloud and prints the login steps', async () => {
+// Runs a recorded tmux command with tmux and sh stubbed as shell functions: tmux evals its command word
+// (`sh .../launch.sh '<session command>'`) and the sh stub prints the session command launch.sh was given —
+// the nested quoting unquoted the way the real shells on the machine unquote it.
+const sessionCommand = (cmd) => spawnSync('sh', ['-c', `tmux() { [ "$1" = new-session ] && eval "$7"; }; sh() { printf '%s' "$2"; }; ${cmd}`], { encoding: 'utf8' }).stdout;
+
+test('image creates a labelled machine, installs cloudy-cloud, removes the credential and snapshots — with no sign-in anywhere', async () => {
   const f = fixture();
+  let snapAt;
+  const create = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => { const s = await create(t, o); const snap = s.createSnapshot; s.createSnapshot = (x) => { snapAt = f.log.cmds.length; return snap(x); }; return s; };
   await main(['image'], f.deps);
   assert.equal(f.log.create[0].opts.metadata.role, 'coordinator-image');
+  assert.equal(f.log.create[0].opts.metadata.install, f.iid, 'the image machine carries this installation\'s label');
   assert.ok(f.log.cmds.some((c) => /npm install/.test(c)));
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && /secrets/.test(x.url)));
   const text = f.log.out.join('\n');
-  assert.match(text, /cloudy-cloud shell sbx-abc/);
-  assert.doesNotMatch(text, /instabox@latest/);
-  assert.match(text, /claude auth login/);
-  assert.match(text, /coordinator image --save/);
-  assert.match(text, /deleted at \d\d:\d\d/);
+  assert.match(text, /Saved snapshot sn_new/);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  // The credential file is removed on the image machine before the snapshot is requested — never inside one.
+  const wipe = f.log.cmds.findIndex((c) => /rm -f "\$c" && \[ ! -e "\$c" \]/.test(c) && c.includes('CLAUDE_CONFIG_DIR'));
+  assert.ok(wipe > -1, 'a credential wipe ran');
+  assert.ok(wipe < snapAt, 'the wipe ran before the snapshot request');
+  assert.doesNotMatch(text, /claude auth login|coordinator image --save|cloudy-cloud shell/);
+  assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/);
 });
 
 const NOT_YET = JSON.stringify({ loggedIn: false });
-const IMG = (f) => f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+const IMG = (f) => f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: f.iid }));
 
-test('interactive image signs in, saves and deletes the machine in one run', async () => {
+test('interactive image saves and deletes the machine in one run, and never spawns a sign-in shell', async () => {
   const f = fixture();
-  const spawned = []; let env;
-  await main(['image'], { ...f.deps, tty: true, spawn: (bin, a, o) => { spawned.push([bin, ...a]); env = o.env; assert.equal(o.stdio, 'inherit'); return { status: 0 }; } });
-  assert.equal(env.INSTABOX_API_KEY, IBK, 'the ssh child gets the same account as the SDK');
-  assert.ok(!spawned[0].some((a) => a.includes(IBK)), 'no key in argv');
-  assert.ok(!f.log.out.join('\n').includes(IBK));
-  assert.ok(spawned[0].includes('-t') && spawned[0].includes("'claude' 'auth' 'login'"));
-  assert.match(f.log.out[0], /Claude will show a link\. Open it, sign in, and paste the code it shows when asked\. This machine is deleted at \d\d:\d\d if you don't finish/);
+  let spawned = 0;
+  await main(['image'], { ...f.deps, tty: true, spawn: () => { spawned++; return { status: 0 }; } });
+  assert.equal(spawned, 0, 'no ssh sign-in: the image carries no Claude account');
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, ['m_new']);
   assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+  assert.doesNotMatch(f.log.out.join('\n'), /auth login|sign in/i);
 });
 
-test('interactive image offers a retry when the sign-in did not finish', async () => {
-  const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
-  let spawns = 0; const asked = [];
-  await main(['image'], { ...f.deps, tty: true, spawn: () => { spawns++; return { status: 0 }; }, ask: async (q) => { asked.push(q); return ''; } });
-  assert.equal(spawns, 2);
-  assert.match(asked[0], /Sign-in did not finish\. Try again\? \[Y\/n\]/);
-  assert.equal(f.log.snapshots.length, 1);
-});
-
-test('declining the retry prints the manual steps and fails, keeping the machine', async () => {
-  const f = fixture({ auth: [NOT_YET] });
-  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }), ask: async () => 'n' }), /cloudy-cloud shell sbx-abc[\s\S]*claude auth login[\s\S]*exit[\s\S]*coordinator image --save/);
-  assert.equal(f.log.snapshots.length, 0);
-  assert.deepEqual(f.log.killed, []);
-});
-
-test('image reuses a running image machine instead of failing', async () => {
+test('image reuses a running image machine and snapshots it instead of making another', async () => {
   const f = fixture();
   IMG(f);
   await main(['image'], f.deps);
   assert.equal(f.log.create.length, 0);
   assert.ok(!f.log.cmds.some((c) => /npm install/.test(c)));
-  assert.match(f.log.out.join('\n'), /cloudy-cloud shell img-1/);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_img']);
 });
 
-test('image --save refuses when Claude is not signed in', async () => {
+test('image --save snapshots whatever the machine has: the sign-in state is never read', async () => {
   const f = fixture({ auth: [NOT_YET] });
   IMG(f);
-  await assert.rejects(main(['image', '--save'], f.deps), /Claude is not signed in on img-1\. Run: cloudy-cloud coordinator image/);
-  assert.equal(f.log.snapshots.length, 0);
+  await main(['image', '--save'], f.deps);
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_img']);
+  assert.ok(f.log.cmds.some((c) => /CLAUDE_CONFIG_DIR/.test(c) && /rm -f "\$c"/.test(c)), 'the credential is removed before snapshotting');
+  assert.ok(!f.log.cmds.some((c) => /auth status/.test(c)), 'no auth status check remains');
 });
 
 test('image --save with no image machine explains the 2 hour deletion', async () => {
@@ -160,7 +163,7 @@ test('image --save with no image machine explains the 2 hour deletion', async ()
 
 test('image --save records the snapshot id and deletes the image machine', async () => {
   const f = fixture({ snapshot: '' });
-  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+  IMG(f);
   await main(['image', '--save'], f.deps);
   assert.equal(f.log.snapshots.length, 1);
   assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
@@ -191,6 +194,8 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   assert.ok(f.log.fetches.some((x) => x.method === 'PATCH' && x.body.includes('GH_TOKEN')));
   const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/env');
   assert.match(w.d, /^CLOUDY_CLOUD_PROXY_SECRETS=CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY$/m);
+  // The operator's install id travels as trusted config so the coordinator recognises this installation's peers.
+  assert.match(w.d, new RegExp(`^CLOUDY_CLOUD_INSTALL_ID=${f.iid}$`, 'm'));
   assert.ok(![IBK, TOK, PROV].some((v) => w.d.includes(v)), 'no key value in the env file');
   assert.ok(!w.d.includes('PATH='));
   assert.ok(!w.d.includes('STRIPE_API_KEY') && !w.d.includes(OTHER), 'a key no profile uses stays on the laptop');
@@ -221,6 +226,50 @@ test('start sends the key of a profile from profiles.json, and still not an unre
   assert.ok(!patch.body.includes('STRIPE_API_KEY'));
 });
 
+test('start names the session and passes the running coordinators of this installation as peers', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  const coord = (id, name, extra = {}) => ({ sandboxId: id, name: `coord-${id}`, state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, install: mine, ...extra } });
+  f.machines.push(
+    coord('m1', 'alpha'),
+    coord('m2', 'beta', { install: 'otherinstall0000' }), // a different installation's coordinator
+    { ...coord('m3', 'gamma'), state: 'stopped' }, // not running
+    coord('m5', 'Bad Name!'), // not a valid session name: dropped
+    coord('m6', 'ok-2'),
+    { sandboxId: 'm7', name: 'w1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'worker', name: 'w', install: mine } }, // not a coordinator
+    { sandboxId: 'm8', name: 'coord-old', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'old' } }, // no install label: predates labelling
+  );
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--branch', 'main'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS=alpha,ok-2 /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_REPO=['\\]*o\/r['\\]* /, tmux);
+  assert.match(tmux, /CLOUDY_CLOUD_BRANCH=['\\]*main['\\]* /, tmux);
+});
+
+test('start with no peers still sets the four peer variables explicitly, so a bridged env.local cannot inject them', async () => {
+  const f = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS= /);
+  assert.match(tmux, /CLOUDY_CLOUD_REPO=['\\]*o\/r['\\]* /);
+  assert.match(tmux, /CLOUDY_CLOUD_BRANCH=['\\]* /);
+});
+
+test('a failed peer lookup never fails the start: no peers, one progress line', async () => {
+  const f = fixture();
+  const orig = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => { if (!o.metadata?.name) throw new Error('list boom'); return orig(o); };
+  const progress = [];
+  f.deps.stderr = { isTTY: true, write: (x) => progress.push(x) };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /);
+  assert.match(tmux, /CLOUDY_CLOUD_PEERS= /);
+  assert.ok(progress.some((l) => /other coordinators/.test(l)), JSON.stringify(progress));
+});
+
 test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {
   const f = fixture();
   const task = "do it; $(rm -rf /) 'quoted'";
@@ -228,7 +277,8 @@ test('start --task uploads ~/task.md by file and launches with it as the first p
   assert.ok(f.log.writes.find((x) => x.p === '/data/home/task.md').d.endsWith(`\n\n${task}`));
   for (const c of f.log.cmds) assert.ok(!c.includes('rm -rf /'), `task text in command: ${c}`);
   const tmux = f.log.cmds.find((c) => /tmux new-session/.test(c));
-  assert.ok(tmux.includes(`--remote-control '\\''boss'\\'' "$(cat '\\''/data/home/task.md'\\'')"`), tmux);
+  const session = sessionCommand(tmux);
+  assert.match(session, /--remote-control 'boss' "\$\(cat '\/data\/home\/task\.md'\)"/, session);
   assert.match(f.log.out.join('\n'), /started on the task/);
 });
 
@@ -264,6 +314,18 @@ test('start rejects bad repo urls and duplicate names', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
   await assert.rejects(main(['start', 'x', '--repo', 'git@github.com:o/r.git'], f.deps), /--repo/);
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), /already exists/);
+});
+
+test('start refuses a name equal to an existing machine name or id: even provider-qualified selectors would stay ambiguous', async () => {
+  // boss runs as machine coord-boss; a second coordinator named coord-boss would make
+  // `login instabox:coord-boss` match both rows, so start must refuse like a duplicate name.
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
+  await assert.rejects(main(['start', 'coord-boss', '--repo', 'https://github.com/o/r'], f.deps), /already answers to coord-boss|collides|ambiguous|already exists/);
+  assert.equal(f.log.create.length, 0, 'no machine was created');
+  // The machine id is a selector too (find matches it).
+  const g = fixture({ machines: [{ sandboxId: 'm2', name: 'coord-docs', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'docs' } }] });
+  await assert.rejects(main(['start', 'm2', '--repo', 'https://github.com/o/r'], g.deps), /already answers to m2|collides|ambiguous|already exists/);
+  assert.equal(g.log.create.length, 0);
 });
 
 test('ls lists only coordinators', async () => {
@@ -305,6 +367,72 @@ test('coordinator names are ambiguous across providers unless qualified', async 
   assert.deepEqual(deleted, []);
   await main(['stop', 'provider-b:boss'], { provider, env: {}, out: () => {} });
   assert.deepEqual(deleted, [['provider-b', 'b1']]);
+});
+
+// With more than one provider configured a bare `coordinator login NAME` can be ambiguous, so the printed
+// next step must carry the provider (start prints primary:name; ls/status print the row's provider:name).
+const twoProviders = (f, pane = '') => {
+  const instabox = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'instabox' });
+  const boat = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'boat' });
+  const boxes = new Map();
+  for (const p of [instabox, boat]) {
+    p.create = async (opts) => {
+      p.log.create.push(opts);
+      const sbx = { id: `${p.name}-machine`, name: opts.name, home: '/data/home',
+        files: { write: async (path, data) => p.log.writes.push({ p: path, d: String(data) }) },
+        commands: { run: async (cmd) => ({ stdout: /printf %s/.test(cmd) ? '/data/home' : /auth status/.test(cmd) ? NOT_YET : /capture-pane/.test(cmd) ? pane : '', stderr: '', exitCode: 0 }) } };
+      boxes.set(sbx.id, sbx);
+      p.machines.set(sbx.id, { id: sbx.id, name: sbx.name, labels: opts.labels, state: 'running', startedAt: Date.now() });
+      return sbx;
+    };
+    p.connect = async (id) => boxes.get(id);
+    p.list = async () => [...p.machines.values()];
+  }
+  f.deps.provider = combine([instabox, boat]);
+  return { instabox, boat, boxes };
+};
+const SIGNIN_PANE = '  ⎿  Not logged in · Please run /login';
+
+test('start prints a provider-qualified login command when multiple providers are configured', async () => {
+  const f = fixture();
+  twoProviders(f);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).next, 'cloudy-cloud coordinator login instabox:boss');
+
+  const g = fixture();
+  twoProviders(g);
+  g.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  const text = plainText(g.log.out.join('\n'));
+  assert.match(text, /Sign in\s+cloudy-cloud coordinator login instabox:boss/);
+  assert.match(text, /Next: cloudy-cloud coordinator login instabox:boss/);
+  assert.doesNotMatch(text, /login boss\b/);
+
+  const h = fixture();
+  twoProviders(h);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], h.deps);
+  assert.match(h.log.out.join('\n'), /Sign in to Claude on it:\n {2}cloudy-cloud coordinator login instabox:boss/);
+});
+
+test('status and ls print a provider-qualified login command when multiple providers are configured', async () => {
+  const f = fixture();
+  const { boat, boxes } = twoProviders(f);
+  const bsbx = { id: 'boat-1', name: 'coord-boss', home: '/data/home', files: { write: async () => {} },
+    commands: { run: async (cmd) => ({ stdout: /capture-pane/.test(cmd) ? SIGNIN_PANE : '', stderr: '', exitCode: 0 }) } };
+  boxes.set('boat-1', bsbx);
+  boat.machines.set('boat-1', { id: 'boat-1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid }, state: 'running', startedAt: Date.now() });
+  await main(['status', 'boss', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).next, 'cloudy-cloud coordinator login boat:boss');
+  await main(['status', 'boat:boss'], f.deps); // an already-qualified selector stays qualified
+  assert.match(f.log.out.at(-1), /Next: cloudy-cloud coordinator login boat:boss/);
+
+  const g = fixture();
+  const { boat: gboat, boxes: gboxes } = twoProviders(g);
+  gboxes.set('boat-1', bsbx);
+  gboat.machines.set('boat-1', { id: 'boat-1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: g.iid }, state: 'running', startedAt: Date.now() });
+  g.deps.ui = tty();
+  await main(['ls'], g.deps);
+  assert.match(plainText(g.log.out.join('\n')), /Next: cloudy-cloud coordinator login boat:boss/);
 });
 
 test('attach off a terminal prints the cloudy-cloud attach command', async () => {
@@ -359,6 +487,7 @@ test('empty list on a terminal points to image or start; piped output stays "No 
 test('progress goes only to an interactive stderr and never contains keys', async () => {
   for (const isTTY of [true, false]) {
     const f = fixture();
+    f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // not under test: keep the unclean-image note out of the count
     const progress = [];
     f.deps.stderr = { isTTY, write: (x) => progress.push(x) };
     await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
@@ -443,9 +572,11 @@ test('start asks the provider for a never-suspending machine from the snapshot w
   };
   const out = [];
   const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
-  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), out: (x) => out.push(x) });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), sleep: async () => {}, out: (x) => out.push(x) });
   assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
-  assert.match(out.join('\n'), /Terminal: cloudy-cloud coordinator attach boss/);
+  // A fresh coordinator waits for its own Claude sign-in: the piped output says so and names the login command.
+  assert.match(out.join('\n'), /Coordinator boss is running on machine coord-boss/);
+  assert.match(out.join('\n'), /coordinator login boss/);
   assert.doesNotMatch(out.join('\n'), /fake ssh|runs:|tmux/);
 });
 
@@ -563,11 +694,11 @@ test('stop and image on a terminal use status lines; piped output has no escapes
   const g = fixture();
   g.deps.ui = tty();
   await main(['image'], g.deps);
-  assert.match(plainText(g.log.out.join('\n')), /✔ Image machine sbx-abc is ready/);
+  assert.match(plainText(g.log.out.join('\n')), /✔ Saved snapshot sn_new/);
   const h = fixture();
   await main(['image'], h.deps); // default ui: stdout is not a terminal under test
   assert.ok(!ANSI.test(h.log.out.join('\n')));
-  assert.match(h.log.out.join('\n'), /^Image machine sbx-abc is ready and cloudy-cloud is installed on it\./); // install.sh reads this line
+  assert.match(h.log.out.join('\n'), /^Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT/); // install.sh checks the saved key, not this line
 });
 
 test('a provider that cannot give a coordinator its keys refuses image and start, before creating anything (#41)', async () => {
@@ -644,12 +775,18 @@ test('start fails and deletes the machine when the session screen shows a spend 
   assert.ok(f.log.cmds.some((c) => /tmux capture-pane/.test(c)));
 });
 
-test('start also fails on a login screen or an invalid key', async () => {
-  for (const pane of ['Select login method', 'Invalid API key \u00b7 Fix external API key']) {
-    const f = fixture({ pane });
-    await assert.rejects(main(START, f.deps), /Next: /, pane);
-    assert.deepEqual(f.log.killed, ['m_new']);
-  }
+test('start keeps a machine waiting for its first sign-in; an invalid key still fails', async () => {
+  // Waiting for the coordinator's own Claude sign-in is a normal state: no delete, and the fix is login.
+  const f = fixture({ pane: 'Select login method', auth: [NOT_YET] });
+  await main([...START, '--json'], f.deps);
+  assert.deepEqual(f.log.killed, []);
+  const j = JSON.parse(f.log.out[0]);
+  assert.equal(j.started, true);
+  assert.equal(j.needsLogin, true);
+  assert.equal(j.next, 'cloudy-cloud coordinator login boss');
+  const g = fixture({ pane: 'Invalid API key \u00b7 Fix external API key' });
+  await assert.rejects(main(START, g.deps), /Next: /);
+  assert.deepEqual(g.log.killed, ['m_new']);
 });
 
 test('start keeps the machine when the screen waits on a trust, MCP or Remote Control prompt, and says how to answer it', async () => {
@@ -788,7 +925,8 @@ test('start fails and deletes the machine when the session exits at once (captur
 test('start --model puts the model on the tmux command line; a bad model is refused before any machine', async () => {
   const f = fixture();
   await main([...START, '--model', 'claude-opus-5-5'], f.deps);
-  assert.match(f.log.cmds.find((c) => /tmux new-session/.test(c)), /--remote-control '\\''boss'\\'' --model '\\''claude-opus-5-5'\\''/);
+  const tmux = f.log.cmds.find((c) => /tmux new-session/.test(c));
+  assert.match(sessionCommand(tmux), /--remote-control 'boss' --model 'claude-opus-5-5'/);
   const g = fixture();
   await assert.rejects(main([...START, '--model', 'x;rm -rf /'], g.deps), /--model/);
   assert.equal(g.log.create.length, 0);
@@ -798,8 +936,9 @@ test('the coordinator session has cloudy-cloud on PATH, as one word even when PA
   const f = fixture();
   await main(START, f.deps);
   const cmd = f.log.cmds.find((c) => /tmux new-session/.test(c));
-  // Run the command with tmux and env stubbed as shell functions: tmux evals its command word, env prints each argument in brackets.
-  const sh = spawnSync('sh', ['-c', `tmux() { [ "$1" = new-session ] && eval "$7"; }; env() { printf '[%s]' "$@"; }; ${cmd}`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/my dir/bin' } }).stdout;
+  // Run the command with tmux, sh and env stubbed as shell functions: tmux evals its command word (which is
+  // `sh .../launch.sh '<session command>'`), the sh stub evals the command launch.sh would exec, env prints each argument in brackets.
+  const sh = spawnSync('sh', ['-c', `tmux() { [ "$1" = new-session ] && eval "$7"; }; sh() { eval "$2"; }; env() { printf '[%s]' "$@"; }; ${cmd}`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/my dir/bin' } }).stdout;
   assert.match(sh, /\[PATH=\/data\/home\/cloudy-cloud\/bin:\/usr\/bin:\/bin:\/my dir\/bin\]/);
 });
 
@@ -818,8 +957,17 @@ test('a task line shown on screen does not count as an error (#44 review)', asyn
   assert.deepEqual(g.f.log.killed, [], 'a message must be a whole Claude error, not a substring');
 });
 
-test('start fails on the real Claude 2.1.325 session-limit and sign-in messages', async () => {
-  for (const text of ["You've hit your session limit \u00b7 resets 3pm", 'Authentication required \u00b7 Sign in again to continue', 'Login expired \u00b7 Please run /login', 'Invalid API key \u00b7 Fix external API key', 'Not logged in \u00b7 Please run /login']) {
+test('start fails on the real Claude 2.1.325 session-limit and invalid-key messages, but keeps a machine at a sign-in screen', async () => {
+  // Sign-in screens are the normal state of a fresh coordinator: kept, and login NAME is the fix.
+  for (const text of ['Authentication required \u00b7 Sign in again to continue', 'Login expired \u00b7 Please run /login', 'Not logged in \u00b7 Please run /login']) {
+    const f = fixture({ pane: `  \u23bf  ${text}`, auth: [NOT_YET] });
+    await main([...START, '--json'], f.deps);
+    assert.deepEqual(f.log.killed, [], text);
+    const j = JSON.parse(f.log.out[0]);
+    assert.equal(j.needsLogin, true, text);
+    assert.equal(j.next, 'cloudy-cloud coordinator login boss', text);
+  }
+  for (const text of ["You've hit your session limit \u00b7 resets 3pm", 'Invalid API key \u00b7 Fix external API key']) {
     const { f, run } = pane(`  \u23bf  ${text}`);
     await assert.rejects(run(), /Next: /, text);
     assert.deepEqual(f.log.killed, ['m_new'], text);
@@ -1093,12 +1241,17 @@ test('the first-run script treats a malformed, null or array settings file as em
   }
 });
 
-test('start --json gives each fatal screen its own code and Tell the user line; a login screen never says spend limit (#88)', async () => {
+test('start --json gives each fatal screen its own code; a sign-in screen is needsLogin, never an error (#88 #208)', async () => {
+  const signin = ['Login expired · Please run /login', 'Not logged in · Please run /login', 'Authentication required · Sign in again', 'Select login method'];
+  for (const text of signin) {
+    const g = fixture({ pane: `  ⎿  ${text}`, auth: [NOT_YET] });
+    await main([...START, '--json'], g.deps);
+    const j = JSON.parse(g.log.out[0]);
+    assert.equal(j.needsLogin, true, text);
+    assert.equal(j.next, 'cloudy-cloud coordinator login boss', text);
+    assert.deepEqual(g.log.killed, [], text);
+  }
   const cases = [
-    ['Login expired · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
-    ['Not logged in · Please run /login', 'coordinator_login_expired', /image's Claude sign-in expired/],
-    ['Authentication required · Sign in again', 'coordinator_login_expired', /image's Claude sign-in expired/],
-    ['Select login method', 'coordinator_login_expired', /image's Claude sign-in expired/],
     ["You've hit your session limit · resets 3pm", 'spend_limit', /spend limit/],
     ['Invalid API key · Fix external API key', 'coordinator_invalid_key', /API key/],
   ];
@@ -1109,7 +1262,6 @@ test('start --json gives each fatal screen its own code and Tell the user line; 
     assert.equal(e.code, code, text);
     assert.match(e.tellUser, tell, text);
     if (code !== 'spend_limit') assert.doesNotMatch(JSON.stringify(e), /spend limit/i, text);
-    if (code === 'coordinator_login_expired') assert.match(e.nextStep, /coordinator image.*claude auth login.*coordinator image --save/s);
   }
 });
 
@@ -1171,7 +1323,8 @@ test('interactive image resumes a pending snapshot instead of starting another',
   assert.equal(f.log.snapshots.length, 1);
 });
 
-const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nSECRET_KEEP=abc\n`, { mode: 0o600 });
+// A pending record written by a cloudy-cloud that verified the credential removal carries PENDING_CLEAN.
+const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nCLOUDY_CLOUD_PENDING_CLEAN=1\nSECRET_KEEP=abc\n`, { mode: 0o600 });
 
 test('--save finishes a pending snapshot by id even when its machine is gone, and keeps other config lines', async () => {
   const f = fixture({ snapshot: '' });
@@ -1188,8 +1341,8 @@ test('--save finishes a pending snapshot by id even when its machine is gone, an
 
 test('pending snapshot: only the recorded machine is deleted, not a newer image machine', async () => {
   const f = fixture({ snapshot: '' });
-  f.machines.push(f.mk('m_old', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
-  f.machines.push(f.mk('m_new2', 'img-2', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+  f.machines.push(f.mk('m_old', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: f.iid }));
+  f.machines.push(f.mk('m_new2', 'img-2', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: f.iid }));
   PENDING(f, 'm_old:sn_new');
   await main(['image', '--save'], f.deps);
   assert.deepEqual(f.log.killed, ['m_old']);
@@ -1197,7 +1350,7 @@ test('pending snapshot: only the recorded machine is deleted, not a newer image 
 
 test('a failed machine delete keeps the pending entry, so the retry only deletes', async () => {
   const f = fixture({ snapshot: '' });
-  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: f.iid }));
   PENDING(f);
   let fails = true;
   const connect = f.deps.sdk.Sandbox.connect;
@@ -1232,32 +1385,14 @@ test('a config read error stops the save before any snapshot is made', async () 
   assert.equal(f.log.snapshots.length, 0);
 });
 
-test('interactive image skips the login when Claude is already signed in on the reused machine', async () => {
+test('interactive image saves the reused machine without a sign-in or a spawned shell', async () => {
   const f = fixture();
   IMG(f);
   let spawned = 0;
   await main(['image'], { ...f.deps, tty: true, spawn: () => { spawned++; return { status: 0 }; } });
   assert.equal(spawned, 0);
   assert.equal(f.log.snapshots.length, 1);
-});
-
-test('a non-zero ssh exit still saves when Claude reads signed in afterwards (the status is the truth)', async () => {
-  const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
-  IMG(f); // first status check (before ssh) reads NOT_YET
-  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 1 }), ask: async () => 'n' });
-  assert.equal(f.log.snapshots.length, 1);
-});
-
-test('an ssh child that could not start counts as an unfinished sign-in', async () => {
-  const f = fixture({ auth: [NOT_YET, SIGNED_IN] });
-  IMG(f);
-  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: null, error: new Error('ENOENT') }), ask: async () => 'n' }), /Sign-in did not finish/);
-  assert.equal(f.log.snapshots.length, 0);
-});
-
-test('closed stdin at the retry prompt declines: fallback and failure', async () => {
-  const f = fixture({ auth: [NOT_YET] });
-  await assert.rejects(main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }), ask: async () => null }), /cloudy-cloud shell sbx-abc/);
+  assert.deepEqual(f.log.killed, ['m_img']);
 });
 
 // ---- round 1: Next lines, account, attach, narrow ls ----
@@ -1270,16 +1405,16 @@ test('ui.next: accent arrow on a colour terminal, plain "Next:" otherwise', () =
   assert.equal(tty({ NO_COLOR: '1' }).next('x'), '  → Next: x');
 });
 
-test('image saves the signed-in email with the snapshot id; no valid email drops the key', async () => {
+test('image never writes an account key and drops a leftover one on save', async () => {
   const f = fixture({ auth: [withEmail('me@example.com')] });
-  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  await main(['image'], f.deps);
   const text = readFileSync(f.configFile, 'utf8');
-  assert.match(text, /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=me@example\.com$/m);
+  assert.doesNotMatch(text, /SNAPSHOT_ACCOUNT/);
   assert.match(text, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
-  const g = fixture({ auth: [withEmail('not an email')] });
+  const g = fixture();
   writeFileSync(g.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\n');
-  await main(['image'], { ...g.deps, tty: true, spawn: () => ({ status: 0 }) });
-  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/);
+  await main(['image'], g.deps);
+  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/, 'a leftover account line is dropped on the next save');
 });
 
 test('failures give a reason line and one Next line; not-found is neutral', async () => {
@@ -1312,25 +1447,32 @@ test('ls moves a cramped waiting prompt to a dimmed second line under its row', 
   assert.equal((text.match(/Next: cloudy-cloud coordinator attach averyvery/g) ?? []).length, 1);
 });
 
-test('the account saved with a pending snapshot is used on resume, and an old pending entry keeps the saved account', async () => {
-  const f = fixture({ auth: [withEmail('me@example.com')], snapStatus: (n) => (n < 2 ? 'pending' : 'ready') });
-  f.deps.sleep = async () => {};
-  await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).catch(() => {});
+test('a pending record without the clean marker is dropped unadopted; a marked one resumes and drops the old account lines', async () => {
+  // Legacy pending record (no CLOUDY_CLOUD_PENDING_CLEAN): the snapshot may still hold a sign-in, so it is
+  // never saved as the image — the record is dropped but the snapshot and its machine are left alone.
   const g = fixture();
+  g.machines.push(g.mk('m_gone', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: g.iid }));
   writeFileSync(g.configFile, 'CLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_ACCOUNT=kept@example.com\n');
-  await main(['image'], { ...g.deps, tty: true });
-  assert.match(readFileSync(g.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=kept@example\.com$/m);
-  assert.doesNotMatch(readFileSync(g.configFile, 'utf8'), /PENDING/);
+  await assert.rejects(main(['image'], { ...g.deps, tty: true }), /may still contain a Claude sign-in[\s\S]*cloudy-cloud coordinator image/);
+  const gcfg = readFileSync(g.configFile, 'utf8');
+  assert.doesNotMatch(gcfg, /SNAPSHOT_ACCOUNT|PENDING/, 'the legacy record and its account line are dropped');
+  assert.doesNotMatch(gcfg, /COORDINATOR_SNAPSHOT/, 'the suspect snapshot is never adopted');
+  assert.equal(g.log.snapshots.length, 0);
+  assert.deepEqual(g.log.killed, [], 'the machine is left alone');
+  // A marked pending record resumes: its snapshot is saved and marked clean, the account lines go.
   const h = fixture();
-  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\n');
+  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=1\n');
   await main(['image'], { ...h.deps, tty: true });
-  assert.match(readFileSync(h.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example\.com$/m);
+  const hcfg = readFileSync(h.configFile, 'utf8');
+  assert.doesNotMatch(hcfg, /SNAPSHOT_ACCOUNT|PENDING/);
+  assert.match(hcfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_p$/m);
+  assert.match(hcfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
 });
 
-test('an email must be one plain address', async () => {
-  for (const bad of ['Display<me@example.org>', 'a\u0000b@example.org', 'a b@example.org', 'me@example.org, you@example.org']) {
+test('the auth-status email is never stored, whatever it looks like', async () => {
+  for (const bad of ['Display<me@example.org>', 'a\u0000b@example.org', 'a b@example.org', 'me@example.org, you@example.org', 'me@example.com']) {
     const f = fixture({ auth: [withEmail(bad)] });
-    await main(['image'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+    await main(['image'], f.deps);
     assert.doesNotMatch(readFileSync(f.configFile, 'utf8'), /SNAPSHOT_ACCOUNT/, bad);
   }
 });
@@ -1446,7 +1588,7 @@ test('a spend-limit start failure shows its screen and machine-readable error st
   assert.equal(e.code, 'spend_limit');
   assert.ok(e.short && e.next, 'the error carries its own lines');
   // our authored words are the cause; the remote pane line is a diagnostic, never a trusted field (#185)
-  assert.equal(e.reason, 'the saved Claude login has hit its spend or usage limit; the machine was deleted');
+  assert.equal(e.reason, 'the Claude account on the coordinator has hit its spend or usage limit; the machine was deleted');
   assert.match(e.details.join(' '), /screen: .*spend limit/i);
   const lines = plainText(errorScreen(e, tty())).split('\n');
   assert.equal(lines.length, 5); // headline, screen diagnostic, the wrapped cause, one Next
@@ -1501,14 +1643,14 @@ test('start on a terminal when the screen cannot be read: warning plus the attac
   for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
 });
 
-test('image --save on a terminal puts the signed-in account on its own hint line', async () => {
+test('image --save on a terminal never mentions a signed-in account', async () => {
   const f = fixture({ machines: [{ sandboxId: 'm_img', name: 'img-1', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator-image' } }], auth: [withEmail('me@example.com')] });
+  f.machines[0].metadata.install = f.iid;
   f.deps.ui = tty();
   await main(['image', '--save'], f.deps);
   const lines = plainText(f.log.out.join('\n')).split('\n');
   assert.match(lines[0], /^ {2}✔ Saved snapshot sn_new {2}the image machine is deleted$/);
-  assert.doesNotMatch(lines[0], /signed in as/);
-  assert.ok(lines.some((l) => /^ {2}› signed in as me@example\.com$/.test(l)), lines.join('\n'));
+  assert.doesNotMatch(lines.join('\n'), /signed in as|account/i);
   for (const l of lines) assert.ok(cellWidth(l) <= 80, l);
 });
 
@@ -1584,6 +1726,7 @@ test('every coordinator screen fits 80 cells at cols=80 (colour)', async () => {
   const st = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } }] });
   st.deps.ui = tty(); await main(['stop', 'a'], st.deps); check('stop', st.log.out.join('\n'));
   const sv = fixture({ machines: [{ sandboxId: 'm_img', name: 'img-1', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator-image' } }], auth: [withEmail('me@example.com')] });
+  sv.machines[0].metadata.install = sv.iid;
   sv.deps.ui = tty(); await main(['image', '--save'], sv.deps); check('image --save', sv.log.out.join('\n'));
   check('errorScreen', errorScreen(Object.assign(new Error('m'), { local: true, short: 'The coordinator session started but is not working.', reason: 'screen: spend limit; the machine was deleted', next: 'check the plan at claude.ai, then start boss again' }), tty()));
   const e = fixture(); // the no-snapshot guided error renders its lines too
@@ -1800,13 +1943,13 @@ test('image stores the key on a reused machine and on image --save, not only on 
   await main(['image'], f.deps);
   assert.equal(noStore(f).length, 1, 'store runs on the reuse path');
   const g = fixture();
-  g.machines.push(g.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+  g.machines.push(g.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: g.iid }));
   g.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN';
   await main(['image', '--save'], g.deps);
   assert.equal(noStore(g).length, 1, 'store runs on image --save');
 });
 
-test('plain stderr keeps the appended guidance; the tmux-exit message keeps its previous text', async () => {
+test('plain stderr keeps the appended guidance; the tmux-exit message names start again, then a fresh image', async () => {
   const f = fixture({ pane: "  You've hit your monthly spend limit\n" });
   const e = await main(START, f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
   const plain = errorScreen(e, { on: false });
@@ -1815,14 +1958,14 @@ test('plain stderr keeps the appended guidance; the tmux-exit message keeps its 
   assert.match(plain, /Next step: /); // the guidance fields scripts saw before
   // the colour screen shows headline, screen diagnostic, the wrapped cause and Next — still one layer
   assert.equal(plainText(errorScreen(e, tty())).split('\n').length, 5);
-  // tmux-exit: piped callers keep the old wording (noninteractive image needs --save)
+  // tmux-exit: the guidance names start again, then a fresh image — no sign-in step exists anymore
   const g = fixture();
   const orig = g.deps.sdk.Sandbox.create;
   g.deps.sdk.Sandbox.create = async (t, o) => { const sbx = await orig(t, o); const run = sbx.commands.run;
     sbx.commands.run = async (cmd, ...r) => { if (/capture-pane/.test(cmd)) throw Object.assign(new Error('no server'), { exitCode: 1 }); return run(cmd, ...r); }; return sbx; };
   const t = await main(START, g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
-  assert.match(t.message, /run cloudy-cloud coordinator image, sign in with claude auth login, run cloudy-cloud coordinator image --save, then start the coordinator again/);
-  assert.doesNotMatch(t.message, /it signs you in to Claude and saves the image/);
+  assert.match(t.message, /run cloudy-cloud coordinator start boss again; if it repeats, run cloudy-cloud coordinator image for a fresh image/);
+  assert.doesNotMatch(t.message, /claude auth login|image --save/);
 });
 
 // ---- r3: layout follows ui.term, colour follows ui.on (visual cluster 2) ----
@@ -1924,8 +2067,8 @@ test('a start provider error renders the appended guidance once: short, cause, o
 
 test('coordinator usage errors keep the origin message for scripts and show the relevant usage only on a terminal', async () => {
   for (const [args, message, usage, help] of [
-    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
-    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
     [['ls', '--all'], 'ls takes no arguments.\nRun: cloudy-cloud coordinator ls --help', /Usage: cloudy-cloud coordinator ls/, /Next: cloudy-cloud coordinator ls --help/],
     [['stop'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator stop --help', /Usage: cloudy-cloud coordinator stop NAME/, /Next: cloudy-cloud coordinator stop --help/],
     [['start'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help', /start needs a NAME\./, /Next: cloudy-cloud coordinator start --help/],
@@ -2317,7 +2460,7 @@ test('an image machine without the cloudy-cloud purpose label is never snapshott
   g.machines.push(g.mk('m_img', 'img-1', { role: 'coordinator-image' }));
   await main(['image'], g.deps);
   assert.equal(g.log.create.length, 1);
-  assert.match(g.log.out.join('\n'), /cloudy-cloud shell sbx-abc/);
+  assert.match(g.log.out.join('\n'), /Saved snapshot sn_new/);
   assert.doesNotMatch(g.log.out.join('\n'), /img-1/);
 });
 
@@ -2333,7 +2476,7 @@ test('a pending snapshot whose recorded machine no longer verifies keeps the mac
 
 test('a pending snapshot still finishes when its recorded machine verifies under the historical claude-cloud purpose', async () => {
   const f = fixture({ snapshot: '' });
-  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'claude-cloud', role: 'coordinator-image' }));
+  f.machines.push(f.mk('m_img', 'img-1', { purpose: 'claude-cloud', role: 'coordinator-image', install: f.iid }));
   PENDING(f, 'm_img:sn_new');
   await main(['image', '--save'], f.deps);
   assert.deepEqual(f.log.killed, ['m_img']);
@@ -2387,13 +2530,39 @@ test('start hints use the machine id when the server-reported name is not a plai
   assert.equal(j.machine, 'coord x; rm -rf /'); // the reported name stays data, never a command word
 });
 
-test('an image machine whose server name is not a plain word hints a shell by id, not by name', async () => {
+test('an image machine whose server name is not a plain word is never echoed into the output', async () => {
+  // There is no shell hint anymore (no sign-in on the image); the server-reported name never reaches a command.
   const f = fixture();
-  f.machines.push(f.mk('m_img', 'img; rm -rf /', { purpose: 'cloudy-cloud', role: 'coordinator-image' }));
+  f.machines.push(f.mk('m_img', 'img; rm -rf /', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: f.iid }));
   await main(['image'], f.deps);
   const text = f.log.out.join('\n');
-  assert.doesNotMatch(text, /cloudy-cloud shell img;/);
-  assert.match(text, /cloudy-cloud shell m_img/);
+  assert.doesNotMatch(text, /cloudy-cloud shell|img;|rm -rf/, text);
+});
+
+// ---- P1-2: an image machine that is not verifiably ours is never reused, wiped, snapshotted or deleted ----
+test('an image machine without an install label is left alone with a guided message naming it', async () => {
+  for (const args of [['image'], ['image', '--save']]) {
+    const f = fixture({ snapshot: '' });
+    f.machines.push(f.mk('m_img', 'img-1', { purpose: 'cloudy-cloud', role: 'coordinator-image' })); // no install label
+    await assert.rejects(main(args, f.deps), /no installation label[\s\S]*cloudy-cloud machines/, args.join(' '));
+    assert.equal(f.log.create.length, 0, 'no new machine was made');
+    assert.equal(f.log.snapshots.length, 0, 'nothing was snapshotted');
+    assert.deepEqual(f.log.killed, [], 'the unlabeled machine was left alone');
+  }
+});
+
+test('an image machine of another installation is never touched: a fresh one is made beside it', async () => {
+  const f = fixture();
+  f.machines.push(f.mk('m_foreign', 'img-foreign', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: 'otherinstall1234' }));
+  await main(['image'], f.deps);
+  assert.equal(f.log.create.length, 1, 'our own image machine is created');
+  assert.deepEqual(f.log.killed, ['m_new'], 'the foreign machine was left alone');
+  // --save likewise finds no image machine of ours.
+  const g = fixture({ snapshot: '' });
+  g.machines.push(g.mk('m_foreign', 'img-foreign', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: 'otherinstall1234' }));
+  await assert.rejects(main(['image', '--save'], g.deps), /No image machine found/);
+  assert.equal(g.log.snapshots.length, 0);
+  assert.deepEqual(g.log.killed, []);
 });
 
 test('a provider error cannot forge our guidance: its labels print as dim diagnostics under a generic Next', () => {
@@ -2834,7 +3003,7 @@ test('cloud --no-attach on a TTY starts without the attach exec', async () => {
 test('cloud on a TTY starts and attaches through the same spawn path as coordinator attach', async () => {
   const f = fixture();
   const spawned = [];
-  const status = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ask: async () => 'y', spawn: localSpawn(spawned) });
+  const status = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ui: tty(), ask: async () => 'y', spawn: localSpawn(spawned) });
   assert.equal(f.log.create.length, 1);
   assert.equal(status, 0);
   assert.ok(spawned.some((a) => a.some((x) => /tmux.*attach.*claude/.test(x))), JSON.stringify(spawned));
@@ -2891,7 +3060,8 @@ test('start --env copies a consented literal value into env.local, sourced into 
   assert.ok(f.log.cmds.some((c) => /umask 077 && : > '[^']*env\.local'/.test(c)));
   assert.ok(f.log.cmds.some((c) => /chmod 600 '[^']*env\.local'/.test(c)));
   const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
-  assert.match(tmux, /set -a; \. '\\''[^'\\]*env\.local'\\''; set \+a;/);
+  assert.match(tmux, /launch\.sh/, 'the session command runs through launch.sh');
+  assert.match(tmux, /set -a;[^]*?env\.local[^]*?set \+a;/, 'the session command still sources env.local');
   const cmds = f.log.cmds.filter((c) => !/umask 077/.test(c));
   for (const c of cmds) assert.ok(!c.includes(ENV_SECRET), `value in command: ${c}`);
   assert.match(notes.join('\n'), /copied literally: MY_LIT/);
@@ -2932,4 +3102,456 @@ test('a missing --env file is a usage error and --env is repeatable', async () =
   writeFileSync(b, 'K2=y\n');
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--env', a, '--env', b], g.deps);
   assert.equal(g.log.create.length, 1, 'repeatable --env reaches start');
+});
+
+// ---- each coordinator signs in to Claude for itself (#208) ----
+
+const coordMachine = (f, name = 'a') => f.machines.push({ sandboxId: 'm1', name: `coord-${name}`, state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, install: f.iid } });
+
+test('launch.sh removes a copied credential once — a relaunch keeps the coordinator\'s own sign-in', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-launch-'));
+  mkdirSync(join(home, '.config/cloudy-cloud'), { recursive: true });
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  // A stub claude: `auth status --json` cats a file the test controls; `auth login` logs the call and
+  // whether the login-active marker exists while it runs.
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\ncase "$1 $2" in\n "auth status") cat "$CLAUDE_STATUS_FILE";;\n "auth login") echo login >> "$HOME/.claude/login-calls"; [ -f "$HOME/.config/cloudy-cloud/login-active" ] && echo active >> "$HOME/.claude/active-seen";;\nesac\n');
+  chmodSync(join(bin, 'claude'), 0o755);
+  const script = join(home, 'launch.sh');
+  writeFileSync(script, LAUNCH_SCRIPT);
+  const status = join(home, 'status.json');
+  const creds = join(home, '.claude/.credentials.json');
+  const marker = join(home, '.config/cloudy-cloud/.credentials-removed');
+  const env = () => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: home, CLAUDE_STATUS_FILE: status });
+  const run = () => spawnSync('sh', [script, `echo ran >> ${join(home, 'ran')}`], { env: env(), encoding: 'utf8' });
+
+  // First launch, not signed in: the copied credential goes, the marker lands, `claude auth login` runs, the command execs.
+  writeFileSync(status, '{"loggedIn":false}');
+  writeFileSync(creds, 'copied-from-image');
+  assert.equal(run().status, 0);
+  assert.ok(!existsSync(creds), 'the image credential was removed');
+  assert.ok(existsSync(marker), 'the removal marker was made');
+  assert.equal(readFileSync(join(home, '.claude/login-calls'), 'utf8'), 'login\n');
+  assert.equal(readFileSync(join(home, '.claude/active-seen'), 'utf8'), 'active\n', 'login-active exists while claude auth login runs');
+  assert.ok(!existsSync(join(home, '.config/cloudy-cloud/login-active')), 'login-active is removed when login returns');
+  assert.equal(readFileSync(join(home, 'ran'), 'utf8'), 'ran\n', 'the session command ran');
+
+  // Relaunch: the coordinator\'s own sign-in now lives in the credentials file — the marker protects it.
+  writeFileSync(creds, 'its-own-login');
+  writeFileSync(status, '{"loggedIn":true,"authMethod":"claude.ai"}');
+  assert.equal(run().status, 0);
+  assert.equal(readFileSync(creds, 'utf8'), 'its-own-login', 'a relaunch never deletes the coordinator\'s own sign-in');
+  assert.equal(readFileSync(join(home, '.claude/login-calls'), 'utf8'), 'login\n', 'no second claude auth login when already signed in');
+});
+
+test('launch.sh: a credential environment variable is not a sign-in — CLAUDE_CONFIG_DIR creds go and login still runs', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-launch-'));
+  mkdirSync(join(home, '.config/cloudy-cloud'), { recursive: true });
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  const confdir = join(home, 'claude-config'); // CLAUDE_CONFIG_DIR points here, not ~/.claude
+  mkdirSync(confdir, { recursive: true });
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  // A stub claude: `auth status` reports signed in ONLY while CLAUDE_CODE_OAUTH_TOKEN is set — the launcher's
+  // `env -u` must strip it, so the check can never be satisfied by a token in the session environment.
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\ncase "$1 $2" in\n "auth status") [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && printf \'%s\' \'{"loggedIn":true,"authMethod":"claude.ai"}\' || printf \'%s\' \'{"loggedIn":false}\';;\n "auth login") echo login >> "$HOME/.claude/login-calls";;\nesac\n');
+  chmodSync(join(bin, 'claude'), 0o755);
+  const script = join(home, 'launch.sh');
+  writeFileSync(script, LAUNCH_SCRIPT);
+  const creds = join(confdir, '.credentials.json');
+  writeFileSync(creds, 'copied-from-image');
+  const r = spawnSync('sh', [script, `echo ran >> ${join(home, 'ran')}`], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: home, CLAUDE_CONFIG_DIR: confdir, CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-notasignin' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!existsSync(creds), 'the credential under CLAUDE_CONFIG_DIR was removed');
+  assert.ok(existsSync(join(home, '.config/cloudy-cloud/.credentials-removed')), 'the removal marker was made');
+  assert.equal(readFileSync(join(home, '.claude/login-calls'), 'utf8'), 'login\n', 'a token in the environment does not satisfy the sign-in check');
+  assert.equal(readFileSync(join(home, 'ran'), 'utf8'), 'ran\n', 'the session command ran');
+});
+
+test('launch.sh: loggedIn true without the claude.ai auth method still signs in', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-launch-'));
+  mkdirSync(join(home, '.config/cloudy-cloud'), { recursive: true });
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\ncase "$1 $2" in\n "auth status") cat "$CLAUDE_STATUS_FILE";;\n "auth login") echo login >> "$HOME/.claude/login-calls";;\nesac\n');
+  chmodSync(join(bin, 'claude'), 0o755);
+  const script = join(home, 'launch.sh');
+  writeFileSync(script, LAUNCH_SCRIPT);
+  const status = join(home, 'status.json');
+  const env = () => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: home, CLAUDE_STATUS_FILE: status });
+  const run = () => spawnSync('sh', [script, `echo ran >> ${join(home, 'ran')}`], { env: env(), encoding: 'utf8' });
+  const calls = () => (existsSync(join(home, '.claude/login-calls')) ? readFileSync(join(home, '.claude/login-calls'), 'utf8').trim().split('\n').length : 0);
+  for (const [i, body] of ['{"loggedIn":true}', '{"loggedIn":true,"authMethod":"apiKey"}', '{"loggedIn":true,"authMethod":"console"}'].entries()) {
+    writeFileSync(status, body);
+    assert.equal(run().status, 0, body);
+    assert.equal(calls(), i + 1, `${body} still ran claude auth login`);
+  }
+});
+
+test('start puts launch.sh on the machine and runs the session command through it', async () => {
+  const f = fixture();
+  await main(START, f.deps);
+  const w = f.log.writes.find((x) => x.p === '/data/home/.config/cloudy-cloud/launch.sh');
+  assert.ok(w, 'launch.sh was written to the machine');
+  assert.equal(w.d, LAUNCH_SCRIPT);
+  assert.ok(f.log.cmds.some((c) => /chmod 700 '[^']*launch\.sh'/.test(c)), 'launch.sh is mode 700');
+  const tmux = f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c));
+  assert.match(tmux, /launch\.sh/);
+  assert.match(tmux, /--remote-control .*boss/);
+});
+
+test('the launch command really runs: the nested quoting passes the task file to cloudy-cloud verbatim', async () => {
+  const f = fixture();
+  // Stand up the machine's filesystem in a temp dir: /data/home becomes a local path.
+  const root = mkdtempSync(join(tmpdir(), 'cc-e2e-'));
+  const task = `do the thing 'with a quote' and keep $(touch ${root}/PWNED-FILE) literal`;
+  await main([...START, '--task', task], f.deps);
+  const tmux = f.log.cmds.find((c) => /tmux new-session/.test(c));
+  const home = join(root, 'home');
+  mkdirSync(join(home, '.config/cloudy-cloud'), { recursive: true });
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  mkdirSync(join(home, 'cloudy-cloud/bin'), { recursive: true });
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(home, '.config/cloudy-cloud/launch.sh'), LAUNCH_SCRIPT, { mode: 0o700 });
+  writeFileSync(join(home, '.claude/.credentials.json'), 'copied-from-image');
+  // The task file carries exactly what start's files.write sent: deadline line, blank line, task.
+  writeFileSync(join(home, 'task.md'), f.log.writes.find((w) => w.p === '/data/home/task.md').d);
+  // A stub claude: `auth status --json` cats a status file the test controls; `auth login` logs the call.
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\ncase "$1 $2" in\n "auth status") cat "$CLAUDE_STATUS_FILE";;\n "auth login") echo login >> "$HOME/.claude/login-calls";;\nesac\n', { mode: 0o755 });
+  // cloudy-cloud prints its argument count and each argument in <brackets>.
+  writeFileSync(join(home, 'cloudy-cloud/bin/cloudy-cloud'), '#!/bin/sh\nprintf \'argc=%s\\n\' "$#"\nfor a in "$@"; do printf \'<%s>\\n\' "$a"; done\n', { mode: 0o755 });
+  const status = join(root, 'status.json');
+  const cmd = tmux.replaceAll('/data/home', home);
+  const run = () => spawnSync('sh', ['-c', `tmux() { [ "$1" = new-session ] && eval "$7"; }; ${cmd}`], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, CLAUDE_STATUS_FILE: status } });
+
+  // First launch, signed in: the copied credential goes once, the task file reaches cloudy-cloud as ONE argument.
+  writeFileSync(status, '{"loggedIn":true,"authMethod":"claude.ai"}');
+  const r1 = run();
+  assert.equal(r1.status, 0, r1.stderr);
+  assert.match(r1.stdout, /^argc=3$/m, r1.stdout);
+  assert.match(r1.stdout, /^<--remote-control>$/m);
+  assert.match(r1.stdout, /^<boss>$/m);
+  assert.ok(r1.stdout.includes(`${task}>`), `the task text is the tail of the prompt argument:\n${r1.stdout}`);
+  assert.ok(!existsSync(join(root, 'PWNED-FILE')), 'the task text was never evaluated');
+  assert.ok(!existsSync(join(home, '.claude/.credentials.json')), 'the copied credential was removed');
+  assert.ok(existsSync(join(home, '.config/cloudy-cloud/.credentials-removed')), 'the marker was made');
+  assert.ok(!existsSync(join(home, '.claude/login-calls')), 'no claude auth login when already signed in');
+
+  // Relaunch, not signed in: the marker keeps this coordinator's own sign-in, and claude auth login runs first.
+  writeFileSync(status, '{"loggedIn":false}');
+  writeFileSync(join(home, '.claude/.credentials.json'), 'its-own-login');
+  const r2 = run();
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.equal(readFileSync(join(home, '.claude/.credentials.json'), 'utf8'), 'its-own-login', 'a relaunch never deletes the coordinator\'s own sign-in');
+  assert.equal(readFileSync(join(home, '.claude/login-calls'), 'utf8'), 'login\n', 'claude auth login ran when not signed in');
+});
+
+test('a non-TTY start waiting for sign-in exits 0 with needsLogin, the claude.ai URL only, and keeps the machine', async () => {
+  const f = fixture({ pane: 'Sign in at https://claude.ai/login?state=abc123 to continue\nsee also https://example.com/x and https://claude.ai/code/session_9', auth: [NOT_YET] });
+  const res = await main([...START, '--json'], f.deps);
+  assert.deepEqual(f.log.killed, [], 'the machine waits for sign-in, it is not deleted');
+  assert.equal(res.needsLogin, true);
+  assert.equal(res.loginUrl, 'https://claude.ai/login?state=abc123');
+  const j = JSON.parse(f.log.out[0]);
+  assert.equal(j.started, true);
+  assert.equal(j.needsLogin, true);
+  assert.equal(j.loginUrl, 'https://claude.ai/login?state=abc123', 'a claude.ai sign-in URL is read back');
+  assert.equal(j.next, 'cloudy-cloud coordinator login boss');
+
+  // No claude sign-in URL on the pane — a /code/ Remote Control link and foreign URLs are never reported.
+  const g = fixture({ pane: 'working\nsee https://example.com/login and https://claude.ai/code/session_9', auth: [NOT_YET] });
+  await main([...START, '--json'], g.deps);
+  const gj = JSON.parse(g.log.out[0]);
+  assert.equal(gj.needsLogin, true);
+  assert.equal(gj.loginUrl, undefined, 'no non-Claude or Remote Control URL is read back');
+});
+
+test('login --code rejects anything but word characters before the pane is touched', async () => {
+  for (const bad of ['abc;rm -rf /', 'a b', 'a\nb', 'a&&b', '$(rm -rf /)', 'a/b', 'a"b', "a'b", 'x'.repeat(513), '']) {
+    const f = fixture();
+    coordMachine(f);
+    await assert.rejects(main(['login', 'a', '--code', bad], f.deps), /--code takes/, JSON.stringify(bad));
+    assert.ok(!f.log.cmds.some((c) => /send-keys|load-buffer/.test(c)), JSON.stringify(bad));
+    assert.ok(!f.log.writes.some((w) => w.d === bad), JSON.stringify(bad));
+  }
+});
+
+test('login --code is refused when the pane is not at a sign-in code prompt', async () => {
+  for (const pane of ['Claude Code v2.1\n  working\n', 'Sign in at https://claude.ai/login?state=abc123 to continue\n']) {
+    const f = fixture({ pane });
+    coordMachine(f);
+    await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], f.deps), /not waiting for a sign-in code/);
+    assert.ok(!f.log.cmds.some((c) => /send-keys|load-buffer/.test(c)), `keys sent at the wrong screen: ${pane}`);
+  }
+});
+
+// P1-5: the code is sent only while `claude auth login` is actually running on the machine.
+test('login --code refuses at a code prompt when claude auth login is not running', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', loginActive: false });
+  coordMachine(f);
+  await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], f.deps), /not waiting for a sign-in code/);
+  assert.ok(!f.log.writes.some((w) => w.d === 'OK-code-1'), 'the code was never written to the machine');
+});
+
+// P1-5: a code prompt scrolled out of the pane's last lines is transcript text, not a live prompt.
+test('login --code refuses a code prompt that is not in the pane\'s last lines', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n' + Array.from({ length: 7 }, (_, i) => `  ⎿  worker output ${i}`).join('\n') + '\n' });
+  coordMachine(f);
+  await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], f.deps), /not waiting for a sign-in code/);
+  assert.ok(!f.log.writes.some((w) => w.d === 'OK-code-1'), 'the code was never written to the machine');
+});
+
+// P1-4: a code is never typed into a machine this installation cannot verify.
+test('login --code never types into a coordinator without an install label', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } }] });
+  await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], f.deps), /cannot verify it is yours/);
+  assert.ok(!f.log.writes.some((w) => w.d === 'OK-code-1'), 'the code was never written to the machine');
+  assert.ok(!f.log.cmds.some((c) => /send-keys|load-buffer/.test(c)));
+});
+
+// P2-2: the code travels by mode-600 file and tmux load/paste-buffer — never in a remote command string.
+test('login --code sends the code by file into the pane\'s sign-in prompt and waits for the sign-in to land', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
+  coordMachine(f);
+  await main(['login', 'a', '--code', 'OK-code_#9'], f.deps);
+  const file = '/data/home/.config/cloudy-cloud/.signin-code';
+  assert.ok(f.log.writes.some((w) => w.p === file && w.d === 'OK-code_#9'), 'the code reaches the machine as a file');
+  assert.ok(!f.log.cmds.some((c) => c.includes('OK-code_#9')), 'the code is never in a remote command string');
+  const send = f.log.cmds.find((c) => /load-buffer/.test(c));
+  assert.equal(send, `chmod 600 '${file}' && tmux load-buffer '${file}' && tmux paste-buffer -t claude && tmux send-keys -t claude Enter; tmux delete-buffer 2>/dev/null; rm -f '${file}'`);
+  assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
+});
+
+test('login --code - reads the code from stdin (first line) and sends it by file', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
+  coordMachine(f);
+  await main(['login', 'a', '--code', '-'], { ...f.deps, stdin: async () => '  OK-code_9\nrest of stdin is ignored\n' });
+  assert.ok(f.log.writes.some((w) => w.d === 'OK-code_9'), 'the first stdin line, trimmed, is the code');
+  assert.ok(!f.log.writes.some((w) => /rest of stdin/.test(w.d)), 'only the first line is used');
+  assert.ok(!f.log.cmds.some((c) => c.includes('OK-code_9')), 'the code is never in a remote command string');
+  assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
+});
+
+// P2-1: the post-sign-in health check runs after a code sign-in too — a dead session is reported, never deleted.
+test('login --code keeps the machine and names the stop command when the session hits a limit right after sign-in', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
+  coordMachine(f);
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  const e = await main(['login', 'a', '--code', 'OK-code-1'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// P2-1: a session that exited under sign-in is also reported, not deleted — a reattach must not lose work.
+test('login --code keeps the machine when the session exited under sign-in', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN] });
+  coordMachine(f);
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? Promise.reject(Object.assign(new Error('no server running on /tmp/tmux-0/default'), { exitCode: 1, stderr: 'no server running' })) : run(cmd, ...r));
+    return sbx;
+  };
+  const e = await main(['login', 'a', '--code', 'OK-code-1'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /exited/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// A Claude error the brief merely quotes (the task is typed into the session) is not a live failure.
+test('login --code does not report an error line that is part of the uploaded task brief', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET, SIGNED_IN], task: 'Fix the Invalid API key · Fix external API key problem in our app' });
+  coordMachine(f);
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: '  ⎿  Invalid API key · Fix external API key', stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  await main(['login', 'a', '--code', 'OK-code-1'], f.deps);
+  assert.match(f.log.out.join('\n'), /Coordinator a is signed in to Claude\./);
+});
+
+test('login --code reports when the sign-in does not land within 60 seconds', async () => {
+  const f = fixture({ pane: 'Paste the code from your browser:\n> ', auth: [NOT_YET] });
+  coordMachine(f);
+  let t = 0;
+  await assert.rejects(main(['login', 'a', '--code', 'OK-code-1'], { ...f.deps, now: () => (t += 30_000) }), /still not signed in/);
+  assert.ok(f.log.writes.some((w) => w.d === 'OK-code-1'), 'the code was sent');
+});
+
+test('login NAME without --code needs a terminal; off one it points at --code', async () => {
+  const f = fixture();
+  coordMachine(f);
+  await assert.rejects(main(['login', 'a'], f.deps), /coordinator login a --code CODE/);
+});
+
+test('login NAME on a terminal attaches; a "Login expired" screen prints the /login hint first', async () => {
+  const f = fixture({ pane: '  ⎿  Login expired · Please run /login' });
+  coordMachine(f);
+  const spawned = [];
+  const code = await main(['login', 'a'], { ...f.deps, tty: true, spawn: (bin, a, o) => { spawned.push([bin, ...a]); return { status: 0 }; } });
+  assert.match(f.log.out.join('\n'), /Type \/login and sign in\./);
+  assert.ok(spawned.length, 'the session was attached');
+  assert.equal(code, 0);
+
+  // A pane at the sign-in URL (the generic sign-in state) attaches without the hint.
+  const g = fixture({ pane: 'Open https://claude.ai/login?state=abc to sign in\n' });
+  coordMachine(g);
+  const spawned2 = [];
+  await main(['login', 'a'], { ...g.deps, tty: true, spawn: (bin, a, o) => { spawned2.push([bin, ...a]); return { status: 0 }; } });
+  assert.doesNotMatch(g.log.out.join('\n'), /Type \/login/);
+  assert.ok(spawned2.length, 'the session was attached');
+});
+
+test('status reports a coordinator waiting for Claude sign-in, next is coordinator login', async () => {
+  const signinPane = '  ⎿  Not logged in · Please run /login';
+  const f = fixture({ pane: signinPane });
+  coordMachine(f);
+  await main(['status', 'a'], f.deps);
+  assert.match(f.log.out.join('\n'), /waiting for Claude sign-in/);
+  assert.match(f.log.out.join('\n'), /Next: cloudy-cloud coordinator login a/);
+
+  const g = fixture({ pane: signinPane });
+  coordMachine(g);
+  await main(['status', 'a', '--json'], g.deps);
+  const j = JSON.parse(g.log.out[0]);
+  assert.equal(j.needsLogin, true);
+  assert.equal(j.next, 'cloudy-cloud coordinator login a');
+  assert.equal(j.remoteControlUrl, undefined, 'no Remote Control link while the pane waits at sign-in');
+});
+
+test('ls shows "waiting for Claude sign-in" and points Next at coordinator login', async () => {
+  const signinPane = '  ⎿  Not logged in · Please run /login';
+  const f = fixture({ pane: signinPane });
+  coordMachine(f);
+  f.deps.ui = tty();
+  await main(['ls'], f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.match(text, /waiting for Claude sign-in/);
+  assert.match(text, /Next: cloudy-cloud coordinator login a/);
+
+  const g = fixture({ pane: signinPane });
+  coordMachine(g);
+  await main(['ls'], g.deps);
+  assert.match(g.log.out.join('\n'), /^a\trunning\t[^\t]+\t[^\t]+\t[^\t]+\twaiting for Claude sign-in$/m);
+});
+
+test('cloud on a TTY signs in through the attached pane, then says how it went on detach', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  const spawned = [];
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, ask: async () => 'y', spawn: localSpawn(spawned) });
+  const text = f.log.out.join('\n');
+  assert.match(text, /Sign in to Claude in the window that opens \(each coordinator has its own sign-in\)\./);
+  assert.ok(spawned.some((a) => a.some((x) => /tmux.*attach.*claude/.test(x))), 'attached to the sign-in pane');
+  assert.match(text, /Not signed in yet — run: cloudy-cloud coordinator login boss/);
+});
+
+test('login --code never types into a same-named coordinator of a different installation', async () => {
+  const foreign = { sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: 'otherinstall1234' } };
+  const f = fixture({ machines: [foreign], pane: 'Paste the code from your browser:\n> ' });
+  await assert.rejects(main(['login', 'boss', '--code', 'OK-code-1'], f.deps), /belongs to a different cloudy-cloud installation/);
+  assert.ok(!f.log.cmds.some((c) => /send-keys|load-buffer/.test(c)));
+  assert.ok(!f.log.writes.some((w) => w.d === 'OK-code-1'), 'the code was never written to the machine');
+});
+
+// ---- P1-1: only a claude.ai sign-in counts, checked without the credential env vars ----
+test('loggedIn true with a non-claude.ai authMethod still needs sign-in, checked under env -u', async () => {
+  for (const auth of [JSON.stringify({ loggedIn: true }), JSON.stringify({ loggedIn: true, authMethod: 'apiKey' })]) {
+    const f = fixture({ auth: [auth] });
+    const res = await main([...START, '--json'], f.deps);
+    assert.equal(res.needsLogin, true, `${auth} is not a claude.ai sign-in`);
+    const check = f.log.cmds.find((c) => /auth status/.test(c));
+    assert.match(check, /^env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json$/, 'the check runs without the credential env vars');
+  }
+});
+
+// ---- P1-3: a saved image without CLOUDY_CLOUD_SNAPSHOT_CLEAN gets one warning line on start ----
+test('start warns once when the saved image predates the credential check, and never when it is marked clean', async () => {
+  const f = fixture();
+  const notes = [];
+  await main(START, { ...f.deps, note: (s) => notes.push(s) });
+  assert.ok(notes.some((n) => /older cloudy-cloud and still contains a Claude sign-in/.test(n)), JSON.stringify(notes));
+  // The marker finishSave writes keeps an image saved by this version quiet.
+  const g = fixture();
+  g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // the value loadEnv reads back from the saved config
+  const gNotes = [];
+  await main(START, { ...g.deps, note: (s) => gNotes.push(s) });
+  assert.ok(!gNotes.some((n) => /older cloudy-cloud/.test(n)), JSON.stringify(gNotes));
+});
+
+test('finishSave marks the saved snapshot clean', async () => {
+  const f = fixture();
+  await main(['image'], f.deps);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+});
+
+// ---- P1-4/P2-4: a sign-in URL is reported only for our own coordinator, only while login runs, never truncated ----
+test('status gives a sign-in URL only for our own coordinator while claude auth login runs', async () => {
+  const pane = 'Open https://claude.ai/login?state=abc123 to sign in\n';
+  const f = fixture({ pane });
+  coordMachine(f);
+  await main(['status', 'a', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).loginUrl, 'https://claude.ai/login?state=abc123');
+  // No install label: the machine cannot be verified as ours, so no URL is reported from its pane.
+  const g = fixture({ pane, machines: [{ sandboxId: 'm1', name: 'coord-a', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'a' } }] });
+  await main(['status', 'a', '--json'], g.deps);
+  const gj = JSON.parse(g.log.out[0]);
+  assert.equal(gj.needsLogin, true);
+  assert.equal(gj.loginUrl, undefined, 'an unverified coordinator gets no sign-in URL');
+  // Ours, but `claude auth login` is not running: a URL left on the pane is not a live sign-in link.
+  const h = fixture({ pane, loginActive: false });
+  coordMachine(h);
+  await main(['status', 'a', '--json'], h.deps);
+  assert.equal(JSON.parse(h.log.out[0]).loginUrl, undefined);
+});
+
+test('a sign-in URL over 4096 characters is reported as no URL at all', async () => {
+  const f = fixture({ pane: `Open https://claude.ai/login?state=${'x'.repeat(4200)} to sign in\n` });
+  coordMachine(f);
+  await main(['status', 'a', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).loginUrl, undefined, 'a too-long URL is dropped whole, never truncated');
+});
+
+// ---- P2-1/P2-7: the post-sign-in health check runs after an interactive attach returns too ----
+test('login on a terminal keeps the machine and names the stop command when the session shows a limit on return from attach', async () => {
+  const f = fixture({ pane: "You've hit your monthly spend limit" });
+  coordMachine(f);
+  const e = await main(['login', 'a'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  assert.match(e.message, /cloudy-cloud coordinator stop a/);
+  assert.deepEqual(f.log.killed, [], 'the post-sign-in check never deletes a machine');
+});
+
+// A plain reattach (`cloud` finding its own coordinator) must never delete it — whatever the screen shows,
+// the report names the stop command and the machine stays.
+test('a reattached cloud session that exited is reported with the stop command; the machine is kept', async () => {
+  const f = fixture();
+  f.machines.push(own(f));
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) ? Promise.reject(Object.assign(new Error('no server running on /tmp/tmux-0/default'), { exitCode: 1, stderr: 'no server running' })) : run(cmd, ...r));
+    return sbx;
+  };
+  const spawned = [];
+  const e = await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, spawn: localSpawn(spawned) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /exited/);
+  assert.match(e.message, /cloudy-cloud coordinator stop boss/);
+  assert.deepEqual(f.log.killed, [], 'a reattach never deletes the machine');
+});
+
+test('the terminal start labels a pending sign-in link "Sign-in link", never "Remote Control"', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(src, /linkLines\(u, loginUrl, 'Sign-in link'\)/);
+  assert.match(src, /linkLines\(u, r\.loginUrl, 'Sign-in link'\)/);
 });

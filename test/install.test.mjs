@@ -230,12 +230,12 @@ test('capture_token extracts a wrapped, escaped token and always deletes the tem
 });
 
 // A stub folder with bin/cloudy-cloud that records its calls and its stdin/stdout state, and an npx that records its calls.
-// The stub plays the part of the one-command "coordinator image": it writes the account to the config like the real one does.
-function coordStub({ fail = false, noSave = false, account = 'coord@example.com' } = {}) {
+// The stub plays the part of the one-command "coordinator image": it writes the snapshot id to the config like the real one does.
+function coordStub({ fail = false, noSave = false } = {}) {
   const dir = tmp();
   const root = join(dir, 'root'); const bin = join(root, 'bin');
   execFileSync('mkdir', ['-p', bin]);
-  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\necho "image output reaches the terminal"\n${fail ? 'exit 1' : noSave ? 'exit 0' : `printf 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=snap-new\\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=${account}\\n' >> "$CLOUDY_CLOUD_CONFIG"`}\n`);
+  writeFileSync(join(bin, 'cloudy-cloud'), `#!/bin/sh\necho "cc $@" >> "${dir}/calls"\necho "image output reaches the terminal"\n${fail ? 'exit 1' : noSave ? 'exit 0' : `printf 'CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=snap-new\\n' >> "$CLOUDY_CLOUD_CONFIG"`}\n`);
   chmodSync(join(bin, 'cloudy-cloud'), 0o755);
   writeFileSync(join(dir, 'npx'), `#!/bin/sh\necho "npx $@" >> "${dir}/calls"\n`);
   chmodSync(join(dir, 'npx'), 0o755);
@@ -257,15 +257,15 @@ test('coordinators: needs both stdin and stdout on a terminal', () => {
   assert.match(r.stdout, /x=1/);
 });
 
-test('coordinators: skipped on N; yes runs "coordinator image" alone and reads the saved account', () => {
+test('coordinators: skipped on N; yes runs "coordinator image" alone and reports ready', () => {
   const s = coordStub();
   const cfg = join(tmp(), 'env');
   const skip = fn(`${TTY} yn() { echo "ASKED: $1"; return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLOUDY_CLOUD_CONFIG: cfg });
-  assert.match(skip.stdout, /ASKED: Set up cloud coordinators now\? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes\./);
+  assert.match(skip.stdout, /ASKED: Set up cloud coordinators now\? It saves an image with the tools \(no sign-in: each coordinator signs in at start\); this takes 10 to 20 minutes\./);
   assert.match(skip.stdout, /declined/);
   assert.ok(!existsSync(join(s.dir, 'calls')));
   const r = fn(`${TTY} yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
-  assert.match(r.stdout, /ready \(coord@example\.com\)/);
+  assert.match(r.stdout, /^ready$/m);
   const calls = readFileSync(join(s.dir, 'calls'), 'utf8');
   assert.equal(calls.trim(), 'cc coordinator image'); // one call, no flags
   assert.match(r.stdout, /image output reaches the terminal/); // not captured
@@ -291,7 +291,7 @@ test('coordinators from an npm install: the step is offered, never says it needs
   const cfg = join(tmp(), 'env');
   const r = fn(`${TTY} PROVIDER=instabox; yn() { echo "ASKED: $1"; return 0; }; offer_coordinators "$1"; echo "$STATUS_COORD"`, [root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
   assert.match(r.stdout, /ASKED: Set up cloud coordinators/);
-  assert.match(r.stdout, /ready \(coord@example\.com\)/);
+  assert.match(r.stdout, /^ready$/m);
   assert.doesNotMatch(r.stdout + r.stderr, /needs a git clone|from a clone/);
   assert.ok(!existsSync(join(s.dir, 'gitcalls')), 'no git call on the package root');
 });
@@ -1312,7 +1312,7 @@ test('pty: --more asks for usage alerts, Particle.ai and OpenRouter keys, then c
   assert.match(r.text, /Particle\.ai key/);
   assert.match(r.text, /OpenAI key/);
   assert.match(r.text, /OpenRouter key/);
-  assert.match(r.text, /Set up cloud coordinators now\? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes\./);
+  assert.match(r.text, /Set up cloud coordinators now\? It saves an image with the tools \(no sign-in: each coordinator signs in at start\); this takes 10 to 20 minutes\./);
   assert.equal(readFileSync(g.cfg, 'utf8').includes('PARTICLE'), false);
 });
 

@@ -862,6 +862,7 @@ Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the
 ```
 cloudy-cloud coordinator image [--save]
 cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json]
+cloudy-cloud coordinator login NAME [--code CODE]
 cloudy-cloud coordinator attach NAME
 cloudy-cloud coordinator ls
 cloudy-cloud coordinator status NAME [--json]
@@ -873,15 +874,15 @@ Manages cloud coordinators: long-lived Claude Code sessions that run on their ow
 
 #### coordinator image
 
-Builds the machine image that coordinators start from. It is a one-time step. On a terminal, it creates an image machine (or reuses one you already started), installs cloudy-cloud on it, opens the Claude sign-in (`claude auth login`), and when you finish in the browser it saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. Without a terminal it prints the manual steps instead (`cloudy-cloud shell NAME`, `claude auth login`, `exit`, then `--save`). `--save` checks that Claude is signed in on the machine, then saves and deletes it. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
+Builds the machine image that coordinators start from. It is a one-time step. It creates an image machine (or reuses one you already started), installs cloudy-cloud on it, removes `~/.claude/.credentials.json` on the machine — the image never holds a Claude sign-in, because each coordinator signs in for itself when it starts — then saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. `--save` does the same wipe-and-save on an image machine that is still running. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
 
 | Flag | Meaning |
 |---|---|
-| `--save` | Save the signed-in image machine as a snapshot and delete the machine. |
+| `--save` | Save the image machine as a snapshot and delete the machine. |
 
 #### coordinator start
 
-Starts a coordinator named NAME on a new machine from the saved image. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude`, with Remote Control under the name NAME. The coordinator never pauses. The server deletes its machine after `--max-hours`. You can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
+Starts a coordinator named NAME on a new machine from the saved image. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude` through a launcher (`~/.config/cloudy-cloud/launch.sh`) that runs `claude auth login` while the coordinator is not signed in, then execs the session with Remote Control under the name NAME. A fresh coordinator waits at the sign-in until you finish it with `coordinator login NAME` — waiting for sign-in is a normal state and the machine is never deleted for it; on a terminal `start` attaches you to that pane so you sign in there. The coordinator never pauses. The server deletes its machine after `--max-hours`. Once signed in you can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
 
 | Argument or flag | Default | Meaning |
 |---|---|---|
@@ -893,9 +894,9 @@ Starts a coordinator named NAME on a new machine from the saved image. It sends 
 | `--max-hours N` | 24 | Hours until the server deletes the machine. At most 24, at least 60 seconds (1/60 hour). The deadline cannot be extended. |
 | `--model NAME` | Claude Code's default | Model for the coordinator's Claude Code session, such as `opus` or `claude-opus-5-5`. Rejected before any machine is created if it has characters other than letters, digits and `._:[]-`. |
 | `--env FILE` | none (repeatable) | Bridge variables from a dotenv-style file to the machine; may be given several times. See Bridged env variables. |
-| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. |
+| `--json` | off | Print one line of JSON with `name`, `machine`, `remoteControlName`, `attach` and `started` (`true`) instead of the usual text. A coordinator waiting for sign-in adds `needsLogin`, `loginUrl` (the `claude.ai`, `claude.com` or `platform.claude.com` URL the pane shows — never any other pane text) and `next`. |
 
-About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or a login problem, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.
+About 5 seconds after starting the session, the command reads its screen. If it shows a spend or usage limit or an invalid key, the command deletes the machine and fails with that line. If it waits on a trust, MCP approval or Remote Control prompt, the machine stays and the output (and `waiting` in `--json`) says to run `coordinator attach NAME` and accept it. A coordinator waiting at `claude auth login` is a normal state: the machine stays, the output says to run `coordinator login NAME`, and once you sign in (in the attached pane, or in your browser plus `--code`) the session starts. The session runs with `--strict-mcp-config` and has `cloudy-cloud` on `PATH`. If neither `--task` nor `--task-file` is given, the coordinator starts without a task. The command fails with a message if no coordinator image has been saved. A coordinator always runs Claude Code.
 
 Example:
 
@@ -921,9 +922,18 @@ Opens the coordinator's `tmux` session over SSH. On a terminal it opens the sess
 cloudy-cloud coordinator attach docs-fleet
 ```
 
+#### coordinator login
+
+Finishes a coordinator's Claude sign-in — each coordinator signs in for itself, and a fresh one waits at `claude auth login` until this runs. Without `--code` it attaches to the `claude` pane so you sign in there; a terminal is required (off one it prints an error pointing at `--code`), and when the pane shows `Login expired` or `/login` it prints `Type /login and sign in.` first. With `--code` — the way an agent finishes a sign-in the user did in a browser — it types the code (1–512 characters of letters, digits, `#`, `_`, `-`; anything else is rejected) into the pane's sign-in prompt, presses Enter, and waits up to 60 seconds for `claude auth status` to report the sign-in. It refuses `--code` when the pane is not showing the sign-in code prompt.
+
+```
+cloudy-cloud coordinator login docs-fleet
+cloudy-cloud coordinator login docs-fleet --code OK-code_#9
+```
+
 #### coordinator ls
 
-Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
+Lists your coordinators in a table with the columns NAME, STATE, STARTED (CREATED when the output is not a terminal), MACHINE and DELETES, plus a WAITING (SCREEN in a terminal) column when a screen needs a look. It reads each running coordinator's screen once: `waiting for Claude sign-in` means the pane waits at `claude auth login` (finish it with `coordinator login NAME`), `waiting on a prompt: <line>` means a prompt needs an answer, `screen not read` means the screen could not be read. It prints `No coordinators.` when there are none.
 
 ```
 cloudy-cloud coordinator ls
@@ -933,7 +943,7 @@ When the output is piped, it prints tab-separated NAME, STATE, CREATED, MACHINE,
 
 #### coordinator status
 
-Read-only. Prints the coordinator's state, the prompt line it is waiting on (if any, with keys removed) the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting` (only when set), `remoteControlUrl` (only when known) and `attach`. `coordinator start` prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run `coordinator status NAME` later.
+Read-only. Prints the coordinator's state, `waiting for Claude sign-in` when the pane waits at the sign-in (with the sign-in URL when the pane shows one), the prompt line it is waiting on (if any, with keys removed), the Remote Control link once Remote Control is connected (with a QR code on a terminal, to scan with a phone) and the attach command — or `coordinator login NAME` while it waits for sign-in. It reads the screen once. `--json` prints `name`, `machine`, `state`, `screenRead`, `waiting`, `needsLogin`, `loginUrl`, `remoteControlUrl` and `attach` (`waiting`, `needsLogin`, `loginUrl` and `remoteControlUrl` only when set; `next` names the finish-sign-in command while it waits). `coordinator start` prints the same link, and the QR code on a terminal, when Remote Control has connected by the end of the start wait; otherwise run `coordinator status NAME` later.
 
 ```
 cloudy-cloud coordinator status NAME [--json]
@@ -1215,7 +1225,7 @@ Source: https://cloudycloud.tech/docs/fleets.html
 
 A coordinator is a Claude Code session that starts and manages many worker agents, each on its own cloud machine. This page covers when to use one, how to run one, and how to merge many worker branches into one pull request.
 
-A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: `coordinator image` signs in to Claude (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start `codex-chatgpt` workers has not been checked, and the code does not copy your ChatGPT login file (`codex-auth.json`) to a coordinator machine, so plan on `codex-chatgpt` not working from a coordinator.
+A coordinator always runs Claude Code, whichever agent is your main session, and it cannot use a pi, omp, Codex or opencode profile. Its workers can run any agent through `profile`. A coordinator needs a Claude login even when your main session is Codex, opencode, pi or free-pi: each coordinator signs in to Claude for itself when it starts (see below), and the coordinator's own session is Claude Code. Whether a coordinator can start `codex-chatgpt` workers has not been checked, and the code does not copy your ChatGPT login file (`codex-auth.json`) to a coordinator machine, so plan on `codex-chatgpt` not working from a coordinator.
 
 **Worker credentials on a coordinator.** A coordinator can start a worker only if its machine holds that profile's key. On Instabox, `coordinator start` attaches every provider key that is stored as a proxy secret (listed in `CLOUDY_CLOUD_PROXY_SECRETS`), including `PARTICLE_API_KEY`, `OPENROUTER_API_KEY` and `OPENAI_API_KEY`, and the coordinator's `~/.config/cloudy-cloud/env` holds their names. So before you start a fleet that uses `codex` workers, store `OPENAI_API_KEY` as an Instabox secret and add it to `CLOUDY_CLOUD_PROXY_SECRETS` on your computer, as in [The codex profiles](https://cloudycloud.tech/docs/models.html#codex-profiles). A key that is only a plain line in your env file is not sent; `coordinator start` says which keys it skipped. The opencode, pi and omp profiles use `PARTICLE_API_KEY` or `OPENROUTER_API_KEY`, which setup stores as proxy secrets.
 
@@ -1241,15 +1251,15 @@ There is also a lighter option. A cloud agent started with `role: "coordinator"`
 
 ### 1. Make the coordinator image (once)
 
-Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. So you sign in once on an image machine and save it as an Instabox snapshot.
+Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so the image carries no sign-in and a copied credential can never race several coordinators into signing each other out.
 
 ```
 cloudy-cloud coordinator image
 ```
 
-This creates a machine, installs `cloudy-cloud` on it, and opens the Claude sign-in. Finish the sign-in in your browser. The command then saves the snapshot as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env` and deletes the image machine.
+This creates a machine and installs `cloudy-cloud` on it. The command then removes `~/.claude/.credentials.json` on the image machine — so no Claude credential is ever frozen into a snapshot — saves the snapshot as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine.
 
-The server deletes the image machine after 2 hours, and the command prints the time. If the sign-in does not finish, run `cloudy-cloud coordinator image` again to resume on the same machine. Without a terminal (a script), the command prints the manual steps instead: `cloudy-cloud shell NAME`, then `claude auth login`, then `exit`, then `cloudy-cloud coordinator image --save`.
+The server deletes the image machine after 2 hours, and the command prints the time. If the machine is still running, `cloudy-cloud coordinator image --save` saves the snapshot the same way.
 
 ### 2. Start a coordinator
 
@@ -1267,12 +1277,14 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 
+A fresh coordinator then waits at `claude auth login` — a normal state the machine is never deleted for. `coordinator start` prints the sign-in command (and the `claude.ai` sign-in URL when the pane shows one); `cloudy-cloud cloud` on a terminal attaches you to the sign-in pane itself: open the URL it shows, sign in in your browser, and paste the code if asked. `start --json` reports `needsLogin: true`, the URL as `loginUrl`, and `next: cloudy-cloud coordinator login NAME`. Finish the sign-in with `cloudy-cloud coordinator login NAME` (attaches to the pane on a terminal) or `cloudy-cloud coordinator login NAME --code CODE` (sends the code the browser showed; `--code -` reads it from stdin, the recommended form for agents; refused unless the pane is at the code prompt while the sign-in runs). `coordinator ls` and `coordinator status NAME` show `waiting for Claude sign-in` until then.
+
 ### 3. Reach it
 
-- **Remote Control:** open claude.ai/code or the Claude app and pick the session named `NAME`.
+- **Remote Control:** open claude.ai/code or the Claude app and pick the session named `NAME` (once the coordinator is signed in).
 - **Terminal:** `cloudy-cloud coordinator attach NAME` opens its tmux session on a terminal. When piped, it prints that same command; run it in your own terminal.
 
-The first time, attach once and accept any trust or Remote Control prompts. To list your coordinators and their delete times, run `cloudy-cloud coordinator ls`.
+The first time, attach once and accept any trust or Remote Control prompts. To list your coordinators, their delete times and any `waiting for Claude sign-in` state, run `cloudy-cloud coordinator ls`.
 
 ### 4. Finish or stop
 
@@ -1280,7 +1292,13 @@ The first time, attach once and accept any trust or Remote Control prompts. To l
 - You can delete it at any time with `cloudy-cloud coordinator stop NAME`.
 - If neither happens, the server deletes the machine at its deadline.
 
-> Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds your real Instabox key, your Claude setup-token and your provider API keys, because it needs them to start workers. Anyone who can SSH into the machine can read them. Use keys you can revoke.
+> Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds the names of your proxy secrets, and its own Claude sign-in (`~/.claude/.credentials.json`, created when you finish `coordinator login`) is a real login. Anyone who can SSH into the machine can use them. Use an account you can revoke.
+
+## Coordinators talking to each other
+
+Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it greets each peer `ListAgents` shows as a Remote Control session with `NAME started`. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name and marks the ones this installation made.
+
+`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack` to each message received (never ack an ack), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
 
 ## Getting one result from many workers
 
@@ -1720,8 +1738,8 @@ Doctor prints these with your real values. What happens to containers when the m
 ## Limits
 
 - **One machine.** Setup saves one SSH address.
-- **Coordinators use Docker images.** `cloudy-cloud coordinator image --save` runs `docker commit --pause=true` on your signed-in image container and saves it as `cloudy-cloud-coordinator:<name>` on the machine. The image keeps your Claude login but never `/run/secrets` (a tmpfs), so no token is saved. `coordinator start` creates a container from it. You list and remove images with `docker image ls` and `docker rmi` on the machine; `cloudy-cloud` has no command for that. This has not been run live on a real Mac Studio yet.
-- **Coordinators start workers through Docker.** Setup asks once: Coordinators on <host> can start containers through Docker, which gives them full control of Docker on that machine. Allow? If you say yes, a coordinator container gets the machine's Docker socket (workers never do) and starts its workers as sibling containers, so no SSH key is copied onto it. Its settings file holds the Claude login and sizing settings, plus the GitHub token only if you allowed it, and never the SSH host or key. The risk: a coordinator can control every container on that machine. Without the consent, coordinators are refused and the reply says to run setup. Docker only, not Podman.
+- **Coordinators use Docker images.** `cloudy-cloud coordinator image --save` removes `~/.claude/.credentials.json` on the image container first — the image never holds a Claude sign-in, because each coordinator signs in for itself at `coordinator start`/`coordinator login` — then runs `docker commit --pause=true` and saves it as `cloudy-cloud-coordinator:<name>` on the machine. The image never holds `/run/secrets` (a tmpfs), so no token is saved either. `coordinator start` creates a container from it. You list and remove images with `docker image ls` and `docker rmi` on the machine; `cloudy-cloud` has no command for that. This has not been run live on a real Mac Studio yet.
+- **Coordinators start workers through Docker.** Setup asks once: Coordinators on <host> can start containers through Docker, which gives them full control of Docker on that machine. Allow? If you say yes, a coordinator container gets the machine's Docker socket (workers never do) and starts its workers as sibling containers, so no SSH key is copied onto it. Its settings file holds the Claude credential and sizing settings, plus the GitHub token only if you allowed it, and never the SSH host or key; the coordinator's own Claude sign-in is created on the container when you finish `coordinator login`, never in the image. The risk: a coordinator can control every container on that machine. Without the consent, coordinators are refused and the reply says to run setup. Docker only, not Podman.
 - **No published links.** `open --share` is refused.
 - **Docker and rootless Podman.** Docker is the supported route. Podman is accepted but its limits may not apply when rootless.
 - **Other agents in the worker image.** The worker image `cloudy-cloud-worker` contains Claude Code only (see `docker/worker.Dockerfile`). A worker on pi, omp, Codex or opencode installs its agent when it starts, from a pinned version with npm (omp with its own installer), so the container needs network access to the npm registry. No such worker has been run on a self-hosted machine. Main sessions (Codex, opencode, pi, free-pi) run on your computer and reach a self-hosted provider through the same `cloudy-cloud codex`, `opencode`, `pi` and `free-pi` commands; only the provider settings in the env file differ. free-pi cannot be a worker.
@@ -1915,6 +1933,8 @@ Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-
 ### Which credentials reach the cloud machine
 
 - **Worker credential:** Cloudy Cloud provides the credential required by the selected profile (and a Claude credential to cloud coordinators). Which credential is needed depends on the worker profile and configured sandbox provider.
+- **Claude token:** placed on each Claude Code worker without a profile (and sent to cloud coordinators for their workers, where the launcher keeps it out of the coordinator's own session). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
+- **Coordinator sign-in:** a cloud coordinator's own Claude login (`~/.claude/.credentials.json`) is created on its machine when you finish `cloudy-cloud coordinator login NAME`. The coordinator image never holds it — the credential file is removed before the image is saved. It is a real login; use an account you can revoke.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
 - **Instabox key:** stays in `~/.config/cloudy-cloud/env` (readable only by you) and in the tool server. It is never put in process arguments.
 - **MCP server tokens:** only for servers you added with `cloudy-cloud mcp add`. The token stays in Instabox as `MCP_<NAME>_TOKEN`, and the machine sees a placeholder that Instabox replaces in request headers to the host you named. The subagent can use the token against that host but cannot read it. Never create the secret without `--host`. With `--allow-literal` the real token is on the machine. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
@@ -1939,7 +1959,7 @@ Revoke the Instabox key in the Instabox dashboard, the GitHub token at https://g
 rm ~/.config/cloudy-cloud/env
 ```
 
-> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds the real Instabox key, the Claude token and your provider keys. Anyone who can SSH into the coordinator can read them. Use keys you can revoke.
+> Warning: On a cloud coordinator, `~/.config/cloudy-cloud/env` holds the real Instabox key, the Claude token and your provider keys, and `~/.claude/.credentials.json` holds its own Claude sign-in. Anyone who can SSH into the coordinator can read them. Use keys and an account you can revoke.
 
 ## FAQ
 

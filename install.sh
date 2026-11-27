@@ -1413,26 +1413,22 @@ store_coordinator_key() {
 # have_tty: true when setup can show a question and read the answer (tests replace it).
 have_tty() { [ -t 0 ] && [ -t 1 ]; }
 
-# Optional (setup --more): cloud coordinators. "coordinator image" handles the sign-in, retry, saving and progress itself,
-# so it runs with the terminal attached and nothing captured. It writes CLOUDY_CLOUD_SNAPSHOT_ACCOUNT when it saves.
+# Optional (setup --more): cloud coordinators. "coordinator image" builds and saves the image itself,
+# so it runs with the terminal attached and nothing captured. The image carries no Claude sign-in:
+# each coordinator signs in for itself at `coordinator start` (finished with `coordinator login`).
 setup_coordinators() {
-  local root=$1 snap marker acct
+  local root=$1 snap
   snap=$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)
-  marker=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
   if ! have_tty; then hint "Set up coordinators later on a terminal: $(rerun_cmd) --more"; return 0; fi
   if [ -n "$snap" ]; then
-    STATUS_COORD="ready${marker:+ ($marker)}"
-    if [ -n "$marker" ] && [ -n "$LOCAL_ACCOUNT" ] && [ "$marker" != "$LOCAL_ACCOUNT" ]; then
-      warn "Coordinators use $marker, but your local Claude is $LOCAL_ACCOUNT."
-    fi
-    yn "Cloud coordinators use the Claude account saved in their image${marker:+ ($marker)}. Sign in again to use a different account?" || return 0
+    STATUS_COORD="ready"
+    yn "Cloud coordinators already have an image. Rebuild it now? This takes 10 to 20 minutes." || return 0
   else
-    yn "Set up cloud coordinators now? It signs you in to Claude once and saves an image; this takes 10 to 20 minutes." || { STATUS_COORD=declined; return 0; }
+    yn "Set up cloud coordinators now? It saves an image with the tools (no sign-in: each coordinator signs in at start); this takes 10 to 20 minutes." || { STATUS_COORD=declined; return 0; }
   fi
   # Ready only when the saved image changed: a command that exits 0 without saving one (no terminal) is not a success.
   if "$root/bin/cloudy-cloud" coordinator image && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ] && [ "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" != "$snap" ]; then
-    acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT)
-    STATUS_COORD="ready${acct:+ ($acct)}"
+    STATUS_COORD="ready"
   else
     bad "Coordinator setup did not finish. Run $(rerun_cmd) --more again to retry." >&2
     STATUS_COORD="failed (run $(rerun_cmd) --more again)"
@@ -1831,7 +1827,7 @@ main() {
   worker_usable || incomplete "no worker credential (a Claude token or a provider key)"
   # A saved image counts as ready on a plain run too.
   if [ "$STATUS_COORD" = "not set up" ] && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ]; then
-    acct=$(get_saved CLOUDY_CLOUD_SNAPSHOT_ACCOUNT); STATUS_COORD="ready${acct:+ ($acct)}"
+    STATUS_COORD="ready"
   fi
 
   branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
