@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, unlinkSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, chmodSync, existsSync, symlinkSync, unlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -1209,6 +1209,20 @@ test('--json reports skippedKeys and the full note even when the terminal block 
   const j = JSON.parse(f.log.out.join('\n'));
   assert.deepEqual(j.skippedKeys, ['OPENROUTER_API_KEY']);
   assert.match(j.note, /Not sent to the coordinator \(not stored as proxy secrets\): OPENROUTER_API_KEY/);
+});
+
+test('a skipped-keys write through a symlinked config lands on the real file and keeps the link', async () => {
+  // The config path is a symlink to a managed file: the skipped-keys bookkeeping write must reach
+  // the target, never replace the link itself with a regular file.
+  const f = withSkippedKeys(fixture());
+  const managed = join(mkdtempSync(join(tmpdir(), 'cc-managed-')), 'env');
+  writeFileSync(managed, 'INSTABOX_API_KEY=managed\n', { mode: 0o600 });
+  symlinkSync(managed, f.configFile);
+  await main(START, f.deps);
+  assert.ok(lstatSync(f.configFile).isSymbolicLink(), 'the config path is still a symlink');
+  const text = readFileSync(managed, 'utf8');
+  assert.match(text, /CLOUDY_CLOUD_SKIPPED_KEYS=[A-Z_,]*OPENROUTER_API_KEY[A-Z_,]*/);
+  assert.match(text, /INSTABOX_API_KEY=managed\n/, 'the managed lines were kept');
 });
 
 test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and start continues', async () => {
@@ -3120,6 +3134,22 @@ test('cloud reattach attaches the machine it validated, not a same-named one cre
   assert.match(f.log.out.join('\n'), /cloudy-cloud coordinator attach boss/);
 });
 
+test('cloud --account on a reattach checks the live lease, not the stale machine label', async () => {
+  // The machine's account metadata was written at creation and cannot change; a replacement
+  // sign-in moved the local lease to personal, so --account must match the lease, not the label.
+  const f = fixture();
+  f.machines.push(own(f, 'boss', { account: 'work' }));
+  seedAccount(f, 'personal', { email: 'p@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['cloud', '--name', 'boss', '--account', 'personal'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn([]) });
+  assert.match(f.log.out.join('\n'), /Reattaching to boss/);
+  // And the stale metadata label no longer passes the guard either.
+  const g = fixture();
+  g.machines.push(own(g, 'boss', { account: 'work' }));
+  seedAccount(g, 'personal', { email: 'p@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const e = await main(['cloud', '--name', 'boss', '--account', 'work'], { ...g.deps, cwd: ghRepo(), spawn: localSpawn([]) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /runs on account personal, not work/);
+});
+
 test('coordinator attach refuses a same-named coordinator of a different installation; a legacy one still attaches by name', async () => {
   const foreign = { sandboxId: 'm1', name: 'coord-boss', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: 'otherinstall1234' } };
   const f = fixture({ machines: [foreign] });
@@ -4268,6 +4298,64 @@ test('a sign-in already saved for the same Claude account keeps the lease on a r
   await main(['login', 'boss', '--code', 'X'], g.deps);
   assert.equal(Object.values(accounts.readIndex(accDir(g))).filter((e) => e.email === 'me@example.com').length, 1);
   assert.equal(accounts.readIndex(accDir(g)).work.leasedBy.machineId, 'm1');
+});
+
+test('a re-login on a leased sibling label renews only its own label — the sibling keeps its credential', async () => {
+  // The coordinator leases <email>-2 and signs the same Claude account in again: the earlier
+  // <email> label is a sibling, never the renewal's target — its credential and its freedom stay.
+  const SIBLING = CRED(9e12, 'rt-older-sibling');
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 7), auth: [SIGNED_ME, SIGNED_ME] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'me@example.com', { cred: SIBLING, email: 'me@example.com' });
+  seedAccount(f, 'me@example.com-2', { cred: CRED(9e12 + 5), email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com'].leasedBy, undefined, 'the earlier sibling stays free');
+  assert.equal(idx['me@example.com-2'].leasedBy?.machineId, 'm1', 'the coordinator keeps its own lease');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com'), 'utf8'), SIBLING, 'the sibling credential was not overwritten');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com-2'), 'utf8'), CRED(9e12 + 7), 'the renewal landed on the leased label');
+
+  // And while the earlier sibling is leased to another coordinator the renewal still saves.
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 7), auth: [SIGNED_ME, SIGNED_ME] });
+  ownMachine(g, 'boss');
+  seedAccount(g, 'me@example.com', { cred: SIBLING, email: 'me@example.com', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  seedAccount(g, 'me@example.com-2', { cred: CRED(9e12 + 5), email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], g.deps);
+  const gidx = accounts.readIndex(accDir(g));
+  assert.equal(gidx['me@example.com'].leasedBy.name, 'other', 'the sibling lease is untouched');
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'me@example.com'), 'utf8'), SIBLING);
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'me@example.com-2'), 'utf8'), CRED(9e12 + 7), 'the renewal is saved even while the sibling is leased');
+});
+
+test('login --account naming a label leased to another coordinator refuses instead of writing a sibling', async () => {
+  const f = mk();
+  ownMachine(f, 'boss');
+  seedAccount(f, 'me@example.com', { cred: CRED(9e12, 'rt-first'), email: 'me@example.com', leasedBy: { name: 'first', machineId: 'm9', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X', '--account', 'me@example.com'], f.deps);
+  assert.match(f.log.out.join('\n'), /already saved as me@example\.com and used by coordinator first/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com'].leasedBy.name, 'first', 'the requested lease is untouched');
+  assert.equal(idx['me@example.com-2'], undefined, 'no sign-in was saved under a substituted label');
+  assert.ok(!existsSync(accounts.credFile(accDir(f), 'me@example.com-2')), 'no credential file was written');
+});
+
+test('a sign-in switch inside an attach saves the replacement and limits it, not the old lease', async () => {
+  // The leased coordinator signed into ANOTHER Claude account and the pane shows that account's
+  // limit: the replacement is saved (the lease travels with the live credential) and the limit
+  // marks the account the machine actually runs — never the old label.
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: "You've hit your usage limit", cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'personal', { email: 'p@x' });
+  const e = await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.personal.leasedBy?.machineId, 'm1', 'the lease moved to the replacement account');
+  assert.ok(idx.personal.limitedUntil > Date.now(), 'the limit marks the account that produced it');
+  assert.equal(idx.work.limitedUntil, undefined, 'the old label is not charged for the replacement\'s limit');
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was released in the same step');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'personal'), 'utf8'), CRED(9e12 + 9), 'the live credential was saved');
 });
 
 test('stop marks the account needsSignIn when the final credential read is not verified current', async () => {

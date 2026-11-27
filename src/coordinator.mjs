@@ -1,6 +1,6 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
 // Usage: node coordinator.mjs image | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
-import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync, existsSync, readlinkSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
@@ -109,17 +109,30 @@ const statusLine = (u, kind, msg, details = []) => {
   return `${u[kind](msg)}${details.length ? `\n    ${u.dim(fitCells(details[0], u.width - 4))}` : ''}`;
 };
 
+// The path a config write lands on: a symlink chain is walked to its end so the temp-file rename
+// replaces the REAL file and a linked config stays a link (a link whose target does not exist yet
+// resolves to that target — the write then creates it). A non-link path resolves to itself.
+const configTarget = (file) => {
+  let p = file;
+  for (let i = 0; i < 16; i++) {
+    let next;
+    try { next = readlinkSync(p); } catch { return p; } // not a link (or nothing there): resolved
+    p = resolve(dirname(p), next);
+  }
+  return p;
+};
 // Sets and drops config lines in ONE write: temp file in the same folder (mode 600), then rename. Errors other than a missing file propagate.
 function updateConfig(file, set = {}, drop = []) {
+  const target = configTarget(file);
   let lines = [];
-  try { lines = readFileSync(file, 'utf8').split('\n'); if (lines.at(-1) === '') lines.pop(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { lines = readFileSync(target, 'utf8').split('\n'); if (lines.at(-1) === '') lines.pop(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const names = new Set([...Object.keys(set), ...drop]);
   lines = lines.filter((l) => !names.has(l.slice(0, l.indexOf('='))));
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp${process.pid}`;
+  mkdirSync(dirname(target), { recursive: true });
+  const tmp = `${target}.tmp${process.pid}`;
   writeFileSync(tmp, `${[...lines, ...Object.entries(set).map(([k, v]) => envLine(k, v))].join('\n')}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  renameSync(tmp, target);
 }
 const saveKey = (file, name, value) => updateConfig(file, { [name]: value });
 
@@ -292,16 +305,21 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
     const idx = accounts.readIndex(dir);
     let label = carried || labelArg || accounts.emailLabel(j.email) || '';
     let dupe;
-    if (carried) {
+    // A re-login of the identity the carried label already names renews that label only — an
+    // earlier sibling of the same Claude account is never the renewal's target. Only a switch to
+    // another identity hops to the sibling label that names it.
+    if (carried && !accounts.sameAccount(idx[carried], j)) {
       dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
       if (dupe) label = dupe; // a replacement sign-in on a leasing coordinator updates the label that names the identity
-    } else {
+    } else if (!carried) {
       // One label = one sign-in: a fresh sign-in of a known identity revives a free signed-out label,
       // else it is saved under a new label for the same identity (<email>-2, -3, ...).
       const same = Object.keys(idx).filter((l) => accounts.sameAccount(idx[l], j));
       const stale = [labelArg, ...same].find((l) => l && same.includes(l) && !idx[l].leasedBy?.name && idx[l].needsSignIn);
+      // An explicit --account that names a leased label stands as requested so the lease guard
+      // below refuses it — a generated sibling must never stand in for a leased request.
       if (stale) label = stale;
-      else if (same.length && !(labelArg && (!idx[labelArg] || !same.includes(labelArg)))) {
+      else if (same.length && !(labelArg && (!idx[labelArg] || !same.includes(labelArg) || idx[labelArg].leasedBy?.name))) {
         const base = accounts.emailLabel(j.email);
         const taken = new Set(accounts.listAccounts(dir).map((a) => a.label));
         label = base ? '' : accounts.nextAccountLabel(dir);
@@ -1072,7 +1090,7 @@ const taskBrief = async (sbx) => {
 // an interactive attach): a session that exited, hit a spend or usage limit, or reports an invalid key is
 // reported plainly, with the stop command — the machine is NEVER deleted here, so reattaching or finishing
 // a sign-in can never destroy work. The only automatic deletion is start's own check on a brand-new machine.
-async function afterSignIn(c, sbx, name, m) {
+async function afterSignIn(c, sbx, name, m, j = null) {
   let pane = '';
   try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? ''; }
   catch (e) {
@@ -1082,9 +1100,15 @@ async function afterSignIn(c, sbx, name, m) {
   const line = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane), await taskBrief(sbx)).blocked;
   if (!line) return; // waiting on a prompt or still at the sign-in: the machine stays
   // A usage-limit message on a leased account is recorded so the next start picks another; the
-  // running coordinator's own account never switches.
+  // running coordinator's own account never switches. The mark lands only on a lease whose saved
+  // identity the machine's own auth status confirms — a sign-in that switched accounts without
+  // being saved leaves the old label blameless (a status carrying no identity blocks nothing).
   const accLabel = m && ownAccount(c, m);
-  if (accLabel && accounts.LIMIT_LINE.test(line)) accounts.markLimited(accounts.accountsDir(c.env), accLabel, accounts.limitUntil(line, c.now()));
+  if (accLabel && accounts.LIMIT_LINE.test(line)) {
+    const dir = accounts.accountsDir(c.env);
+    const confirmed = !(j?.loggedIn === true && (j.accountUuid || j.email)) || accounts.sameAccount(accounts.readIndex(dir)[accLabel], j);
+    if (confirmed) accounts.markLimited(dir, accLabel, accounts.limitUntil(line, c.now()));
+  }
   const [code, cause] = /invalid api key/i.test(line)
     ? ['coordinator_invalid_key', "the session reports an invalid API key; check the keys the image settings or your --env files send"]
     : ['spend_limit', 'the Claude account on the coordinator has hit its spend or usage limit; check the plan at claude.ai'];
@@ -1101,17 +1125,23 @@ async function afterSignIn(c, sbx, name, m) {
 async function postAttach(c, name, get, code, { machine = null, labelArg = '' } = {}) {
   try {
     const sbx = await get();
-    if (await signedIn(sbx)) {
+    const j = await authStatus(sbx);
+    if (j?.loggedIn === true && j?.authMethod === 'claude.ai') {
       const carried = ownAccount(c, machine);
       const entry = carried && accounts.readIndex(accounts.accountsDir(c.env))[carried];
-      if (carried && entry && !entry.needsSignIn) {
+      // Sync or save is chosen by the identity the machine reports, not only by the lease's stale
+      // flag: a lease whose saved account the auth status still confirms gets just its newest
+      // credential back, but a confirmed switch to another Claude account is saved under the label
+      // naming it (the lease travels with the live credential). A status that carries no identity
+      // cannot prove a switch — the lease's account stands.
+      if (carried && entry && !entry.needsSignIn && (!(j.accountUuid || j.email) || accounts.sameAccount(entry, j))) {
         // The account was already saved: only its newest credential goes back to the laptop.
         try { await accounts.syncBack(accounts.accountsDir(c.env), sbx, carried, c.now(), machineLease(c, machine)?.leasedBy); } catch { /* keep the attach report clean */ }
       } else {
         const label = await saveAccountFromMachine(c, sbx, machine, { labelArg, name });
         if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
       }
-      await afterSignIn(c, sbx, name, machine);
+      await afterSignIn(c, sbx, name, machine, j);
       const url = await readLink(sbx);
       if (url) { for (const l of linkLines(c.ui, url)) c.out(l); for (const l of qrLines(c.ui, url)) c.out(l); }
       else c.out(`Signed in. The Remote Control link is not ready yet; get it with: cloudy-cloud coordinator status ${name}`);
@@ -1582,9 +1612,11 @@ async function cloud(c, args) {
     // --env on a reattach would silently do nothing: say so instead (env files apply at start only).
     if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
     // --account on a reattach must name the account the coordinator actually uses — a coordinator
-    // keeps its account; silently attaching to one on another account would be a lie.
+    // keeps its account; silently attaching to one on another account would be a lie. The local
+    // lease is the live record (a replacement sign-in moves it); the machine's account label was
+    // written at creation and can lag it, so it counts only when no lease exists.
     const accountArg = flag(args, '--account');
-    const used = match.labels?.account || machineLease(c, match)?.label || '';
+    const used = machineLease(c, match)?.label || match.labels?.account || '';
     if (accountArg && used !== accountArg) guided(`Coordinator ${name} runs on account ${used || 'none'}, not ${accountArg} — a reattach cannot switch its account.\nNext step: pick another account (cloudy-cloud accounts ls) and start a new coordinator, or drop --account`, { short: `Coordinator ${name} does not use account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
     if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
     c.out(`Reattaching to ${name}`);
