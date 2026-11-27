@@ -1699,3 +1699,16 @@ test('the dashboard reads only coordinators of this installation (another instal
   await liveState(env, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, getReader })();
   assert.deepEqual([...new Set(reads.map((r) => r.replace('pane ', '')))], [mine.id]);
 });
+
+test('page: a coordinator\'s Activity tab shows its live steps instead of "no stream recorded", and the Machine value wraps', () => {
+  assert.match(PAGE, /coordSteps/);
+  assert.match(PAGE, /\.prop\.wide \.pv \{[^}]*white-space: normal/);
+  assert.match(PAGE, /wide\(prop\('Machine'/);
+});
+
+test('demo data has a coordinator row with steps and a worker row marked with its coordinator', async () => {
+  const { demoActivity } = await import('../src/dashboard-demo.mjs');
+  const rows = demoActivity(Date.now()), co = demoState().boxes.find((b) => b.kind === 'coordinator');
+  assert.ok(rows.find((r) => r.kind === 'coordinator' && r.id === co.machine && r.steps.length > 1));
+  assert.ok(rows.find((r) => r.kind === 'worker' && r.name.startsWith(`${co.labels.name} › `)));
+});

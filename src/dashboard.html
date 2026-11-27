@@ -111,6 +111,7 @@
   .pv.note { white-space: normal; align-items: flex-start; }
   .prop.full { grid-column: 1 / -1; }
   .prop.wide { grid-column: span 2; }
+  .prop.wide .pv { flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; }
   .props.cmds { grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 12px; }
   .cmds .prop { display: flex; gap: 12px; align-items: baseline; }
   .cmds .pl { flex: none; width: 64px; margin: 0; }
@@ -571,6 +572,8 @@
   const num = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
   const CAP = 4096, FULL_CAP = 2_000_000; // characters of Show-all text kept
   const turnOf = (b) => S.turn[b.id] || b.turns || 1;
+  // A coordinator keeps no stream on this computer; its recent steps come from the live activity feed (row id = its machine id).
+  const coordSteps = (b) => b.kind === 'coordinator' ? ((S.data && S.data.activity) || []).find((r) => r.kind === 'coordinator' && r.id === b.machine)?.steps || [] : [];
   const selBox = () => S.data?.boxes.find((b) => b.id === S.sel);
   const redo = () => { S.sigs.p = null; render(); };
   const stOf = (b) => S.st && S.st.box === b.id && S.st.turn === turnOf(b) ? S.st : null;
@@ -582,6 +585,7 @@
     let text, cls = 'badge', at = null;
     if (!st || (!st.loaded && !st.err)) text = term ? 'checking the terminal…' : 'checking the stream…';
     else if (st.err && !st.loaded) { text = 'unavailable: ' + st.err; cls += ' bad'; }
+    else if (src?.kind === 'none' && !term && coordSteps(b).length) { text = 'recent steps from the live feed'; cls += ' live'; }
     else if (src?.kind === 'none') { text = 'unavailable: ' + (NONE[src.reason]?.[0] || src.reason || (term ? 'no terminal' : 'no stream')); cls += ' bad'; }
     else if (src?.kind === 'cache') { text = src.reason === 'machine_gone' ? 'saved copy · machine deleted' : 'from the saved copy (machine not reachable)'; at = src.fetchedAt; }
     else if (src?.kind === 'local') text = 'from local log';
@@ -676,7 +680,9 @@
     if (dropped) kids.push(h('div', { class: 'note', text: 'The messages for turn ' + turn + ' were not kept: the dashboard holds only the most recent 300 messages. The tool calls below come from its stream.' }));
     let run = null;
     const last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress' && !hasTools;
-    if (st?.loaded && st.source?.kind === 'none' && NONE[st.source.reason]) kids.push(h('div', { class: 'note', text: NONE[st.source.reason][1] }));
+    const cs = coordSteps(b);
+    if (cs.length) { const r = h('div', { class: 'run', 'aria-label': 'Recent steps' }); for (const x of cs.slice(-30)) r.append(h('div', { class: 'ev prog' }, h('span', { class: 'ptxt', text: x.step }), timeEl('ptime', x.t))); kids.push(r); }
+    else if (st?.loaded && st.source?.kind === 'none' && NONE[st.source.reason]) kids.push(h('div', { class: 'note', text: NONE[st.source.reason][1] }));
     else if (st?.loaded && st.source?.kind === 'none') kids.push(h('div', { class: 'note', text: 'No stream to show: ' + (st.source.reason || 'unknown reason') }));
     for (const { m, e } of items) {
       if (e) { run = null; const r = evRow(e, b, st); if (r) kids.push(r); continue; }
@@ -726,7 +732,7 @@
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') }), harnessTag(b)),
         autofixTag(b) && prop('Autofix', autofixTag(b), prLink(b)),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
-        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), b.provider && h('span', { class: 'providerrep', text: ' · ' + b.provider }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) })),
+        wide(prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), b.provider && h('span', { class: 'providerrep', text: ' · ' + b.provider }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) }))),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))

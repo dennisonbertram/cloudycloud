@@ -148,5 +148,6 @@ export const demoStream = {
 // Made-up live feed rows for --demo (same shape as readActivity in activity.mjs).
 export const demoActivity = (now = Date.now()) => [
   { id: 'demo-1', name: 'fix parser bug', kind: 'worker', state: 'working', step: 'Bash npm test', t: now - 12_000, steps: [{ t: now - 40_000, step: 'Edit src/parser.ts' }, { t: now - 12_000, step: 'Bash npm test' }] },
-  { id: 'demo-2', name: 'boss', kind: 'coordinator', state: 'working', step: 'thinking', t: now - 7 * 60_000, quietMin: 7, steps: [{ t: now - 7 * 60_000, step: 'thinking' }] },
+  { id: 'm-fleet-main', name: 'fleet-main', kind: 'coordinator', state: 'working', step: 'waiting for a worker', t: now - 20_000, steps: [{ t: now - 6 * 60_000, step: 'looking up tools' }, { t: now - 5 * 60_000, step: 'starting a worker' }, { t: now - 90_000, step: 'Bash git' }, { t: now - 20_000, step: 'waiting for a worker' }] },
+  { id: '7c1e90ab', name: 'fleet-main › Add retry with backoff to the upload client', kind: 'worker', state: 'working', step: 'Edit src/upload/client.ts', t: now - 9_000, steps: [{ t: now - 2 * 60_000, step: 'Bash npm test -- upload' }, { t: now - 9_000, step: 'Edit src/upload/client.ts' }] },
 ];

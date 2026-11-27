@@ -29,6 +29,7 @@ const LOCK_MS = 90_000;
 const NAME_OK = /^[A-Za-z0-9._-]{1,64}$/;
 const STATES = { running: 'working', idle: 'idle', queued: 'queued', starting: 'starting' };
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const CLOUD_VERBS = { cloud_agent: 'starting a worker', cloud_agent_wait: 'waiting for a worker', cloud_agent_stop: 'stopping a worker', cloud_agent_message: 'messaging a worker', cloud_agent_list: 'listing agents' };
 const tidy = (s, n = 200) => safeText(s).replace(/\s+/g, ' ').trim().slice(0, n); // one line of plain text
 
 // One short line for a normalised stream event, or undefined when it is not a step. Only an allowlisted summary is kept:
@@ -45,6 +46,9 @@ export function stepFor(e, clean = redactText) {
       const prog = String(input.command ?? '').trim().split(/\s+/).find((w) => !/^\w+=/.test(w)); // skips `VAR=value` prefixes
       return prog && /^[\w./+-]{1,40}$/.test(prog) ? `Bash ${c(prog, 40)}` : 'Bash';
     }
+    if (name === 'ToolSearch') return 'looking up tools';
+    const mcp = /^mcp__(.+?)__(.+)$/.exec(name); // mcp__<server>__<tool>
+    if (mcp) return mcp[1] === 'cloud' && CLOUD_VERBS[mcp[2]] || `${mcp[1]}: ${mcp[2]}`;
     return name;
   }
   if (e.kind === 'thinking') return 'thinking';
@@ -93,8 +97,14 @@ export function coordinatorRows(dir, now = Date.now(), install = '') {
       if (j?.v !== 1 || j.install !== install || !(now - j.t <= FRESH_MS) || typeof j.machine !== 'string') return [];
       const steps = (Array.isArray(j.steps) ? j.steps : []).slice(-KEEP).map((s) => ({ n: s.n, t: s.t, step: String(s.step) }));
       const st = j.state ?? { state: 'working', t: j.t }, last = steps.at(-1), signal = !['working', 'idle'].includes(st.state);
-      return [withQuiet({ id: j.machine, name: tidy(j.name ?? j.machine, 64), kind: 'coordinator', state: String(st.state), step: signal ? tidy(st.note || st.state) : (last?.step ?? ''),
-        t: Math.max(last?.t ?? 0, signal ? st.t : 0) || st.t || j.t, steps }, now)];
+      const name = tidy(j.name ?? j.machine, 64);
+      // The coordinator's own workers, from its machine's event log: marked with their coordinator ("boss › fix parser").
+      const workers = Object.entries(j.workers ?? {}).filter(([, w]) => STATES[w?.status]).map(([id, w]) => {
+        const ws = (Array.isArray(w.steps) ? w.steps : []).slice(-KEEP).map((x) => ({ t: x.t, step: String(x.step) })), wl = ws.at(-1);
+        return withQuiet({ id: tidy(id, 64), name: `${name} › ${tidy(w.description || id, 64)}`, kind: 'worker', state: STATES[w.status], step: wl?.step ?? (w.status === 'running' ? 'thinking' : ''), t: wl?.t ?? w.t, steps: ws }, now);
+      });
+      return [withQuiet({ id: j.machine, name, kind: 'coordinator', state: String(st.state), step: signal ? tidy(st.note || st.state) : (last?.step ?? ''),
+        t: Math.max(last?.t ?? 0, signal ? st.t : 0) || st.t || j.t, steps }, now), ...workers];
     } catch { return []; }
   });
 }
@@ -128,7 +138,7 @@ export function sessionIdFrom(out) {
   return found.sort((a, b) => (Number(b.startedAt) || 0) - (Number(a.startedAt) || 0))[0]?.sessionId ?? '';
 }
 // First line "SIZE START", then the base64 of at most CHUNK_BYTES from START (nothing when the file did not grow).
-const readCmd = (path, off) => `f='${path}'; n=$(wc -c < "$f" 2>/dev/null || echo 0); o=${off ?? '-'}; [ "$o" = - ] && o=$((n > ${TAIL_BYTES} ? n - ${TAIL_BYTES} : 0)); echo "$n $o"; [ "$n" -gt "$o" ] && tail -c +$((o + 1)) "$f" | head -c ${CHUNK_BYTES} | base64 | tr -d '\n'; echo; true`;
+const readCmd = (file, off) => `f=${file}; n=$(wc -c < "$f" 2>/dev/null || echo 0); o=${off ?? '-'}; [ "$o" = - ] && o=$((n > ${TAIL_BYTES} ? n - ${TAIL_BYTES} : 0)); echo "$n $o"; [ "$n" -gt "$o" ] && tail -c +$((o + 1)) "$f" | head -c ${CHUNK_BYTES} | base64 | tr -d '\n'; echo; true`;
 
 const readSnap = (file, id) => { try { const j = JSON.parse(readFileSync(file, 'utf8')); return j?.v === 1 && j.install === id.install && j.provider === id.provider && j.machine === id.machine ? j : null; } catch { return null; } };
 function writeSnap(file, snap) { const tmp = `${file}.${process.pid}.tmp`; writeFileSync(tmp, JSON.stringify(snap), { mode: 0o600 }); renameSync(tmp, file); }
@@ -142,6 +152,35 @@ function lock(file) {
     }
   }
   return null;
+}
+
+// The coordinator machine's own event log: its workers' progress, read like the transcript (a bounded tail first, then at most
+// CHUNK_BYTES past the saved offset). Kept in snap.workers: { id: { description, status, t, steps } }, steps redacted and cut.
+const EVENTS_FILE = '"$HOME/.config/cloudy-cloud/events.jsonl"';
+const MAX_WORKERS = 30;
+async function readWorkers(run, snap, t, clean) {
+  const out = await run(readCmd(EVENTS_FILE, snap.evOff)), nl = out.indexOf('\n');
+  const [size, start] = out.slice(0, nl < 0 ? 0 : nl).trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(size) || !Number.isFinite(start)) return;
+  if (snap.evOff !== undefined && size < snap.evOff) { delete snap.evOff; return; } // the log was replaced: start again from its tail
+  if (size <= start) { snap.evOff ??= start; return; }
+  let buf = Buffer.from(out.slice(nl + 1).trim(), 'base64'), from = start;
+  if (snap.evOff === undefined && start > 0) { const cut = buf.indexOf(10) < 0 ? buf.length : buf.indexOf(10) + 1; from += cut; buf = buf.subarray(cut); } // the first line of a tail is cut off
+  const end = buf.lastIndexOf(10) + 1; // an unfinished last line is read next time
+  snap.evOff = end || buf.length < CHUNK_BYTES ? from + end : from + buf.length; // a single line over 1 MiB is skipped
+  const workers = snap.workers ??= {};
+  for (const l of buf.subarray(0, end).toString('utf8').split('\n')) {
+    let e; try { e = JSON.parse(l); } catch { continue; }
+    if (!e || typeof e.id !== 'string' || !NAME_OK.test(e.id) || typeof e.t !== 'number') continue;
+    const w = workers[e.id] ??= { steps: [] };
+    w.t = e.t;
+    if (e.type === 'agent' && typeof e.description === 'string') w.description = tidy(clean(e.description), 64);
+    else if (e.type === 'status' && typeof e.status === 'string') w.status = e.status;
+    else if (e.type === 'progress' && typeof e.text === 'string') { w.steps.push({ t: e.t, step: tidy(clean(e.text), 100) }); w.steps = w.steps.slice(-KEEP); w.status ??= 'running'; }
+  }
+  for (const [id, w] of Object.entries(workers)) if (t - w.t > 25 * 3_600_000) delete workers[id]; // a worker lives 24 h at most
+  const ids = Object.keys(workers);
+  if (ids.length > MAX_WORKERS) for (const id of ids.sort((a, b) => workers[a].t - workers[b].t).slice(0, ids.length - MAX_WORKERS)) delete workers[id];
 }
 
 // Polls the running coordinators of THIS installation (install label) and writes their snapshots. poll() runs one at a time (a call
@@ -172,7 +211,7 @@ export function createCoordinatorPoller({ provider, env = process.env, scrub = (
         if (next !== snap.path) { snap.path = next; delete snap.off; }
       }
       if (snap.path) {
-        const out = await run(readCmd(snap.path, snap.off)), nl = out.indexOf('\n');
+        const out = await run(readCmd(`'${snap.path}'`, snap.off)), nl = out.indexOf('\n');
         const [size, start] = out.slice(0, nl < 0 ? 0 : nl).trim().split(/\s+/).map(Number);
         if (Number.isFinite(size) && Number.isFinite(start)) {
           if (snap.off !== undefined && size < snap.off) delete snap.off; // the file was replaced: start again from its tail
@@ -186,6 +225,7 @@ export function createCoordinatorPoller({ provider, env = process.env, scrub = (
           } else snap.off ??= start;
         }
       }
+      await readWorkers(run, snap, t, clean);
       const cs = coordinatorState(await run('tmux capture-pane -t claude -p -J 2>/dev/null || true').catch((e) => { if (ac.signal.aborted) throw e; return ''; }), scrub), sig = `${cs.state}|${cs.note ?? ''}`;
       if (sig !== snap.sig) { snap.state = { t, state: cs.state, ...(cs.note && { note: tidy(clean(cs.note)) }) }; snap.sig = sig; }
       snap.t = t;

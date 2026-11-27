@@ -64,13 +64,19 @@ test('stepFor turns normalised session lines into steps', () => {
 // answers it like `wc`, `tail -c +N` and `head -c` would, and counts the bytes it hands back.
 const SID = '11111111-2222-3333-4444-555555555555', OTHER_SID = '99999999-8888-7777-6666-555555555555';
 function fakeMachine({ install = 'abcdef0123456789', transcript = '', pane = 'esc to interrupt', id = 'm1', provider: prov, name = 'boss', transcripts } = {}) {
-  const state = { transcript, pane, bytes: 0, cmds: [], connects: 0, paths: [] };
+  const state = { transcript, pane, bytes: 0, cmds: [], connects: 0, paths: [], events: '', evBytes: 0 };
   const m = { id, provider: prov, state: 'running', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, install } };
   const files = transcripts ?? { [SID]: () => state.transcript };
   const run = async (cmd) => {
     state.cmds.push(cmd);
     if (cmd.startsWith('p=$(tmux')) return { stdout: `PANE 100\n100 1\n200 100\n300 1\nSESSIONS\n${JSON.stringify({ pid: 200, sessionId: SID, startedAt: 1 })}\n${JSON.stringify({ pid: 300, sessionId: OTHER_SID, startedAt: 2 })}\n` };
     if (cmd.startsWith('ls ')) { const sid = /([0-9a-f-]{36})\.jsonl/.exec(cmd)[1]; return { stdout: `/home/user/.claude/projects/-home-user-repo/${sid}.jsonl\n` }; }
+    if (cmd.startsWith('f="$HOME/.config/cloudy-cloud/events.jsonl"')) {
+      const buf = Buffer.from(state.events), arg = /o=(\S+);/.exec(cmd)[1], o = arg === '-' ? Math.max(0, buf.length - 262144) : Number(arg);
+      const data = buf.length > o ? buf.subarray(o, o + 1048576).toString('base64') : '';
+      state.evBytes += data.length;
+      return { stdout: `${buf.length} ${o}\n${data}\n` };
+    }
     if (cmd.startsWith('f=')) {
       const path = /^f='([^']+)'/.exec(cmd)[1]; state.paths.push(path);
       const buf = Buffer.from(files[/([0-9a-f-]{36})\.jsonl/.exec(path)[1]]());
@@ -375,4 +381,39 @@ test('cloud_agent_activity is listed read-only and returns state and steps, filt
     assert.match(one.content[0].text, /alpha \(eeee5555, worker\) working\n {2}\d\d:\d\d:\d\d Edit alpha\.ts/);
   } finally { child.kill(); }
   assert.equal(activityText([]), 'No running cloud agents.');
+});
+
+test('stepFor gives MCP tools and ToolSearch plain names and keeps file and Bash steps', () => {
+  const use = (name, input = {}) => stepFor({ kind: 'tool_use', name, input: JSON.stringify(input) });
+  assert.equal(use('mcp__cloud__cloud_agent'), 'starting a worker');
+  assert.equal(use('mcp__cloud__cloud_agent_wait'), 'waiting for a worker');
+  assert.equal(use('mcp__cloud__cloud_agent_stop'), 'stopping a worker');
+  assert.equal(use('mcp__cloud__cloud_agent_message'), 'messaging a worker');
+  assert.equal(use('mcp__cloud__cloud_agent_list'), 'listing agents');
+  assert.equal(use('mcp__notion__search_pages'), 'notion: search_pages');
+  assert.equal(use('ToolSearch'), 'looking up tools');
+  assert.equal(use('Edit', { file_path: 'a.ts' }), 'Edit a.ts');
+  assert.equal(use('Bash', { command: 'npm test' }), 'Bash npm');
+});
+
+test('the poller also reads the coordinator machine\'s own event log, from a saved offset, and shows its workers as rows', async () => {
+  const dir = tmp(), env = ENV(dir), e = (o) => `${JSON.stringify({ pid: 1, ...o })}\n`;
+  const f = fakeMachine({ transcript: asst('t1', 'Edit', { file_path: 'a.ts' }) });
+  f.state.events = e({ id: 'aaaa1111', t: NOW - 5000, type: 'agent', description: 'Report node version', role: 'worker' }) + e({ id: 'aaaa1111', t: NOW - 4000, type: 'status', status: 'running' })
+    + e({ id: 'aaaa1111', t: NOW - 3000, type: 'progress', text: 'Bash node' }) + e({ id: 'aaaa1111', t: NOW - 2000, type: 'progress', text: 'Bash echo EXACTSECRET99' })
+    + e({ id: 'bbbb2222', t: NOW - 4000, type: 'agent', description: 'Done job', role: 'worker' }) + e({ id: 'bbbb2222', t: NOW - 3500, type: 'status', status: 'stopped' });
+  const poller = createCoordinatorPoller({ provider: f.provider, env, now: () => NOW, scrub: (s) => s.split('EXACTSECRET99').join('[redacted]') });
+  await poller.poll();
+  const act = env.CLOUDY_CLOUD_ACTIVITY, rows = coordinatorRows(act, NOW + 1000, INSTALL);
+  assert.deepEqual(rows.map((r) => [r.kind, r.name, r.state]), [['coordinator', 'boss', 'working'], ['worker', 'boss › Report node version', 'working']]);
+  assert.deepEqual(rows[1].steps.map((s) => s.step), ['Bash node', 'Bash echo [redacted]']);
+  assert.equal(rows[1].step, 'Bash echo [redacted]');
+  assert.doesNotMatch(readdirSync(act).map((n) => readFileSync(join(act, n), 'utf8')).join(''), /EXACTSECRET99/);
+  const before = f.state.evBytes;
+  await poller.poll(); // nothing new: no bytes read
+  assert.equal(f.state.evBytes, before);
+  f.state.events += e({ id: 'aaaa1111', t: NOW - 1000, type: 'progress', text: 'Read b.ts' });
+  await poller.poll();
+  assert.deepEqual(coordinatorRows(act, NOW + 1000, INSTALL)[1].steps.map((s) => s.step), ['Bash node', 'Bash echo [redacted]', 'Read b.ts']);
+  assert.ok(f.state.evBytes - before < 400, 'only the new line is read');
 });
