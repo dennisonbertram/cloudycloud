@@ -81,6 +81,18 @@ test('explain shares local eligibility checks and reports dynamic checks without
   assert.equal(f.deps.open.size, 0);
 });
 
+test('explain does not send the billed profile preflight request', async () => {
+  let fetches = 0;
+  const f = await setup({
+    env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-explain-test', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' },
+    fetchFn: async () => { fetches++; return { status: 200, text: async () => '{}' }; },
+  });
+  const result = await explainSubagent({ description: 'preview', prompt: 'hi', profile: 'pi-glm' }, f.deps);
+  assert.equal(result.structuredContent.status, 'conditional');
+  assert.ok(result.structuredContent.unknown_checks.some((c) => c.includes('preflight')));
+  assert.equal(fetches, 0, 'explain must not send the one-token preflight request');
+});
+
 test('explain reports locally known launch exclusions using the same request validation', async () => {
   const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: '' } });
   const result = await explainSubagent({ description: 'preview', prompt: 'hi', machine: 'not-a-machine' }, f.deps);
@@ -140,6 +152,20 @@ test('cloud_exec rejects paths outside the MCP-bound repository before execution
   assert.equal(executions, 0);
 });
 
+test('cloud_exec scrubs JSON-escaped spellings of secrets from the final text', async () => {
+  // A secret with characters JSON.stringify escapes (a quote, a newline) survives a literal scrub of
+  // the serialized result: the text form must redact the escaped spelling too.
+  const escaped = 'tok"en\nvalue';
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', MCP_TEST_TOKEN: escaped } });
+  const server = buildServer({ ...f.deps, executeRemoteArgv: async () => ({ status: 'completed', exit_code: 0, stdout: `leak ${escaped} done` }) });
+  const call = server._requestHandlers.get('tools/call');
+  const result = await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['x'] } } }, { mcpReq: { requestState: () => undefined } });
+  const text = result.content[0].text;
+  assert.ok(!text.includes('tok'), `the serialized text leaked the escaped secret: ${text}`);
+  assert.ok(text.includes('[redacted]'));
+  assert.ok(!result.structuredContent.stdout.includes('tok'));
+});
+
 test('cloud_exec does not send MCP progress without a progress token', async () => {
   const f = await setup();
   let suppliedCallbacks = false, notices = 0;
@@ -153,6 +179,15 @@ test('cloud_exec does not send MCP progress without a progress token', async () 
   });
   assert.equal(suppliedCallbacks, false);
   assert.equal(notices, 0);
+});
+
+test('cloud_exec refreshes the environment before routing', async () => {
+  const f = await setup();
+  const order = [];
+  const server = buildServer({ ...f.deps, refreshEnv: () => order.push('refresh'), executeRemoteArgv: async () => { order.push('exec'); return { status: 'completed', exit_code: 0 }; } });
+  const call = server._requestHandlers.get('tools/call');
+  await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['true'] } } }, { mcpReq: { requestState: () => undefined } });
+  assert.deepEqual(order, ['refresh', 'exec'], 'cloud_exec must refresh the environment before it routes');
 });
 
 test('start returns at once with starting, before the sandbox exists', async () => {
@@ -752,7 +787,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  cpu \\d+% mem \\S+ GiB \\(\\d+[sm] ago\\)  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -1031,6 +1066,224 @@ test('conditional automatic stop leaves a worker alone after a newer turn starts
   assert.equal(created[0].killed, false);
   await wait([id]);
   await stopAgents({ agent_ids: [id] }, deps);
+});
+
+test('conditional automatic stop rechecks the live workspace before deleting', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  // A file created through cloudy-cloud shell after the result was collected leaves the workspace dirty.
+  await sbx.commands.run('echo shell-edit > shell.txt', { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const dirty = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(dirty.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(sbx.killed, false);
+
+  // Committing the same edit makes it pushable: the recheck preserves it on origin, then deletes.
+  await sbx.commands.run('git add -A && git -c user.name=x -c user.email=x@x commit -qm shell-commit', { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const head = (await sbx.commands.run('git rev-parse HEAD', { cwd: '/home/user/repo', timeoutMs: 5000 })).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head, 'the shell commit must be on origin before deletion');
+});
+
+test('conditional automatic stop keeps a worker whose repo gained a linked worktree or extra branch', async () => {
+  for (const make of ['git worktree add ../linked --detach', 'git branch extra-head HEAD~0']) {
+    const { start, wait, deps, created } = await setup();
+    const id = await start({ prompt: 'EDIT' });
+    await wait([id]);
+    const turn = deps.open.get(id).turn.id;
+    const sbx = created[0];
+    await sbx.commands.run(make, { cwd: '/home/user/repo', timeoutMs: 5000 });
+    const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+    assert.equal(r.structuredContent.agents[0].status, 'not-stopped', make);
+    assert.equal(sbx.killed, false, make);
+    // An explicit user-requested stop is not conditional, so it still deletes the machine.
+    await stopAgents({ agent_ids: [id] }, deps);
+    assert.equal(sbx.killed, true);
+  }
+});
+
+test('conditional automatic stop pushes a worker-branch tip that moved past HEAD', async () => {
+  const recovery = await mkdtemp(join(tmpdir(), 'cc-recovery-'));
+  const { start, wait, deps, created, remote } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_RECOVERY: recovery } });
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  // Commits on refs/heads/<branch> that HEAD does not name (a detached checkout moved the ref past it).
+  await run(`git checkout -q --detach HEAD && git commit -qm drift --allow-empty && git update-ref refs/heads/cloudy-cloud/${id} HEAD && git reset -q --hard HEAD~1`);
+  const tip = (await run(`git rev-parse refs/heads/cloudy-cloud/${id}`)).stdout.trim();
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  assert.notEqual(tip, head, 'the branch ref must hold a commit HEAD does not');
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), tip, 'the drifted branch tip must be on origin before deletion');
+  assert.equal(stopped.structuredContent.agents[0].checkpoint_sha, tip, 'the recovery checkpoint names the pushed branch tip');
+});
+
+test('conditional automatic stop refuses when the worker-branch tip diverged from HEAD', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const base = deps.open.get(id).sha;
+  // A commit on the branch ref that shares no history with the pushed HEAD: no single push preserves both.
+  await sbx.commands.run(`head=$(git rev-parse HEAD) && git checkout -q -b div ${base} && git commit -qm div --allow-empty && git update-ref refs/heads/cloudy-cloud/${id} div && git checkout -q --detach $head`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /diverged/);
+  assert.equal(sbx.killed, false);
+  await sbx.commands.run(`git update-ref -d refs/heads/cloudy-cloud/${id} 2>/dev/null; git checkout -q -b cloudy-cloud/${id} HEAD`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
+});
+
+test('conditional automatic stop saves a newer detached HEAD when the local worker branch is stale', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  // B is pushed from a detached HEAD, then C is committed on top; the local branch still names the older tip.
+  await run(`git checkout -q --detach && git commit -qm b --allow-empty && git push -q origin HEAD:refs/heads/cloudy-cloud/${id} && git commit -qm c --allow-empty`);
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped', stopped.structuredContent.agents[0].message);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head, 'the newer HEAD is on origin before deletion');
+});
+
+test('conditional automatic stop saves HEAD when the local worker branch is missing', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  await run(`git checkout -q --detach && git branch -D cloudy-cloud/${id} && git commit -qm c --allow-empty`);
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped', stopped.structuredContent.agents[0].message);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head);
+});
+
+test('conditional automatic stop keeps a worker that holds only Git-ignored files', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  await sbx.commands.run(`echo diagnostics.log >> .git/info/exclude && echo report > diagnostics.log`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /diagnostics\.log/);
+  assert.equal(sbx.killed, false);
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
+});
+
+test('conditional automatic stop with no new commits checkpoints the confirmed remote tip', async () => {
+  const recovery = await mkdtemp(join(tmpdir(), 'cc-recovery-'));
+  const { start, wait, deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_RECOVERY: recovery } });
+  const id = await start();
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const a = deps.open.get(id);
+  // The turn pushed nothing, so no checkpoint was saved. The branch tip reached origin another way
+  // (a manual push): the no-change stop must still checkpoint that verified remote tip.
+  await created[0].commands.run(`git push -q origin refs/heads/cloudy-cloud/${id}`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(stopped.structuredContent.agents[0].checkpoint_sha, a.sha, 'a no-change stop still leaves a checkpoint at the verified remote tip');
+  const record = JSON.parse(await readFile(join(recovery, `${id}.json`), 'utf8'));
+  assert.equal(record.checkpointSha, a.sha);
+});
+
+test('conditional automatic stop refuses deletion when the workspace probe fails', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const realRun = sbx.commands.run;
+  // The worktree/ref listing dies after the safety push passed clean: an incomplete probe refuses.
+  sbx.commands.run = (cmd, o) => String(cmd).includes('git worktree list')
+    ? Promise.reject(Object.assign(new Error('probe broke'), { exitCode: 1 }))
+    : realRun(cmd, o);
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /could not be fully inspected/);
+  assert.equal(sbx.killed, false);
+  sbx.commands.run = realRun;
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+});
+
+test('conditional automatic stop deletes only on provider confirmation that the machine is gone', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  // A command-level not_found (Boat also returns it for sandbox_not_ready) while the provider still
+  // reaches the machine: the deletion must not be authorized by the failed probe.
+  const realRun = sbx.commands.run;
+  sbx.commands.run = () => Promise.reject(Object.assign(new Error('sandbox_not_ready'), { code: 'not_found' }));
+  // Hook-created sandboxes are not registered in the fake provider's own maps, so simulate the
+  // provider lookup directly: reachable while the flag is clear, not_found once it is set.
+  const gone = { current: false };
+  const realConnect = deps.provider.connect;
+  deps.provider.connect = async () => {
+    if (gone.current) throw Object.assign(new Error('not found'), { code: 'not_found' });
+    return {};
+  };
+  const refused = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(refused.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(refused.structuredContent.agents[0].message, /still reaches the machine|not confirmed gone/);
+  assert.equal(sbx.killed, false);
+  // The provider's own lookup confirms the machine is gone: only then does the failed probe count.
+  gone.current = true;
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  sbx.commands.run = realRun;
+  deps.provider.connect = realConnect;
+});
+
+test('conditional automatic stop rechecks the completed turn after the workspace probe', async () => {
+  const { start, wait, msg, deps, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const realRun = sbx.commands.run;
+  let entered, release;
+  const gate = new Promise((r) => { release = r; });
+  const gateEntered = new Promise((r) => { entered = r; });
+  // The probe's ref listing is held open while another client starts a new turn.
+  sbx.commands.run = (cmd, o) => {
+    if (!String(cmd).includes('--CC-REFS--')) return realRun(cmd, o);
+    entered();
+    return realRun(cmd, o).then(async (r) => { await gate; return r; });
+  };
+  const pending = stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  await gateEntered;
+  await msg(id, 'OK more work');
+  release();
+  const r = await pending;
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(sbx.killed, false);
+  assert.equal(deps.open.get(id).status, 'running');
+  sbx.commands.run = realRun;
+  await wait([id]);
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
 });
 
 
@@ -3186,6 +3439,64 @@ test('a pi turn that fails twice with model_not_found is rerun and succeeds, wai
   assert.deepEqual(sleeps, [30_000, 60_000]);
   assert.ok(events.some((e) => e.type === 'progress' && /retrying .*attempt 2 of 4/.test(e.text)));
   assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
+});
+
+test('a nonzero turn with empty stderr is classified on its error, not on the worker transcript in stdout', async () => {
+  // First pi run exits 1: stdout is a transcript quoting model_not_found (the user's task), the message says 503. The
+  // profile has not answered yet, so a model_not_found classification would give up; the 503 must be retried.
+  answeredProfiles.delete('pi-glm');
+  let piRuns = 0;
+  const { start, wait } = await setup({
+    env: pEnv, sleep: async () => {},
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => {
+        if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('503 overloaded'), { exitCode: 1, stdout: '{"type":"user","text":"investigate model_not_found handling"}\n' + 'progress line\n'.repeat(30), stderr: '' });
+        return real(cmd, o);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(piRuns, 2, 'the 503 is retried');
+  assert.match(r, /status: idle/);
+});
+
+function emptyStderrTurn(tail) {
+  return async () => {
+    let piRuns = 0;
+    const { start, wait } = await setup({
+      env: pEnv, sleep: async () => {},
+      createSandbox: async (envs) => {
+        const sbx = await fakeSandbox(getGithub());
+        sbx.envs = envs;
+        const real = sbx.commands.run;
+        sbx.commands.run = async (cmd, o) => {
+          if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: 'progress line\n'.repeat(30) + tail + '\n', stderr: '' });
+          return real(cmd, o);
+        };
+        return sbx;
+      },
+    });
+    const r = await wait([await start({ profile: 'pi-glm' })]);
+    return { piRuns, r };
+  };
+}
+
+test('an Instabox-style turn (empty stderr, merged log on stdout) that ends with a 503 is retried', async () => {
+  answeredProfiles.delete('pi-glm');
+  const { piRuns, r } = await emptyStderrTurn('503 service unavailable')();
+  assert.equal(piRuns, 2);
+  assert.match(r, /status: idle/);
+});
+
+test('an empty-stderr turn whose stdout ends with a real model_not_found line is not retried', async () => {
+  answeredProfiles.delete('pi-glm');
+  const { piRuns, r } = await emptyStderrTurn(NOT_FOUND)();
+  assert.equal(piRuns, 1);
+  assert.match(r, /ERROR/);
 });
 
 test('a lost command transport with a retryable provider status is not replayed automatically', async () => {

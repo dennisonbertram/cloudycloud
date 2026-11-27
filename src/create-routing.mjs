@@ -4,10 +4,12 @@ import { classifyProviderError, isQuotaExceeded, isRateLimited } from './limits.
 // happens before allocation. Transport failures need exact-label reconciliation first.
 export function classifyCreateFailure(error) {
   const code = String(error?.code ?? '');
+  // An explicit uncertain-create code wins over message text: a transient error that merely
+  // mentions quota or rate limits still needs exact-label reconciliation first.
+  if (['transient', 'create_unknown', 'ambiguous'].includes(code)) return 'reconcile';
   if (isRateLimited(error) || isQuotaExceeded(error) || ['no_key', 'machine_no_capacity',
     'size_not_allowed', 'machine_not_on_plan', 'machine_gpu_limit'].includes(code)) return 'next';
-  if (['transient', 'create_unknown', 'ambiguous'].includes(code)
-    || (!code && classifyProviderError(error?.message)?.kind === 'connection')) return 'reconcile';
+  if (!code && classifyProviderError(error?.message)?.kind === 'connection') return 'reconcile';
   return undefined;
 }
 

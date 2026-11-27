@@ -695,6 +695,60 @@ test('a prerelease of the floor is below it; a prerelease of a newer version is 
   const [a, bin] = argv0('echo instabox 0.8.290-rc.1'); assert.equal(a, bin);
 });
 
+// A command past the 600 s foreground cap runs as a background job: the SDK's startJob rejects
+// stream callbacks (and stdin) outright, so the run must not forward them. The job's one combined
+// log is followed with wait() and delivered once, to the stdout consumer.
+test('background commands (timeoutMs > the foreground cap) start without stream callbacks; the merged wait() log reaches only the stdout consumer', async () => {
+  const runCalls = [];
+  const job = {
+    killed: 0,
+    kill: async () => { job.killed++; return true; },
+    wait: async (w) => { await w?.onStdout?.('out-chunk\nerr-chunk\n'); return { stdout: 'out-chunk\nerr-chunk\n', stderr: '', exitCode: 0, timedOut: false, truncated: false }; },
+  };
+  const { sdk } = fakeSdk();
+  sdk.Sandbox.connect = async () => ({
+    sandboxId: 'm-1',
+    commands: { run: async (cmd, opts = {}) => {
+      runCalls.push({ cmd, opts });
+      // the SDK startJob refusal this test exists to avoid:
+      if (opts.background === true && (opts.onStdout || opts.onStderr || opts.stdin !== undefined)) {
+        throw Object.assign(new Error('stream callbacks are not supported with background: true'), { code: 'bad_request' });
+      }
+      if (opts.background === true) return job;
+      return { stdout: 'fg-out', stderr: 'fg-err', exitCode: 0 };
+    } },
+  });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, sliceMs: 1 });
+  const sbx = await p.connect('m-1');
+  const out = [], err = [];
+  const r = await sbx.commands.run('long running', { timeoutMs: 601_000, onStdout: (c) => out.push(c), onStderr: (c) => err.push(c) });
+  assert.equal(r.exitCode, 0);
+  assert.equal(runCalls[0].opts.background, true);
+  assert.equal(runCalls[0].opts.onStdout, undefined, 'the background start must not carry onStdout');
+  assert.equal(runCalls[0].opts.onStderr, undefined, 'the background start must not carry onStderr');
+  assert.equal(runCalls[0].opts.stdin, undefined, 'the background start must not carry stdin');
+  assert.deepEqual(out, ['out-chunk\nerr-chunk\n']);
+  assert.deepEqual(err, [], 'the merged background log is delivered once, as stdout; stderr stays empty');
+  assert.equal(job.killed, 0);
+});
+
+test('foreground commands still forward onStdout, onStderr and stdin', async () => {
+  const runCalls = [];
+  const { sdk } = fakeSdk();
+  sdk.Sandbox.connect = async () => ({
+    sandboxId: 'm-1',
+    commands: { run: async (cmd, opts = {}) => { runCalls.push({ cmd, opts }); return { stdout: 'o', stderr: 'e', exitCode: 0 }; } },
+  });
+  const p = createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f });
+  const sbx = await p.connect('m-1');
+  const stdin = new TextEncoder().encode('in');
+  await sbx.commands.run('short', { timeoutMs: 60_000, onStdout: () => {}, onStderr: () => {}, stdin });
+  assert.equal(runCalls[0].opts.background, undefined);
+  assert.equal(typeof runCalls[0].opts.onStdout, 'function');
+  assert.equal(typeof runCalls[0].opts.onStderr, 'function');
+  assert.equal(runCalls[0].opts.stdin, stdin);
+});
+
 test('files.writeSecret uploads through the SDK upload route only, and fails closed when only the base64 exec fallback is left', async () => {
   const seen = [];
   const mk = (writeStream) => {

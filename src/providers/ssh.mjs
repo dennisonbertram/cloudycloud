@@ -9,6 +9,7 @@
 // the remote side itself if it matters. ConnectTimeout makes an unreachable host fail in seconds, not minutes.
 // Only the key PATH goes in argv. The remote command is base64 so its text never needs quoting or shows in argv.
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +30,7 @@ export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = no
   const dir = privateDir();
   const limiter = createLimiter(8); // OpenSSH MaxSessions defaults to 10 per connection
 
-  const argvFor = (remoteCmd) => {
+  const argvFor = (remoteCmd, tag) => {
     const b64 = Buffer.from(remoteCmd).toString('base64');
     return [
       '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ControlMaster=auto', '-o', `ControlPath=${dir}/cc-%C`,
@@ -37,15 +38,19 @@ export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = no
       ...(env.CLOUDY_CLOUD_SSH_KEY ? ['-i', env.CLOUDY_CLOUD_SSH_KEY] : []),
       ...(env.CLOUDY_CLOUD_SSH_PORT ? ['-p', String(env.CLOUDY_CLOUD_SSH_PORT)] : []),
       host,
-      `sh -c "$(printf %s ${b64} | base64 -d)"`,
+      // The exit marker proves the remote command ran: ssh's own 255 (a transport failure) is then told
+      // apart from a remote command that legitimately exits 255.
+      `sh -c "$(printf %s ${b64} | base64 -d)"${tag ? `; s=$?; printf '\\nCCSSH_EXIT_${tag}=%s\\n' "$s" >&2; exit $s` : ''}`,
     ];
   };
 
   const once = (remoteCmd, { stdin, onStdout, onStderr, timeoutMs, signal } = {}) => new Promise((resolve, reject) => {
     const aborted = () => Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
     if (signal?.aborted) return reject(aborted());
-    const child = spawn('ssh', argvFor(remoteCmd), { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', done = false;
+    const tag = randomBytes(8).toString('hex');
+    const child = spawn('ssh', argvFor(remoteCmd, tag), { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '', pending = '', done = false;
+    const marker = new RegExp(`CCSSH_EXIT_${tag}=(\\d+)`);
     const timer = timeoutMs > 0 && setTimeout(() => {
       child.kill();
       finish(reject, fail('timeout', `timed out after ${Math.ceil(timeoutMs / 1000)} s`, { stdout, stderr }));
@@ -56,9 +61,26 @@ export function createSsh(env = process.env, { spawn = nodeSpawn, spawnSync = no
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (d) => { d = String(d); stdout += d; try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
-    child.stderr.on('data', (d) => { d = String(d); stderr += d; try { onStderr?.(d); } catch { /* a bad callback must not kill the call */ } });
+    // The exit marker arrives as the last stderr bytes, possibly split across chunks or followed by ssh's
+    // own trailer (a dropped connection can still print after it): the last bytes are held back until
+    // close so the marker is found and stripped before the stream reaches callers.
+    child.stderr.on('data', (d) => {
+      pending += String(d);
+      const emit = pending.slice(0, -256);
+      pending = pending.slice(-256);
+      if (emit) { stderr += emit; try { onStderr?.(emit); } catch { /* a bad callback must not kill the call */ } }
+    });
     child.on('error', (e) => finish(reject, fail('transient', `cannot reach ${host} over ssh: ${e.message}`)));
     child.on('close', (code) => {
+      const m = marker.exec(pending);
+      const rest = m ? pending.slice(0, m.index) : pending;
+      if (rest) { stderr += rest; try { onStderr?.(rest); } catch { /* a bad callback must not kill the call */ } }
+      pending = '';
+      if (m) { // the remote command ran and finished: its real exit code, even a genuine 255
+        const remote = Number(m[1]);
+        if (remote !== 0) return finish(reject, Object.assign(new Error(stderr.trim().slice(-300) || `exit ${remote}`), { exitCode: remote, stdout, stderr }));
+        return finish(resolve, { stdout, stderr, exitCode: 0 });
+      }
       if (code === 255 || code === null) return finish(reject, fail('transient', `cannot reach ${host} over ssh: ${stderr.trim().slice(-300)}`));
       if (code !== 0) return finish(reject, Object.assign(new Error(stderr.trim().slice(-300) || `exit ${code}`), { exitCode: code, stdout, stderr }));
       finish(resolve, { stdout, stderr, exitCode: 0 });

@@ -21,21 +21,23 @@ async function localRepo() {
   return dir;
 }
 
-function provider({ transportLoss = false, createError, name = 'fake', duplicateMatches = false } = {}) {
+function provider({ transportLoss = false, createError, name = 'fake', duplicateMatches = false, deleteAt, hasShell = true } = {}) {
   const home = join(tmpdir(), `cc-exec-machine-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const state = { createAttempts: 0, created: 0, deleted: 0, commands: 0, calls: [], labels: undefined, sandbox: undefined };
+  const state = { createAttempts: 0, created: 0, deleted: 0, commands: 0, calls: [], labels: undefined, sandbox: undefined, writes: [], secretWrites: [] };
   const adapter = {
     name,
-    caps: { machineKinds: ['linux'], uploadMaxBytes: 10_000_000, maxTtlSeconds: 86_400, hasEgressPolicy: true },
+    caps: { machineKinds: ['linux'], uploadMaxBytes: 10_000_000, maxTtlSeconds: 86_400, hasEgressPolicy: true, hasShell },
     async create(options) {
       state.createAttempts++;
       if (createError && !createError.afterAllocation) throw Object.assign(new Error(createError.message ?? 'create refused'), createError);
       state.created++;
       state.labels = options.labels;
       await mkdir(home, { recursive: true });
+      const put = (list) => async (path, bytes) => { list.push(path); await mkdir(join(path, '..'), { recursive: true }).catch(() => {}); const { writeFile } = await import('node:fs/promises'); await writeFile(path, bytes); };
       const sandbox = {
-        id: 'same-id', home,
-        files: { async write(path, bytes) { await mkdir(join(path, '..'), { recursive: true }).catch(() => {}); const { writeFile } = await import('node:fs/promises'); await writeFile(path, bytes); } },
+        id: 'same-id', home, deleteAt,
+        kill: async () => { await adapter.delete(); },
+        files: { write: put(state.writes), writeSecret: put(state.secretWrites) },
         commands: { async run(cmd, opts = {}) {
           state.commands++;
           state.calls.push({ cmd, opts });
@@ -90,6 +92,13 @@ test('shared create routing preserves message-based provider refusal classificat
   assert.equal(classifyCreateFailure(new Error('unexpected transport failure')), undefined);
 });
 
+test('create routing honors an explicit transient code before message text', () => {
+  const transient = (message) => Object.assign(new Error(message), { code: 'transient' });
+  assert.equal(classifyCreateFailure(transient('the create request was dropped; response mentioned quota_exceeded')), 'reconcile');
+  assert.equal(classifyCreateFailure(Object.assign(new Error('retry timed out during rate_limited backoff'), { code: 'create_unknown' })), 'reconcile');
+  assert.equal(classifyCreateFailure(Object.assign(new Error('rate_limited'), { code: 'rate_limited' })), 'next');
+});
+
 test('exec preserves literal argv, streams both streams, and deletes a verified clean machine', async () => {
   const repo = await localRepo(), instance = provider();
   const streamed = { out: '', err: '' };
@@ -119,6 +128,28 @@ test('exec returns the exact nonzero code and cleans an unchanged workspace', as
     assert.equal(result.workspace_changed, false);
     assert.equal(result.preserve_machine, false);
     assert.equal(instance.state.deleted, 1);
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test('exec prints the log of a failing Instabox-style command once (merged log in stdout, stderr empty)', async () => {
+  const repo = await localRepo(), instance = provider();
+  const create = instance.adapter.create;
+  instance.adapter.create = async (o) => {
+    const sandbox = await create(o), real = sandbox.commands.run;
+    // Instabox background jobs return one merged log: it streams as stdout and the failure carries no stderr.
+    sandbox.commands.run = (cmd, opts = {}) => /; s=\$\?;/.test(cmd)
+      ? (async () => { await opts.onStdout?.('out-ok\nerr-ok\n'); throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: 'out-ok\nerr-ok\n', stderr: '' }); })()
+      : real(cmd, opts);
+    return sandbox;
+  };
+  const streamed = { out: '', err: '' };
+  try {
+    const result = await invoke(repo, instance, ['sh', '-c', 'true'], { stdout: (c) => { streamed.out += c; }, stderr: (c) => { streamed.err += c; } });
+    assert.equal(result.exit_code, 1);
+    assert.equal(streamed.out, 'out-ok\nerr-ok\n');
+    assert.equal(streamed.err, '');
+    assert.equal(result.stdout, 'out-ok\nerr-ok\n');
+    assert.equal(result.stderr, '');
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
@@ -158,6 +189,29 @@ test('exec keeps dirty work and a clean new commit for inspection', async () => 
     assert.equal(commitResult.preserve_machine, true);
     assert.equal(committed.state.deleted, 0);
   } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(dirty.home, { recursive: true, force: true }), rm(committed.home, { recursive: true, force: true })]); }
+});
+
+test('exec keeps the machine when the command adds a linked worktree with a commit', async () => {
+  const repo = await localRepo(), instance = provider();
+  try {
+    const result = await invoke(repo, instance, [
+      'sh', '-c', 'git worktree add ../linked --detach && cd ../linked && git -c user.name=x -c user.email=x@x commit -qm linked-work --allow-empty',
+    ]);
+    assert.equal(result.preserve_machine, true, JSON.stringify(result));
+    assert.equal(instance.state.deleted, 0);
+  } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(instance.home, { recursive: true, force: true })]); }
+});
+
+test('exec never puts argv or the snapshot bundle in a provider command string', async () => {
+  const repo = await localRepo(), instance = provider();
+  try {
+    const result = await invoke(repo, instance, ['node', '-e', 'process.stdout.write("ok")', 'sk-literal-credential-9']);
+    assert.equal(result.status, 'completed', JSON.stringify(result));
+    for (const { cmd } of instance.state.calls) assert.ok(!cmd.includes('sk-literal-credential-9'), `argv leaked into a command string: ${cmd}`);
+    assert.ok(instance.state.secretWrites.some((p) => p.endsWith('/in.bundle')), 'the snapshot bundle must use the upload-only write route');
+    assert.ok(instance.state.secretWrites.some((p) => p.includes('exec-argv')), 'the argv file must use the upload-only write route');
+    assert.ok(!instance.state.writes.some((p) => p.endsWith('/in.bundle') || p.includes('exec-argv')), 'secret material must not use the plain write route when writeSecret exists');
+  } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
 test('CLI returns zero and prints the locator when a successful command leaves dirty work', async () => {
@@ -219,4 +273,59 @@ test('exec refuses duplicate matches after an uncertain create and returns provi
     assert.deepEqual(result.owners.map((owner) => owner.selector), ['first:same-id', 'first:other-id']);
     assert.match(result.action, /cloudy-cloud machines ls/);
   } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(uncertain.home, { recursive: true, force: true })]); }
+});
+
+test('exec makes the argv file private and removes it (and the bundle) when the command ends', async () => {
+  const repo = await localRepo(), instance = provider();
+  try {
+    // The leftover file keeps the machine, so the removal is checked on a retained machine.
+    const result = await invoke(repo, instance, ['node', '-e', "require('fs').writeFileSync('left.txt','work'); process.exit(37)"]);
+    assert.equal(result.exit_code, 37);
+    assert.equal(result.preserve_machine, true);
+    const setup = instance.state.calls.find(({ cmd }) => cmd.includes('git init -q repo'))?.cmd;
+    assert.match(setup ?? '', /chmod 600 .*exec-argv\.sh/, 'the uploaded argv script is locked down before the command runs');
+    await assert.rejects(readFile(join(instance.home, 'exec-argv.sh')), 'the argv script must not survive the command');
+    await assert.rejects(readFile(join(instance.home, 'in.bundle')), 'the uploaded bundle must not survive the command');
+  } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(instance.home, { recursive: true, force: true })]); }
+});
+
+test('exec keeps the machine when the command leaves only ignored build output', async () => {
+  const repo = await localRepo();
+  await (await import('node:fs/promises')).writeFile(join(repo, '.gitignore'), '*.log\n');
+  await run('git', ['add', '.gitignore'], { cwd: repo });
+  await run('git', ['commit', '-qm', 'ignore logs'], { cwd: repo });
+  const instance = provider();
+  try {
+    const result = await invoke(repo, instance, ['node', '-e', "require('fs').writeFileSync('build.log','artifact')"]);
+    assert.equal(result.workspace_dirty, true, `ignored output must count as work: ${JSON.stringify(result)}`);
+    assert.equal(result.preserve_machine, true);
+    assert.equal(instance.state.deleted, 0);
+  } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(instance.home, { recursive: true, force: true })]); }
+});
+
+test('exec deletes a sandbox whose granted lifetime cannot cover the command and tries the next provider', async () => {
+  const repo = await localRepo();
+  const short = provider({ name: 'short', deleteAt: Date.now() + 5_000 }); // granted 5 s against a 2,100 s default
+  const ready = provider({ name: 'ready' });
+  try {
+    const result = await executeRemoteArgv(['node', '-e', 'process.stdout.write("ok")'], {
+      repo, providers: [short.adapter, ready.adapter], env: { HOME: tmpdir(), CLOUDY_CLOUD_CONFIG: join(tmpdir(), 'missing-exec-env') },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(result.provider, 'ready');
+    assert.equal(short.state.deleted, 1, 'the too-short sandbox was deleted before moving on');
+    assert.equal(short.state.commands, 0, 'no command ran on the expiring sandbox');
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test('exec tells the truth when a retained machine has no shell', async () => {
+  const repo = await localRepo(), instance = provider({ hasShell: false, name: 'noshell' });
+  try {
+    const result = await invoke(repo, instance, ['node', '-e', "require('fs').writeFileSync('left.txt','work')"]);
+    assert.equal(result.preserve_machine, true);
+    assert.match(result.action, /no shell/);
+    assert.doesNotMatch(result.action, /cloudy-cloud shell/);
+    assert.match(result.action, /noshell:same-id/);
+    assert.match(result.cleanup_command, /cloudy-cloud machines stop 'noshell:same-id'/);
+  } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(instance.home, { recursive: true, force: true })]); }
 });

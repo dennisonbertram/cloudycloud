@@ -11,6 +11,9 @@ import { proxySecrets } from './config.mjs';
 import { providerNames, loadProviders } from './providers/index.mjs';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
+// Advertised by owners whose cloud_agent_stop verifies the live workspace before deleting a worker.
+// The run/resume CLI only sends a conditional stop to an owner carrying this extension.
+export const CONDITIONAL_STOP_EXTENSION = 'io.cloudy-cloud/conditional-stop';
 const CAPABILITIES_META = 'io.modelcontextprotocol/clientCapabilities';
 const packageVersion = createRequire(import.meta.url)('../package.json').version;
 const localExec = promisify(execFile);
@@ -183,6 +186,7 @@ for (const tool of tools) {
 const handlers = {
   cloud_agent: runSubagent, cloud_agent_explain: explainSubagent, cloud_agent_recover: recoverAgent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
   cloud_exec: async (args, deps) => {
+    deps.refreshEnv?.(); // keys and network policy added to the env file since startup apply to this exec
     const secrets = secretValues(deps.env ?? process.env, deps.provider?.keyName, [...(deps.literals ?? [])]);
     const scrub = (value) => secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), String(value ?? ''));
     const cleanValue = (value) => typeof value === 'string' ? scrub(value) : Array.isArray(value) ? value.map(cleanValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cleanValue(item)])) : value;
@@ -219,10 +223,12 @@ const handlers = {
     };
     const report = (stream, chunk, flush = false) => {
       if (progressToken === undefined) return Promise.resolve();
-      const combined = tails[stream] + String(chunk ?? '');
+      // Scrub the whole buffer before splitting off a possible in-progress secret prefix: a complete
+      // match must never reach the held suffix, where the next chunk could leak it piecemeal.
+      const combined = scrub(tails[stream] + String(chunk ?? ''));
       const heldLength = partialSecretSuffix(combined);
       const safeLength = combined.length - heldLength;
-      const safe = scrub(combined.slice(0, safeLength)) + (flush && heldLength ? '[redacted]' : '');
+      const safe = combined.slice(0, safeLength) + (flush && heldLength ? '[redacted]' : '');
       tails[stream] = flush ? '' : combined.slice(safeLength);
       if (!safe) return Promise.resolve();
       for (let offset = 0; offset < safe.length; offset += 4096) {
@@ -244,7 +250,13 @@ const handlers = {
       await report('stderr', '', true);
       await notifications;
     }
-    return { content: [{ type: 'text', text: scrub(JSON.stringify(result)) }], structuredContent: cleanValue(result), ...(result?.error ? { isError: true } : {}) };
+    // Serialization escapes secrets (a newline inside a token becomes \n in the JSON), so the text
+    // form scrubs both the literal and the JSON-escaped spelling of each secret.
+    const scrubJson = (value) => secrets.reduce((text, secret) => {
+      const escaped = JSON.stringify(secret).slice(1, -1);
+      return text.split(secret).join('[redacted]').split(escaped).join('[redacted]');
+    }, String(value ?? ''));
+    return { content: [{ type: 'text', text: scrubJson(JSON.stringify(result)) }], structuredContent: cleanValue(result), ...(result?.error ? { isError: true } : {}) };
   },
   cloud_agent_list: listAgents, cloud_agent_stop: stopAgents,
 };
@@ -264,7 +276,7 @@ export function buildServer(deps) {
   sharedQueue(deps);
   deps.literals ??= new Set(); // tokens to redact, added when an agent starts and needed by every later call
   deps.stoppedBranches ??= new Map(); // branches of stopped agents, for the not-open error of a later call
-  const server = new Server({ name: 'cloud', version: packageVersion }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {} } } });
+  const server = new Server({ name: 'cloud', version: packageVersion }, { capabilities: { tools: {}, extensions: { [TASKS_EXTENSION]: {}, [CONDITIONAL_STOP_EXTENSION]: { workspaceProbe: true } } } });
   server.setRequestHandler('tools/list', async () => ({ tools }));
   server.setRequestHandler('tools/call', async (req, ctx) => {
     if (req.params.name === 'cloud_agent_capabilities') return capabilities(deps);

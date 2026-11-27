@@ -302,6 +302,7 @@ export function createProvider(env = process.env, deps = {}) {
         body: JSON.stringify({ process: { tag }, signal: 'SIGNAL_SIGKILL' }),
       }).then((r) => r.text().catch(() => {})).catch(() => {});
       let stdout = '', stderr = '', exitCode, streamed = false, reattached = false;
+      let outPre = '', errPre = ''; // the stream text delivered before the drop, so the gap can be split out
       // envd event boundaries do not respect UTF-8 character boundaries, so each stream gets its
       // own streaming decoder — a multibyte character split across events decodes whole.
       const utf8 = { stdout: new TextDecoder(), stderr: new TextDecoder() };
@@ -335,6 +336,7 @@ export function createProvider(env = process.env, deps = {}) {
           if (end?.error) throw connectErr(end.error);
           if (!dropped && end) break; // completed stream
           if (!streamed || attach >= 2) throw fail('transient', 'the E2B command stream ended before the process result arrived');
+          if (!reattached) { outPre = stdout; errPre = stderr; }
           reattached = true; // the stream dropped: output emitted in the gap never replays on envd
         }
       } catch (e) {
@@ -350,14 +352,18 @@ export function createProvider(env = process.env, deps = {}) {
         // so the partial transcript is never returned as complete.
         try {
           const [outB, errB] = await Promise.all([files.read(ioOut), files.read(ioErr)]);
-          const full = outB.toString('utf8');
-          const delta = full.startsWith(stdout) ? full.slice(stdout.length) : full;
-          if (delta) { try { onStdout?.(delta); } catch { /* a bad callback must not kill the call */ } }
-          const fullErr = errB.toString('utf8');
-          const deltaErr = fullErr.startsWith(stderr) ? fullErr.slice(stderr.length) : '';
-          if (deltaErr) { try { onStderr?.(deltaErr); } catch { /* a bad callback must not kill the call */ } }
-          stdout = full;
-          stderr = fullErr;
+          // The file holds pre ++ missed ++ post, where post is what streamed after the drop. Emit only
+          // the missed window: replaying the whole file would duplicate, skipping it would lose output.
+          const recover = (full, pre, stream, emit) => {
+            const post = stream.slice(pre.length);
+            if (full.startsWith(pre) && full.endsWith(post) && pre.length + post.length <= full.length) {
+              const delta = full.slice(pre.length, full.length - post.length);
+              if (delta) emit(delta);
+            } else if (full !== stream) emit(full); // cannot place the gap: deliver the recovered output whole rather than lose it
+            return full;
+          };
+          stdout = recover(outB.toString('utf8'), outPre, stdout, (d) => { try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
+          stderr = recover(errB.toString('utf8'), errPre, stderr, (d) => { try { onStderr?.(d); } catch { /* a bad callback must not kill the call */ } });
         } catch (e) {
           throw fail('transient', `the E2B command stream dropped and its output could not be read back (${scrub(e?.message ?? e)})`, { stdout: scrub(stdout), stderr: scrub(stderr) });
         }
@@ -422,7 +428,10 @@ export function createProvider(env = process.env, deps = {}) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `e2b runs only linux sandboxes, not ${kind.name}. Use machine "linux".`);
       if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
       apiKey(); // no_key before the consent check: the key is required either way
-      if ((includeGithubToken || secrets.length || Object.keys(envs).length) && !consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      // Token-on-box consent covers a create that carries credentials; a credential-free one (cloudy-cloud
+      // exec sends no secrets) needs no consent and never hits stillConsented below either.
+      const credentialled = Boolean(includeGithubToken || secrets.length || Object.keys(envs).length);
+      if (credentialled && !consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
       signal?.throwIfAborted?.();
 
       const ttl = Math.min(Math.max(1, ttlSeconds || MAX_TTL_SECONDS), MAX_TTL_SECONDS);
@@ -478,7 +487,7 @@ export function createProvider(env = process.env, deps = {}) {
             created = await ctl('POST', '/v2/sandboxes', {
               templateID: template, timeout: want, metadata: all, envVars: vars,
               ...(net && { network: net }),
-            }, { headers: { 'Idempotency-Key': `${idem}-${want}` }, tries: 4, signal, before: stillConsented }); // one key per rung: E2B refuses a reused key with a different body
+            }, { headers: { 'Idempotency-Key': `${idem}-${want}` }, tries: 4, signal, before: credentialled ? stillConsented : undefined }); // one key per rung: E2B refuses a reused key with a different body
             step = want;
             if (want > learnedMax) learnedMax = want; // the plan accepted more than the Hobby hour
             break;

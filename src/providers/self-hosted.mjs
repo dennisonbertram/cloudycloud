@@ -67,7 +67,7 @@ export function createProvider(env = process.env, deps = {}) {
       files: {
         async write(path, data) {
           const dir = String(path).replace(/\/[^/]*$/, '') || '/';
-          await exec(`mkdir -p ${q(dir)} && cat > ${q(path)}`, { stdin: typeof data === 'string' ? data : Buffer.from(data) }, ['-i', '-w', HOME]);
+          await exec(`mkdir -p ${q(dir)} && (umask 077; cat > ${q(path)})`, { stdin: typeof data === 'string' ? data : Buffer.from(data) }, ['-i', '-w', HOME]);
           return true;
         },
         async read(path) { // base64 keeps binary safe through ssh.mjs's utf8 stdout

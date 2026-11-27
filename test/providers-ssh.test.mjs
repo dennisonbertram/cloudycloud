@@ -102,6 +102,35 @@ test('exit 255 is transient and names the host', async () => {
   } finally { h.cleanup(); }
 });
 
+test('a remote command exit 255 keeps its exit code when the exit marker arrives', async () => {
+  const h = harness((c, call) => {
+    const tag = call.args.at(-1).match(/CCSSH_EXIT_([0-9a-f]{16})=/)[1];
+    c.stderr.write(`remote tool failed\n\nCCSSH_EXIT_${tag}=255\n`);
+    c.emit('close', 255, null);
+  });
+  try {
+    const chunks = [];
+    await assert.rejects(h.make().run('exit 255', { onStderr: (s) => chunks.push(s) }),
+      (e) => e.exitCode === 255 && e.code === undefined && e.stderr.includes('remote tool failed') && !e.stderr.includes('CCSSH_EXIT'));
+    assert.ok(!chunks.join('').includes('CCSSH_EXIT'), 'the exit marker never reaches the stderr consumer');
+  } finally { h.cleanup(); }
+});
+
+test('the exit marker is still honoured split across stderr chunks and with a following trailer', async () => {
+  const h = harness((c, call) => {
+    const tag = call.args.at(-1).match(/CCSSH_EXIT_([0-9a-f]{16})=/)[1];
+    const marker = `\nCCSSH_EXIT_${tag}=42\n`;
+    c.stderr.write('first half of stderr\n');
+    c.stderr.write(marker.slice(0, 10));
+    c.stderr.write(marker.slice(10));
+    c.stderr.write('Connection to box closed.\r\n');
+    c.emit('close', 42, null);
+  });
+  try {
+    await assert.rejects(h.make().run('exit 42'), (e) => e.exitCode === 42 && e.code === undefined && e.stderr.includes('first half of stderr') && !e.stderr.includes('CCSSH_EXIT'));
+  } finally { h.cleanup(); }
+});
+
 test('other non-zero exit rejects with exitCode, stdout, stderr', async () => {
   const h = harness((c) => exit(c, 3, 'o', 'e'));
   try {

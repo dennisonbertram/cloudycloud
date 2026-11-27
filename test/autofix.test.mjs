@@ -92,7 +92,7 @@ async function setup(g = {}, env = {}) {
         await run('echo x >> fix.txt && git add -A && git -c user.name=x -c user.email=x@x commit -qm fix', { cwd: o.cwd, timeoutMs: 5000 });
         g.fixPushed = true;
       }
-      if (g.leaveDirtyOnFix && g.fixPushed && !g.dirtyAdded && cmd.startsWith('if [ "$(git rev-parse HEAD)"')) {
+      if (g.leaveDirtyOnFix && g.fixPushed && !g.dirtyAdded && cmd.startsWith('H=$(git rev-parse HEAD);')) {
         await run('echo uncommitted >> a.txt', { cwd: o.cwd, timeoutMs: 5000 });
         g.dirtyAdded = true;
       }
