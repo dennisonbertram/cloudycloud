@@ -8,6 +8,7 @@ import { runSubagent, explainSubagent, recoverAgent, messageAgent, waitAgents, r
 import { executeRemoteArgv } from './exec.mjs';
 import { loadProfiles, resolveProfile } from './profiles.mjs';
 import { proxySecrets } from './config.mjs';
+import { readActivity, activityText } from './activity.mjs';
 import { providerNames, loadProviders } from './providers/index.mjs';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
@@ -159,6 +160,13 @@ const tools = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: 'cloud_agent_activity',
+    description: 'Show what running cloud agents are doing right now: each agent\'s state (working, idle, waiting for sign-in, blocked) and its last ~10 steps, read from local files without calling any machine. Optionally filter by agent id or name. A working agent with no new step for 5 minutes is marked quiet. Coordinators appear while cloudy-cloud watch or dashboard runs.',
+    inputSchema: { type: 'object', properties: { agent: { type: 'string', description: 'Optional agent id or name' } } },
+    outputSchema: { type: 'object', properties: { agents: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['agents'], additionalProperties: true },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: 'cloud_agent_stop',
     description: 'Stop agents and delete their sandboxes. Safe to repeat or to call with unknown ids. Automatic cleanup may include expected_turn_id and expected_status idle so it stops only the same completed turn if the worker has not resumed.',
     inputSchema: { type: 'object', properties: { agent_ids: ids, expected_turn_id: { type: 'string' }, expected_status: { type: 'string', enum: ['idle'] } }, required: ['agent_ids'] },
@@ -257,6 +265,11 @@ const handlers = {
       return text.split(secret).join('[redacted]').split(escaped).join('[redacted]');
     }, String(value ?? ''));
     return { content: [{ type: 'text', text: scrubJson(JSON.stringify(result)) }], structuredContent: cleanValue(result), ...(result?.error ? { isError: true } : {}) };
+  },
+  cloud_agent_activity: async (args, deps) => {
+    const q = typeof args.agent === 'string' ? args.agent : '';
+    const agents = readActivity({ env: { ...process.env, ...deps.env } }).filter((r) => !q || r.id === q || r.name === q || r.id.startsWith(q));
+    return { content: [{ type: 'text', text: activityText(agents) }], structuredContent: { agents } };
   },
   cloud_agent_list: listAgents, cloud_agent_stop: stopAgents,
 };

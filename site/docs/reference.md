@@ -118,6 +118,17 @@ Example:
 cloudy-cloud dashboard --port 5000 --no-open
 ```
 
+### cloudy-cloud watch and statusline
+
+```
+cloudy-cloud watch [NAME|ID] [--json]
+cloudy-cloud statusline
+```
+
+`watch` follows what your running cloud agents do, like `tail -f`. It prints the current state of each agent when it starts, then one line per new step, each state change, and a warning when a working agent has had no step for 5 minutes. `NAME|ID` limits it to one agent. `--json` prints one JSON object per line. Press Ctrl+C to stop. Workers come from the local event log. Coordinators of this installation are read every 10 seconds from the transcript of the Claude session in their `claude` tmux pane, and only a short summary of each tool call is kept: the tool name, a file path, or the program name of a Bash command. Arguments and URLs are never kept.
+
+`statusline` prints one line for a Claude Code status line, such as `☁ 2 working, 1 blocked · boss: Bash npm · 12s ago`, with a count for each state. It reads local files only and prints nothing when no agent runs. Add `{ "statusLine": { "type": "command", "command": "cloudy-cloud statusline" } }` to your Claude Code settings; cloudy-cloud does not edit them.
+
 ### cloudy-cloud branches
 
 ```
@@ -473,6 +484,10 @@ Returns an agent's latest result again, as often as asked, even after `cloud_age
 ### cloud_agent_list
 
 Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With `all: true` it instead lists every machine on the provider labelled `purpose=cloudy-cloud` (other sessions and coordinators included), grouped by its `parent` label. Each worker machine carries the labels `role`, `profile` (`claude` for the default), `parent`, `agent` and a short redacted `description`.
+
+### cloud_agent_activity
+
+Shows what running agents do now: state, current step and the last 10 steps of each worker and coordinator, with a quiet warning after 5 minutes without a step. The optional `agent` argument is a name or id. The tool is read-only and reads local files only. Coordinator steps are available while `cloudy-cloud watch` or the dashboard runs.
 
 ### cloud_agent_stop
 

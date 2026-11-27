@@ -37,6 +37,8 @@ Boxes are grouped as **Needs you**, **Active** and **Finished**.
 - **Active:** agents that are queued, starting or running.
 - **Finished:** everything else.
 
+Above the list, a **Live activity** strip shows one line per agent: its state, current step, how long ago it changed, and *quiet for N min* after 5 minutes without a step. Coordinators of this installation appear in it with their steps, read every 10 seconds from the Claude session in their `claude` tmux pane. A step is a short summary only: the tool name, a file path, or the program name of a Bash command. The dashboard never reads a coordinator that belongs to another installation on a shared provider account.
+
 The top bar counts running, starting, idle and failed agents and those finished today. The browser tab title shows the failed and idle counts.
 
 ### The detail pane
