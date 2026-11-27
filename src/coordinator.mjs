@@ -246,8 +246,9 @@ async function signedIn(sbx) {
 const loginActive = async (sbx) => { try { await sbx.commands.run('test -f "$HOME/.config/cloudy-cloud/login-active"', { timeoutMs: 15_000 }); return true; } catch { return false; } };
 
 // ---- Saved Claude accounts (src/accounts.mjs): sign in once per account, lease one at a time ----
-// The account a coordinator uses is on the machine's `account` label — or, for a sign-in saved after
-// start, on the index lease that names the machine (a label cannot be set after creation). Only a
+// The account a coordinator uses is recorded only in the local index lease that names the machine —
+// a sign-in email never rides machine metadata, which the whole workspace can read (a machine
+// created before this may still carry an `account` label; it is read as a fallback only). Only a
 // machine carrying this installation's `install` label is ever delivered a credential or read back —
 // the same check attach and login use before they act on a machine.
 const machineLease = (c, m) => {
@@ -289,6 +290,9 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
     const dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
     if (dupe) label = dupe; // the identity already has a label — this sign-in updates it
     else label ||= accounts.nextAccountLabel(dir);
+    // The lease this machine holds on the carried label, re-read under the lock: when the sign-in
+    // lands under a different label the lease moves with the live credential.
+    const ours = mid && carried && idx[carried]?.leasedBy?.machineId === mid ? idx[carried].leasedBy : null;
     const holder = idx[label]?.leasedBy;
     if (holder?.name && holder.machineId !== mid) {
       if (dupe || accounts.sameAccount(idx[label], j)) { c.out(`This Claude account is already saved as ${label} and used by coordinator ${holder.name} — the sign-in was not saved under a second label.`); return ''; }
@@ -303,9 +307,17 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
       label = accounts.nextAccountLabel(dir);
     }
     accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, accountUuid: typeof j.accountUuid === 'string' ? j.accountUuid : undefined, credText: got.text, now: c.now() });
-    // The lease this machine already holds was the save's slot and stays as it is; a fresh save is
-    // leased to this coordinator (name, machine id, provider, deleteAt — the record start writes).
-    if (mid && !(holder?.name && holder.machineId === mid)) {
+    // The lease this machine already holds was the save's slot and stays as it is. A replacement
+    // sign-in saved under a different label keeps that lease: it travels with the live credential
+    // to the saved label, and the old label is unbound in the same locked step — its saved
+    // credential stays (the lease a machine holds always covers the identity it is actually
+    // running; a saved sign-in never sits unleased while it is live on that machine). A fresh save
+    // is leased to this coordinator (name, machine id, provider, deleteAt — the record start
+    // writes).
+    if (mid && ours && label !== carried) {
+      accounts.lease(dir, label, ours, c.now());
+      accounts.release(dir, carried, { machineId: mid });
+    } else if (mid && !(holder?.name && holder.machineId === mid)) {
       const deleteAt = m?.deleteAt && Number.isFinite(new Date(m.deleteAt).getTime()) ? new Date(m.deleteAt).toISOString() : undefined;
       accounts.lease(dir, label, { name: m?.labels?.name || name, machineId: mid, provider: m?.provider ?? c.primary.name, deleteAt }, c.now());
     }
@@ -363,7 +375,8 @@ const goneChecker = (c) => {
 // partial — never release on a failed listing (the same incomplete-inventory rule uniqueCoordinator
 // applies), and a lease whose provider is not configured was never listed at all. A released
 // account whose newest credential died with the machine is uncertain: it is marked needsSignIn
-// before it goes back on offer. A start reservation that never got a machine expires by age — and
+// before it goes back on offer — unless the saved credential was already verified current while
+// the machine lived (`verifiedAt` — a finished sign-in or a successful sync). A start reservation that never got a machine expires by age — and
 // only the still-unbound reservation carrying exactly that resId, never one bound or re-reserved
 // while the listing was in flight.
 const releaseStaleLeases = async (c, rows, leased) => {
@@ -379,7 +392,7 @@ const releaseStaleLeases = async (c, rows, leased) => {
     }
     if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) continue;
     const alive = rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
-    if (!alive && await gone(l) && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending) accounts.markNeedsSignIn(dir, a.label);
+    if (!alive && await gone(l) && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending && !a.verifiedAt) accounts.markNeedsSignIn(dir, a.label);
   }
 };
 
@@ -406,7 +419,7 @@ const syncAccounts = async (c) => {
     const m = rows.find((x) => (x.provider ?? c.primary.name) === l.provider && x.id === l.machineId);
     if (!m) {
       if (!(await gone(l))) lines.push(`${a.label}: ${l.name} is missing only from the filtered listing; left alone.`);
-      else if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
+      else if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending && !a.verifiedAt) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
       else lines.push(`${a.label}: the lease moved to another machine; left alone.`);
       continue;
     }
@@ -779,11 +792,13 @@ async function start(c, args) {
   c.progress('Creating the coordinator machine...');
   // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
   // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
-  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name.
+  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name. The account a
+  // coordinator uses never rides machine metadata — machine labels are visible to the whole workspace and
+  // the account label is derived from a sign-in email; the local index lease is the only record of it.
   const t0 = Date.now(); // the create timestamp, for the deadline fallback below
   let sbx;
   try {
-    sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(useAccount ? { account: useAccount } : {}), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+    sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
   } catch (e) {
     // A create that never produced a machine frees this start's reservation at once — pinned by
     // resId, so a concurrent start's reservation of the same label is never touched.
@@ -803,7 +818,7 @@ async function start(c, args) {
   let leased = '';
   if (useAccount && accounts.bindLease(accDir, useAccount, { name, machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name, deleteAt, pending: true }, c.now())) leased = useAccount;
   if (useAccount && !leased) {
-    await sbx.kill().catch(() => {}); // the machine carries the label but never got the credential
+    await sbx.kill().catch(() => {}); // the machine never got the credential
     guided(`Account ${useAccount} was claimed by another coordinator while this machine was being created; the credential was not delivered and the machine was deleted.`, { short: `Account ${useAccount} could not be reserved.`, next: 'cloudy-cloud accounts ls' });
   }
   let delivered = false;
@@ -981,7 +996,7 @@ async function start(c, args) {
   return { needsLogin, loginUrl, sbx, account: leased, deleteAt };
 }
 
-async function attach(c, args, { noAttach = false, machine = null } = {}) {
+async function attach(c, args, { noAttach = false, machine = null, labelArg = '' } = {}) {
   // `cloud` passes the machine it already validated (`machine`): a same-named machine created after the
   // lookup is not what this attach reaches. Without it the default lookup by name stands.
   const m = machine ?? uniqueCoordinator(await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.')), args[0]);
@@ -997,10 +1012,14 @@ async function attach(c, args, { noAttach = false, machine = null } = {}) {
     // doctor checks self-hosted boxes only; everywhere else the fix is the missing provider CLI itself.
     if (r?.error) guided(selected.name === 'self-hosted' ? `Could not start ${argv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor` : `Could not start ${argv[0]} (${r.error.message}). Install ${argv[0]} first.`,
       selected.name === 'self-hosted' ? { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' } : { short: `Could not start ${argv[0]} (${r.error.message}).`, next: `install ${argv[0]}, then attach again` });
-    // After the attach returns, a leased account's newest credential goes back to the laptop.
+    const code = r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
+    // After the attach returns, an install-labeled machine runs the same post-sign-in work `login`
+    // does — a new sign-in is saved, a leased account's newest credential syncs back, the link is
+    // reported. A legacy machine (no install label) only gets the silent credential sync.
+    if (m.labels?.install === installId(c.env)) return postAttach(c, args[0], () => selected.connect(m.id, { retry: false }), code, { machine: m, labelArg });
     const accLabel = ownAccount(c, m);
     if (accLabel) { try { const sbx = await selected.connect(m.id, { retry: false }); await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now(), machineLease(c, m)?.leasedBy); } catch { /* the newest copy is all a failed sync loses */ } }
-    return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
+    return code;
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
   c.out(`cloudy-cloud coordinator attach ${args[0]}`);
@@ -1039,15 +1058,16 @@ async function afterSignIn(c, sbx, name, m) {
   guided(`The coordinator session is not working after sign-in. Its screen shows: ${line}\nThe machine was kept — inspect it with cloudy-cloud coordinator attach ${name}.\nLikely cause: ${cause}.\nNext: cloudy-cloud coordinator stop ${name}.`, { code, short: 'The coordinator session is not working after sign-in.', reason: `${cause}; the machine was kept`, details: [`screen: ${fitCells(line, 40)}`], next: `cloudy-cloud coordinator stop ${name}` });
 }
 
-// After an interactive attach returns: the post-sign-in health check above, then the account work
-// (a new sign-in is saved; a leased account's newest credential syncs back silently), then the
-// Remote Control link (and QR, as `status` prints it) once the coordinator is signed in. `get`
-// connects the machine the caller already validated — never a second lookup by name; the attach
-// exit status passes through.
+// After an interactive attach returns: the account work FIRST — a new sign-in is saved and leased,
+// or an already-saved account's newest credential syncs back silently — then the post-sign-in
+// health check, then the Remote Control link (and QR, as `status` prints it) once the coordinator
+// is signed in. The save runs before the health check so a usage-limit pane can never discard a
+// credential the machine is already running — it marks the saved account limitedUntil instead.
+// `get` connects the machine the caller already validated — never a second lookup by name; the
+// attach exit status passes through.
 async function postAttach(c, name, get, code, { machine = null, labelArg = '' } = {}) {
   try {
     const sbx = await get();
-    await afterSignIn(c, sbx, name, machine);
     if (await signedIn(sbx)) {
       const carried = ownAccount(c, machine);
       const entry = carried && accounts.readIndex(accounts.accountsDir(c.env))[carried];
@@ -1058,10 +1078,14 @@ async function postAttach(c, name, get, code, { machine = null, labelArg = '' } 
         const label = await saveAccountFromMachine(c, sbx, machine, { labelArg, name });
         if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
       }
+      await afterSignIn(c, sbx, name, machine);
       const url = await readLink(sbx);
       if (url) { for (const l of linkLines(c.ui, url)) c.out(l); for (const l of qrLines(c.ui, url)) c.out(l); }
       else c.out(`Signed in. The Remote Control link is not ready yet; get it with: cloudy-cloud coordinator status ${name}`);
-    } else c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
+    } else {
+      await afterSignIn(c, sbx, name, machine);
+      c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
+    }
   } catch (e) { if (e?.local) throw e; c.out(`Check the session with: cloudy-cloud coordinator status ${name}`); }
   return code;
 }
@@ -1098,8 +1122,10 @@ async function login(c, args) {
     // A terminal is required: signing in means seeing the pane (the URL and the code prompt live there).
     if (!c.tty) guided(`coordinator login opens the session on a terminal. For a non-interactive finish, pass the code the browser showed: cloudy-cloud coordinator login ${name} --code CODE`, { short: 'coordinator login needs a terminal.', reason: 'the sign-in lives in the session pane', next: `cloudy-cloud coordinator login ${name} --code CODE` });
     if (/Login expired|\/login/i.test(st.signin)) c.out('Type /login and sign in.');
-    const r = await attach(c, args, { machine: m });
-    // The person signs in inside the attach, then detaches: run the post-sign-in check and report the link.
+    const r = await attach(c, args, { machine: m, labelArg: accountArg });
+    // The person signs in inside the attach, then detaches: an install-labeled machine already ran
+    // the post-sign-in work inside attach; a legacy machine runs it here.
+    if (m.labels?.install === installId(c.env)) return r;
     return postAttach(c, name, async () => sbx, r, { machine: m, labelArg: accountArg });
   }
   // The code reaches Claude only at a live sign-in prompt: `claude auth login` must be running on the machine
@@ -1116,10 +1142,12 @@ async function login(c, args) {
   const t0 = c.now();
   while (c.now() - t0 < 60_000) {
     if (await signedIn(sbx)) {
-      // Signed in — run the post-sign-in health check, save the sign-in as an account, report the link.
-      await afterSignIn(c, sbx, name, m);
+      // Signed in — save the sign-in as an account FIRST, so the post-sign-in health check can
+      // never lose a credential the machine is already running: a usage-limit pane marks the saved
+      // account limitedUntil (afterSignIn does it) instead of discarding the sign-in.
       const label = await saveAccountFromMachine(c, sbx, m, { labelArg: accountArg, name });
       if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
+      await afterSignIn(c, sbx, name, m);
       const url = await readLink(sbx);
       return c.out(`Coordinator ${name} is signed in to Claude.${url ? `\nRemote Control: ${url}` : ''}`);
     }
@@ -1529,6 +1557,8 @@ async function cloud(c, args) {
     c.out(`Reattaching to ${name}`);
     const code = await attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
     if (!c.tty || args.includes('--no-attach')) return code;
+    // An install-labeled machine already ran the post-sign-in work inside attach; a legacy one runs it here.
+    if (match.labels?.install === installId(c.env)) return code;
     return postAttach(c, name, async () => c.provider.connect(match.id, { retry: false }), code, { machine: match });
   }
   // A fresh start only: what the GitHub clone would not have — commits the branch has not pushed to
@@ -1560,12 +1590,13 @@ async function cloud(c, args) {
   if (args.includes('--no-attach') || json || !c.tty) return undefined;
   // The machine attach and the post-attach check act on is the one start just made — never a second lookup
   // by name (a same-named machine created meanwhile is not this coordinator). The labels it was created
-  // with are reconstructed here: they are what gates the account read-back (install) and its label (account).
-  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}`, deleteAt: res.deleteAt, labels: { install: mine, name, ...(res.account ? { account: res.account } : {}) } };
+  // with are reconstructed here: install is what gates the account read-back (the account itself is in
+  // the local index, never on the machine).
+  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}`, deleteAt: res.deleteAt, labels: { install: mine, name } };
   // A coordinator waiting for its Claude sign-in attaches to the sign-in pane, not to Claude: say so first.
   if (res?.needsLogin) c.out('Sign in to Claude in the window that opens (each coordinator has its own sign-in).');
-  const code = await attach(c, [name], { machine: own });
-  return postAttach(c, name, async () => res.sbx, code, { machine: own });
+  // attach runs the post-sign-in work (save/sync, health check, link report) itself.
+  return attach(c, [name], { machine: own });
 }
 
 async function run(argv, deps) {

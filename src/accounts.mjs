@@ -11,7 +11,7 @@
 // sign-ins — never a token. Every write is atomic: a mode-600 temp file renamed into place.
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { writeSecretFile } from './providers/index.mjs';
@@ -46,64 +46,89 @@ const atomicWrite = (path, text, mode = 0o600) => {
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 // Cross-process mutual exclusion for every read-modify-write of the index, re-entrant within this
-// process. The owner line (pid + the holder's start token + a uuid) is written to a temp file and
-// hard-linked into place — the link is atomic and cannot overwrite, so the lock file never exists
-// half-written or empty. A lock is reclaimed only when its recorded holder pid is dead, or the pid
-// was reused (the stored start token no longer matches the live one); a LIVE holder is never
-// reclaimed by age, and release removes the file only while it still carries our own owner line.
-const LOCK_FILE = 'index.lock';
+// process. The lock is a Lamport bakery over claim files in <dir>/index.lock.d/: each contender
+// writes only its own uniquely-named claim (pid + start token + uuid + ticket + choosing flag),
+// published through a temp file and rename, and deletes only its own file on release. A contender
+// enters when no live claim is still choosing and none outranks its (ticket, pid) pair — tickets
+// are assigned one past the largest assigned one seen, so a claim created later can never slip in
+// below the holder's. The only claims ever unlinked are the holder's own or ones whose recorded
+// owner is provably dead — a dead pid, or a reused pid (the stored start token no longer matches
+// the live one) — so reclamation can never remove a live holder's file, whatever the interleaving.
+const LOCK_DIR = 'index.lock.d';
 const LOCK_WAIT_MS = 15_000;
 const held = new Map(); // dir → re-entry depth
 const normTok = (s) => String(s ?? '').trim().split(/\s+/).join(' ');
-// The lock file line is `pid <lstart> <uuid>`; files written by older versions carried `pid <ms>` —
-// a numeric-only second field cannot be token-checked, so it falls back to the pid check alone.
-const lockState = (file) => {
+const CLAIM_RE = /^claim-\d+-[0-9a-f-]{36}$/;
+// A claim file line is `pid uuid ticket choosing <lstart…>`. A file that vanished or fails to parse
+// is not a claim.
+const readClaim = (path) => {
   try {
-    const [pid, ...rest] = readFileSync(file, 'utf8').trim().split(/\s+/);
+    const [pid, uuid, ticket, choosing, ...tok] = readFileSync(path, 'utf8').trim().split(/\s+/);
     const p = Number(pid);
-    return { pid: Number.isInteger(p) && p > 0 ? p : 0, token: rest.join(' '), lstart: rest.slice(0, -1).join(' '), mtime: statSync(file).mtimeMs };
-  } catch { return null; } // a half-written or missing lock is stale
+    return Number.isInteger(p) && p > 0 ? { pid: p, uuid, ticket: Number(ticket) || 0, choosing: choosing === '1', token: tok.join(' '), path } : null;
+  } catch { return null; }
+};
+// The recorded owner is dead when the pid is dead, or the pid was reused — the live start token no
+// longer matches the stored one. An unreadable token falls back to the pid check alone, like the
+// watcher file's.
+const claimDead = (c) => {
+  if (!c || !pidAlive(c.pid)) return true;
+  const live = watcherToken(c.pid);
+  return Boolean(c.token && live && c.token !== normTok(live));
 };
 export const withLock = (dir, fn) => {
   const depth = held.get(dir) ?? 0;
   if (depth > 0) { held.set(dir, depth + 1); try { return fn(); } finally { held.set(dir, depth); } }
   ensureDir(dir);
-  const file = join(dir, LOCK_FILE);
-  const mine = `${process.pid} ${normTok(watcherToken(process.pid))} ${randomUUID()}`;
-  const tmp = `${file}.tmp-${process.pid}`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      writeFileSync(tmp, mine, { mode: 0o600 });
-      linkSync(tmp, file); // atomic no-clobber: the owner line lands with the lock itself
-      try { unlinkSync(tmp); } catch { /* the link won; the temp is a leftover at worst */ }
-      break;
-    } catch (e) {
-      try { unlinkSync(tmp); } catch { }
-      if (e.code !== 'EEXIST') throw e;
+  const lockDir = join(dir, LOCK_DIR);
+  ensureDir(lockDir);
+  const uuid = randomUUID();
+  const mine = join(lockDir, `claim-${process.pid}-${uuid}`);
+  const write = (ticket, choosing) => {
+    const tmp = `${mine}.tmp`;
+    writeFileSync(tmp, `${process.pid} ${uuid} ${ticket} ${choosing ? 1 : 0} ${normTok(watcherToken(process.pid))}`, { mode: 0o600 });
+    renameSync(tmp, mine); // readers only ever see a whole claim
+  };
+  // Every claim whose recorded owner is still alive; provably-dead claims are swept — deleting one
+  // can never remove a live holder's file, which always names a live pid and its start token.
+  const liveClaims = () => {
+    const live = [];
+    for (const f of readdir(lockDir)) {
+      if (!CLAIM_RE.test(f)) continue;
+      const c = readClaim(join(lockDir, f));
+      if (!c) continue;
+      if (claimDead(c)) { try { unlinkSync(c.path); } catch { /* another sweeper got there first */ } continue; }
+      live.push(c);
     }
-    const snap = lockState(file);
-    let stale = !snap || !(snap.pid > 0) || !pidAlive(snap.pid);
-    if (!stale && snap.lstart && !/^\d+$/.test(snap.lstart)) { const live = watcherToken(snap.pid); if (live && snap.lstart !== normTok(live)) stale = true; } // pid reused since the write
-    if (stale) {
-      // Reclaim only when the file is still the same stale one we just inspected.
-      const again = lockState(file);
-      if (!snap ? !again : again && again.pid === snap.pid && again.mtime === snap.mtime) { try { unlinkSync(file); } catch { /* someone else reclaimed it */ } }
-      continue;
+    return live;
+  };
+  try {
+    write(0, 1); // choosing: visible before a ticket is assigned
+    // A later claim always sees our assigned ticket and picks a larger one — a contender whose claim
+    // appears between our two writes orders behind us or ties on ticket, where the pid decides.
+    const ticket = Math.max(0, ...liveClaims().filter((c) => !c.choosing && c.uuid !== uuid).map((c) => c.ticket)) + 1;
+    write(ticket, 0);
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      const ahead = liveClaims().some((c) => c.uuid !== uuid && (c.choosing || c.ticket < ticket || (c.ticket === ticket && c.pid < process.pid)));
+      if (!ahead) break;
+      if (Date.now() > deadline) throw Object.assign(new Error('Timed out waiting for the accounts lock.'), { code: 'accounts_locked', local: true });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
-    if (Date.now() > deadline) throw Object.assign(new Error('Timed out waiting for the accounts lock.'), { code: 'accounts_locked', local: true });
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-  held.set(dir, 1);
-  try { return fn(); } finally {
-    held.delete(dir);
-    try { if (readFileSync(file, 'utf8').trim() === mine) unlinkSync(file); } catch { /* a reclaimer owns the file now */ }
+    held.set(dir, 1);
+    try { return fn(); } finally { held.delete(dir); }
+  } finally {
+    try { unlinkSync(mine); } catch { /* release already removed it */ }
+    try { unlinkSync(`${mine}.tmp`); } catch { /* none */ }
   }
 };
 
 // The index maps label → { email, accountUuid, leasedBy: {name, machineId, provider, deleteAt,
-// pending}, leasedAt, lastUsed, limitedUntil, needsSignIn } — all timestamps in ms. It never holds a
-// token. A damaged index is never an empty pool: refusing is safer than treating leased accounts as
+// pending}, leasedAt, lastUsed, limitedUntil, needsSignIn, verifiedAt } — all timestamps in ms. It
+// never holds a token. `verifiedAt` is set when the saved credential was written by a finished
+// sign-in or proved current by a sync while its machine was alive; a lease handoff clears it, so a
+// credential that was only ever delivered — never verified — is marked needsSignIn if that machine
+// later goes away. A damaged index is never an empty pool: refusing is safer than treating leased accounts as
 // free and delivering a live refresh token to a second machine.
 export const readIndex = (dir) => {
   let text;
@@ -140,7 +165,7 @@ export const saveCredential = (dir, label, text) => atomicWrite(credFile(dir, la
 // can never leave a selectable credential with no owner. Both are one locked step so a concurrent
 // sync cannot slide between them.
 export const saveAccount = (dir, label, { email, accountUuid, credText, now = 0 }) => withLock(dir, () => {
-  const e = updateAccount(dir, label, (x) => ({ ...x, email: email ?? x.email, accountUuid: accountUuid ?? x.accountUuid, lastUsed: now, needsSignIn: undefined }));
+  const e = updateAccount(dir, label, (x) => ({ ...x, email: email ?? x.email, accountUuid: accountUuid ?? x.accountUuid, lastUsed: now, needsSignIn: undefined, verifiedAt: now }));
   saveCredential(dir, label, oauthOnly(credText));
   return e;
 });
@@ -202,7 +227,9 @@ export const bindLease = (dir, label, leasedBy, now) => {
   updateAccount(dir, label, (e) => {
     if (e.leasedBy?.name !== leasedBy.name || !e.leasedBy.pending || e.leasedBy.machineId) return e;
     ok = true;
-    return { ...e, leasedBy: { ...e.leasedBy, ...leasedBy }, leasedAt: now }; // keeps the reservation's resId for expiry checks
+    // A lease handoff to a fresh machine clears the credential's verification — it was verified on
+    // the previous machine, not on this one.
+    return { ...e, leasedBy: { ...e.leasedBy, ...leasedBy }, leasedAt: now, verifiedAt: undefined }; // keeps the reservation's resId for expiry checks
   });
   return ok;
 };
@@ -322,9 +349,12 @@ export const syncBack = async (dir, sbx, label, now, lease = null) => {
     if (lease && (entry.leasedBy?.machineId !== lease.machineId || (lease.provider && entry.leasedBy?.provider !== lease.provider))) return 'moved';
     if (j?.loggedIn === true && (j.accountUuid || j.email) && (entry.accountUuid || entry.email) && !sameAccount(entry, j)) return 'moved'; // the machine now holds a different Claude identity
     const saved = credJson(readCredential(dir, label));
-    if (saved && !(Number(got.oauth.expiresAt) > Number(saved.expiresAt ?? 0))) return 'current';
+    if (saved && !(Number(got.oauth.expiresAt) > Number(saved.expiresAt ?? 0))) {
+      updateAccount(dir, label, (e) => ({ ...e, lastUsed: now, verifiedAt: now }));
+      return 'current';
+    }
     saveCredential(dir, label, got.text);
-    updateAccount(dir, label, (e) => ({ ...e, lastUsed: now }));
+    updateAccount(dir, label, (e) => ({ ...e, lastUsed: now, verifiedAt: now }));
     return 'synced';
   });
 };

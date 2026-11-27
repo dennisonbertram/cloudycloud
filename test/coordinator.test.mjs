@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync, unlinkSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, existsSync, unlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -3667,7 +3667,7 @@ test('start picks the free account used least recently, delivers its credential 
   seedAccount(f, 'old', { email: 'a@x', lastUsed: 500 });
   seedAccount(f, 'new', { email: 'b@x', lastUsed: 100 });
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
-  assert.equal(f.log.create[0].opts.metadata.account, 'new', 'the least-recently-used free account was picked');
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the account label never rides machine metadata (#216)');
   const delivery = f.log.writes.find((w) => /credentials\.new$/.test(w.p));
   assert.equal(delivery?.d, CRED(9e12), 'the credential went by file write, never a command string');
   const marker = f.log.cmds.findIndex((c) => /credentials-removed/.test(c));
@@ -3687,7 +3687,8 @@ test('start --account LABEL picks that account; a leased label is refused naming
   seedAccount(f, 'work', { email: 'a@x' });
   seedAccount(f, 'free', { email: 'b@x', lastUsed: 1 });
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
-  assert.equal(f.log.create[0].opts.metadata.account, 'work');
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the account label never rides machine metadata (#216)');
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.name, 'boss', 'the --account pick was leased to this coordinator');
 
   const g = fixture();
   seedAccount(g, 'held', { leasedBy: { name: 'other', machineId: 'm2', provider: 'instabox' }, leasedAt: 1 });
@@ -3776,7 +3777,7 @@ test('a usage-limit screen marks the account limitedUntil so the next start pick
   seedAccount(g, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' }, limitedUntil: Date.now() + 3_600_000 });
   seedAccount(g, 'alt', { email: 'b@x', lastUsed: 5 });
   await main(['start', 'next', '--repo', 'https://github.com/o/r'], g.deps);
-  assert.equal(g.log.create[0].opts.metadata.account, 'alt');
+  assert.equal(accounts.readIndex(accDir(g)).alt.leasedBy?.name, 'next', 'the next start picked the other free account');
 });
 
 test('accounts ls prints label, email, state and last used; --json prints the same rows', async () => {
@@ -3957,8 +3958,7 @@ test('two concurrent starts cannot claim the same saved account', async () => {
     main(['start', 'one', '--repo', 'https://github.com/o/r'], f.deps),
     main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps),
   ]);
-  const claimed = f.log.create.filter((x) => x.opts.metadata.account === 'work');
-  assert.equal(claimed.length, 1, 'two starts must never lease the same account');
+  assert.ok(f.log.create.every((x) => x.opts.metadata.account === undefined), 'the account label never rides machine metadata (#216)');
   const delivered = f.log.writes.filter((w) => /credentials\.new$/.test(w.p));
   assert.equal(delivered.length, 1, 'the refresh token went to exactly one machine');
   const idx = accounts.readIndex(accDir(f));
@@ -4328,30 +4328,34 @@ test('syncBack re-verifies under the lock: the lease it expected and the same Cl
   assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 9));
 });
 
-// P1-5: the lock never reclaims a live holder by age alone, and release removes only the file the
+// P1-5: the lock never reclaims a live holder by age alone, and release removes only the claim the
 // holder itself wrote.
-test('a live process keeps the accounts lock past the old stale window', () => {
+test('a live process keeps the accounts lock — its claim is never reclaimed by age or a dead-owner check', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-lock-'));
-  const file = join(dir, 'index.lock');
   const kid = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
   try {
-    writeFileSync(file, `${kid.pid} ${accounts.watcherToken(kid.pid)} owner-token`, { mode: 0o600 });
+    // A live holder's claim names a live pid with its start token: however old it looks, it is never
+    // reclaimed — and never removed.
+    mkdirSync(join(dir, 'index.lock.d'), { recursive: true });
+    const claim = join(dir, 'index.lock.d', `claim-${kid.pid}-00000000-0000-4000-8000-000000000000`);
+    writeFileSync(claim, `${kid.pid} 00000000-0000-4000-8000-000000000000 1 0 ${accounts.watcherToken(kid.pid)}`, { mode: 0o600 });
     const past = new Date(Date.now() - 10 * 60_000);
-    utimesSync(file, past, past); // far older than the former 120 s stale window
+    utimesSync(claim, past, past); // far older than the former 120 s stale window
     const t0 = Date.now();
     assert.throws(() => accounts.withLock(dir, () => {}), /Timed out waiting for the accounts lock/);
     assert.ok(Date.now() - t0 > 10_000, 'a live holder was never reclaimed');
+    assert.ok(existsSync(claim), 'the live holder\'s claim was never removed');
   } finally { kid.kill('SIGKILL'); }
 });
 
-test('releasing the accounts lock removes only the holder\'s own file — a newer owner\'s file stays', () => {
+test('releasing the accounts lock removes only the holder\'s own claim — another owner\'s files stay', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-lock-rel-'));
-  const file = join(dir, 'index.lock');
+  const foreign = join(dir, 'index.lock.d', 'claim-999999-00000000-0000-4000-8000-000000000000');
   accounts.withLock(dir, () => {
-    unlinkSync(file); // pretend a reclaimer removed ours and took the lock
-    writeFileSync(file, '999999 x other-owner', { mode: 0o600 });
+    // A foreign claim appearing mid-section is not the holder's to remove: release touches only our own.
+    writeFileSync(foreign, '999999 00000000-0000-4000-8000-000000000000 9 0 whatever', { mode: 0o600 });
   });
-  assert.equal(readFileSync(file, 'utf8'), '999999 x other-owner', 'the newer lock file was not removed');
+  assert.equal(readFileSync(foreign, 'utf8'), '999999 00000000-0000-4000-8000-000000000000 9 0 whatever', 'another owner\'s claim was not removed');
 });
 
 // P1-6: a machine that vanished only from the label-filtered listing still exists — the lease is
@@ -4494,4 +4498,166 @@ test('cloud --account refuses to reattach to a coordinator that uses a different
   const e = await main(['cloud', '--name', 'boss', '--account', 'other', '--json'], { ...f.deps, cwd: ghRepo() }).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.match(e.message, /does not use account|runs on account work/i);
   assert.ok(!/Reattaching to|reattached.: ?true/i.test(f.log.out.join('\n')), 'no reattach happened');
+});
+
+// ---- Devin Review (PR #216) ----
+
+// #216-1 (red): a replacement sign-in on a leased coordinator is saved UNDER THE SAME LEASE — the
+// lease moves to the sign-in's label and the old label is unbound in the same locked step, so a
+// second start can never pick the new sign-in while it is live on that machine.
+test('a replacement sign-in on a leased coordinator is saved under the existing lease', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', needsSignIn: true, leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const dir = accDir(f);
+  const idx = accounts.readIndex(dir);
+  const label = Object.keys(idx).find((l) => l !== 'work');
+  assert.ok(label, 'the different sign-in was saved under its own label');
+  assert.equal(idx[label].email, 'me@example.com');
+  assert.deepEqual(idx[label].leasedBy, { name: 'boss', machineId: 'm1', provider: 'instabox' }, 'the machine\'s lease moved to the sign-in\'s label');
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was unbound in the same step');
+  assert.equal(idx.work.email, 'w@x', 'the old account stayed saved');
+  assert.ok(!accounts.freeAccounts(dir, Date.now()).some((a) => a.label === label), 'a second start cannot pick the live sign-in');
+  assertNoToken(f);
+});
+
+// #216-2 (red): a coordinator that finishes normally releases its account cleanly — a credential
+// verified current or synced while the machine lived is never marked needsSignIn on release; only
+// an unverified one is (the stale-sign-in safeguard).
+test('a gone coordinator releases a verified account cleanly; only an unverified one is marked needsSignIn', async () => {
+  const f = fixture({ cred: CRED(9e12 + 1) });
+  ownMachine(f, 'boss', { account: 'work' });
+  f.machines.push({ sandboxId: 'm2', name: 'coord-two', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'two', install: f.iid } });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'fresh', { leasedBy: { name: 'two', machineId: 'm2', provider: 'instabox' } });
+  seedAccount(f, 'uncertain', { leasedBy: { name: 'ghost', machineId: 'm_gone', provider: 'instabox' } });
+  // The live machines sync — their saved credentials verify; the already-gone unverified one is marked.
+  await main(['accounts', 'sync'], f.deps);
+  let idx = accounts.readIndex(accDir(f));
+  assert.ok(idx.work.verifiedAt > 0, 'a synced credential records its verification');
+  assert.ok(idx.fresh.verifiedAt > 0);
+  assert.equal(idx.uncertain.needsSignIn, true, 'a credential that was never verified stays marked');
+  assert.equal(idx.uncertain.leasedBy, undefined);
+  // Both coordinators finish — the machines vanish from the next complete listing.
+  f.machines.length = 0;
+  await main(['accounts', 'sync'], f.deps);
+  idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.leasedBy, undefined, 'the finished coordinator released its lease');
+  assert.equal(idx.work.needsSignIn, undefined, 'a verified credential releases cleanly — no needsSignIn');
+  assert.equal(idx.fresh.needsSignIn, undefined);
+  assertNoToken(f);
+});
+
+// #216-3 (red): stale-lock cleanup must never remove a live holder's lock — only files whose
+// recorded owner is provably dead are ever unlinked, and a live holder's claim is never such a file.
+test('stale-lock cleanup can never remove a live holder\'s lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-race-'));
+  const lib = `file://${resolve('src/accounts.mjs')}`;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
+  const until = async (cond, ms = 10_000) => { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  // A holder writes a marker inside its critical section, then spins — the lock stays held.
+  const hold = (marker, ms) => spawn(process.execPath, ['-e',
+    `import(${JSON.stringify(lib)}).then((a) => a.withLock(${JSON.stringify(dir)}, () => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1'); const t = Date.now(); while (Date.now() - t < ${ms}) {} }))`], { stdio: 'ignore' });
+  // The lock artifacts that exist right now — whatever the protocol's on-disk shape.
+  const lockFiles = () => {
+    const files = [];
+    if (existsSync(join(dir, 'index.lock'))) files.push(join(dir, 'index.lock'));
+    const d = join(dir, 'index.lock.d');
+    if (existsSync(d)) for (const f of readdirSync(d)) if (!f.endsWith('.tmp')) files.push(join(d, f));
+    return files;
+  };
+  const liveArtifacts = () => lockFiles().filter((p) => { try { const pid = Number(readFileSync(p, 'utf8').trim().split(/\s+/)[0]); return pid > 0 && alive(pid); } catch { return false; } });
+  // A holder killed mid-section leaves dead-owner artifacts behind — what a reclaimer inspects.
+  const deadMark = join(dir, 'dead-inside');
+  const dead = hold(deadMark, 60_000);
+  await until(() => existsSync(deadMark));
+  const deadExit = new Promise((r) => dead.on('exit', r));
+  dead.kill('SIGKILL');
+  await deadExit;
+  const stale = lockFiles();
+  assert.ok(stale.length, 'the killed holder left lock artifacts');
+  // A live holder takes the lock — reclaiming the dead owner's artifacts if the protocol does that.
+  const aMark = join(dir, 'a-inside');
+  const a = hold(aMark, 3_000);
+  await until(() => existsSync(aMark));
+  // Replay the second reclaimer's step: it inspected the dead owner's files while stale and unlinks
+  // them by pathname. Under a vulnerable protocol those paths now name the live holder's lock.
+  for (const p of stale) try { unlinkSync(p); } catch { /* already gone */ }
+  assert.ok(liveArtifacts().length, 'the live holder\'s lock survived the reclaim step');
+  // A real second contender still cannot enter while the holder is inside.
+  const bMark = join(dir, 'b-inside');
+  const b = hold(bMark, 60_000);
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(existsSync(bMark), false, 'a second process did not enter the held lock');
+  b.kill('SIGKILL');
+  if (a.exitCode == null && a.signalCode == null) await new Promise((r) => a.on('exit', r));
+});
+
+// #216-4 (yellow): a usage limit after a successful sign-in keeps the sign-in — it is saved and
+// leased first, and the limit is recorded on the saved account instead of discarding it.
+test('a usage limit after sign-in keeps the sign-in saved and marks the account limited', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  // login --code: the sign-in lands, then the pane reports the exhausted account.
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  const t0 = Date.now();
+  const e = await main(['login', 'boss', '--code', 'X'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.ok(idx['me@example.com'], 'the successful sign-in was still saved');
+  assert.ok(idx['me@example.com'].limitedUntil > t0, 'the usage limit was recorded on the saved account');
+  assert.equal(idx['me@example.com'].leasedBy?.machineId, 'm1', 'the saved sign-in is leased to this coordinator');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com'), 'utf8'), CRED(9e12));
+  assertNoToken(f);
+  // Interactive login (attach + postAttach) orders the save before the health check the same way.
+  const g = fixture({ cred: CRED(9e12), auth: [SIGNED, SIGNED, SIGNED] });
+  ownMachine(g, 'boss');
+  const connect2 = g.deps.sdk.Sandbox.connect;
+  g.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect2(id); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  const e2 = await main(['login', 'boss'], { ...g.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e2.message, /not working after sign-in/);
+  const idx2 = accounts.readIndex(accDir(g));
+  assert.ok(idx2['me@example.com']?.limitedUntil > t0, 'interactive login: the sign-in was saved and marked limited');
+  assert.equal(idx2['me@example.com'].leasedBy?.machineId, 'm1');
+  assertNoToken(g);
+});
+
+// #216-5 (yellow): a direct `coordinator attach` runs the shared post-attach account logic — a
+// sign-in finished in the pane is saved and leased to that machine, exactly like `login`.
+test('a direct attach saves a sign-in finished in the pane under a lease to that coordinator', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  const f = fixture({ pane: 'working', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  const code = await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(code, 0, 'the attach exit status passes through');
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com']?.leasedBy?.name, 'boss', 'the sign-in was saved and leased to the coordinator');
+  assert.equal(idx['me@example.com']?.leasedBy?.machineId, 'm1');
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com/);
+  assertNoToken(f);
+});
+
+// #216-6 (yellow): the account a coordinator uses lives in the local index lease — never in machine
+// metadata, where other workspace members could read an email-derived label.
+test('start never publishes the account label in machine metadata', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'me@example.com', { email: 'me@example.com' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const meta = f.log.create[0].opts.metadata;
+  assert.equal(meta.account, undefined, 'no account label rides the machine');
+  assert.ok(!JSON.stringify(meta).includes('me@example.com'), 'no email-derived value reaches machine metadata');
+  assert.equal(accounts.readIndex(accDir(f))['me@example.com'].leasedBy?.name, 'boss', 'the lease is recorded locally');
+  assert.ok(f.log.writes.some((w) => /credentials\.new$/.test(w.p) && w.d === CRED(9e12)), 'the credential still delivered');
 });
