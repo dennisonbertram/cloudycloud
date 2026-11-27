@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$self")/.." && pwd -P) # -P: npm link adds a linked folder
 # and `help -p` still goes to claude. For mcp, only `mcp`, `mcp add|ls|rm` are ours; `mcp list -h` is Claude Code's.
 case ${1:-} in
   help) if [ $# -gt 1 ]; then case $2 in -*) ;; *) shift; exec node "$root/src/cli-help.mjs" "$@" ;; esac; fi ;;
-  setup|--setup|coordinator|cloud|exec|run|resume|shell|display|open|mcp|mcp-server|protect|doctor|dashboard|machines|branches)
+  setup|--setup|coordinator|cloud|exec|run|resume|shell|display|open|mcp|mcp-server|protect|doctor|dashboard|machines|branches|watch|statusline)
     case $1:${2:-} in mcp:''|mcp:--help|mcp:-h|mcp:add|mcp:ls|mcp:rm) ;; mcp:*) n=-1 ;; esac
     [ "${n:-}" = -1 ] || n=0
     [ "$n" = -1 ] || for a in "$@"; do
@@ -57,6 +57,11 @@ fi
 if [ "${1:-}" = resume ]; then
   shift
   exec node "$root/src/run.mjs" --resume "$@"
+fi
+
+# `cloudy-cloud watch [NAME|ID] [--json]` follows what cloud agents do; `statusline` prints one line for a Claude Code status line.
+if [ "${1:-}" = watch ] || [ "${1:-}" = statusline ]; then
+  exec node "$root/src/activity.mjs" "$@"
 fi
 
 # `cloudy-cloud dashboard [--demo]` opens a read-only local web page about your boxes.
@@ -180,6 +185,8 @@ Usage: cloudy-cloud [command] [options]
   mcp-server              Run the MCP server for other clients
   branches prune          Delete empty or merged cloudy-cloud/* branches
   dashboard               Open a read-only web page about your cloud machines
+  watch [agent]           Follow what cloud agents do, one line per step
+  statusline              One line for a Claude Code status line
   machines                List or delete your Cloudy Cloud machines
   protect [owner/repo]    Block direct pushes to the default branch (asks first)
   doctor                  Check your own machine (self-hosted provider)

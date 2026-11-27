@@ -18,8 +18,9 @@ import { paneState } from './pane-state.mjs';
 import { secretValues } from './run-subagent.mjs';
 import { consentedLiterals } from './mcpsync.mjs';
 import { planSnapshot } from './machine.mjs';
-import { demoState, demoStream } from './dashboard-demo.mjs';
+import { demoActivity, demoState, demoStream } from './dashboard-demo.mjs';
 import { guideObj } from './errors.mjs';
+import { createCoordinatorPoller, readActivity, scrubberFor } from './activity.mjs';
 import { createLimiter } from './limits.mjs';
 import { normalise, pruneStreams, streamsDir } from './stream.mjs';
 
@@ -348,6 +349,9 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
   };
 }
 
+// getState plus the live activity of every agent (see activity.mjs), for the page's feed.
+export const withActivity = (getState, read = readActivity) => async () => ({ ...(await getState()), activity: read() });
+
 const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').split(/\s+/).filter(Boolean).at(-1); } catch { return undefined; } };
 
 const COORD_MS = 10_000;
@@ -550,7 +554,12 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
   const live = demo ? undefined : liveState(env, { getReader });
-  const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live }), port);
+  const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: withActivity(demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live, demo ? () => demoActivity(Date.now()) : () => readActivity({ env })) }), port);
+  if (!demo) { // coordinators' transcripts are read every 10 s while the dashboard runs
+    const poller = lazy(async () => { const provider = await getProvider(); return createCoordinatorPoller({ provider, env, scrub: await scrubberFor(provider, env) }); });
+    const poll = async () => { try { await (await poller()).poll(); } catch { /* no provider or machine list: the feed shows workers only */ } };
+    poll(); setInterval(poll, 10_000).unref();
+  }
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);

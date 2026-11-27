@@ -245,6 +245,18 @@ CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
 - **Template:** `E2B_TEMPLATE` in `~/.config/cloudy-cloud/env` picks the sandbox template (name or id; default `base`). The stock `base` template is small — about 0.5 GiB RAM — so a bigger worker needs a custom template built with the [E2B template tooling](https://e2b.dev/docs). Custom templates also need `bash` and the provisioning hosts above.
 - **Status:** experimental. Unit-tested against a fake transport and live-tested on 2026-11-22 with fake worker tokens (start, commands, files, public preview, delete, setup, and a full `cloud_agent` run up to the model call). Not yet run with a real agent task. The default `base` template has 0.5 GiB of memory; point `E2B_TEMPLATE` at a bigger template for real work. See [STATUS.md](docs/STATUS.md).
 
+## Live activity
+
+Three views show what cloud agents are doing, all from local files: the dashboard feed (state, current step, age, and a "quiet for N min" warning after 5 minutes without a new step), `cloudy-cloud watch [NAME|ID] [--json]` (one line per new step), and the `cloud_agent_activity` MCP tool, which lets Claude answer "what are they doing?". Coordinators appear while `watch` or the dashboard runs: they read the coordinator's Claude transcript every 10 seconds and cache redacted steps in `~/.config/cloudy-cloud/activity/`.
+
+To show it in Claude Code's status line, add this to your Claude Code settings (for example `~/.claude/settings.json`). cloudy-cloud does not edit your settings:
+
+```json
+{ "statusLine": { "type": "command", "command": "cloudy-cloud statusline" } }
+```
+
+It prints a line such as `☁ 3 working · boss: Bash npm test · 12s ago`, reads local files only and prints nothing when no agent runs.
+
 ## Dashboard
 
 ```sh
@@ -367,6 +379,8 @@ Both kinds of coordinator work from a git clone or an npm install: a coordinator
 | `cloudy-cloud setup [--more] [--check-only] [--provider NAME] [--default-profile NAME]` | Checks your tools and saves provider and worker credentials. `--provider` selects the provider setup configures; runtime placement uses `CLOUDY_CLOUD_PROVIDERS` (ordered) or the legacy `CLOUDY_CLOUD_PROVIDER`. `--default-profile` selects the worker profile used when a request does not name one; Claude Code remains the default unless changed. `--more` adds coordinators, usage alert emails and optional model keys. |
 | `cloudy-cloud doctor` | Checks your own machine when subagents run there (`self-hosted`). |
 | `cloudy-cloud dashboard [--demo] [--port N] [--no-open]` | Opens the read-only local dashboard. |
+| `cloudy-cloud watch [NAME\|ID] [--json]` | Prints one line per new step of your running agents, like `tail -f`. |
+| `cloudy-cloud statusline` | Prints one line of agent activity for a Claude Code status line. |
 | `cloudy-cloud machines` \| `machines stop <id-or-name\|--all> [--yes]` | Lists machines across configured providers or deletes them. Use `provider:id` or `provider:name` when selecting a machine across providers; ambiguous bare IDs and names are refused. `stop --all` asks first unless you pass `--yes`. |
 | `cloudy-cloud protect [owner/repo] [--yes]` | Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the default branch: changes need a pull request, force pushes and deletion are refused, and the ruleset has no bypass actors, so nobody it covers can push around it — including you and the cloud agents, which push as you. A repo admin can still edit or disable the ruleset, and the command changes nothing when an equivalent ruleset or classic branch protection already covers the branch. Asks first unless you pass `--yes`; needs `gh` signed in and repo admin. |
 | `cloudy-cloud branches prune [--yes] [--dry-run]` | Deletes empty or merged `cloudy-cloud/<id>` and `cloudy-cloud/issue-<n>-<id>` branches on origin. A dry run unless you pass `--yes`. |
@@ -395,6 +409,7 @@ Full reference with every option and environment variable: [Command and tool ref
 | `cloud_agent_recover` | Starts a fresh conversation from a confirmed pushed checkpoint, after verifying the original machine is gone and the branch still points at that checkpoint. `provider: "auto"` tries eligible configured providers other than the original provider. It never replays the old prompt. |
 | `cloud_agent_wait` | Waits for subagents and returns their answers (not needed in task mode). |
 | `cloud_agent_list` | Shows every subagent's status and progress. |
+| `cloud_agent_activity` | Shows what running agents do now: state and last steps, from local files. |
 | `cloud_agent_stop` | Stops agents owned by this server. Success means the provider confirmed deletion or absence; transient failures remain tracked as `stop-pending`. |
 
 **Machine sizes.** `size` must be a size Instabox sells and your plan includes. The cost is vCPU $0.004/h plus memory $0.00225/GiB-h while the machine runs.

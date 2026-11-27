@@ -179,7 +179,7 @@ const mach = (m) => m.machineName ?? m.name; // the machine's own name; self-hos
 // Every machine a command acts on must be one of ours: the purpose label plus the role. Machines made before the
 // rename carry the historical purpose=claude-cloud label; those count as ours too. The name (for attach/status/stop)
 // is a second filter, not a substitute — labels decide, never the reported name alone.
-const OUR_PURPOSES = new Set(['cloudy-cloud', 'claude-cloud']);
+export const OUR_PURPOSES = new Set(['cloudy-cloud', 'claude-cloud']);
 const find = async (provider, role, name) => {
   const [providerName, target] = name?.includes(':') ? [name.slice(0, name.indexOf(':')), name.slice(name.indexOf(':') + 1)] : [undefined, name];
   const singleProvider = !provider.providers || provider.providers.length === 1;

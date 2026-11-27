@@ -509,7 +509,7 @@ test('host with no Claude token and no other worker key says to run setup', () =
 });
 
 // `<command> --help` and `help <command>` print that command's help (80 columns at most), exit 0 and never start anything.
-const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'run', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard', 'machines', 'branches'];
+const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'run', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard', 'machines', 'branches', 'watch', 'statusline'];
 test('every help screen fits 80 columns and --help / help <command> never run the command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
   const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };
