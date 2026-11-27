@@ -3834,6 +3834,57 @@ test('login --account on a coordinator already leasing another account refuses i
   assert.match(e.message, /uses account work/);
 });
 
+// The live sequence: a coordinator started with no saved accounts sits at its browser sign-in, and
+// `coordinator login` saves the finished sign-in. That account is live on the machine that made it —
+// it must be leased to that coordinator in the same step, or a second start takes it and the two
+// machines sign each other out (the refresh token is single-use).
+test('a sign-in saved by login is leased to its coordinator: ls shows it used, a second start cannot take it, stop releases it', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  let reads = 0, newest = '';
+  const cred = () => (newest = CRED(9e12 + 1000 * ++reads)); // every read back is a newer credential
+  const f = fixture({ pane: 'Enter the code from your browser', cred, auth: [NOT_YET, SIGNED, SIGNED, NOT_YET] });
+  const dir = accDir(f);
+  const r1 = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(r1.needsLogin, true, 'no saved account: the browser sign-in path');
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the machine carries no account label');
+  f.machines[0].deleteAt = '2026-01-03T03:04:05Z'; // the provider reports the deadline on its list rows
+  await main(['login', 'boss', '--code', 'ABC123'], f.deps);
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com; new coordinators reuse it\./);
+  const lease = accounts.readIndex(dir)['me@example.com'].leasedBy;
+  assert.equal(lease?.name, 'boss', 'the saved sign-in is leased to the coordinator that made it');
+  assert.equal(lease?.machineId, 'm_new');
+  assert.equal(lease?.provider, 'instabox');
+  assert.equal(lease?.deleteAt, '2026-01-03T03:04:05.000Z');
+  assert.equal(f.log.watchers, 1, 'the lease resumed the detached sync watcher');
+  // `accounts ls` shows the account in use — never free while its coordinator runs.
+  await main(['accounts', 'ls'], f.deps);
+  assert.match(f.log.out.at(-1), /me@example\.com.*used by boss/);
+  // status finds the lease by machine id — the machine has no account label to read.
+  const connect0 = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const s = await connect0(id), run0 = s.commands.run;
+    s.commands.run = async (cmd, ...rest) => (/capture-pane/.test(cmd) ? { stdout: 'working', stderr: '', exitCode: 0 } : run0(cmd, ...rest));
+    return s;
+  };
+  await main(['status', 'boss', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out.at(-1)).account, 'me@example.com');
+  // An interactive attach syncs the newest credential back under the same lease (it never releases).
+  await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(accounts.readIndex(dir)['me@example.com'].leasedBy?.name, 'boss', 'attach keeps the lease');
+  // A second start without --account cannot take the leased account: browser sign-in again.
+  const r2 = await main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(r2.needsLogin, true, 'the leased account is not pickable');
+  assert.equal(f.log.create[1].opts.metadata.account, undefined, 'the second machine got no account label either');
+  // stop copies the newest credential back and releases the lease; the account goes free again.
+  await main(['stop', 'boss'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(dir, 'me@example.com'), 'utf8'), newest, 'stop synced the newest credential back');
+  assert.equal(accounts.readIndex(dir)['me@example.com'].leasedBy, undefined, 'stop released the lease');
+  // With no lease left the watcher exits at its next tick and releases its pid file.
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  assert.equal(existsSync(join(dir, accounts.WATCH_PID)), false);
+  assertNoToken(f);
+});
+
 test('limitUntil parses reset times from the limit line, else defaults to five hours', () => {
   const now = Date.now();
   assert.equal(accounts.limitUntil("You've hit your usage limit", now), now + 5 * 3_600_000);

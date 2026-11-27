@@ -251,31 +251,47 @@ async function signedIn(sbx) {
 const loginActive = async (sbx) => { try { await sbx.commands.run('test -f "$HOME/.config/cloudy-cloud/login-active"', { timeoutMs: 15_000 }); return true; } catch { return false; } };
 
 // ---- Saved Claude accounts (src/accounts.mjs): sign in once per account, lease one at a time ----
-// The account a coordinator uses is on the machine's `account` label. Only a machine carrying this
-// installation's `install` label is ever delivered a credential or read back — the same check
-// attach and login use before they act on a machine.
-const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? m.labels?.account || '' : '');
+// The account a coordinator uses is on the machine's `account` label — or, for a sign-in saved after
+// start, on the index lease that names the machine (a label cannot be set after creation). Only a
+// machine carrying this installation's `install` label is ever delivered a credential or read back —
+// the same check attach and login use before they act on a machine.
+const machineLease = (c, m) => {
+  const mid = m?.id ?? m?.sandboxId;
+  if (!mid) return null;
+  const dir = accounts.accountsDir(c.env);
+  return accounts.leasedAccounts(dir).find((a) => a.leasedBy?.machineId === mid && (a.leasedBy.provider ?? c.primary.name) === (m.provider ?? c.primary.name)) ?? null;
+};
+const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? m.labels?.account || machineLease(c, m)?.label || '' : '');
 
 // After a finished browser sign-in (login --code, or an interactive attach that detached): read the
 // machine's credential back and save it under the label the coordinator already leases (the slot the
 // sign-in revives), else --account, else the auth-status email sanitised to [a-z0-9._@-], else
-// account-N. Returns the label saved under; '' when nothing signed-in-shaped was found to save.
-const saveAccountFromMachine = async (c, sbx, m, { labelArg = '' } = {}) => {
+// account-N. The account is then leased to this coordinator in the same step — the sign-in is live
+// on this machine only, so a second start must never pick it while it runs. Returns the label saved
+// under; '' when nothing signed-in-shaped was found to save.
+const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = {}) => {
   if (m?.labels?.install && m.labels.install !== installId(c.env)) return '';
   const [got, j] = await Promise.all([accounts.readMachineCredential(sbx).catch(() => null), authStatus(sbx)]);
   if (!got || j?.loggedIn !== true || j?.authMethod !== 'claude.ai') return '';
-  const carried = m?.labels?.account || '';
+  const mid = m?.id ?? m?.sandboxId;
+  const carried = m?.labels?.account || machineLease(c, m)?.label || '';
   if (carried && labelArg && carried !== labelArg) usageError(`Coordinator ${m.labels?.name ?? ''} uses account ${carried} — one account serves one coordinator at a time, so --account ${labelArg} does not apply here.`, 'login', '--account names the label a sign-in is saved under; a leased coordinator keeps its own.');
   const dir = accounts.accountsDir(c.env);
   let label = carried || labelArg || accounts.emailLabel(j.email) || accounts.nextAccountLabel(dir);
   // The label another coordinator's lease already holds is never overwritten: an explicit --account is
   // refused naming its holder; a derived one (the sign-in email) falls back to a fresh account-N label.
   const holder = accounts.readIndex(dir)[label]?.leasedBy;
-  if (holder?.name && holder.machineId !== (m?.id ?? m?.sandboxId)) {
+  if (holder?.name && holder.machineId !== mid) {
     if (labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
     label = accounts.nextAccountLabel(dir);
   }
   accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, credText: got.text, now: c.now() });
+  // The lease this machine already holds was the save's slot and stays as it is; a fresh save is
+  // leased to this coordinator (name, machine id, provider, deleteAt — the same record start writes).
+  if (mid && !(holder?.name && holder.machineId === mid)) {
+    const deleteAt = m?.deleteAt && Number.isFinite(new Date(m.deleteAt).getTime()) ? new Date(m.deleteAt).toISOString() : undefined;
+    accounts.lease(dir, label, { name: m?.labels?.name || name, machineId: mid, provider: m?.provider ?? c.primary.name, deleteAt }, c.now());
+  }
   return label;
 };
 
@@ -788,7 +804,7 @@ async function start(c, args) {
   // be ambiguous, so they carry the primary provider prefix; one provider keeps the bare name as before.
   const sel = (c.provider.providers?.length ?? 1) > 1 ? `${c.primary.name}:${name}` : name;
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(leased && { account: leased }), ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx, account: leased }; }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(leased && { account: leased }), ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx, account: leased, deleteAt }; }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -823,14 +839,14 @@ async function start(c, args) {
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${sel}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
-    return { needsLogin, loginUrl, sbx, account: leased }; // `cloud` attaches to — and health-checks — this same machine
+    return { needsLogin, loginUrl, sbx, account: leased, deleteAt }; // `cloud` attaches to — and health-checks — this same machine
   }
   c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? (needsLogin ? ' and starts on the task once it is signed in' : ' and has started on the task') : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
     (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${sel}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
       : `${leased ? `Signed in with saved account ${leased}.\n` : ''}Reach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n  - Terminal: cloudy-cloud coordinator attach ${name}\n\n`) +
     `${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
-  return { needsLogin, loginUrl, sbx, account: leased };
+  return { needsLogin, loginUrl, sbx, account: leased, deleteAt };
 }
 
 async function attach(c, args, { noAttach = false, machine = null } = {}) {
@@ -901,13 +917,13 @@ async function postAttach(c, name, get, code, { machine = null, labelArg = '' } 
     const sbx = await get();
     await afterSignIn(c, sbx, name, machine);
     if (await signedIn(sbx)) {
-      const carried = machine?.labels?.account || '';
+      const carried = ownAccount(c, machine);
       const entry = carried && accounts.readIndex(accounts.accountsDir(c.env))[carried];
       if (carried && entry && !entry.needsSignIn) {
         // The account was already saved: only its newest credential goes back to the laptop.
         try { await accounts.syncBack(accounts.accountsDir(c.env), sbx, carried, c.now()); } catch { /* keep the attach report clean */ }
       } else {
-        const label = await saveAccountFromMachine(c, sbx, machine, { labelArg });
+        const label = await saveAccountFromMachine(c, sbx, machine, { labelArg, name });
         if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
       }
       const url = await readLink(sbx);
@@ -970,7 +986,7 @@ async function login(c, args) {
     if (await signedIn(sbx)) {
       // Signed in — run the post-sign-in health check, save the sign-in as an account, report the link.
       await afterSignIn(c, sbx, name, m);
-      const label = await saveAccountFromMachine(c, sbx, m, { labelArg: accountArg });
+      const label = await saveAccountFromMachine(c, sbx, m, { labelArg: accountArg, name });
       if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
       const url = await readLink(sbx);
       return c.out(`Coordinator ${name} is signed in to Claude.${url ? `\nRemote Control: ${url}` : ''}`);
@@ -1386,7 +1402,7 @@ async function cloud(c, args) {
   // The machine attach and the post-attach check act on is the one start just made — never a second lookup
   // by name (a same-named machine created meanwhile is not this coordinator). The labels it was created
   // with are reconstructed here: they are what gates the account read-back (install) and its label (account).
-  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}`, labels: { install: mine, ...(res.account ? { account: res.account } : {}) } };
+  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}`, deleteAt: res.deleteAt, labels: { install: mine, name, ...(res.account ? { account: res.account } : {}) } };
   // A coordinator waiting for its Claude sign-in attaches to the sign-in pane, not to Claude: say so first.
   if (res?.needsLogin) c.out('Sign in to Claude in the window that opens (each coordinator has its own sign-in).');
   const code = await attach(c, [name], { machine: own });
