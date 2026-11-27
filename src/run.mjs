@@ -10,6 +10,7 @@ import { createNamedSessionTransport } from './session-transport.mjs';
 import { loadEnv } from './config.mjs';
 import { combine, loadProviders } from './providers/index.mjs';
 import { explainSubagent } from './run-subagent.mjs';
+import { CONDITIONAL_STOP_EXTENSION } from './mcp.mjs';
 
 const usage = 'usage: cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--json] [--explain] -- PROMPT';
 const resumeUsage = 'usage: cloudy-cloud resume RUN-ID [--json] [--timeout SECONDS]';
@@ -110,6 +111,33 @@ const toolCall = async (client, name, args) => client.request('tools/call', { na
 const outputText = (result) => result?.content?.find((block) => block.type === 'text')?.text ?? '';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The conditional stop asks the owner to verify the worker workspace before deleting it. A failure
+// other than "not-stopped" is retried; "not-stopped" and success end the loop.
+async function attemptConditionalStop(client, agentId, turnId) {
+  let outcome, stopError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const stopped = await toolCall(client, 'cloud_agent_stop', { agent_ids: [agentId], expected_turn_id: turnId, expected_status: 'idle' });
+      outcome = stopped?.structuredContent?.agents?.[0];
+      const stopText = outputText(stopped);
+      if (stopped?.isError) stopError = stopText || 'the stop request failed';
+      else if (outcome?.status === 'stopped' || outcome?.status === 'not-open') { stopError = undefined; break; }
+      else if (outcome?.status === 'not-stopped') { stopError = outcome.message ?? 'the worker changed state before automatic cleanup'; break; }
+      else stopError = outcome?.message ?? stopText ?? 'the provider did not confirm machine deletion';
+    } catch (error) { stopError = error.message; }
+    if (attempt < 2) await pause(250 * (attempt + 1));
+  }
+  return { outcome, stopError, changedTurn: outcome?.status === 'not-stopped' };
+}
+
+// The recheck inside a conditional stop can push (and checkpoint) a commit the turn result did not
+// know about; the cached result must then name the newer verified sha.
+const CHECKPOINT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+const applyStopOutcomeCheckpoint = (record, outcome) =>
+  CHECKPOINT_OID.test(outcome?.checkpoint_sha ?? '') && record.cached_result?.checkpoint_sha !== outcome.checkpoint_sha
+    ? { ...record, cached_result: { ...record.cached_result, checkpoint_sha: outcome.checkpoint_sha } }
+    : record;
+
 async function run(options, resumeRecord) {
   const repo = await realpath(options.repo).catch(() => { throw new Error(`repo does not exist: ${options.repo}`); });
   if (options.explain) {
@@ -145,6 +173,9 @@ async function run(options, resumeRecord) {
       protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'cloudy-cloud-run', version: packageVersion },
     });
     if (init?.protocolVersion !== '2025-11-25') throw new Error('the MCP owner did not accept the CLI protocol');
+    // Only an owner advertising the workspace-verifying stop may get the conditional-stop request:
+    // a 0.6.0 owner deletes without the live-workspace recheck, so it keeps the worker instead.
+    const canConditionalStop = init?.capabilities?.extensions?.[CONDITIONAL_STOP_EXTENSION] !== undefined;
     await client.notify('notifications/initialized');
 
     const args = resumeRecord ? {} : {
@@ -250,27 +281,22 @@ async function run(options, resumeRecord) {
           record = { ...record, status: 'completed', turn_id: final.turn_id, cached_result: { ...final, run_id: id }, updated_at: Date.now() };
           writeRunRecord(record);
         }
-        let outcome, stopText = '', stopError;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const stopped = await toolCall(client, 'cloud_agent_stop', { agent_ids: [agentId], expected_turn_id: final.turn_id, expected_status: 'idle' });
-            outcome = stopped?.structuredContent?.agents?.[0];
-            stopText = outputText(stopped);
-            if (stopped?.isError) stopError = stopText || 'the stop request failed';
-            else if (outcome?.status === 'stopped' || outcome?.status === 'not-open') { stopError = undefined; break; }
-            else if (outcome?.status === 'not-stopped') { stopError = outcome.message ?? 'the worker changed state before automatic cleanup'; break; }
-            else stopError = outcome?.message ?? stopText ?? 'the provider did not confirm machine deletion';
-          } catch (error) { stopError = error.message; }
-          if (attempt < 2) await pause(250 * (attempt + 1));
-        }
-        if (stopError) {
-          const changedTurn = outcome?.status === 'not-stopped';
-          const action = changedTurn
-            ? (outcome?.action ?? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${agentId}; a newer turn may be running, so decide manually whether to stop it.`)
-            : `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${agentId}. The worker remains tracked while deletion is unconfirmed.`;
-          final = { ...final, status: 'failed', error: true, cleanup_error: true, preserve_worker: !changedTurn, recoverable: true, session: name, repo,
-            message: changedTurn ? (stopError || 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.') : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`,
-            action };
+        if (!canConditionalStop) {
+          final = { ...final, status: 'failed', error: true, cleanup_error: true, preserve_worker: true, recoverable: true, session: name, repo,
+            message: 'The worker finished, but this session owner predates the workspace-verifying automatic stop, so the worker was kept instead of risking deletion.',
+            action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)}, inspect cloud_agent_result and the workspace for ${agentId}, then call cloud_agent_stop when you have confirmed the work is safe on origin. Restart the session with an updated cloudy-cloud to enable automatic cleanup.` };
+        } else {
+          const { outcome, stopError, changedTurn } = await attemptConditionalStop(client, agentId, final.turn_id);
+          if (CHECKPOINT_OID.test(outcome?.checkpoint_sha ?? '') && final.checkpoint_sha !== outcome.checkpoint_sha) final = { ...final, checkpoint_sha: outcome.checkpoint_sha };
+          record = applyStopOutcomeCheckpoint(record, outcome);
+          if (stopError) {
+            const action = changedTurn
+              ? (outcome?.action ?? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${agentId}; a newer turn may be running, so decide manually whether to stop it.`)
+              : `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${agentId}. The worker remains tracked while deletion is unconfirmed.`;
+            final = { ...final, status: 'failed', error: true, cleanup_error: true, preserve_worker: !changedTurn, recoverable: true, session: name, repo,
+              message: changedTurn ? (stopError || 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.') : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`,
+              action };
+          }
         }
       }
     }
@@ -291,6 +317,49 @@ async function run(options, resumeRecord) {
   } finally {
     await transport.close().catch(() => {});
     if (timedOut) process.exitCode = 124;
+  }
+}
+
+// Resume over a record whose cached result finished but whose cleanup never confirmed deletion:
+// reconnect to the session owner and retry the conditional stop instead of replaying a plain success.
+// An owner without the workspace-verifying capability keeps the worker and gets told how to stop it.
+async function settleCachedCleanup(record) {
+  const { session: name, repo } = record;
+  let result = { ...record.cached_result, run_id: record.id };
+  const keep = (message, action) => ({ ...result, status: 'failed', error: true, cleanup_error: true, preserve_worker: true, recoverable: true, session: name, repo, message, action });
+  if (!record.agent_id || !record.turn_id) {
+    return keep('The worker finished, but deletion was never confirmed and the run record cannot drive a conditional stop.',
+      `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)}, inspect cloud_agent_result and cloud_agent_list, then call cloud_agent_stop when you have confirmed the work is safe on origin.`);
+  }
+  let transport;
+  try {
+    transport = await createNamedSessionTransport({ name, repo, home: runHome(), requireExisting: true });
+    await transport.start();
+    const client = rpcClient(transport);
+    const init = await client.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'cloudy-cloud-run', version: packageVersion } });
+    await client.notify('notifications/initialized');
+    if (init?.capabilities?.extensions?.[CONDITIONAL_STOP_EXTENSION] === undefined) {
+      return keep('The worker finished, but this session owner predates the workspace-verifying automatic stop, so the worker was kept instead of risking deletion.',
+        `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)}, inspect cloud_agent_result and the workspace for ${record.agent_id}, then call cloud_agent_stop when you have confirmed the work is safe on origin. Restart the session with an updated cloudy-cloud to enable automatic cleanup.`);
+    }
+    const { outcome, stopError, changedTurn } = await attemptConditionalStop(client, record.agent_id, record.turn_id);
+    const updated = applyStopOutcomeCheckpoint(record, outcome);
+    if (updated !== record) result = { ...updated.cached_result, run_id: record.id };
+    if (!stopError) {
+      const { cleanup_error, ...cleared } = updated;
+      writeRunRecord({ ...cleared, status: 'completed', updated_at: Date.now() });
+      return result;
+    }
+    writeRunRecord({ ...updated, updated_at: Date.now() }); // the checkpoint correction still lands
+    const action = changedTurn
+      ? (outcome?.action ?? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${record.agent_id}; a newer turn may be running, so decide manually whether to stop it.`)
+      : `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${record.agent_id}. The worker remains tracked while deletion is unconfirmed.`;
+    return keep(changedTurn ? (stopError || 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.') : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`, action);
+  } catch (error) {
+    return keep(`The worker finished, but the cleanup retry could not reach the session owner: ${error.message}`,
+      `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${record.agent_id ?? 'the worker'}; the worker remains tracked while deletion is unconfirmed.`);
+  } finally {
+    await transport?.close?.().catch(() => {});
   }
 }
 
@@ -335,7 +404,9 @@ export async function main(argv = process.argv.slice(2)) {
       if (!id) throw new Error('a run ID is required');
       const record = readRunRecord(id);
       if (record.cached_result) {
-        const result = { ...record.cached_result, run_id: id };
+        // The result replays at once; when the recorded cleanup never confirmed deletion, resume is
+        // the user's retry handle — it settles the worker instead of hiding it behind a replay.
+        const result = record.cleanup_error ? await settleCachedCleanup(record) : { ...record.cached_result, run_id: id };
         print(result, json);
         return result.error ? 1 : 0;
       }

@@ -67,7 +67,7 @@
     "cc-ID",
     "sh",
     "-c",
-    "mkdir -p '/run/secrets' && cat > '/run/secrets/env'"
+    "mkdir -p '/run/secrets' && (umask 077; cat > '/run/secrets/env')"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -100,7 +100,7 @@
     "cc-ID",
     "sh",
     "-c",
-    "mkdir -p '/home/worker/dir' && cat > '/home/worker/dir/a.txt'"
+    "mkdir -p '/home/worker/dir' && (umask 077; cat > '/home/worker/dir/a.txt')"
   ],
   [
     "/opt/homebrew/bin/docker",
@@ -203,7 +203,7 @@
     "cc-ID",
     "sh",
     "-c",
-    "mkdir -p '/run/secrets' && cat > '/run/secrets/env'"
+    "mkdir -p '/run/secrets' && (umask 077; cat > '/run/secrets/env')"
   ],
   [
     "/opt/homebrew/bin/docker",

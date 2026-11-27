@@ -38,9 +38,10 @@ const textOf = (error) => String(error?.message ?? error ?? 'Unknown error');
 const exitOf = (error) => Number.isInteger(error?.exitCode) ? error.exitCode
   : error?.code === 'timeout' ? 124
     : Number.isInteger(error?.code) && typeof error.code === 'number' ? error.code : undefined;
-const ownerFor = (provider, id) => ({ provider: provider.name, machine_id: String(id), selector: `${provider.name}:${id}` });
+const ownerFor = (provider, id, deleteAt) => ({ provider: provider.name, machine_id: String(id), selector: `${provider.name}:${id}`, hasShell: provider.caps?.hasShell !== false, ...(deleteAt && { delete_at: new Date(deleteAt).toISOString() }) });
 
 function ownerAction(owner) {
+  if (owner.hasShell === false) return `This provider has no shell you can attach to. Inspect machine ${owner.machine_id} (provider ${owner.provider}) with the provider's own tools${owner.delete_at ? ` — it is deleted at ${owner.delete_at}` : ''}.\nAfter preserving any needed files, delete it with:\n  cloudy-cloud machines stop ${quote(owner.selector)}`;
   return `Inspect this machine:\n  cloudy-cloud shell ${quote(owner.selector)} -- /bin/sh\nAfter preserving any needed files, delete it with:\n  cloudy-cloud machines stop ${quote(owner.selector)}`;
 }
 
@@ -60,6 +61,19 @@ async function place(providers, env, labels, bundleSize, egress, timeoutSeconds)
     && (!egress.length || provider.caps?.hasEgressPolicy));
   const rejected = providers.filter((provider) => !eligible.includes(provider));
   const tried = [];
+  // A provider may grant a shorter lifetime than requested (E2B caps the timeout by plan): when the
+  // granted deadline cannot cover the command, the machine is deleted and the next provider tried.
+  const lifetimeOk = async (provider, sandbox) => {
+    const granted = Number(sandbox?.deleteAt) || Date.parse(sandbox?.deleteAt ?? '') || 0;
+    if (!granted || granted >= Date.now() + timeoutSeconds * 1000) return true;
+    try { await sandbox.kill(); }
+    catch (e) {
+      const owner = ownerFor(provider, sandbox.id, sandbox?.deleteAt);
+      throw Object.assign(new Error(`Provider ${provider.name} granted a sandbox lifetime ending ${new Date(granted).toISOString()} — before the ${timeoutSeconds}-second command could finish — and the sandbox could not be deleted: ${textOf(e)}`), { cause: e, owner, provider: provider.name, machine_id: owner.machine_id, selector: owner.selector });
+    }
+    tried.push({ provider: provider.name, code: 'ttl_too_short', message: `the granted sandbox lifetime ends ${new Date(granted).toISOString()}, before the ${timeoutSeconds}s command can finish` });
+    return false;
+  };
   for (const provider of eligible) {
     const ttlSeconds = requestedTtl;
     try {
@@ -67,7 +81,8 @@ async function place(providers, env, labels, bundleSize, egress, timeoutSeconds)
         image: 'agent-browser', envs: {}, labels, name: labels.owner, ttlSeconds, includeGithubToken: false,
         ...(egress.length && { egress: { allow: egress } }),
       });
-      return { provider, sandbox, owner: ownerFor(provider, sandbox.id), ttlSeconds };
+      if (await lifetimeOk(provider, sandbox)) return { provider, sandbox, owner: ownerFor(provider, sandbox.id, sandbox.deleteAt), ttlSeconds };
+      continue;
     } catch (error) {
       if (error?.code === 'cleanup_unconfirmed' && error?.allocated === true) {
         const owner = ownerFor(provider, error.machineId ?? 'unknown');
@@ -76,7 +91,8 @@ async function place(providers, env, labels, bundleSize, egress, timeoutSeconds)
       const how = classifyCreateFailure(error);
       if (how === 'reconcile') {
         const adopted = await reconcileCreate(provider, labels);
-        return { provider, sandbox: adopted.sandbox, owner: adopted.owner, ttlSeconds, reconciled: true };
+        if (await lifetimeOk(provider, adopted.sandbox)) return { provider, sandbox: adopted.sandbox, owner: { ...adopted.owner, hasShell: provider.caps?.hasShell !== false }, ttlSeconds, reconciled: true };
+        continue;
       }
       if (how !== 'next') throw error;
       tried.push({ provider: provider.name, code: error?.code, message: textOf(error).split('\n')[0] });
@@ -93,7 +109,7 @@ async function place(providers, env, labels, bundleSize, egress, timeoutSeconds)
 
 async function inspectWorkspace(sandbox, repoPath, originalSha, originalRefs) {
   try {
-    const r = await sandbox.commands.run(String.raw`git status --porcelain --untracked-files=all && printf '\n--CC-HEAD--\n' && git rev-parse HEAD && printf '\n--CC-REFS--\n' && git for-each-ref --format='%(refname) %(objectname)' && printf '\n--CC-WT--\n' && git worktree list | wc -l`, {
+    const r = await sandbox.commands.run(String.raw`git status --porcelain --untracked-files=all --ignored=matching && printf '\n--CC-HEAD--\n' && git rev-parse HEAD && printf '\n--CC-REFS--\n' && git for-each-ref --format='%(refname) %(objectname)' && printf '\n--CC-WT--\n' && git worktree list | wc -l`, {
       cwd: repoPath, timeoutMs: 30_000,
     });
     const raw = String(r.stdout ?? '');
@@ -145,6 +161,7 @@ async function runExec(options, deps) {
   let sandbox;
   let remoteRepo;
   let argvFile;
+  let bundleFile;
   let originalRefs = '';
   try {
     placement = await place(providers, env, labels, snapshot.size, network.list, options.timeout);
@@ -152,13 +169,16 @@ async function runExec(options, deps) {
     remoteRepo = `${sandbox.home ?? '/home/user'}/repo`;
     const bundle = await snapshot.read();
     if (!bundle) throw new Error('the full local repository snapshot could not be read');
+    const home = sandbox.home ?? '/home/user';
     // The bundle can carry a credential inside tracked history, so it uses the upload-only route (writeSecret fails closed).
-    await writeSecretFile(sandbox, `${sandbox.home ?? '/home/user'}/in.bundle`, bundle);
+    bundleFile = `${home}/in.bundle`;
+    await writeSecretFile(sandbox, bundleFile, bundle);
     // argv can hold a credential too, so it is never interpolated into the provider's command string: the script is uploaded
     // through the same secret route and the remote command names only its path.
-    argvFile = `${sandbox.home ?? '/home/user'}/exec-argv.sh`;
+    argvFile = `${home}/exec-argv.sh`;
     await writeSecretFile(sandbox, argvFile, `${shellCommand(options.argv)}\n`);
     const setup = [
+      `chmod 600 ${quote(argvFile)}`,
       'git init -q repo',
       'cd repo',
       'git config user.name cloudy-cloud',
@@ -166,11 +186,14 @@ async function runExec(options, deps) {
       `git fetch -q ../in.bundle ${snapshot.sha}`,
       `git checkout -q --detach ${snapshot.sha}`,
     ].join(' && ');
-    const initialized = await sandbox.commands.run(`${setup} && git for-each-ref --format='%(refname) %(objectname)'`, { cwd: sandbox.home ?? '/home/user', timeoutMs: 120_000 });
+    const initialized = await sandbox.commands.run(`${setup} && git for-each-ref --format='%(refname) %(objectname)'`, { cwd: home, timeoutMs: 120_000 });
     originalRefs = String(initialized.stdout ?? '').trim();
   } catch (error) {
     await snapshot.release();
     if (sandbox && placement) {
+      // The uploaded argv script (and bundle) can hold a credential: remove it before a possibly
+      // preserved machine is handed back, then delete.
+      if (argvFile) await sandbox.commands.run(`rm -f ${quote(argvFile)} ${quote(bundleFile)}`, { timeoutMs: 10_000 }).catch(() => {});
       try { await deleteAndConfirm(placement.provider, sandbox.id); }
       catch (deleteError) {
         const owner = placement.owner;
@@ -202,7 +225,9 @@ async function runExec(options, deps) {
   let commandError;
   let commandResult;
   try {
-    commandResult = await sandbox.commands.run(`sh ${quote(argvFile)}`, {
+    // The argv script removes itself (and the consumed bundle) when the command ends, so a retained
+    // machine never keeps a file that can hold a credential; the exit code is passed through.
+    commandResult = await sandbox.commands.run(`sh ${quote(argvFile)}; s=$?; rm -f ${quote(argvFile)} ${quote(bundleFile)}; exit $s`, {
       cwd: remoteRepo,
       timeoutMs: options.timeout * 1000,
       onStdout: (chunk) => {
@@ -232,6 +257,9 @@ async function runExec(options, deps) {
     emit(emitStderr, tail);
   }
 
+  // A command killed before its own cleanup (or a removed-file race) still leaves the script: remove it
+  // here too so a machine the inspection keeps never retains it.
+  if (argvFile) await sandbox.commands.run(`rm -f ${quote(argvFile)} ${quote(bundleFile)}`, { timeoutMs: 10_000 }).catch(() => {});
   const inspection = await inspectWorkspace(sandbox, remoteRepo, snapshot.sha, originalRefs);
   const code = commandError ? exitOf(commandError) : Number.isInteger(commandResult?.exitCode) ? commandResult.exitCode : 0;
   const commandKnown = !commandError || code !== undefined;

@@ -205,15 +205,19 @@ export function createProvider(env, deps = {}) {
       loadName: async () => (nameFromInfo ? (sandbox.name = (await sbx.getInfo()).name) : sandbox.name),
       commands: {
         // opts.onStdout receives output as it is written. opts.signal stops the command (a background job is killed).
-        async run(cmd, { timeoutMs: ms, onStdout, signal, ...opts } = {}) {
-          if (!(ms > FOREGROUND_MAX_MS)) return call(() => sbx.commands.run(cmd, { ...opts, onStdout, signal, timeoutMs: ms }));
+        async run(cmd, { timeoutMs: ms, onStdout, onStderr, signal, stdin, ...opts } = {}) {
+          if (!(ms > FOREGROUND_MAX_MS)) return call(() => sbx.commands.run(cmd, { ...opts, onStdout, onStderr, signal, stdin, timeoutMs: ms }));
           // The SDK does not enforce a timeout on background jobs, so wait with a deadline and kill on expiry.
+          // startJob rejects the stream callbacks and stdin outright: the job's output is one combined
+          // log that only wait() can follow, so they are never forwarded to the background start.
+          if (stdin !== undefined) throw Object.assign(new Error('stdin is not supported for background commands'), { code: 'bad_request' });
           const job = await call(() => sbx.commands.run(cmd, { ...opts, background: true }));
           const kill = () => job.kill().catch(() => {});
           if (signal?.aborted) await kill();
           else signal?.addEventListener('abort', kill, { once: true });
           // wait() replays the whole log from the start on every call, so count the characters already delivered
-          // and pass only the new tail to onStdout.
+          // and pass only the new tail. The merged log is delivered to the stderr consumer the same way
+          // stdout is delivered: there is no way to tell the streams apart in one job log.
           let delivered = 0;
           let failures = 0; // consecutive transient errors, for the backoff
           const deadline = now() + ms;
@@ -225,12 +229,14 @@ export function createProvider(env, deps = {}) {
                 throw Object.assign(new Error(`command timed out after ${ms} ms`), { local: true, stderr: `job still running after ${ms} ms` });
               }
               let pos = 0;
-              const fresh = (chunk) => {
+              const fresh = async (chunk) => {
                 const end = pos + chunk.length, skip = Math.max(0, delivered - pos);
                 pos = end;
                 if (end <= delivered) return;
                 delivered = end;
-                return onStdout?.(skip ? chunk.slice(skip) : chunk);
+                const slice = skip ? chunk.slice(skip) : chunk;
+                await onStdout?.(slice);
+                return onStderr?.(slice);
               };
               try {
                 return await call(() => { pos = 0; return job.wait({ timeoutMs: Math.min(sliceMs, left), onStdout: fresh }); });

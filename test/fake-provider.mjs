@@ -59,6 +59,7 @@ case "$p" in OMPERR*) cat ${FIXTURES}omp-json-error.jsonl; exit 1 ;; *) cat ${FI
 let currentGithub; // the bare repo of the test being set up (tests in a file run one at a time)
 export const setGithub = (g) => { currentGithub = g; };
 export const getGithub = () => currentGithub;
+let fakeSbxIds = 0;
 export async function fakeSandbox(github = currentGithub) {
   const dir = await mkdtemp(join(tmpdir(), 'fake-sbx-'));
   const bin = join(dir, 'bin');
@@ -79,6 +80,7 @@ export async function fakeSandbox(github = currentGithub) {
   await chmod(join(bin, 'gh'), 0o755);
   const map = (s) => s.replaceAll('/home/user', join(dir, 'home'));
   const sbx = {
+    id: `fake-sbx-${++fakeSbxIds}`,
     dir,
     killed: false,
     files: {

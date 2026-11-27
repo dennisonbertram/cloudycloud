@@ -152,6 +152,20 @@ test('cloud_exec rejects paths outside the MCP-bound repository before execution
   assert.equal(executions, 0);
 });
 
+test('cloud_exec scrubs JSON-escaped spellings of secrets from the final text', async () => {
+  // A secret with characters JSON.stringify escapes (a quote, a newline) survives a literal scrub of
+  // the serialized result: the text form must redact the escaped spelling too.
+  const escaped = 'tok"en\nvalue';
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', MCP_TEST_TOKEN: escaped } });
+  const server = buildServer({ ...f.deps, executeRemoteArgv: async () => ({ status: 'completed', exit_code: 0, stdout: `leak ${escaped} done` }) });
+  const call = server._requestHandlers.get('tools/call');
+  const result = await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['x'] } } }, { mcpReq: { requestState: () => undefined } });
+  const text = result.content[0].text;
+  assert.ok(!text.includes('tok'), `the serialized text leaked the escaped secret: ${text}`);
+  assert.ok(text.includes('[redacted]'));
+  assert.ok(!result.structuredContent.stdout.includes('tok'));
+});
+
 test('cloud_exec does not send MCP progress without a progress token', async () => {
   const f = await setup();
   let suppliedCallbacks = false, notices = 0;
@@ -773,7 +787,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  cpu \\d+% mem \\S+ GiB \\(\\d+[sm] ago\\)  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -1090,6 +1104,142 @@ test('conditional automatic stop keeps a worker whose repo gained a linked workt
     await stopAgents({ agent_ids: [id] }, deps);
     assert.equal(sbx.killed, true);
   }
+});
+
+test('conditional automatic stop pushes a worker-branch tip that moved past HEAD', async () => {
+  const recovery = await mkdtemp(join(tmpdir(), 'cc-recovery-'));
+  const { start, wait, deps, created, remote } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_RECOVERY: recovery } });
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  // Commits on refs/heads/<branch> that HEAD does not name (a detached checkout moved the ref past it).
+  await run(`git checkout -q --detach HEAD && git commit -qm drift --allow-empty && git update-ref refs/heads/cloudy-cloud/${id} HEAD && git reset -q --hard HEAD~1`);
+  const tip = (await run(`git rev-parse refs/heads/cloudy-cloud/${id}`)).stdout.trim();
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  assert.notEqual(tip, head, 'the branch ref must hold a commit HEAD does not');
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), tip, 'the drifted branch tip must be on origin before deletion');
+  assert.equal(stopped.structuredContent.agents[0].checkpoint_sha, tip, 'the recovery checkpoint names the pushed branch tip');
+});
+
+test('conditional automatic stop refuses when the worker-branch tip diverged from HEAD', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const base = deps.open.get(id).sha;
+  // A commit on the branch ref that shares no history with the pushed HEAD: no single push preserves both.
+  await sbx.commands.run(`head=$(git rev-parse HEAD) && git checkout -q -b div ${base} && git commit -qm div --allow-empty && git update-ref refs/heads/cloudy-cloud/${id} div && git checkout -q --detach $head`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /diverged/);
+  assert.equal(sbx.killed, false);
+  await sbx.commands.run(`git update-ref -d refs/heads/cloudy-cloud/${id} 2>/dev/null; git checkout -q -b cloudy-cloud/${id} HEAD`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
+});
+
+test('conditional automatic stop with no new commits checkpoints the confirmed remote tip', async () => {
+  const recovery = await mkdtemp(join(tmpdir(), 'cc-recovery-'));
+  const { start, wait, deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_RECOVERY: recovery } });
+  const id = await start();
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const a = deps.open.get(id);
+  // The turn pushed nothing, so no checkpoint was saved. The branch tip reached origin another way
+  // (a manual push): the no-change stop must still checkpoint that verified remote tip.
+  await created[0].commands.run(`git push -q origin refs/heads/cloudy-cloud/${id}`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(stopped.structuredContent.agents[0].checkpoint_sha, a.sha, 'a no-change stop still leaves a checkpoint at the verified remote tip');
+  const record = JSON.parse(await readFile(join(recovery, `${id}.json`), 'utf8'));
+  assert.equal(record.checkpointSha, a.sha);
+});
+
+test('conditional automatic stop refuses deletion when the workspace probe fails', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const realRun = sbx.commands.run;
+  // The worktree/ref listing dies after the safety push passed clean: an incomplete probe refuses.
+  sbx.commands.run = (cmd, o) => String(cmd).includes('git worktree list')
+    ? Promise.reject(Object.assign(new Error('probe broke'), { exitCode: 1 }))
+    : realRun(cmd, o);
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /could not be fully inspected/);
+  assert.equal(sbx.killed, false);
+  sbx.commands.run = realRun;
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+});
+
+test('conditional automatic stop deletes only on provider confirmation that the machine is gone', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  // A command-level not_found (Boat also returns it for sandbox_not_ready) while the provider still
+  // reaches the machine: the deletion must not be authorized by the failed probe.
+  const realRun = sbx.commands.run;
+  sbx.commands.run = () => Promise.reject(Object.assign(new Error('sandbox_not_ready'), { code: 'not_found' }));
+  // Hook-created sandboxes are not registered in the fake provider's own maps, so simulate the
+  // provider lookup directly: reachable while the flag is clear, not_found once it is set.
+  const gone = { current: false };
+  const realConnect = deps.provider.connect;
+  deps.provider.connect = async () => {
+    if (gone.current) throw Object.assign(new Error('not found'), { code: 'not_found' });
+    return {};
+  };
+  const refused = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(refused.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(refused.structuredContent.agents[0].message, /still reaches the machine|not confirmed gone/);
+  assert.equal(sbx.killed, false);
+  // The provider's own lookup confirms the machine is gone: only then does the failed probe count.
+  gone.current = true;
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  sbx.commands.run = realRun;
+  deps.provider.connect = realConnect;
+});
+
+test('conditional automatic stop rechecks the completed turn after the workspace probe', async () => {
+  const { start, wait, msg, deps, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const realRun = sbx.commands.run;
+  let entered, release;
+  const gate = new Promise((r) => { release = r; });
+  const gateEntered = new Promise((r) => { entered = r; });
+  // The probe's ref listing is held open while another client starts a new turn.
+  sbx.commands.run = (cmd, o) => {
+    if (!String(cmd).includes('--CC-REFS--')) return realRun(cmd, o);
+    entered();
+    return realRun(cmd, o).then(async (r) => { await gate; return r; });
+  };
+  const pending = stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  await gateEntered;
+  await msg(id, 'OK more work');
+  release();
+  const r = await pending;
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(sbx.killed, false);
+  assert.equal(deps.open.get(id).status, 'running');
+  sbx.commands.run = realRun;
+  await wait([id]);
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
 });
 
 
