@@ -1144,6 +1144,50 @@ test('conditional automatic stop refuses when the worker-branch tip diverged fro
   assert.equal(sbx.killed, true);
 });
 
+test('conditional automatic stop saves a newer detached HEAD when the local worker branch is stale', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  // B is pushed from a detached HEAD, then C is committed on top; the local branch still names the older tip.
+  await run(`git checkout -q --detach && git commit -qm b --allow-empty && git push -q origin HEAD:refs/heads/cloudy-cloud/${id} && git commit -qm c --allow-empty`);
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped', stopped.structuredContent.agents[0].message);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head, 'the newer HEAD is on origin before deletion');
+});
+
+test('conditional automatic stop saves HEAD when the local worker branch is missing', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  const run = (cmd) => sbx.commands.run(cmd, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  await run(`git checkout -q --detach && git branch -D cloudy-cloud/${id} && git commit -qm c --allow-empty`);
+  const head = (await run('git rev-parse HEAD')).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped', stopped.structuredContent.agents[0].message);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head);
+});
+
+test('conditional automatic stop keeps a worker that holds only Git-ignored files', async () => {
+  const { start, wait, deps, created } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  await sbx.commands.run(`echo diagnostics.log >> .git/info/exclude && echo report > diagnostics.log`, { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.match(r.structuredContent.agents[0].message, /diagnostics\.log/);
+  assert.equal(sbx.killed, false);
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(sbx.killed, true);
+});
+
 test('conditional automatic stop with no new commits checkpoints the confirmed remote tip', async () => {
   const recovery = await mkdtemp(join(tmpdir(), 'cc-recovery-'));
   const { start, wait, deps, created } = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_RECOVERY: recovery } });
@@ -3395,6 +3439,29 @@ test('a pi turn that fails twice with model_not_found is rerun and succeeds, wai
   assert.deepEqual(sleeps, [30_000, 60_000]);
   assert.ok(events.some((e) => e.type === 'progress' && /retrying .*attempt 2 of 4/.test(e.text)));
   assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
+});
+
+test('a nonzero turn with empty stderr is classified on its error, not on the worker transcript in stdout', async () => {
+  // First pi run exits 1: stdout is a transcript quoting model_not_found (the user's task), the message says 503. The
+  // profile has not answered yet, so a model_not_found classification would give up; the 503 must be retried.
+  answeredProfiles.delete('pi-glm');
+  let piRuns = 0;
+  const { start, wait } = await setup({
+    env: pEnv, sleep: async () => {},
+    createSandbox: async (envs) => {
+      const sbx = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const real = sbx.commands.run;
+      sbx.commands.run = async (cmd, o) => {
+        if (cmd.includes('pi --mode json') && ++piRuns === 1) throw Object.assign(new Error('503 overloaded'), { exitCode: 1, stdout: '{"type":"user","text":"investigate model_not_found handling"}\n', stderr: '' });
+        return real(cmd, o);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.equal(piRuns, 2, 'the 503 is retried');
+  assert.match(r, /status: idle/);
 });
 
 test('a lost command transport with a retryable provider status is not replayed automatically', async () => {

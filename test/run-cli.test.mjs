@@ -242,6 +242,7 @@ test('run persists the completed result before requesting worker cleanup', async
   }
   assert.equal(record?.cached_result?.status, 'completed', `the completed result must be persisted before the stop request; record=${JSON.stringify(record)} stderr=${stderr}`);
   assert.equal(record.cached_result.agent_id, record.agent_id);
+  assert.equal(record.cleanup_error, true, 'the pending cleanup is recorded with the cached result, so an interrupted CLI makes resume re-check');
 });
 
 test('CLI drains large JSON output before exiting', async (t) => {

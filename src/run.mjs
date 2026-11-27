@@ -275,10 +275,10 @@ async function run(options, resumeRecord) {
           message: 'The result did not identify its completed turn, so the CLI kept the worker open instead of stopping a possibly resumed task.',
           action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list before stopping ${agentId}.` };
       } else {
-        // Persist the completed result before asking the owner to delete the worker: if this process
-        // exits while cleanup is in flight, resume still replays the finished turn.
+        // Persist the completed result, with cleanup marked pending, before asking the owner to delete the
+        // worker: if this process exits while cleanup is in flight, resume re-checks instead of replaying success.
         if (typeof final.result === 'string') {
-          record = { ...record, status: 'completed', turn_id: final.turn_id, cached_result: { ...final, run_id: id }, updated_at: Date.now() };
+          record = { ...record, status: 'completed', turn_id: final.turn_id, cleanup_error: true, cached_result: { ...final, run_id: id }, updated_at: Date.now() };
           writeRunRecord(record);
         }
         if (!canConditionalStop) {
@@ -301,8 +301,9 @@ async function run(options, resumeRecord) {
       }
     }
     final.run_id = id;
+    const { cleanup_error: _pending, ...settled } = record; // the pending marker clears once the stop outcome is known
     record = {
-      ...record,
+      ...settled,
       status: final.status,
       ...(final.turn_id && { turn_id: final.turn_id }),
       ...(final.cleanup_error && { cleanup_error: true }), // cleanup is recorded separately; the completed result above stays replayable

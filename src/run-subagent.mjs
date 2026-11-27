@@ -411,14 +411,14 @@ async function safetyPush(a, ctx) {
     // is newer and the branch does not already contain it; TIP is the commit origin must then name. DIVERGED marks
     // a branch tip unrelated to HEAD, whose unique commits a HEAD push cannot cover.
     const push = async () => (await a.sandbox.commands.run(
-      `H=$(git rev-parse HEAD); BT=$(git rev-parse refs/heads/${branch} 2>/dev/null || true); RT=$(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}');` +
+      `H=$(git rev-parse HEAD); BT=$(git rev-parse --verify --quiet refs/heads/${branch} || true); RT=$(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}');` +
       ` if [ "$H" = ${a.sha} ] && { [ -z "$BT" ] || [ "$BT" = "$H" ]; }; then echo NOCHANGE; echo "REMOTE_SHA $RT";` +
-      ` elif err=$( { if [ -n "$BT" ] && [ "$BT" != "$RT" ]; then git push -q origin refs/heads/${branch}:refs/heads/${branch} || exit; fi;` +
+      ` elif err=$( { if [ -n "$BT" ] && [ "$BT" != "$RT" ] && ! { [ "$BT" != "$H" ] && git merge-base --is-ancestor "$BT" "$H"; } && ! git merge-base --is-ancestor "$BT" "$RT"; then git push -q origin refs/heads/${branch}:refs/heads/${branch} || exit; fi;` +
       ` if [ "$H" != ${a.sha} ] && { [ -z "$BT" ] || ! git merge-base --is-ancestor "$H" "$BT"; }; then git push -q origin HEAD:refs/heads/${branch}; fi; } 2>&1 );` +
       ` then echo PUSHOK; echo "REMOTE_SHA $(git ls-remote --heads origin refs/heads/${branch} | awk 'NR==1 {print $1}')";` +
       ` else echo PUSHFAIL; printf '%s\n' "$err" | tail -n 8 | sed 's/^/ERR /'; fi;` +
       ` if [ -n "$BT" ] && [ "$H" != ${a.sha} ] && [ "$BT" != "$H" ] && ! git merge-base --is-ancestor "$H" "$BT" && ! git merge-base --is-ancestor "$BT" "$H"; then echo DIVERGED; fi;` +
-      ` if [ -n "$BT" ] && { [ "$H" = ${a.sha} ] || git merge-base --is-ancestor "$H" "$BT"; }; then TIP=$BT; else TIP=$H; fi; echo "SHA $TIP";` +
+      ` if [ -n "$BT" ] && ! git merge-base --is-ancestor "$BT" "$H" && { [ "$H" = ${a.sha} ] || git merge-base --is-ancestor "$H" "$BT"; }; then TIP=$BT; else TIP=$H; fi; echo "SHA $TIP";` +
       ` if status=$(git status --porcelain 2>&1); then echo STATUS_OK; if [ -n "$status" ]; then printf '%s\n' "$status" | head -20 | sed 's/^/ST /'; fi; else echo STATUS_FAIL; printf '%s\n' "$status" | tail -n 8 | sed 's/^/STATUSERR /'; fi; true`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout;
@@ -523,7 +523,7 @@ async function turn(a, message, ctx, t) {
     if (!max) return r;
     if (!r.error || r.pushOnly) { answered.add(a.profile.name); return r; } // any finished run counts as answered; a push failure after one must not rerun the task
     if (r.cancelled || r.gone) return r;
-    const c = classifyProviderError(r.text);
+    const c = classifyProviderError(r.classText ?? r.text);
     if (!c) return r;
     const ok = c.retryable && (c.kind !== 'model_not_found' || answered.has(a.profile.name));
     if (!ok || r.uncertainExecution || n >= max || t.cancelled || a.status === 'stopped' || a.stopPending || deadline - Date.now() < RETRY_MIN_LEFT_MS) return giveUp(r, c, n);
@@ -612,6 +612,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
     const stderr = `${said}${String(failure.stderr || failure.stdout || failure.message || '')}`.slice(-4000);
+    // The retry classifier reads only diagnostics: a worker transcript on stdout can quote any provider keyword.
+    const classified = `${said}${String(failure.stderr || failure.message || '')}`.slice(-4000);
     const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
     const failureWhere = retainedWithoutSession
       ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')
@@ -622,7 +624,8 @@ async function turnOnce(a, message, ctx, t, deadline) {
     const noSessionNote = retainedWithoutSession
       ? '\nThe sandbox is retained because workspace or push state may be uncommitted or unconfirmed. No session ID was reported, so this conversation cannot be resumed. Inspect the workspace or explicitly stop the agent.'
       : '';
-    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
+    return { error: true, gone: turnGone, preserve_worker: !!preserve_worker, workspace_dirty, push_status, uncertainExecution: !turnGone && (failure.exitCode === undefined || commandNotFound), ...(checkpointSha && { checkpointSha }), text: pat(`Subagent failed, exit code ${code}.${limit}\n${stderr}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`),
+      classText: pat(`Subagent failed, exit code ${code}.${limit}\n${classified}\n${failureWhere}${noSessionNote}\n${totals(a, t)}`) };
   }
   // A sandbox that does not stream still returns the whole output; parse that instead.
   if (!t.progress.final) {
@@ -1904,15 +1907,19 @@ async function recheckWorkspace(a, ctx) {
     // Linked worktrees and local refs other than the worker branch hold work no branch push covers. The
     // && chain makes any git failure reject the whole command instead of reading as "clean".
     const out = String((await a.sandbox.commands.run(
-      `git worktree list --porcelain && printf '\\n--CC-REFS--\\n' && git for-each-ref --format='%(refname)'`,
+      `git worktree list --porcelain && printf '\\n--CC-REFS--\\n' && git for-each-ref --format='%(refname)' && printf '\\n--CC-IGN--\\n' && git status --porcelain --untracked-files=all --ignored=matching`,
       { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
     )).stdout ?? '');
     const markerAt = out.indexOf('\n--CC-REFS--\n');
     if (markerAt < 0) return { safe: false, detail: 'the workspace probe did not finish (its ref listing is missing)', check };
+    const ignAt = out.indexOf('\n--CC-IGN--\n');
+    if (ignAt < 0) return { safe: false, detail: 'the workspace probe did not finish (its ignored-file listing is missing)', check };
+    const ignored = out.slice(ignAt).split('\n').filter((l) => l.startsWith('!! ')).map((l) => l.slice(3));
     const worktrees = out.slice(0, markerAt).split('\n').filter((l) => l.startsWith('worktree ')).length;
     extra = [
       ...(worktrees !== 1 ? [worktrees > 1 ? 'a linked worktree' : 'an unreadable worktree list'] : []),
-      ...out.slice(markerAt + '\n--CC-REFS--\n'.length).split('\n').filter((l) => l && !l.startsWith('refs/remotes/') && l !== `refs/heads/${a.branch}`).map((l) => `local ref ${l}`),
+      ...(ignored.length ? [`Git-ignored files ${ignored.slice(0, 20).join(', ')}`] : []),
+      ...out.slice(markerAt + '\n--CC-REFS--\n'.length, ignAt).split('\n').filter((l) => l && !l.startsWith('refs/remotes/') && l !== `refs/heads/${a.branch}`).map((l) => `local ref ${l}`),
     ];
   } catch (e) {
     return { safe: false, detail: `the workspace could not be fully inspected (${ctx.scrub(e?.message)})`, check };
