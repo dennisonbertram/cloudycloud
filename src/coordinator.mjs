@@ -229,15 +229,10 @@ const nameOf = async (sbx) => (await sbx.loadName?.()) ?? sbx.name;
 // The sign-in check and `claude auth login` must run under the same credential-free environment the session
 // itself gets: an API key or OAuth token in the session environment would otherwise satisfy `auth status`
 // (or silently pick a different sign-in method) without the claude.ai sign-in each coordinator needs.
-export const AUTH_STATUS = 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json';
-// The parsed `claude auth status --json` (null when unreadable): saving an account needs its email too.
-const authStatus = async (sbx) => {
-  try {
-    const r = await sbx.commands.run(AUTH_STATUS, { timeoutMs: 60_000 });
-    const j = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
-    return j && typeof j === 'object' ? j : null;
-  } catch { return null; }
-};
+export const AUTH_STATUS = accounts.AUTH_STATUS;
+// The parsed `claude auth status --json` (null when unreadable or transport-failed; the CLI's exit-1
+// signed-out answer still parses): saving an account needs its email too.
+const authStatus = accounts.authStatus;
 // True when the machine's Claude is signed in to claude.ai through the browser (a setup-token cannot open
 // Remote Control sessions); an unreadable status counts as not signed in.
 async function signedIn(sbx) {
@@ -300,6 +295,12 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
       if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
       // A derived label another coordinator's lease already holds falls back to a fresh account-N.
       label = accounts.nextAccountLabel(dir);
+    } else if (idx[label] && !accounts.sameAccount(idx[label], j)) {
+      // The label already names a DIFFERENT Claude identity — its saved credential is never
+      // overwritten (a label collision by sanitised email, or a stolen --account). Explicit
+      // --account refuses; a derived label falls back to a fresh account-N.
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} already names a different Claude account (${idx[label].email || idx[label].accountUuid}) — its saved credential is never overwritten. Pick another label.`, 'login', `Account ${labelArg} names a different Claude account.`);
+      label = accounts.nextAccountLabel(dir);
     }
     accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, accountUuid: typeof j.accountUuid === 'string' ? j.accountUuid : undefined, credText: got.text, now: c.now() });
     // The lease this machine already holds was the save's slot and stays as it is; a fresh save is
@@ -329,12 +330,30 @@ const accountFromScreen = async (c, m, st) => {
     const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
     if (st.signin) {
       const j = await authStatus(sbx);
-      if (j?.loggedIn === true) await accounts.syncBack(dir, sbx, label, c.now());
+      if (j?.loggedIn === true) await accounts.syncBack(dir, sbx, label, c.now(), machineLease(c, m)?.leasedBy);
       else if (j) accounts.markNeedsSignIn(dir, label); // auth status confirmed the sign-in died
       return; // an unparseable status confirms nothing — the account is left as it is
     }
-    await accounts.syncBack(dir, sbx, label, c.now());
+    await accounts.syncBack(dir, sbx, label, c.now(), machineLease(c, m)?.leasedBy);
   } catch { /* a failed check loses only the newest credential copy */ }
+};
+
+// Returns a predicate: has the lease's machine id vanished even from an UNFILTERED listing of its
+// provider? The role-filtered coordinator listing misses a machine whose labels merely changed, so
+// absence from it alone never frees an account. The unfiltered listing is fetched once per pass,
+// lazily; a failed fetch or a failed provider slice is inconclusive — the lease stays.
+const goneChecker = (c) => {
+  let check;
+  return async (l) => {
+    check ??= (async () => {
+      const errs = [];
+      const rows = await c.provider.list({}, { sdk: true, onError: (e) => errs.push(e) }).catch(() => null);
+      return { rows, errs };
+    })();
+    const { rows, errs } = await check;
+    if (!rows || errs.some((e) => !e.provider || e.provider === l.provider)) return false;
+    return !rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
+  };
 };
 
 // A lease outlives its machine by nothing: when a COMPLETE listing of the lease's own provider no
@@ -344,20 +363,23 @@ const accountFromScreen = async (c, m, st) => {
 // partial — never release on a failed listing (the same incomplete-inventory rule uniqueCoordinator
 // applies), and a lease whose provider is not configured was never listed at all. A released
 // account whose newest credential died with the machine is uncertain: it is marked needsSignIn
-// before it goes back on offer. A start reservation that never got a machine expires by age.
-const releaseStaleLeases = (c, rows, leased) => {
+// before it goes back on offer. A start reservation that never got a machine expires by age — and
+// only the still-unbound reservation carrying exactly that resId, never one bound or re-reserved
+// while the listing was in flight.
+const releaseStaleLeases = async (c, rows, leased) => {
   const errors = rows.providerErrors ?? [];
   const dir = accounts.accountsDir(c.env);
   const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
+  const gone = goneChecker(c);
   for (const a of leased) {
     const l = a.leasedBy;
     if (l.pending && !l.machineId) {
-      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS) accounts.release(dir, a.label, { pending: true });
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS) accounts.release(dir, a.label, { pending: true, resId: l.resId });
       continue;
     }
     if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) continue;
     const alive = rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
-    if (!alive && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending) accounts.markNeedsSignIn(dir, a.label);
+    if (!alive && await gone(l) && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending) accounts.markNeedsSignIn(dir, a.label);
   }
 };
 
@@ -372,17 +394,19 @@ const syncAccounts = async (c) => {
   const errors = rows.providerErrors ?? [];
   const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
   const lines = [];
+  const gone = goneChecker(c);
   for (const a of leased) {
     const l = a.leasedBy;
     if (l.pending && !l.machineId) {
-      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS && accounts.release(dir, a.label, { pending: true })) lines.push(`${a.label}: the reservation for ${l.name} expired — released.`);
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS && accounts.release(dir, a.label, { pending: true, resId: l.resId })) lines.push(`${a.label}: the reservation for ${l.name} expired — released.`);
       else lines.push(`${a.label}: the reservation for ${l.name} is still starting; left alone.`);
       continue;
     }
     if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) { lines.push(`${a.label}: ${l.provider} could not be listed; left alone.`); continue; }
     const m = rows.find((x) => (x.provider ?? c.primary.name) === l.provider && x.id === l.machineId);
     if (!m) {
-      if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
+      if (!(await gone(l))) lines.push(`${a.label}: ${l.name} is missing only from the filtered listing; left alone.`);
+      else if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
       else lines.push(`${a.label}: the lease moved to another machine; left alone.`);
       continue;
     }
@@ -391,8 +415,8 @@ const syncAccounts = async (c) => {
     if (m.state !== 'running') { lines.push(`${a.label}: ${l.name} is ${safeText(m.state) || 'not running'}; left alone.`); continue; }
     try {
       const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
-      const r = await accounts.syncBack(dir, sbx, a.label, c.now());
-      lines.push(`${a.label}: ${r === 'synced' ? 'synced a newer credential.' : r === 'current' ? 'already current.' : 'could not read the credential.'}`);
+      const r = await accounts.syncBack(dir, sbx, a.label, c.now(), l);
+      lines.push(`${a.label}: ${r === 'synced' ? 'synced a newer credential.' : r === 'current' ? 'already current.' : r === 'moved' ? 'the account moved or the sign-in changed; left alone.' : 'could not read the credential.'}`);
     } catch (e) { lines.push(`${a.label}: could not read the machine (${safeText(e.message ?? e)}).`); }
   }
   return lines;
@@ -439,7 +463,10 @@ const readKey = (file, name) => { // throws on anything but a missing file, so a
 };
 
 // Waits for the snapshot, saves its id, deletes the image machine (sbx, when it still exists), then drops the pending entry.
-async function finishSave(c, sbx, snap) {
+// `pending` is the pending record THIS run owns (mid:sid): the snapshot id is written only while
+// that record still stands — an `image --forget` that ran during the wait cleared it, and a save
+// must never write the image back after a forget (nor drop another run's pending record).
+async function finishSave(c, sbx, snap, pending) {
   const t0 = c.now(); let shown = 0;
   while (snap.status === 'pending') {
     const waited = c.now() - t0;
@@ -449,10 +476,17 @@ async function finishSave(c, sbx, snap) {
     if (half > shown) { shown = half; c.progress(`Saving the image snapshot... ${Math.floor(half / 2)} min`); }
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image' }); }
-  updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: '1' }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
+  const owned = () => pending === undefined || readKey(c.configFile, PENDING_KEY) === pending;
+  const dropPending = () => { if (pending !== undefined && owned()) updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); };
+  if (snap.status && snap.status !== 'ready') { dropPending(); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image' }); }
+  // SNAPSHOT_CLEAN is exactly the saved snapshot id: a marker naming another snapshot proves nothing.
+  // `recorded` is decided BEFORE the pending record is dropped — dropping it is what flips owned().
+  const recorded = owned();
+  if (recorded) updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: snap.id }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
-  updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+  dropPending();
+  updateConfig(c.configFile, {}, LEGACY_ACCOUNT_KEYS);
+  if (!recorded) return c.out(`Snapshot ${safeText(snap.id)} finished, but the saved-image record was cleared meanwhile (as by coordinator image --forget) — it was NOT saved as the image. The image machine was deleted.`);
   if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${safeText(snap.id)}`, 'the image machine is deleted'),
     hintFit(c.ui, `Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
     c.ui.next('cloudy-cloud cloud')].join('\n'));
@@ -461,12 +495,13 @@ async function finishSave(c, sbx, snap) {
 
 // If an earlier run left a snapshot pending, finish that one (even when its machine is gone). Returns false when none is pending.
 async function resumePending(c) {
-  const [mid, sid] = readKey(c.configFile, PENDING_KEY).split(':');
+  const pending = readKey(c.configFile, PENDING_KEY);
+  const [mid, sid] = pending.split(':');
   if (!sid) return false;
-  // A pending record written without PENDING_CLEAN_KEY predates the credential check: that snapshot may still
-  // hold a sign-in, so it is never adopted as the image. The record is dropped but the snapshot and its
-  // machine are left alone (a shared workspace may still want the snapshot by hand).
-  if (readKey(c.configFile, PENDING_CLEAN_KEY) !== '1') {
+  // A pending record whose clean mark does not name THIS snapshot predates the credential check (or was
+  // tampered with): that snapshot may still hold a sign-in, so it is never adopted as the image. The
+  // record is dropped but the snapshot and its machine are left alone.
+  if (readKey(c.configFile, PENDING_CLEAN_KEY) !== sid) {
     updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
     guided(`The pending snapshot ${sid} was started by an older cloudy-cloud and may still contain a Claude sign-in, so it was not saved as the image (the snapshot and its machine were left alone).\nNext step: make a clean image with cloudy-cloud coordinator image`, { short: 'The pending snapshot may still contain a Claude sign-in.', reason: 'it was started by an older cloudy-cloud; the snapshot and its machine were left alone', next: 'cloudy-cloud coordinator image' });
   }
@@ -490,7 +525,7 @@ async function resumePending(c) {
     else foreign = !!row;
   } catch (e) { if (!gone(e)) throw e; }
   if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
-  await finishSave(c, sbx, snap);
+  await finishSave(c, sbx, snap, pending);
   return true;
 }
 
@@ -501,8 +536,11 @@ async function saveNew(c, sbx) {
   await sbx.commands.run('c="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"; rm -f "$c" && [ ! -e "$c" ]', { timeoutMs: 30_000 });
   c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
   const snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
-  if (snap.status === 'pending') updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}`, [PENDING_CLEAN_KEY]: '1' }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
-  return finishSave(c, sbx, snap);
+  // The pending record goes in even for an instantly-ready snapshot: it is what finishSave checks
+  // before writing the image key (an image --forget during the save must stop the write), and
+  // PENDING_CLEAN names exactly this snapshot — a mark for another id is never trusted.
+  updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}`, [PENDING_CLEAN_KEY]: snap.id }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
+  return finishSave(c, sbx, snap, `${sbx.id}:${snap.id}`);
 }
 
 const STORE_NOTE = 'Stored a coordinator copy of your Instabox key as a proxy secret (machines see a placeholder).';
@@ -562,7 +600,8 @@ async function storeCoordinatorSecret(c) {
 async function image(c, args) {
   refuseEgress(c.env, 'image');
   if (args.includes('--forget')) { // only the config keys; the snapshot itself is never deleted
-    updateConfig(c.configFile, {}, [SNAPSHOT_KEY, SNAPSHOT_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+    // The pending record goes too: it is what lets a save still in flight write the snapshot back.
+    updateConfig(c.configFile, {}, [SNAPSHOT_KEY, SNAPSHOT_CLEAN_KEY, PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
     return c.out('Forgot the saved coordinator image setting. The snapshot itself was not deleted; delete it with: npx instabox snapshot rm ID');
   }
   c.progress('Making the coordinator image takes about 20 minutes. It is safe to interrupt: run cloudy-cloud coordinator image again and it resumes.');
@@ -667,7 +706,7 @@ async function start(c, args) {
   // Coordinators start from the base template unless a clean saved image is configured. An image saved before
   // the credential check still holds a Claude sign-in, so it is ignored (one note, never a stop).
   let snapshot = c.env[SNAPSHOT_KEY] || TEMPLATE;
-  if (c.env[SNAPSHOT_KEY] && !c.env[SNAPSHOT_CLEAN_KEY]) {
+  if (c.env[SNAPSHOT_KEY] && c.env[SNAPSHOT_CLEAN_KEY] !== c.env[SNAPSHOT_KEY]) {
     snapshot = TEMPLATE;
     c.note('Your saved coordinator image holds a Claude sign-in and is no longer needed; coordinators now start from the base template. Remove the image setting with: cloudy-cloud coordinator image --forget');
   }
@@ -721,25 +760,36 @@ async function start(c, args) {
   // holds it; when every saved account is leased, limited or stale, start falls back to the browser
   // sign-in (which then saves as another account).
   const accDir = accounts.accountsDir(c.env);
-  let useAccount = '';
+  let useAccount = '', resId;
   // Selection and reservation are ONE locked step before the machine exists, so a second start can
   // never pick the same account. The lease is written pending: it is not eligible for sync until the
   // credential is delivered (a watcher cannot overwrite the saved file with the image's credential).
+  // The reservation carries a unique resId — an expiry or a failed create's release touches only
+  // THIS reservation, never a lease that bound or a newer reservation of the same label.
   accounts.withLock(accDir, () => {
     if (accountArg) {
       const entry = accounts.readIndex(accDir)[accountArg];
       if (!entry || !existsSync(accounts.credFile(accDir, accountArg))) guided(`There is no saved account ${accountArg}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
       if (entry.leasedBy?.name) guided(`Account ${accountArg} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: pick another with cloudy-cloud accounts ls, or stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${accountArg} is in use by ${entry.leasedBy.name}.`, next: 'cloudy-cloud accounts ls' });
+      if (entry.needsSignIn) guided(`Account ${accountArg} needs a fresh sign-in — its saved credential may be dead, so it is not delivered.\nNext step: sign it in again with cloudy-cloud coordinator login NAME --account ${accountArg} (on a coordinator already leasing it), or pick another account: cloudy-cloud accounts ls`, { short: `Account ${accountArg} needs a fresh sign-in.`, next: 'cloudy-cloud accounts ls' });
       useAccount = accountArg;
     } else useAccount = accounts.freeAccounts(accDir, c.now())[0]?.label ?? '';
-    if (useAccount) accounts.lease(accDir, useAccount, { name, pending: true }, c.now());
+    if (useAccount) { resId = randomUUID(); accounts.lease(accDir, useAccount, { name, pending: true, resId }, c.now()); }
   });
   c.progress('Creating the coordinator machine...');
   // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
   // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
   // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name.
   const t0 = Date.now(); // the create timestamp, for the deadline fallback below
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(useAccount ? { account: useAccount } : {}), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  let sbx;
+  try {
+    sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(useAccount ? { account: useAccount } : {}), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  } catch (e) {
+    // A create that never produced a machine frees this start's reservation at once — pinned by
+    // resId, so a concurrent start's reservation of the same label is never touched.
+    if (resId) accounts.release(accDir, useAccount, { resId });
+    throw e;
+  }
   // The deadline comes from the machine's own deletion time once the provider reports it — the consent
   // prompts above could otherwise eat into a deadline computed before them. Only the list row of THIS
   // machine counts (another coordinator's deadline is wrong), so the fallback is the requested ttl from
@@ -843,7 +893,7 @@ async function start(c, args) {
       // account is marked needsSignIn and the coordinator falls back to its browser sign-in.
       if (needsLogin) accounts.markNeedsSignIn(accDir, leased);
       // A first renewal can already have rotated the token on the machine — sync the newest back.
-      else await accounts.syncBack(accDir, sbx, leased, c.now()).catch(() => {});
+      else await accounts.syncBack(accDir, sbx, leased, c.now(), { machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name }).catch(() => {});
     }
     if (needsLogin) {
       // A sign-in URL is read back only while `claude auth login` is actually running (the login-active
@@ -872,7 +922,7 @@ async function start(c, args) {
     // which case the account is uncertain and marked needsSignIn. The lease is released only when
     // the machine's deletion is confirmed — while it may live, the lease stays with it.
     let failedRead = false;
-    if (leased && delivered) failedRead = (await accounts.syncBack(accDir, sbx, leased, c.now()).catch(() => 'failed')) === 'failed';
+    if (leased && delivered) failedRead = (await accounts.syncBack(accDir, sbx, leased, c.now(), { machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name }).catch(() => 'failed')) === 'failed';
     const killed = await sbx.kill().then(() => true).catch(() => false);
     if (leased && killed) {
       if (failedRead) accounts.markNeedsSignIn(accDir, leased);
@@ -949,7 +999,7 @@ async function attach(c, args, { noAttach = false, machine = null } = {}) {
       selected.name === 'self-hosted' ? { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' } : { short: `Could not start ${argv[0]} (${r.error.message}).`, next: `install ${argv[0]}, then attach again` });
     // After the attach returns, a leased account's newest credential goes back to the laptop.
     const accLabel = ownAccount(c, m);
-    if (accLabel) { try { const sbx = await selected.connect(m.id, { retry: false }); await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now()); } catch { /* the newest copy is all a failed sync loses */ } }
+    if (accLabel) { try { const sbx = await selected.connect(m.id, { retry: false }); await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now(), machineLease(c, m)?.leasedBy); } catch { /* the newest copy is all a failed sync loses */ } }
     return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
@@ -1003,7 +1053,7 @@ async function postAttach(c, name, get, code, { machine = null, labelArg = '' } 
       const entry = carried && accounts.readIndex(accounts.accountsDir(c.env))[carried];
       if (carried && entry && !entry.needsSignIn) {
         // The account was already saved: only its newest credential goes back to the laptop.
-        try { await accounts.syncBack(accounts.accountsDir(c.env), sbx, carried, c.now()); } catch { /* keep the attach report clean */ }
+        try { await accounts.syncBack(accounts.accountsDir(c.env), sbx, carried, c.now(), machineLease(c, machine)?.leasedBy); } catch { /* keep the attach report clean */ }
       } else {
         const label = await saveAccountFromMachine(c, sbx, machine, { labelArg, name });
         if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
@@ -1134,7 +1184,7 @@ async function ls(c) {
   const rows = await find(c.provider, 'coordinator');
   // A complete listing is also how stale leases die: a coordinator the listing no longer shows
   // cannot still hold its account. providerErrors mean the inventory is partial — release nothing.
-  if (preLeases.length) releaseStaleLeases(c, rows, preLeases);
+  if (preLeases.length) await releaseStaleLeases(c, rows, preLeases);
   for (const e of rows.providerErrors ?? []) c.note(`cloudy-cloud coordinator: could not list ${e.provider}; that provider's coordinators are omitted.`);
   if (!rows.length) {
     if (!c.ui.term) return c.out('No coordinators.');
@@ -1208,7 +1258,7 @@ async function stop(c, args) {
   if (accLabel && m.state === 'running') {
     try {
       const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
-      verified = (await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now())) !== 'failed';
+      verified = (await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now(), machineLease(c, m)?.leasedBy)) !== 'failed';
     } catch (e) { c.note(`cloudy-cloud: could not sync the credential back to account ${accLabel} (${safeText(e.message ?? e)}); the newest token goes with the machine.`); }
   }
   c.progress('Deleting the coordinator machine...');
@@ -1321,7 +1371,7 @@ async function accountsCmd(c, args) {
     // A leased account whose coordinator no longer exists is freed here too — the same complete-
     // inventory check `coordinator ls` runs, with the lease snapshot taken before the listing.
     const pre = accounts.leasedAccounts(dir);
-    if (pre.length) releaseStaleLeases(c, await find(c.provider, 'coordinator'), pre);
+    if (pre.length) await releaseStaleLeases(c, await find(c.provider, 'coordinator'), pre);
     const now = c.now(), list = accounts.listAccounts(dir);
     if (args.includes('--json')) return c.out(JSON.stringify(list.map((a) => accounts.accountRow(a, now))));
     if (!list.length) return c.out('No saved accounts yet — a coordinator sign-in is saved as an account automatically.');
@@ -1331,18 +1381,22 @@ async function accountsCmd(c, args) {
   if (sub === 'rm') {
     const label = args[1];
     if (!accounts.validLabel(label ?? '')) guided(`Usage: cloudy-cloud accounts rm LABEL`, { short: 'accounts rm needs a saved account label.', details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]', 'List them with: cloudy-cloud accounts ls'], next: 'cloudy-cloud accounts ls' });
-    const entry = accounts.readIndex(dir)[label];
-    if (!entry && !existsSync(accounts.credFile(dir, label))) guided(`There is no saved account ${label}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${label}.`, next: 'cloudy-cloud accounts ls', neutral: true });
-    if (entry?.leasedBy?.name) guided(`Account ${label} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${label} is in use by ${entry.leasedBy.name}.`, next: `cloudy-cloud coordinator stop ${entry.leasedBy.name}` });
-    // The credential file plus leftover temp files of its writes go together. Only a missing file
-    // is ignored — any other unlink failure is reported, and the index entry stays while the
-    // credential file does (the account is still there).
-    const { gone, failed } = accounts.removeAccountFiles(dir, label);
-    if (!gone || failed.length) {
-      if (entry && gone) accounts.updateAccount(dir, label, () => null);
-      guided(`Could not remove every file of saved account ${label}: ${failed.map((p) => safeText(p)).join('; ')}.${gone ? ' Its index entry was removed anyway.' : ' The account is still saved.'}`, { short: `Could not remove every file of ${label}.`, next: `check the account files under ${tilde(dir, c.env)}, then run cloudy-cloud accounts rm ${label} again` });
-    }
-    if (entry) accounts.updateAccount(dir, label, () => null);
+    // The lease check, the file removal and the index update are one locked step — a lease granted
+    // mid-remove can never strand a delivered credential whose index row is already gone.
+    accounts.withLock(dir, () => {
+      const entry = accounts.readIndex(dir)[label];
+      if (!entry && !existsSync(accounts.credFile(dir, label))) guided(`There is no saved account ${label}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${label}.`, next: 'cloudy-cloud accounts ls', neutral: true });
+      if (entry?.leasedBy?.name) guided(`Account ${label} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${label} is in use by ${entry.leasedBy.name}.`, next: `cloudy-cloud coordinator stop ${entry.leasedBy.name}` });
+      // The credential file plus leftover temp files of its writes go together. Only a missing file
+      // is ignored — any other unlink failure is reported, and the index entry stays while the
+      // credential file does (the account is still there).
+      const { gone, failed } = accounts.removeAccountFiles(dir, label);
+      if (!gone || failed.length) {
+        if (entry && gone) accounts.updateAccount(dir, label, () => null);
+        guided(`Could not remove every file of saved account ${label}: ${failed.map((p) => safeText(p)).join('; ')}.${gone ? ' Its index entry was removed anyway.' : ' The account is still saved.'}`, { short: `Could not remove every file of ${label}.`, next: `check the account files under ${tilde(dir, c.env)}, then run cloudy-cloud accounts rm ${label} again` });
+      }
+      if (entry) accounts.updateAccount(dir, label, () => null);
+    });
     return c.out(`Removed saved account ${label}. The Claude account itself is unaffected — only this laptop's saved credential and lease record were deleted.`);
   }
   if (sub === 'sync') {
@@ -1466,6 +1520,11 @@ async function cloud(c, args) {
     }
     // --env on a reattach would silently do nothing: say so instead (env files apply at start only).
     if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
+    // --account on a reattach must name the account the coordinator actually uses — a coordinator
+    // keeps its account; silently attaching to one on another account would be a lie.
+    const accountArg = flag(args, '--account');
+    const used = match.labels?.account || machineLease(c, match)?.label || '';
+    if (accountArg && used !== accountArg) guided(`Coordinator ${name} runs on account ${used || 'none'}, not ${accountArg} — a reattach cannot switch its account.\nNext step: pick another account (cloudy-cloud accounts ls) and start a new coordinator, or drop --account`, { short: `Coordinator ${name} does not use account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
     if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
     c.out(`Reattaching to ${name}`);
     const code = await attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });

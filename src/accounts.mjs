@@ -10,7 +10,8 @@
 // content verbatim at mode 600, and index.json tracks labels, emails, leases, usage limits and stale
 // sign-ins — never a token. Every write is atomic: a mode-600 temp file renamed into place.
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { writeSecretFile } from './providers/index.mjs';
@@ -44,17 +45,23 @@ const atomicWrite = (path, text, mode = 0o600) => {
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-// Cross-process mutual exclusion for every read-modify-write of the index: an O_EXCL lock file,
-// re-entrant within this process. A lock whose holder died — or that is simply too old — is
-// reclaimed, so a killed run can never wedge the accounts.
+// Cross-process mutual exclusion for every read-modify-write of the index, re-entrant within this
+// process. The owner line (pid + the holder's start token + a uuid) is written to a temp file and
+// hard-linked into place — the link is atomic and cannot overwrite, so the lock file never exists
+// half-written or empty. A lock is reclaimed only when its recorded holder pid is dead, or the pid
+// was reused (the stored start token no longer matches the live one); a LIVE holder is never
+// reclaimed by age, and release removes the file only while it still carries our own owner line.
 const LOCK_FILE = 'index.lock';
-const LOCK_STALE_MS = 120_000;
 const LOCK_WAIT_MS = 15_000;
 const held = new Map(); // dir → re-entry depth
+const normTok = (s) => String(s ?? '').trim().split(/\s+/).join(' ');
+// The lock file line is `pid <lstart> <uuid>`; files written by older versions carried `pid <ms>` —
+// a numeric-only second field cannot be token-checked, so it falls back to the pid check alone.
 const lockState = (file) => {
   try {
-    const [pid] = readFileSync(file, 'utf8').split(/\s+/);
-    return { pid: Number(pid), mtime: statSync(file).mtimeMs };
+    const [pid, ...rest] = readFileSync(file, 'utf8').trim().split(/\s+/);
+    const p = Number(pid);
+    return { pid: Number.isInteger(p) && p > 0 ? p : 0, token: rest.join(' '), lstart: rest.slice(0, -1).join(' '), mtime: statSync(file).mtimeMs };
   } catch { return null; } // a half-written or missing lock is stale
 };
 export const withLock = (dir, fn) => {
@@ -62,12 +69,22 @@ export const withLock = (dir, fn) => {
   if (depth > 0) { held.set(dir, depth + 1); try { return fn(); } finally { held.set(dir, depth); } }
   ensureDir(dir);
   const file = join(dir, LOCK_FILE);
+  const mine = `${process.pid} ${normTok(watcherToken(process.pid))} ${randomUUID()}`;
+  const tmp = `${file}.tmp-${process.pid}`;
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { writeFileSync(file, `${process.pid} ${Date.now()}`, { flag: 'wx', mode: 0o600 }); break; }
-    catch (e) { if (e.code !== 'EEXIST') throw e; }
+    try {
+      writeFileSync(tmp, mine, { mode: 0o600 });
+      linkSync(tmp, file); // atomic no-clobber: the owner line lands with the lock itself
+      try { unlinkSync(tmp); } catch { /* the link won; the temp is a leftover at worst */ }
+      break;
+    } catch (e) {
+      try { unlinkSync(tmp); } catch { }
+      if (e.code !== 'EEXIST') throw e;
+    }
     const snap = lockState(file);
-    const stale = !snap || !(snap.pid > 0) || !pidAlive(snap.pid) || Date.now() - snap.mtime > LOCK_STALE_MS;
+    let stale = !snap || !(snap.pid > 0) || !pidAlive(snap.pid);
+    if (!stale && snap.lstart && !/^\d+$/.test(snap.lstart)) { const live = watcherToken(snap.pid); if (live && snap.lstart !== normTok(live)) stale = true; } // pid reused since the write
     if (stale) {
       // Reclaim only when the file is still the same stale one we just inspected.
       const again = lockState(file);
@@ -78,7 +95,10 @@ export const withLock = (dir, fn) => {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   held.set(dir, 1);
-  try { return fn(); } finally { held.delete(dir); try { unlinkSync(file); } catch { /* a reclaimer owns the file now */ } }
+  try { return fn(); } finally {
+    held.delete(dir);
+    try { if (readFileSync(file, 'utf8').trim() === mine) unlinkSync(file); } catch { /* a reclaimer owns the file now */ }
+  }
 };
 
 // The index maps label → { email, accountUuid, leasedBy: {name, machineId, provider, deleteAt,
@@ -105,15 +125,24 @@ export const credJson = (text) => {
   try { const j = JSON.parse(text); return isObj(j?.claudeAiOauth) ? j.claudeAiOauth : null; }
   catch { return null; }
 };
-export const readCredential = (dir, label) => { try { return readFileSync(credFile(dir, label), 'utf8'); } catch { return ''; } };
+// The ONLY key we save or deliver is claudeAiOauth: a credentials file can also carry MCP OAuth
+// entries and other secrets that must never be copied between machines. Everything else is stripped
+// — including from files an earlier version of this branch already saved verbatim.
+const oauthOnly = (text) => {
+  const oauth = credJson(text);
+  return oauth ? JSON.stringify({ claudeAiOauth: oauth }) : '';
+};
+export const readCredential = (dir, label) => { try { return oauthOnly(readFileSync(credFile(dir, label), 'utf8')); } catch { return ''; } };
 export const saveCredential = (dir, label, text) => atomicWrite(credFile(dir, label), text);
 // The credential from a finished sign-in: overwrites the label's saved file and clears a stale
 // sign-in mark (a fresh sign-in is exactly what clears it). The lease it sits under is kept. The
-// file write and the index update are one locked step so a concurrent sync cannot slide between
-// the freshness check and the write.
+// index row (its owner identity) is written BEFORE the credential file lands, so a crash mid-save
+// can never leave a selectable credential with no owner. Both are one locked step so a concurrent
+// sync cannot slide between them.
 export const saveAccount = (dir, label, { email, accountUuid, credText, now = 0 }) => withLock(dir, () => {
-  saveCredential(dir, label, credText);
-  return updateAccount(dir, label, (e) => ({ ...e, email: email ?? e.email, accountUuid: accountUuid ?? e.accountUuid, lastUsed: now, needsSignIn: undefined }));
+  const e = updateAccount(dir, label, (x) => ({ ...x, email: email ?? x.email, accountUuid: accountUuid ?? x.accountUuid, lastUsed: now, needsSignIn: undefined }));
+  saveCredential(dir, label, oauthOnly(credText));
+  return e;
 });
 
 // The saved-account label: an email sanitised to [a-z0-9._@-], '' when nothing usable remains.
@@ -127,18 +156,19 @@ export const sameAccount = (entry, j) =>
   (typeof j?.accountUuid === 'string' && entry?.accountUuid === j.accountUuid) ||
   (typeof j?.email === 'string' && typeof entry?.email === 'string' && entry.email.toLowerCase() === j.email.toLowerCase());
 const readdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
-// Index entries plus credential files dropped in by hand: a <label>.json with no index row is still
-// an account the next start may pick. Reserved and malformed labels are never listed.
+// Index entries plus credential files dropped in by hand — but a <label>.json with no index row has
+// no verified owner, so it is listed as needing attention (`indexed: false`) and is never picked.
+// Reserved and malformed labels are never listed.
 export const listAccounts = (dir) => {
   const idx = readIndex(dir);
   const labels = new Set(Object.keys(idx).filter(validLabel));
   for (const f of readdir(dir)) if (f.endsWith('.json') && f !== 'index.json' && validLabel(f.slice(0, -5))) labels.add(f.slice(0, -5));
-  return [...labels].sort().map((label) => ({ label, ...(isObj(idx[label]) ? idx[label] : {}), saved: existsSync(credFile(dir, label)) }));
+  return [...labels].sort().map((label) => ({ label, ...(isObj(idx[label]) ? idx[label] : {}), indexed: isObj(idx[label]), saved: existsSync(credFile(dir, label)) }));
 };
-// Pickable accounts: saved credential present, not leased, not limited, sign-in not stale — least
-// recently used first, so several accounts rotate instead of wearing out one.
+// Pickable accounts: indexed, saved credential present, not leased, not limited, sign-in not stale —
+// least recently used first, so several accounts rotate instead of wearing out one.
 export const freeAccounts = (dir, now) => listAccounts(dir)
-  .filter((a) => a.saved && !a.leasedBy?.name && !a.needsSignIn && !(Number(a.limitedUntil) > now))
+  .filter((a) => a.indexed && a.saved && !a.leasedBy?.name && !a.needsSignIn && !(Number(a.limitedUntil) > now))
   .sort((a, b) => (a.lastUsed ?? 0) - (b.lastUsed ?? 0) || a.label.localeCompare(b.label));
 export const leasedAccounts = (dir) => listAccounts(dir).filter((a) => a.leasedBy?.name);
 export const nextAccountLabel = (dir) => {
@@ -150,11 +180,14 @@ export const lease = (dir, label, leasedBy, now) => updateAccount(dir, label, (e
 // Releasing is conditional when options are given: `machineId` must match the lease generation the
 // caller checked (a recycled label's newer lease is never released), `pending` releases only a
 // start reservation. Returns whether anything was released.
-export const release = (dir, label, { machineId, pending } = {}) => {
+export const release = (dir, label, { machineId, pending, resId } = {}) => {
   let did = false;
   updateAccount(dir, label, (e) => {
     if (machineId !== undefined && e.leasedBy?.machineId !== machineId) return e;
-    if (pending !== undefined && Boolean(e.leasedBy?.pending) !== pending) return e;
+    if (pending !== undefined && (Boolean(e.leasedBy?.pending) !== pending || (pending && e.leasedBy?.machineId))) return e;
+    // A reservation is identified by its resId: expiry touches only a still-unbound reservation with
+    // exactly that id — a lease that bound (or was re-reserved) while the listing was in flight is kept.
+    if (resId !== undefined && (e.leasedBy?.resId !== resId || e.leasedBy?.machineId)) return e;
     did = true;
     const { leasedBy, leasedAt, ...rest } = e;
     return rest;
@@ -169,7 +202,7 @@ export const bindLease = (dir, label, leasedBy, now) => {
   updateAccount(dir, label, (e) => {
     if (e.leasedBy?.name !== leasedBy.name || !e.leasedBy.pending || e.leasedBy.machineId) return e;
     ok = true;
-    return { ...e, leasedBy, leasedAt: now };
+    return { ...e, leasedBy: { ...e.leasedBy, ...leasedBy }, leasedAt: now }; // keeps the reservation's resId for expiry checks
   });
   return ok;
 };
@@ -180,13 +213,16 @@ export const markDelivered = (dir, label, machineId) => updateAccount(dir, label
   const { pending, ...leasedBy } = e.leasedBy;
   return { ...e, leasedBy };
 });
-// `accounts rm` file removal: the credential file plus leftover temp files of its writes. Only
-// ENOENT is ignored — every other failure is reported so nothing is silently left behind.
+// `accounts rm` file removal: the credential file plus leftover temp files of its writes — the
+// exact `<label>.json.tmp-<pid>` format atomicWrite uses, so a sibling label that shares the prefix
+// is never swept up. Only ENOENT is ignored — every other failure is reported so nothing is
+// silently left behind.
 export const removeAccountFiles = (dir, label) => {
   const failed = [];
   const rm = (p) => { try { unlinkSync(p); return true; } catch (e) { if (e.code !== 'ENOENT') failed.push(`${p} (${e.code ?? e.message})`); return e.code === 'ENOENT'; } };
   const gone = rm(credFile(dir, label));
-  for (const f of readdir(dir)) if (f.startsWith(`${label}.json.tmp-`)) rm(join(dir, f));
+  const tmpRe = new RegExp(`^${label.replace(/[.^$]/g, '\\$&')}\\.json\\.tmp-\\d+$`);
+  for (const f of readdir(dir)) if (tmpRe.test(f)) rm(join(dir, f));
   return { gone, failed };
 };
 export const markNeedsSignIn = (dir, label, on = true) => updateAccount(dir, label, (e) => ({ ...e, needsSignIn: on || undefined }));
@@ -208,12 +244,26 @@ export const limitUntil = (line, now) => {
 };
 const nextTime = (now, h, min) => { const d = new Date(now); d.setHours(h, min, 0, 0); if (d.getTime() <= now) d.setDate(d.getDate() + 1); return d.getTime(); };
 
+// `claude auth status` answers over its exit code: 0 carries the JSON on stdout, 1 is the CLI's
+// definite signed-out answer — the JSON is still on stdout, on the error object. Only a
+// transport-level failure (no exit code at all) is inconclusive and returns null.
+export const AUTH_STATUS = 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json';
+const parseAuthStatus = (text) => {
+  try { const s = String(text ?? ''); const i = s.indexOf('{'); if (i < 0) return null; const j = JSON.parse(s.slice(i)); return isObj(j) ? j : null; }
+  catch { return null; }
+};
+export const authStatus = async (sbx) => {
+  try { return parseAuthStatus((await sbx.commands.run(AUTH_STATUS, { timeoutMs: 60_000 })).stdout); }
+  catch (e) { if (typeof e?.exitCode === 'number') return parseAuthStatus(e.stdout); return null; }
+};
+
 // The credential path on the machine follows launch.sh exactly: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}.
 const CRED_DIR_CMD = 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"';
 export const credDir = async (sbx) => (await sbx.commands.run(CRED_DIR_CMD, { timeoutMs: 15_000 })).stdout.trim();
 // The machine's saved sign-in, when the file parses and still carries a refresh token. reads go
 // through files.readSecret where the adapter provides one — it fails closed when the only route
-// left would put the credential in command stdout (Instabox's base64 exec fallback).
+// left would put the credential in command stdout (Instabox's base64 exec fallback). Only the
+// claudeAiOauth object leaves the machine — MCP OAuth entries and other keys in the file stay.
 export const readMachineCredential = async (sbx) => {
   const read = sbx?.files?.readSecret ?? sbx?.files?.read;
   if (typeof read !== 'function') return null;
@@ -222,29 +272,55 @@ export const readMachineCredential = async (sbx) => {
   const raw = await read.call(sbx.files, `${dir}/.credentials.json`);
   const text = typeof raw === 'string' ? raw : raw ? Buffer.from(raw).toString('utf8') : '';
   const oauth = credJson(text);
-  return oauth?.refreshToken ? { text, oauth } : null;
+  return oauth?.refreshToken ? { text: JSON.stringify({ claudeAiOauth: oauth }), oauth } : null;
 };
-// Deliver a saved account's credential before the tmux session starts: the file mode is created
-// narrow, the body travels the secret-file route (never a command string), then a chmod. The
-// .credentials-removed marker goes in first so launch.sh's one-time image-credential removal can
-// never delete what was just delivered.
+// Deliver a saved account's credential before the tmux session starts. Only our claudeAiOauth is
+// delivered — merged over the machine's existing file so MCP OAuth entries and other keys already
+// there are kept. The body is staged inside the mode-700 config dir on an empty 600 file (the same
+// pattern env.local uses), then moved into place by one same-filesystem mv — the credentials path is
+// never a partial write, and the upload never travels a command string. The .credentials-removed
+// marker goes in first so launch.sh's one-time image-credential removal can never delete what was
+// just delivered.
 export const deliverCredential = async (sbx, confDir, credText) => {
   const dir = await credDir(sbx);
   if (!dir) throw new Error('Could not read the Claude config dir on the machine.');
+  const oauth = credJson(credText);
+  if (!oauth?.refreshToken) throw Object.assign(new Error('The saved credential is not a usable Claude sign-in.'), { code: 'account_cred_unusable', local: true });
   const creds = `${dir}/.credentials.json`;
-  await sbx.commands.run(`umask 077 && : > "${creds}" && touch "${confDir}/.credentials-removed"`);
-  await writeSecretFile(sbx, creds, credText);
-  await sbx.commands.run(`chmod 600 "${creds}"`);
+  const staged = `${confDir}/credentials.new`;
+  let existing = {};
+  try {
+    const read = sbx?.files?.readSecret ?? sbx?.files?.read;
+    if (typeof read === 'function') {
+      const raw = await read.call(sbx.files, creds);
+      const j = JSON.parse(typeof raw === 'string' ? raw : raw ? Buffer.from(raw).toString('utf8') : '');
+      if (isObj(j)) existing = j;
+    }
+  } catch { /* no existing file, or unreadable: ours alone is delivered */ }
+  const body = JSON.stringify({ ...existing, claudeAiOauth: oauth });
+  await sbx.commands.run(`umask 077 && mkdir -p "${confDir}" && chmod 700 "${confDir}" && : > "${staged}" && touch "${confDir}/.credentials-removed"`);
+  await writeSecretFile(sbx, staged, body);
+  await sbx.commands.run(`chmod 600 "${staged}" && mkdir -p "${dir}" && mv -f "${staged}" "${creds}"`);
 };
 // Copy the machine's credential back to the laptop — only when it parses, carries a refresh token,
 // and is newer by expiresAt than the saved one. Returns 'synced', 'current' (the saved copy proved
-// at least as new) or 'failed' (no usable machine credential): the caller needs the difference —
-// releasing a lease after an unverified read makes a possibly-spent token the only copy, so it is
-// marked needsSignIn instead. The freshness compare and the write are one locked step.
-export const syncBack = async (dir, sbx, label, now) => {
-  const got = await readMachineCredential(sbx);
+// at least as new), 'moved' (the label was removed, its lease moved, or the machine's Claude
+// identity no longer matches — nothing is written) or 'failed' (no usable machine credential): the
+// caller needs the difference — releasing a lease after an unverified read makes a possibly-spent
+// token the only copy, so it is marked needsSignIn instead. The machine read happens outside the
+// lock (it is slow); under the lock the entry is re-verified: it must still exist (a removed
+// account is never recreated), still hold the lease the caller synced for (`lease`), and still be
+// the same Claude identity when auth status carries one. The freshness compare and the write are
+// the same locked step.
+export const syncBack = async (dir, sbx, label, now, lease = null) => {
+  const [got, j] = await Promise.all([readMachineCredential(sbx).catch(() => null), authStatus(sbx).catch(() => null)]);
   if (!got) return 'failed';
   return withLock(dir, () => {
+    const idx = readIndex(dir);
+    const entry = idx[label];
+    if (!isObj(entry)) return 'moved'; // the account was removed while the read ran — never recreate it
+    if (lease && (entry.leasedBy?.machineId !== lease.machineId || (lease.provider && entry.leasedBy?.provider !== lease.provider))) return 'moved';
+    if (j?.loggedIn === true && (j.accountUuid || j.email) && (entry.accountUuid || entry.email) && !sameAccount(entry, j)) return 'moved'; // the machine now holds a different Claude identity
     const saved = credJson(readCredential(dir, label));
     if (saved && !(Number(got.oauth.expiresAt) > Number(saved.expiresAt ?? 0))) return 'current';
     saveCredential(dir, label, got.text);
@@ -271,7 +347,9 @@ export const watcherAlive = (dir) => {
   if (!(pid > 0) || !pidAlive(pid)) return false;
   const live = watcherToken(pid);
   if (!live) return true; // ps is unavailable — a live pid stays trusted rather than double-running
-  if (token) return token === live;
+  // Stored and live tokens must compare in the same whitespace-normalized form — macOS ps pads
+  // single-digit days with a second space, which readWatcherFile's split already collapses.
+  if (token) return token === normTok(live);
   // A file without a token (written before the token existed) is owned only when its pid is older
   // than the file: a pid reused after the write started later.
   try { return statSync(join(dir, WATCH_PID)).mtimeMs >= new Date(live).getTime() - 2000; } catch { return false; }
@@ -287,7 +365,7 @@ export const acquireWatcher = (dir, pid = process.pid) => {
   }
   return false;
 };
-export const releaseWatcher = (dir, pid = process.pid) => { try { if (watcherPid(dir) === pid) unlinkSync(join(dir, WATCH_PID)); } catch { /* a newer watcher's file stays */ } };
+export const releaseWatcher = (dir, pid = process.pid) => { try { const wf = readWatcherFile(dir); const live = watcherToken(pid); if (wf.pid === pid && (!wf.token || !live || wf.token === normTok(live))) unlinkSync(join(dir, WATCH_PID)); } catch { /* a newer watcher's file stays */ } };
 export const spawnWatcher = (script) => {
   const child = spawn(process.execPath, [script, 'accounts', 'sync', '--watch'], { detached: true, stdio: 'ignore' });
   child.unref();
@@ -305,8 +383,9 @@ export const ensureWatcher = (env, spawnIt) => {
 // `accounts ls` rows and --json fields. No token ever leaves the credential files into these.
 const shortTime = (t) => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
 export const accountState = (a, now) =>
-  a.leasedBy?.pending ? `reserved for ${a.leasedBy.name}` :
-    a.leasedBy?.name ? `used by ${a.leasedBy.name}` :
-      a.needsSignIn ? 'needs sign-in' :
-        Number(a.limitedUntil) > now ? `limited until ${shortTime(a.limitedUntil)}` : 'free';
+  !a.indexed || !a.saved ? 'needs sign-in' :
+    a.leasedBy?.pending ? `reserved for ${a.leasedBy.name}` :
+      a.leasedBy?.name ? `used by ${a.leasedBy.name}` :
+        a.needsSignIn ? 'needs sign-in' :
+          Number(a.limitedUntil) > now ? `limited until ${shortTime(a.limitedUntil)}` : 'free';
 export const accountRow = (a, now) => ({ label: a.label, email: a.email ?? '', state: accountState(a, now), lastUsed: a.lastUsed ? shortTime(a.lastUsed) : 'never' });

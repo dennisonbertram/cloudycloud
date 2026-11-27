@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync, unlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -61,7 +61,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
       read: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return v; },
       // readStream is the SDK's file-content route — the same bytes files.read returns.
       readStream: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return new TextEncoder().encode(v); } },
-    commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
+    commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) { const s = auth.length > 1 ? auth.shift() : auth[0]; let j; try { j = JSON.parse(s); } catch { /* non-JSON auth payloads still return exit 0 */ } if (j?.loggedIn === false) throw Object.assign(new Error('auth status: signed out'), { exitCode: 1, stdout: s, stderr: '' }); return { stdout: s, stderr: '', exitCode: 0 }; } // the real CLI answers a signed-out status with exit 1
       if (/test -f .*login-active/.test(cmd)) { if (!loginActive) throw Object.assign(new Error('no login-active'), { exitCode: 1 }); return { stdout: '', stderr: '', exitCode: 0 }; }
       if (/task\.md/.test(cmd)) return { stdout: task, stderr: '', exitCode: 0 };
       // The credential dir command mirrors launch.sh: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}.
@@ -87,7 +87,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     return Response.json({ machines: machines.map((m) => ({ id: m.sandboxId, name: m.name, state: m.state, createdAt: m.startedAt, metadata: m.metadata, deleteAt: m.machine?.deleteAt })) });
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
-  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot, CLOUDY_CLOUD_SNAPSHOT_CLEAN: '1' }), PATH: '/x' };
+  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot, CLOUDY_CLOUD_SNAPSHOT_CLEAN: snapshot }), PATH: '/x' };
   // Provider CLI calls (instabox secrets ...) are recorded, never run: argv plus what stdin would carry.
   // `secrets ls --json` answers the names in store.remote (default: the current CLOUDY_CLOUD_PROXY_SECRETS).
   const store = { calls: [], fail: false, lsFail: false, remote: undefined };
@@ -173,7 +173,7 @@ test('image --save is an alias: with no image machine it does the whole one-run 
   assert.equal(f.log.create.length, 1);
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, ['m_new']);
-  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$\n?[\s\S]*CLOUDY_CLOUD_SNAPSHOT_CLEAN=1/m);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$\n?[\s\S]*CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new/m);
 });
 
 test('image in one run creates, installs, removes the credential, snapshots, saves the clean key and deletes the machine', async () => {
@@ -187,7 +187,7 @@ test('image in one run creates, installs, removes the credential, snapshots, sav
   assert.deepEqual(f.log.killed, ['m_new']);
   const cfg = readFileSync(f.configFile, 'utf8');
   assert.match(cfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
-  assert.match(cfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.match(cfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new$/m);
   assert.doesNotMatch(cfg, /PENDING/);
   assert.match(f.log.out.join('\n'), /cloudy-cloud cloud/);
 });
@@ -233,7 +233,7 @@ test('start with a clean snapshot uses it', async () => {
 
 test('image --forget clears only the image config keys and deletes nothing', async () => {
   const f = fixture({ snapshot: 'sn_old' });
-  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_old\nCLOUDY_CLOUD_SNAPSHOT_CLEAN=1\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=x\n', { mode: 0o600 });
+  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_old\nCLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_old\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=x\n', { mode: 0o600 });
   await main(['image', '--forget'], f.deps);
   assert.equal(readFileSync(f.configFile, 'utf8').trim(), 'KEEP=1');
   assert.match(f.log.out.join('\n'), /npx instabox snapshot rm ID/);
@@ -551,7 +551,6 @@ test('empty list on a terminal points to image or start; piped output stays "No 
 test('progress goes only to an interactive stderr and never contains keys', async () => {
   for (const isTTY of [true, false]) {
     const f = fixture();
-    f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // not under test: keep the unclean-image note out of the count
     const progress = [];
     f.deps.stderr = { isTTY, write: (x) => progress.push(x) };
     await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
@@ -635,7 +634,7 @@ test('start asks the provider for a never-suspending machine from the snapshot w
       commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
   };
   const out = [];
-  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_SNAPSHOT_CLEAN: '1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_SNAPSHOT_CLEAN: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), sleep: async () => {}, out: (x) => out.push(x) });
   assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   // A fresh coordinator waits for its own Claude sign-in: the piped output says so and names the login command.
@@ -1398,7 +1397,7 @@ test('interactive image resumes a pending snapshot instead of starting another',
 });
 
 // A pending record written by a cloudy-cloud that verified the credential removal carries PENDING_CLEAN.
-const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nCLOUDY_CLOUD_PENDING_CLEAN=1\nSECRET_KEEP=abc\n`, { mode: 0o600 });
+const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nCLOUDY_CLOUD_PENDING_CLEAN=${v.split(':')[1]}\nSECRET_KEEP=abc\n`, { mode: 0o600 });
 
 test('--save finishes a pending snapshot by id even when its machine is gone, and keeps other config lines', async () => {
   const f = fixture({ snapshot: '' });
@@ -1535,12 +1534,12 @@ test('a pending record without the clean marker is dropped unadopted; a marked o
   assert.deepEqual(g.log.killed, [], 'the machine is left alone');
   // A marked pending record resumes: its snapshot is saved and marked clean, the account lines go.
   const h = fixture();
-  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=1\n');
+  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=sn_p\n');
   await main(['image'], { ...h.deps, tty: true });
   const hcfg = readFileSync(h.configFile, 'utf8');
   assert.doesNotMatch(hcfg, /SNAPSHOT_ACCOUNT|PENDING/);
   assert.match(hcfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_p$/m);
-  assert.match(hcfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.match(hcfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_p$/m);
 });
 
 test('the auth-status email is never stored, whatever it looks like', async () => {
@@ -3543,7 +3542,7 @@ test('start warns once when the saved image predates the credential check, and n
   assert.ok(notes.some((n) => /holds a Claude sign-in and is no longer needed/.test(n)), JSON.stringify(notes));
   // The marker finishSave writes keeps an image saved by this version quiet.
   const g = fixture();
-  g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // the value loadEnv reads back from the saved config
+  g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = 'sn_1'; // the value loadEnv reads back from the saved config
   const gNotes = [];
   await main(START, { ...g.deps, note: (s) => gNotes.push(s) });
   assert.ok(!gNotes.some((n) => /no longer needed/.test(n)), JSON.stringify(gNotes));
@@ -3552,7 +3551,7 @@ test('start warns once when the saved image predates the credential check, and n
 test('finishSave marks the saved snapshot clean', async () => {
   const f = fixture();
   await main(['image'], f.deps);
-  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new$/m);
 });
 
 // ---- P1-4/P2-4: a sign-in URL is reported only for our own coordinator, only while login runs, never truncated ----
@@ -3669,7 +3668,7 @@ test('start picks the free account used least recently, delivers its credential 
   seedAccount(f, 'new', { email: 'b@x', lastUsed: 100 });
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
   assert.equal(f.log.create[0].opts.metadata.account, 'new', 'the least-recently-used free account was picked');
-  const delivery = f.log.writes.find((w) => w.p === '/data/home/.claude/.credentials.json');
+  const delivery = f.log.writes.find((w) => /credentials\.new$/.test(w.p));
   assert.equal(delivery?.d, CRED(9e12), 'the credential went by file write, never a command string');
   const marker = f.log.cmds.findIndex((c) => /credentials-removed/.test(c));
   const tmuxAt = f.log.cmds.findIndex((c) => /tmux new-session/.test(c));
@@ -3867,7 +3866,7 @@ test('a saved credential never reaches a command, an output or the index — onl
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
   assertNoToken(f);
   assert.ok(!readFileSync(join(accDir(f), 'index.json'), 'utf8').includes(TOK));
-  assert.ok(f.log.writes.some((w) => w.p.endsWith('.credentials.json') && w.d === CRED(9e12)), 'the token rode the file route only');
+  assert.ok(f.log.writes.some((w) => w.p.endsWith('credentials.new') && w.d === CRED(9e12)), 'the token rode the file route only');
 });
 
 test('accounts --help prints its own usage within 80 columns; unknown subcommands are guided', async () => {
@@ -3960,7 +3959,7 @@ test('two concurrent starts cannot claim the same saved account', async () => {
   ]);
   const claimed = f.log.create.filter((x) => x.opts.metadata.account === 'work');
   assert.equal(claimed.length, 1, 'two starts must never lease the same account');
-  const delivered = f.log.writes.filter((w) => /\.credentials\.json$/.test(w.p));
+  const delivered = f.log.writes.filter((w) => /credentials\.new$/.test(w.p));
   assert.equal(delivered.length, 1, 'the refresh token went to exactly one machine');
   const idx = accounts.readIndex(accDir(f));
   assert.ok(idx.work.leasedBy?.name === 'one' || idx.work.leasedBy?.name === 'two', 'one lease stands');
@@ -4113,6 +4112,7 @@ test('index updates from concurrent processes are serialized by the lock', async
 test('syncBack never lets an older machine read overwrite a newer saved credential', async () => {
   const f = fixture();
   const dir = accDir(f);
+  accounts.updateAccount(dir, 'work', (e) => ({ ...e, email: 'a@x' })); // the index row marks the owner — a bare credential file is never synced into
   accounts.saveCredential(dir, 'work', CRED(9e12 + 5));
   const sbx = { files: { read: async () => CRED(9e12) }, commands: { run: async (c) => (/CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) } };
   assert.equal(await accounts.syncBack(dir, sbx, 'work', 1), 'current', 'the saved copy is verified newer');
@@ -4197,14 +4197,18 @@ test('accounts rm removes leftover temp files and reports unlink failures', asyn
   assert.equal(existsSync(tmp), false, 'the temp credential went with the account');
   assert.equal(accounts.readIndex(accDir(f)).work, undefined);
   // A non-ENOENT unlink failure is reported and the index entry is kept — the account is still there.
+  // (A non-empty directory at the credential path is what makes the unlink itself fail; a read-only
+  // dir would fail earlier, at lock acquisition — also a safe refusal.)
   const g = fixture();
   seedAccount(g, 'work', { email: 'a@x' });
   const dir = accDir(g);
-  chmodSync(dir, 0o500);
-  const e = await main(['accounts', 'rm', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x).finally(() => chmodSync(dir, 0o700));
+  unlinkSync(accounts.credFile(dir, 'work'));
+  mkdirSync(join(dir, 'work.json'));
+  writeFileSync(join(dir, 'work.json', 'x'), '1');
+  const e = await main(['accounts', 'rm', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.match(e.message, /could not remove/i);
   assert.ok(accounts.readIndex(dir).work, 'the index entry stays while the file does');
-  assert.ok(existsSync(accounts.credFile(dir, 'work')), 'the credential file is still there');
+  assert.ok(existsSync(accounts.credFile(dir, 'work')), 'the credential path is still there');
 });
 
 test('a stale-looking pane marks needsSignIn only when auth status confirms signed out', async () => {
@@ -4213,4 +4217,281 @@ test('a stale-looking pane marks needsSignIn only when auth status confirms sign
   seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
   await main(['status', 'boss'], f.deps);
   assert.equal(accounts.readIndex(accDir(f)).work.needsSignIn, undefined, 'signed-in per the machine itself: not marked');
+});
+
+// ---- Astra round 2 ----
+
+// P1-4/P2-3: only claudeAiOauth is ever saved, read back or delivered — MCP OAuth entries and other
+// secrets in a credentials file are stripped on the way in and out.
+test('only claudeAiOauth is saved and read back — other credential keys are stripped', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cc-acc-')), 'accounts');
+  const dirty = JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] }, mcpOAuth: { 'm|x': { accessToken: 'mcp-secret' } }, otherSecret: 's' });
+  accounts.saveCredential(dir, 'work', dirty);
+  assert.deepEqual(JSON.parse(accounts.readCredential(dir, 'work')), { claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] } }, 'a saved file is stripped to claudeAiOauth when read');
+  const sbx = { files: { read: async () => dirty }, commands: { run: async (c) => (/CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) } };
+  const got = await accounts.readMachineCredential(sbx);
+  assert.ok(got, 'the machine credential parsed');
+  assert.deepEqual(JSON.parse(got.text), { claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] } }, 'the machine read keeps only claudeAiOauth');
+  assert.ok(!got.text.includes('mcp-secret'), 'an MCP OAuth entry never leaves the machine');
+});
+
+// P1-4/P2-3: delivery merges our claudeAiOauth over the machine's existing file through a staged
+// file inside the mode-700 config dir — the credentials path is never written directly.
+test('the delivered credential is staged in the mode-700 config dir, merged over the machine\'s other keys, then moved into place', async () => {
+  const existing = JSON.stringify({ claudeAiOauth: { accessToken: 'old', refreshToken: 'old', expiresAt: 1, scopes: [] }, mcpOAuth: { github: { accessToken: 'mcp-tok' } } });
+  const f = fixture({ cred: existing });
+  seedAccount(f, 'work', { cred: CRED(9e12), email: 'a@x' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
+  assert.ok(!f.log.writes.some((w) => /\.claude\/\.credentials\.json$/.test(w.p)), 'nothing is written at the credentials path directly');
+  const staged = f.log.writes.find((w) => /credentials\.new$/.test(w.p));
+  assert.ok(staged, 'the credential was staged inside the config dir');
+  assert.match(staged.p, /^\/data\/home\/\.config\/cloudy-cloud\//, 'the staged file sits under the mode-700 config dir');
+  const body = JSON.parse(staged.d);
+  assert.equal(body.mcpOAuth?.github?.accessToken, 'mcp-tok', 'the machine\'s other credential keys were kept');
+  assert.equal(body.claudeAiOauth?.refreshToken, TOK, 'the saved sign-in was merged in');
+  assert.ok(f.log.cmds.some((c) => /chmod 700/.test(c) && /credentials\.new/.test(c)), 'the staged file was created empty inside a mode-700 dir');
+  assert.ok(f.log.cmds.some((c) => /mv -f .*credentials\.new.*\.credentials\.json/.test(c)), 'the staged file was moved into place');
+  assertNoToken(f);
+});
+
+// P1-1: an expired reservation must still be THIS run's reservation — a lease bound (or re-reserved)
+// while the listing was in flight is never released under it.
+test('a reservation bound while a listing is in flight is not expired under it', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', pending: true, resId: 'r1' }, leasedAt: 1 });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The start that made the reservation binds it to the new machine while the listing is in flight.
+    accounts.bindLease(accDir(f), 'work', { name: 'boss', machineId: 'm1', provider: 'instabox', pending: true }, Date.now());
+    return list0(o);
+  };
+  await main(['accounts', 'ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy?.machineId, 'm1', 'the just-bound lease was released by the stale sweep');
+});
+
+test('an expired reservation releases only itself — a newer reservation of the label survives', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', pending: true, resId: 'r1' }, leasedAt: 1 });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The stale reservation was released and start reserved again while the listing was in flight.
+    accounts.release(accDir(f), 'work');
+    accounts.lease(accDir(f), 'work', { name: 'boss', pending: true, resId: 'r2' }, Date.now());
+    return list0(o);
+  };
+  await main(['accounts', 'ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy?.resId, 'r2', 'the replacement reservation was expired under the old listing');
+});
+
+// P2-4: a create that never produces a machine frees the reservation so a retry can start at once.
+test('a create refusal releases the account reservation this start made', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  f.deps.sdk.Sandbox.create = async () => { throw Object.assign(new Error('quota'), { code: 'quota_exceeded' }); };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy, undefined, 'the refused create freed the reservation');
+});
+
+// P1-2: a credential file with no index row has no verified owner — it lists as needing attention
+// and is never delivered to a machine.
+test('a credential file with no index row is listed as needing attention and is never picked', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  accounts.saveCredential(accDir(f), 'work', CRED(9e12)); // a file dropped without its index row
+  await main(['accounts', 'ls'], f.deps);
+  assert.match(f.log.out.at(-1), /work.*needs sign-in/);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'a file without an index row was not delivered');
+  assert.ok(!f.log.writes.some((w) => /credentials\.new|\.credentials\.json/.test(w.p)), 'no credential was delivered');
+});
+
+// P1-3: the credential read and the index write are separated by time; under the lock the entry
+// must still exist, still hold the lease we synced for, and still be the same Claude identity.
+test('syncBack re-verifies under the lock: the lease it expected and the same Claude identity — a removed account is not recreated', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cc-acc-')), 'accounts');
+  const mkSbx = (email) => ({
+    files: { read: async () => CRED(9e12 + 9) },
+    commands: { run: async (c) => (/auth status/.test(c) ? { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email }) } : /CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) },
+  });
+  // An account removed while the read was in flight is never recreated.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'gone', 1, { machineId: 'm1', provider: 'instabox' }), 'moved');
+  assert.equal(accounts.readIndex(dir).gone, undefined, 'no index row was recreated');
+  assert.equal(existsSync(accounts.credFile(dir, 'gone')), false, 'no credential file was recreated');
+  accounts.updateAccount(dir, 'work', (e) => ({ ...e, email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } }));
+  // A different Claude identity on the machine is not written under this label.
+  assert.equal(await accounts.syncBack(dir, mkSbx('b@x'), 'work', 1, { machineId: 'm1', provider: 'instabox' }), 'moved');
+  assert.equal(existsSync(accounts.credFile(dir, 'work')), false);
+  // A lease that moved to another machine refuses the write.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'work', 1, { machineId: 'm_old', provider: 'instabox' }), 'moved');
+  assert.equal(existsSync(accounts.credFile(dir, 'work')), false);
+  // The same lease and identity still syncs.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'work', 1, { machineId: 'm1', provider: 'instabox' }), 'synced');
+  assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 9));
+});
+
+// P1-5: the lock never reclaims a live holder by age alone, and release removes only the file the
+// holder itself wrote.
+test('a live process keeps the accounts lock past the old stale window', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-'));
+  const file = join(dir, 'index.lock');
+  const kid = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  try {
+    writeFileSync(file, `${kid.pid} ${accounts.watcherToken(kid.pid)} owner-token`, { mode: 0o600 });
+    const past = new Date(Date.now() - 10 * 60_000);
+    utimesSync(file, past, past); // far older than the former 120 s stale window
+    const t0 = Date.now();
+    assert.throws(() => accounts.withLock(dir, () => {}), /Timed out waiting for the accounts lock/);
+    assert.ok(Date.now() - t0 > 10_000, 'a live holder was never reclaimed');
+  } finally { kid.kill('SIGKILL'); }
+});
+
+test('releasing the accounts lock removes only the holder\'s own file — a newer owner\'s file stays', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-rel-'));
+  const file = join(dir, 'index.lock');
+  accounts.withLock(dir, () => {
+    unlinkSync(file); // pretend a reclaimer removed ours and took the lock
+    writeFileSync(file, '999999 x other-owner', { mode: 0o600 });
+  });
+  assert.equal(readFileSync(file, 'utf8'), '999999 x other-owner', 'the newer lock file was not removed');
+});
+
+// P1-6: a machine that vanished only from the label-filtered listing still exists — the lease is
+// released only after an unfiltered id lookup in its provider also fails to find it.
+test('a lease whose machine vanished only from the role-filtered listing is kept', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  // The machine is still there but lost its purpose/role labels — the coordinator listing cannot see it.
+  f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { name: 'boss', install: f.iid } });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['accounts', 'ls'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.leasedBy?.machineId, 'm1', 'a label change alone must not free the account');
+  assert.equal(idx.work.needsSignIn, undefined);
+  const g = fixture({ cred: CRED(9e12) });
+  g.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { name: 'boss', install: g.iid } });
+  seedAccount(g, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['accounts', 'sync'], g.deps);
+  assert.equal(accounts.readIndex(accDir(g)).work.leasedBy?.machineId, 'm1');
+});
+
+// An explicit --account never overrides a needsSignIn mark: the saved credential may be dead.
+test('start --account refuses an account marked needsSignIn', async () => {
+  const f = fixture();
+  seedAccount(f, 'stale', { email: 'a@x', needsSignIn: true });
+  const e = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'stale'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /needs a fresh sign-in|needs sign-in/i);
+  assert.equal(f.log.create.length, 0, 'no machine was created');
+});
+
+// P2: `accounts rm` temp-file cleanup matches the exact `<label>.json.tmp-<pid>` format only — a
+// sibling label that shares the prefix must survive.
+test('accounts rm deletes only this label\'s exact temp files — a sibling label\'s file survives', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  accounts.saveCredential(accDir(f), 'work.json.tmp-team', CRED(9e12)); // shares the tmp- prefix
+  await main(['accounts', 'rm', 'work'], f.deps);
+  assert.equal(existsSync(accounts.credFile(accDir(f), 'work.json.tmp-team')), true, 'another label\'s file was not swept up');
+  assert.equal(existsSync(accounts.credFile(accDir(f), 'work')), false);
+});
+
+// P2: a finished sign-in colliding with a DIFFERENT identity's label falls back to a fresh label —
+// that account's saved credential is never overwritten. An explicit --account naming it refuses.
+test('a sign-in colliding with another identity\'s label falls back to a fresh label; an explicit --account naming it refuses', async () => {
+  const SIGNED_B = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'dev+ops@example.com' });
+  // emailLabel('dev+ops@example.com') === 'dev-ops@example.com' — already another account's label.
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_B, SIGNED_B] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'dev-ops@example.com', { cred: CRED(1), email: 'dev-ops@example.com' });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'dev-ops@example.com'), 'utf8'), CRED(1), 'the other identity\'s credential was not overwritten');
+  const fresh = Object.keys(idx).find((l) => l !== 'dev-ops@example.com');
+  assert.ok(fresh, 'the sign-in was saved under a fresh label');
+  assert.equal(idx[fresh].email, 'dev+ops@example.com');
+  assert.equal(idx[fresh].leasedBy?.machineId, 'm1');
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_B, SIGNED_B] });
+  ownMachine(g, 'boss');
+  seedAccount(g, 'work', { cred: CRED(1), email: 'someone@example.com' });
+  const e = await main(['login', 'boss', '--code', 'X', '--account', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /different|another/i);
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'work'), 'utf8'), CRED(1), 'the saved credential survived');
+});
+
+// P2: `claude auth status` exit 1 is the CLI's definite signed-out answer — it parses from the
+// error's stdout; only a transport failure (no exit code) is inconclusive.
+test('a claude auth status exit 1 carrying signed-out JSON still reads as signed out', async () => {
+  const sbx = { commands: { run: async (c) => { if (/auth status/.test(c)) throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: NOT_YET, stderr: '' }); return { stdout: '' }; } } };
+  const j = await accounts.authStatus(sbx);
+  assert.equal(j?.loggedIn, false, 'a definite signed-out status on exit 1 is not inconclusive');
+  const dead = { commands: { run: async () => { throw new Error('connection reset'); } } };
+  assert.equal(await accounts.authStatus(dead), null, 'a transport failure stays inconclusive');
+});
+
+// P2: the watcher file's lstart token and the live token must compare in the same normalized form —
+// macOS ps pads single-digit days with a second space.
+test('the watcher lstart token compares the same normalized form it was stored with', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-watch-norm-'));
+  const bin = mkdtempSync(join(tmpdir(), 'cc-ps-'));
+  const raw = 'Thu Nov  5 10:00:00 2026'; // what ps really prints on a single-digit day
+  writeFileSync(join(bin, 'ps'), `#!/bin/sh\necho '${raw}'\n`, { mode: 0o755 });
+  const path0 = process.env.PATH;
+  process.env.PATH = `${bin}:${path0}`;
+  try {
+    writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} ${raw}`);
+    assert.equal(accounts.watcherAlive(dir), true, 'the stored and live tokens must compare whitespace-normalized');
+    writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} foreign-token`);
+    accounts.releaseWatcher(dir);
+    assert.ok(existsSync(join(dir, accounts.WATCH_PID)), 'a foreign token\'s file is not released');
+  } finally { process.env.PATH = path0; }
+});
+
+// P2-8: SNAPSHOT_CLEAN must equal the saved snapshot id — a marker naming another snapshot proves
+// nothing about this one.
+test('SNAPSHOT_CLEAN must equal the saved snapshot id — a marker naming another snapshot is not trusted', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = 'sn_other'; // proves only that SOME image was clean, not this one
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...f.deps, note: (s) => notes.push(s) });
+  assert.equal(f.log.create[0].template, 'agent-browser', 'a clean marker for another snapshot is not trusted');
+});
+
+// P2-8: --forget drops the pending record too, and a save finishing after a forget does not write
+// the snapshot back.
+test('image --forget also drops the pending record', async () => {
+  const f = fixture({ snapshot: '' });
+  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_img:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=sn_p\n', { mode: 0o600 });
+  await main(['image', '--forget'], f.deps);
+  assert.equal(readFileSync(f.configFile, 'utf8').trim(), 'KEEP=1', 'the pending record was forgotten too');
+});
+
+test('a save that finishes after image --forget does not write the snapshot back', async () => {
+  const f = fixture({ snapshot: '', snapStatus: () => 'pending' });
+  let forgot = false;
+  f.deps.sdk.Sandbox.getSnapshot = async (id, o) => {
+    if (!forgot) { forgot = true; writeFileSync(f.configFile, '', { mode: 0o600 }); } // the concurrent forget
+    return { id, status: 'ready' };
+  };
+  await main(['image'], f.deps);
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.doesNotMatch(cfg, /CLOUDY_CLOUD_COORDINATOR_SNAPSHOT|CLOUDY_CLOUD_SNAPSHOT_CLEAN|CLOUDY_CLOUD_PENDING/, 'the finished snapshot was not written back after a forget');
+});
+
+// P2: the first-run script must handle a CLAUDE_CONFIG_DIR that differs from HOME and may not
+// exist yet — both .claude.json and settings.json land there.
+test('the first-run script works with a CLAUDE_CONFIG_DIR that differs from HOME and may not exist', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
+  const cc = join(home, 'claude-conf'); // deliberately missing
+  const r = spawnSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { HOME: home, CLAUDE_CONFIG_DIR: cc, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(readFileSync(join(cc, '.claude.json'), 'utf8')).hasCompletedOnboarding, true);
+  assert.equal(JSON.parse(readFileSync(join(cc, 'settings.json'), 'utf8')).skipDangerousModePermissionPrompt, true);
+  assert.ok(!existsSync(join(home, '.claude', 'settings.json')), 'settings went to CLAUDE_CONFIG_DIR, not ~/.claude');
+});
+
+// P2: `cloud --account X` reattaching to a coordinator that runs another account silently ignores
+// the flag — refuse instead.
+test('cloud --account refuses to reattach to a coordinator that uses a different account', async () => {
+  const f = fixture();
+  f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid, repo: 'owner/cloudrepo', branch: 'main', account: 'work' } });
+  const e = await main(['cloud', '--name', 'boss', '--account', 'other', '--json'], { ...f.deps, cwd: ghRepo() }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /does not use account|runs on account work/i);
+  assert.ok(!/Reattaching to|reattached.: ?true/i.test(f.log.out.join('\n')), 'no reattach happened');
 });

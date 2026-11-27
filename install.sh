@@ -1424,7 +1424,7 @@ setup_coordinators() {
     STATUS_COORD="ready"
     yn "Cloud coordinators already have an image. Rebuild it now? This takes 10 to 20 minutes." || return 0
   else
-    yn "Set up cloud coordinators now? It saves an image with the tools (no sign-in: each coordinator signs in at start); this takes 10 to 20 minutes." || { STATUS_COORD=declined; return 0; }
+    yn "Build the optional cloud-coordinator image now? Coordinators work without it; the image only carries the tools preinstalled (no sign-in: each coordinator signs in at start). This takes 10 to 20 minutes." || { STATUS_COORD=declined; return 0; }
   fi
   # Ready only when the saved image changed: a command that exits 0 without saving one (no terminal) is not a success.
   if "$root/bin/cloudy-cloud" coordinator image && [ -n "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" ] && [ "$(get_saved CLOUDY_CLOUD_COORDINATOR_SNAPSHOT)" != "$snap" ]; then
