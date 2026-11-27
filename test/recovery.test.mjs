@@ -107,6 +107,63 @@ test('recovery confirms the old machine is gone and starts a fresh message on th
   assert.match(r.structuredContent.message, /Recovery start requested/);
 });
 
+test('automatic recovery sends the configured eligible provider order through one placement attempt', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  const old = { name: 'old-provider', list: async () => [], connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); } };
+  const first = { name: 'first-alternate', caps: { hasEgressPolicy: false } };
+  const second = { name: 'second-alternate', caps: { hasEgressPolicy: true } };
+  let calls = 0, actual;
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'auto', message: 'continue from the checkpoint' }, {
+    env: f.env, cwd: f.dir, providers: [old, first, second],
+    verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+    startRecovery: async (_args, candidates, control) => {
+      calls++;
+      actual = { candidates, control };
+      return { content: [{ type: 'text', text: 'started' }] };
+    },
+  });
+  assert.equal(calls, 1, 'recovery must hand candidate placement to the regular placement path once');
+  assert.deepEqual(actual.candidates, [first, second], 'configured order is preserved and source is excluded');
+  assert.equal(actual.control.automatic, true);
+  assert.equal(r.isError, undefined);
+  assert.equal(r.structuredContent.requested_provider, 'auto');
+  assert.equal(r.structuredContent.provider, undefined, 'do not report a preferred provider as the actual placement');
+  assert.equal(r.structuredContent.checkpoint_sha, f.record.checkpointSha);
+  assert.equal(r.structuredContent.workspace, 'packages/api');
+  assert.match(r.content[0].text, /automatic provider placement/);
+});
+
+test('automatic recovery refuses when every alternate cannot enforce the saved egress policy', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, { ...f.record, egress: ['github.com'] });
+  const old = { name: 'old-provider', list: async () => [], connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); } };
+  let starts = 0;
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'auto', message: 'continue' }, {
+    env: f.env, cwd: f.dir, providers: [old, { name: 'one', caps: { hasEgressPolicy: false } }],
+    verifyCheckpoint: async () => ({ ok: true, sha: f.record.checkpointSha }),
+    startRecovery: async () => { starts++; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /no configured alternate provider.*cannot enforce/i);
+});
+
+test('automatic recovery still requires the exact current checkpoint before any provider allocation', async () => {
+  const f = fixture();
+  await saveCheckpoint(f.env, f.record);
+  const old = { name: 'old-provider', list: async () => [], connect: async () => { throw Object.assign(new Error('gone'), { code: 'not_found' }); } };
+  let starts = 0;
+  const r = await recoverFromCheckpoint({ agent_id: f.record.id, provider: 'auto', message: 'continue' }, {
+    env: f.env, cwd: f.dir, providers: [old, { name: 'alternate' }],
+    verifyCheckpoint: async () => ({ ok: true, sha: 'b'.repeat(40) }),
+    startRecovery: async () => { starts++; },
+  });
+  assert.equal(starts, 0);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /exact origin checkpoint/i);
+});
+
 test('recovery refuses an origin branch that moved past its checkpoint', async () => {
   const f = fixture();
   await saveCheckpoint(f.env, f.record);
@@ -318,6 +375,41 @@ test('the MCP recovery entry restores the confirmed commit under the same id and
     assert.match(secondTask.id, new RegExp(`^cc-${id}-t3-[0-9a-f-]{36}$`));
     assert.notEqual(secondTask.id, replacementTask.id, 'a different session must not reuse the previous session task id');
     assert.equal(deps.tasks.get(replacementTask.id), replacementTask, 'starting in a second session must leave the first session result addressable');
+
+    const checkpointBeforeAuto = await readCheckpoint(f.env, id);
+    await old.delete(secondSession.open.get(id).sandbox.id);
+    const firstAlternate = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'first-alternate', hasProxySecrets: false, hasConsentedSecrets: true });
+    const secondAlternate = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'second-alternate', hasProxySecrets: false, hasConsentedSecrets: true });
+    let firstAttempts = 0;
+    firstAlternate.create = async () => {
+      firstAttempts++;
+      throw Object.assign(new Error('known capacity refusal'), { code: 'machine_no_capacity' });
+    };
+    const autoSession = {
+      ...secondSession, owner: 'owner-auto', provider: old,
+      providers: [old, firstAlternate, secondAlternate], open: new Map(), tasks: new Map(), count: { started: 0 },
+    };
+    const autoStarted = await recoverAgent({ agent_id: id, provider: 'auto', message: 'SHOW-NEW: inspect the restored file.' }, autoSession);
+    assert.equal(autoStarted.isError, undefined, autoStarted.content?.[0]?.text);
+    assert.match(autoStarted.content[0].text, new RegExp(`agent_id: ${id}`));
+    const autoResult = await waitAgents({ agent_ids: [id], timeout_seconds: 3 }, autoSession);
+    const autoAgent = autoSession.open.get(id);
+    assert.equal(autoAgent.id, id, 'automatic recovery must retain the original agent id');
+    assert.equal(autoAgent.provider, secondAlternate, 'placement must continue to the second eligible provider');
+    assert.equal(autoAgent.branch, checkpointBeforeAuto.branch);
+    assert.equal(autoAgent.workspaceRel, 'packages/api');
+    assert.equal(autoResult.structuredContent.agents[0].provider, 'second-alternate', 'the result must name the provider that actually placed the worker');
+    assert.match(autoResult.content[0].text, /a=changed/, 'the recovered worker must see checkpoint contents');
+    assert.doesNotMatch(autoResult.content[0].text, /EDIT-OLD-PROMPT/);
+    assert.equal(firstAttempts, 1, 'the first eligible provider must receive one definite refusal');
+    assert.equal(firstAlternate.machines.size, 0, 'the refused first provider must not create a machine');
+    assert.equal(secondAlternate.log.create.length, 1, 'only one replacement machine may be created');
+    assert.equal(secondAlternate.machines.size, 1, 'exactly one successful replacement worker must remain tracked');
+    const autoCheckpoint = await readCheckpoint(f.env, id);
+    assert.equal(autoCheckpoint.provider, 'second-alternate');
+    assert.equal(autoCheckpoint.machine, autoAgent.sandbox.id);
+    assert.equal(autoCheckpoint.checkpointSha, checkpointBeforeAuto.checkpointSha);
+    assert.equal(autoCheckpoint.workspaceRel, 'packages/api');
   } finally {
     for (const [k, v] of Object.entries(prevGit)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }

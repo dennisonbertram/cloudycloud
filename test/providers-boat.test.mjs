@@ -505,10 +505,11 @@ test('boat: commands.run streams stdout, returns output and rejects on a nonzero
   const s = await create(p);
   try {
     z.exec = () => ({ code: 0, out: 'hello\n', err: 'warn\n' });
-    let streamed = '';
-    const r = await s.commands.run('echo hi', { timeoutMs: 5000, onStdout: (c) => { streamed += c; } });
+    let streamed = '', streamedErr = '';
+    const r = await s.commands.run('echo hi', { timeoutMs: 5000, onStdout: (c) => { streamed += c; }, onStderr: (c) => { streamedErr += c; } });
     assert.deepEqual(r, { stdout: 'hello\n', stderr: 'warn\n', exitCode: 0 });
     assert.equal(streamed, 'hello\n');
+    assert.equal(streamedErr, 'warn\n');
     const last = z.log.filter((l) => l.path === `/sandboxes/${s.id}/commands`).at(-1).body;
     assert.equal(last.detached, true);
     z.exec = () => ({ code: 2, out: 'o', err: 'e' });
@@ -535,6 +536,29 @@ test('boat: a finished command with `more` buffered output is drained before fin
     const r = await s.commands.run('echo hello', { timeoutMs: 10_000 });
     assert.equal(r.stdout, 'part1\npart2\n', 'the buffered page after the finished flag is read too');
     assert.equal(r.exitCode, 0);
+  } finally { await s.kill(); }
+});
+
+test('boat: old status API fallback emits only newly appended stderr tail', async () => {
+  const z = fakeBoat();
+  const p = mk(z);
+  const s = await create(p);
+  try {
+    let offsetsRejected = false;
+    z.fail.set(`GET /sandboxes/${s.id}/commands/${z.procs.size + 1}`, (_method, u) => {
+      if (!u.searchParams.has('stdoutOffset')) return undefined;
+      offsetsRejected = true;
+      return z.err(409, 'agent_outdated', 'offsets unsupported');
+    });
+    z.statusPages = [
+      { status: 'running', running: true, stdout: 'out1', stderr: 'err1' },
+      { status: 'exited', running: false, success: true, exitCode: 0, stdout: 'out1out2', stderr: 'err1err2' },
+    ];
+    let streamed = '';
+    const r = await s.commands.run('echo hello', { timeoutMs: 10_000, onStderr: (c) => { streamed += c; } });
+    assert.equal(offsetsRejected, true);
+    assert.equal(r.stderr, 'err1err2');
+    assert.equal(streamed, r.stderr, 'the whole-tail fallback delivers each new suffix once');
   } finally { await s.kill(); }
 });
 

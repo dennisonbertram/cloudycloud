@@ -641,11 +641,12 @@ test('e2b: a UTF-8 character split across output events decodes whole', async ()
         { end: { exited: true, status: 'exited' } },
       ]),
     };
-    let streamed = '';
-    const r = await s.commands.run('x', { onStdout: (c) => { streamed += c; } });
+    let streamed = '', streamedErr = '';
+    const r = await s.commands.run('x', { onStdout: (c) => { streamed += c; }, onStderr: (c) => { streamedErr += c; } });
     assert.equal(r.stdout, 'hi é\n', 'the accumulated output joins the split character');
     assert.equal(r.stderr, 'é');
     assert.equal(streamed, 'hi é\n', 'the concatenated stdout callbacks carry no replacement characters');
+    assert.equal(streamedErr, 'é', 'the concatenated stderr callbacks carry no replacement characters');
   } finally { await s.kill(); }
 });
 
@@ -654,13 +655,14 @@ test('e2b: a dropped command stream reattaches and recovers the complete transcr
   const p = mk(z);
   const s = await create(p);
   try {
-    z.execState = { code: 0, out: 'part1\n', err: '', dropMid: true, ioOut: 'part1\npart2\n', ioErr: 'warned\n' };
-    let streamed = '';
-    const r = await s.commands.run('work', { onStdout: (c) => { streamed += c; } });
+    z.execState = { code: 0, out: 'part1\n', err: 'warn', dropMid: true, ioOut: 'part1\npart2\n', ioErr: 'warned\n' };
+    let streamed = '', streamedErr = '';
+    const r = await s.commands.run('work', { onStdout: (c) => { streamed += c; }, onStderr: (c) => { streamedErr += c; } });
     assert.equal(r.stdout, 'part1\npart2\n', 'the gap output is recovered from the io file envd cannot replay');
     assert.equal(r.stderr, 'warned\n');
     assert.equal(r.exitCode, 0);
     assert.equal(streamed, 'part1\npart2\n', 'onStdout still receives the full stream');
+    assert.equal(streamedErr, 'warned\n', 'readback emits only stderr missing from the dropped stream');
     const connects = z.log.filter((l) => l.path === '/process.Process/Connect');
     assert.equal(connects.length, 1, 'the dropped stream was re-attached once');
   } finally { await s.kill(); }

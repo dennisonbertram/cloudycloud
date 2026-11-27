@@ -104,8 +104,17 @@ async function waitForOwner(paths, timeoutMs = 8000, stopWhenOwnerExited = true)
   return (await tryConnect(paths.socket)) ? paths : null;
 }
 
-export async function startNamedSession({ name, repo, home = homedir(), env = process.env, ownerEntry = fileURLToPath(new URL('./server.mjs', import.meta.url)), timeoutMs = 8000 }) {
+export async function startNamedSession({ name, repo, home = homedir(), env = process.env, ownerEntry = fileURLToPath(new URL('./server.mjs', import.meta.url)), timeoutMs = 8000, requireExisting = false }) {
   const paths = sessionPaths({ name, repo, home });
+  if (requireExisting) {
+    const current = metadata(paths);
+    if (!current) throw new Error(`No live named session owner exists for run session "${name}"; refusing to start a replacement.`);
+    const currentPaths = ownerSocketPaths(paths, current);
+    if (!Number.isInteger(current.pid) || !isAlive(current.pid) || !(await tryConnect(currentPaths.socket))) {
+      throw new Error(`The named session owner for run session "${name}" is stale or unavailable; refusing to start a replacement.`);
+    }
+    return currentPaths;
+  }
   mkdirSync(dirname(paths.metadata), { recursive: true, mode: 0o700 });
   try { chmodSync(dirname(paths.metadata), 0o700); } catch { /* best effort on platforms without chmod */ }
   const current = metadata(paths);

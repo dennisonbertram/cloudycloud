@@ -1,6 +1,6 @@
 {
   "name": "cloudycloud",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Run coding-agent subagents on cloud machines with isolated workspaces, Git branches, and configurable sandbox providers.",
   "license": "MIT",
   "homepage": "https://cloudycloud.tech",

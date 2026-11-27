@@ -2,7 +2,7 @@ import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, access, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -75,13 +75,16 @@ test('CLI returns a recoverable worker after failure and a separate MCP stdio co
   const f = await fixture(t);
   const cleanSession = `${f.session}-clean`;
   t.after(async () => { await stopOwner(cleanSession, f.repo, f.home); await stopOwner(f.session, f.repo, f.home); });
-  const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '1', '--json', '--', 'FAIL keep this worker'], { env: f.env, timeout: 20_000 }).catch((error) => error);
+  const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '5', '--json', '--', 'FAIL keep this worker'], { env: f.env, timeout: 20_000 }).catch((error) => error);
   assert.equal(cli.code, 1, `expected failed work to return nonzero; stdout=${cli.stdout} stderr=${cli.stderr}`);
   const result = JSON.parse(cli.stdout.trim());
   assert.equal(result.status, 'failed');
   assert.equal(result.recoverable, true);
   assert.equal(result.session, f.session);
   assert.equal(result.repo, f.repo);
+  const runId = /Run ID: ([0-9a-f-]{36})/.exec(cli.stderr)?.[1];
+  assert.ok(runId, 'the CLI must expose the durable run handle on stderr');
+  assert.equal(result.run_id, runId);
   assert.match(result.action, /cloudy-cloud mcp-server --session/);
 
   const mcp = rpcProcess(process.execPath, [resolve(root, 'src/server.mjs'), '--session', f.session, '--repo', f.repo], f.repo, f.env);
@@ -97,6 +100,20 @@ test('CLI returns a recoverable worker after failure and a separate MCP stdio co
   assert.equal(cleanResult.error, false);
 });
 
+test('run --explain reports local eligibility without creating a worker', async (t) => {
+  const f = await fixture(t);
+  t.after(() => stopOwner(f.session, f.repo, f.home));
+  const cli = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--json', '--explain', '--', 'check eligibility'], { env: f.env, timeout: 15_000 }).catch((error) => error);
+  assert.equal(cli.code ?? 0, 0, `explanation should succeed; stdout=${cli.stdout} stderr=${cli.stderr}`);
+  const result = JSON.parse(cli.stdout.trim());
+  assert.equal(result.status, 'conditional');
+  assert.ok(result.eligible_providers.length > 0, JSON.stringify(result));
+  assert.ok(result.unknown_checks.length > 0);
+  assert.equal(result.agent_id, undefined);
+  assert.equal(result.error, undefined);
+  await assert.rejects(access(sessionPaths({ name: f.session, repo: f.repo, home: f.home }).metadata), 'explain must not create a persistent named owner manifest');
+});
+
 test('run migrates legacy config before creating the named owner and keeps its notice off JSON stdout', async (t) => {
   const f = await fixture(t, { currentConfig: false });
   const legacy = join(f.home, '.config', 'claude-cloud');
@@ -106,7 +123,7 @@ test('run migrates legacy config before creating the named owner and keeps its n
   await writeFile(join(legacy, 'legacy-marker'), 'preserve this directory\n');
   t.after(() => stopOwner(f.session, f.repo, f.home));
 
-  const result = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '1', '--json', '--', 'FAIL keep this worker'], { env: f.env, timeout: 20_000 }).catch((error) => error);
+  const result = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '5', '--json', '--', 'FAIL keep this worker'], { env: f.env, timeout: 20_000 }).catch((error) => error);
   assert.equal(result.code, 1, `expected failed worker result; stdout=${result.stdout} stderr=${result.stderr}`);
   assert.doesNotThrow(() => JSON.parse(result.stdout.trim()), 'stdout must contain only the JSON result');
   assert.match(result.stderr, /Moved your saved keys from ~\/\.config\/claude-cloud/);
@@ -219,4 +236,102 @@ test('CLI drains large JSON output before exiting', async (t) => {
   const result = JSON.parse(stdout);
   assert.equal(result.status, 'completed');
   assert.ok(result.result.length > 2_000_000);
+});
+
+test('run prints a durable handle and resume collects the same worker after the CLI disconnects', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-resume`;
+  t.after(() => stopOwner(session, f.repo, f.home));
+  const dirtyFile = join(f.repo, 'keep-me.txt');
+  await writeFile(dirtyFile, 'local edits stay here\n');
+  const child = spawn(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', 'SLOW resumable work'], {
+    cwd: f.repo, env: f.env, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const runId = await new Promise((resolveId, reject) => {
+    const timer = setTimeout(() => reject(new Error(`run handle was not printed; stderr=${stderr}`)), 10_000);
+    const poll = async () => {
+      const match = /Run ID: ([0-9a-f-]{36})/.exec(stderr);
+      if (match) { clearTimeout(timer); resolveId(match[1]); return; }
+      if (child.exitCode !== null) { clearTimeout(timer); reject(new Error(`run exited before printing its handle; stderr=${stderr}`)); return; }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+  const recordPath = join(f.home, '.config', 'cloudy-cloud', 'runs', `${runId}.json`);
+  let record;
+  for (let i = 0; i < 200; i++) {
+    try { record = JSON.parse(await readFile(recordPath, 'utf8')); } catch { /* waiting for atomic run record update */ }
+    if (record?.agent_id) break;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  assert.ok(record?.agent_id, `worker id was not persisted; stderr=${stderr}`);
+  child.kill('SIGTERM');
+  await new Promise((resolveClose) => child.once('close', resolveClose));
+  assert.equal(stdout, '', 'the interrupted --json command must not emit a partial result');
+
+  const mcp = rpcProcess(process.execPath, [resolve(root, 'src/server.mjs'), '--session', session, '--repo', f.repo], f.repo, f.env);
+  t.after(() => mcp.child.kill());
+  await mcp.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'run-resume-test', version: '1' } });
+  const listed = await mcp.request('tools/call', { name: 'cloud_agent_list', arguments: {} });
+  const originalAgents = listed.result.structuredContent.agents;
+  assert.deepEqual(originalAgents.map((agent) => agent.agent_id), [record.agent_id], 'the original session must contain exactly one worker before resume');
+
+  const resumed = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--json'], { cwd: tmpdir(), env: f.env, timeout: 40_000 }).catch((error) => error);
+  assert.equal(resumed.code ?? 0, 0, `resume failed; stdout=${resumed.stdout} stderr=${resumed.stderr}`);
+  const result = JSON.parse(resumed.stdout.trim());
+  assert.equal(result.status, 'completed');
+  assert.equal(result.run_id, runId);
+  assert.equal(result.agent_id, record.agent_id, 'resume must collect the original worker');
+  assert.match(result.result, /slow done/);
+  assert.equal(await readFile(dirtyFile, 'utf8'), 'local edits stay here\n');
+  const runs = await stat(join(f.home, '.config', 'cloudy-cloud', 'runs'));
+  assert.equal(runs.mode & 0o077, 0, 'run handles must be private to the user');
+  mcp.child.kill();
+  await new Promise((resolveClose) => mcp.child.once('close', resolveClose));
+  await stopOwner(session, f.repo, f.home);
+  const metadataFile = sessionPaths({ name: session, repo: f.repo, home: f.home }).metadata;
+  let ownerGone = false;
+  for (let i = 0; i < 200; i++) {
+    try { await access(metadataFile); } catch { ownerGone = true; break; }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  assert.equal(ownerGone, true, 'the cached replay must not depend on a live owner');
+  const replay = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--json'], { cwd: tmpdir(), env: f.env, timeout: 20_000 });
+  assert.deepEqual(JSON.parse(replay.stdout.trim()), result);
+});
+
+test('resume with a stale run record fails without starting a new named owner', async (t) => {
+  const f = await fixture(t);
+  const runId = '00000000-0000-4000-8000-000000000060';
+  const session = `${f.session}-stale`;
+  const records = join(f.home, '.config', 'cloudy-cloud', 'runs');
+  await mkdir(records, { recursive: true, mode: 0o700 });
+  await writeFile(join(records, `${runId}.json`), JSON.stringify({ id: runId, uid: process.getuid?.() ?? 0, repo: f.repo, session, agent_id: 'deadbeef', created_at: Date.now() }), { mode: 0o600 });
+  const resumed = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--json'], { cwd: f.repo, env: f.env }).catch((error) => error);
+  assert.equal(resumed.code, 1);
+  const result = JSON.parse(resumed.stdout.trim());
+  assert.equal(result.error, true);
+  assert.match(result.message, /stale or unavailable|No live named session owner/);
+  await assert.rejects(access(sessionPaths({ name: session, repo: f.repo, home: f.home }).metadata), 'resume must not create an owner for a stale run');
+});
+
+test('transient run timeout remains resumable and is not cached as a final result', async (t) => {
+  const f = await fixture(t);
+  t.after(() => stopOwner(f.session, f.repo, f.home));
+  const result = await exec(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', f.session, '--timeout', '1', '--json', '--', 'HANG until stopped'], { env: f.env, timeout: 20_000 }).catch((error) => error);
+  assert.equal(result.code, 124, `expected the wait limit to expire; stdout=${result.stdout} stderr=${result.stderr}`);
+  const runId = /Run ID: ([0-9a-f-]{36})/.exec(result.stderr)?.[1];
+  assert.ok(runId);
+  const record = JSON.parse(await readFile(join(f.home, '.config', 'cloudy-cloud', 'runs', `${runId}.json`), 'utf8'));
+  assert.equal(record.agent_id !== null, true);
+  assert.equal(record.cached_result, undefined);
+  assert.equal(record.status, 'failed');
+  const resumed = await exec(resolve(root, 'bin/cloudy-cloud'), ['resume', runId, '--timeout', '1', '--json'], { cwd: tmpdir(), env: f.env, timeout: 20_000 }).catch((error) => error);
+  assert.equal(resumed.code, 124, `expected resume to keep waiting on the original worker; stdout=${resumed.stdout} stderr=${resumed.stderr}`);
+  const resumedResult = JSON.parse(resumed.stdout.trim());
+  assert.equal(resumedResult.run_id, runId);
+  assert.equal(resumedResult.agent_id, record.agent_id);
 });

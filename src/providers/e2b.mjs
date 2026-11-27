@@ -279,7 +279,7 @@ export function createProvider(env = process.env, deps = {}) {
         return Buffer.from(await res.arrayBuffer());
       },
     };
-    const run = async (cmd, { cwd, timeoutMs, signal, onStdout } = {}) => {
+    const run = async (cmd, { cwd, timeoutMs, signal, onStdout, onStderr } = {}) => {
       await guard();
       const secs = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0;
       const tag = `cc-${randomBytes(6).toString('hex')}`;
@@ -314,7 +314,7 @@ export function createProvider(env = process.env, deps = {}) {
             if (typeof ev.data[ch] !== 'string') continue;
             const text = utf8[ch].decode(Buffer.from(ev.data[ch], 'base64'), { stream: true });
             if (ch === 'stdout') { stdout += text; try { onStdout?.(text); } catch { /* a bad callback must not kill the call */ } }
-            else stderr += text;
+            else { stderr += text; try { onStderr?.(text); } catch { /* a bad callback must not kill the call */ } }
           }
           return;
         }
@@ -353,8 +353,11 @@ export function createProvider(env = process.env, deps = {}) {
           const full = outB.toString('utf8');
           const delta = full.startsWith(stdout) ? full.slice(stdout.length) : full;
           if (delta) { try { onStdout?.(delta); } catch { /* a bad callback must not kill the call */ } }
+          const fullErr = errB.toString('utf8');
+          const deltaErr = fullErr.startsWith(stderr) ? fullErr.slice(stderr.length) : '';
+          if (deltaErr) { try { onStderr?.(deltaErr); } catch { /* a bad callback must not kill the call */ } }
           stdout = full;
-          stderr = errB.toString('utf8');
+          stderr = fullErr;
         } catch (e) {
           throw fail('transient', `the E2B command stream dropped and its output could not be read back (${scrub(e?.message ?? e)})`, { stdout: scrub(stdout), stderr: scrub(stderr) });
         }
@@ -362,7 +365,7 @@ export function createProvider(env = process.env, deps = {}) {
         // Flush the decoders' pending bytes: a character the stream left incomplete still decodes.
         const tailOut = utf8.stdout.decode(), tailErr = utf8.stderr.decode();
         if (tailOut) { stdout += tailOut; try { onStdout?.(tailOut); } catch { /* a bad callback must not kill the call */ } }
-        stderr += tailErr;
+        if (tailErr) { stderr += tailErr; try { onStderr?.(tailErr); } catch { /* a bad callback must not kill the call */ } }
       }
       if (exitCode === undefined) throw fail('transient', 'the E2B command stream ended without an exit event', { stdout: scrub(stdout), stderr: scrub(stderr) });
       if (secs && exitCode === 124) throw fail('timeout', `timed out after ${secs} s`, { stdout: scrub(stdout), stderr: scrub(stderr), exitCode: 124 });
@@ -415,11 +418,11 @@ export function createProvider(env = process.env, deps = {}) {
       uploadMaxBytes: 100 * 1024 * 1024, machineKinds: ['linux'],
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, signal }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, signal, includeGithubToken = true }) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `e2b runs only linux sandboxes, not ${kind.name}. Use machine "linux".`);
       if (role === 'coordinator') throw new Error(api.text.coordinatorRefusal);
       apiKey(); // no_key before the consent check: the key is required either way
-      if (!consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
+      if ((includeGithubToken || secrets.length || Object.keys(envs).length) && !consented()) throw new Error(`This adapter writes every worker credential (GH_TOKEN, the Claude credential, profile keys) into each sandbox's environment, where anything running in the sandbox could read it.\nTo allow that, add ${CONSENT}=yes to ~/.config/cloudy-cloud/env, then call cloud_agent again.`);
       signal?.throwIfAborted?.();
 
       const ttl = Math.min(Math.max(1, ttlSeconds || MAX_TTL_SECONDS), MAX_TTL_SECONDS);
@@ -433,7 +436,7 @@ export function createProvider(env = process.env, deps = {}) {
       const vars = { ...envs };
       // With consent GH_TOKEN goes into the sandbox like the self-hosted provider's; other names in
       // `secrets` are MCP tokens the core asked for after the user allowed that server.
-      for (const n of [...new Set(['GH_TOKEN', ...secrets])]) {
+      for (const n of [...new Set([...(includeGithubToken ? ['GH_TOKEN'] : []), ...secrets])]) {
         if (env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put into an E2B sandbox. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }

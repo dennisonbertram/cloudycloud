@@ -162,7 +162,8 @@ async function confirmOriginalGone(record, provider) {
 export async function recoverFromCheckpoint({ agent_id: id, provider: providerName, message } = {}, deps) {
   if (!ID.test(String(id ?? ''))) return textResult('agent_id must be an eight-character Cloudy Cloud agent id.', true);
   if (typeof message !== 'string' || !message.trim()) return textResult('A new message is required; recovery never replays the previous task.', true);
-  if (typeof providerName !== 'string' || !PROVIDER.test(providerName)) return textResult('Choose a configured alternate provider by name.', true);
+  const automatic = providerName === 'auto';
+  if (typeof providerName !== 'string' || (!automatic && !PROVIDER.test(providerName))) return textResult('Choose a configured alternate provider by name or use auto.', true);
   let release;
   try { release = await acquireLock(deps.env ?? process.env, id); } catch (e) { return textResult(e.message, true); }
   let lockTransferred = false;
@@ -182,26 +183,38 @@ export async function recoverFromCheckpoint({ agent_id: id, provider: providerNa
     if (previous && !['failed', 'stopped', 'idle'].includes(previous.status)) return textResult(`Agent ${id} is already open in this session; use cloud_agent_message or cloud_agent_list.`, true);
     const providers = deps.providers ?? deps.provider?.providers ?? [deps.provider].filter(Boolean);
     const oldProvider = providers.find((p) => p.name === record.provider);
-    const target = providers.find((p) => p.name === providerName);
+    const target = automatic ? undefined : providers.find((p) => p.name === providerName);
     if (!oldProvider) return textResult(`The original provider ${record.provider} is not configured, so its machine state is unknown.`, true);
-    if (!target) return textResult(`Provider ${providerName} is not configured for this session.`, true);
-    if (target.name === record.provider) return textResult('Recovery requires a different configured provider from the original machine.', true);
+    if (!automatic && !target) return textResult(`Provider ${providerName} is not configured for this session.`, true);
+    if (!automatic && target.name === record.provider) return textResult('Recovery requires a different configured provider from the original machine.', true);
     const old = await confirmOriginalGone(record, oldProvider);
     if (!old.ok) return textResult(old.reason, true);
-    if (record.profile) {
-      const profile = resolveProfile(record.profile, record.model || undefined, deps.env ?? process.env, { proxyOnly: !!target.caps?.hasProxySecrets && !target.caps?.localSecrets });
-      if (profile.error || profile.ok?.harness !== record.harness) return textResult(`The saved profile cannot be restored on ${target.name} with the current configuration${profile.error ? `: ${profile.error.split('\n')[0]}` : ''}.`, true);
+    const candidates = automatic ? providers.filter((p) => p.name !== record.provider) : [target];
+    if (!candidates.length) return textResult('No configured provider is available besides the original provider.', true);
+    const eligible = [], rejected = [];
+    for (const candidate of candidates) {
+      let reason;
+      if (record.profile) {
+        const profile = resolveProfile(record.profile, record.model || undefined, deps.env ?? process.env, { proxyOnly: !!candidate.caps?.hasProxySecrets && !candidate.caps?.localSecrets });
+        if (profile.error || profile.ok?.harness !== record.harness) reason = `the saved profile cannot be restored with the current configuration${profile.error ? `: ${profile.error.split('\n')[0]}` : ''}`;
+      }
+      if (!reason && record.egress.length && !candidate.caps?.hasEgressPolicy) reason = 'it cannot enforce the saved network allowlist';
+      if (!reason) eligible.push(candidate);
+      else rejected.push(`${candidate.name}: ${reason}`);
+      if (!automatic && reason) return textResult(`Provider ${candidate.name} ${reason}; recovery was refused.`, true);
     }
-    if (record.egress.length && !target.caps?.hasEgressPolicy) return textResult(`Provider ${target.name} cannot enforce the saved network allowlist; recovery was refused.`, true);
+    if (!eligible.length) return textResult(`No configured alternate provider can restore this checkpoint${rejected.length ? ` (${rejected.join('; ')})` : ''}.`, true);
     const verified = await (deps.verifyCheckpoint ?? verifyOriginCheckpoint)(record.workspace, record);
     if (!verified?.ok || verified.sha !== record.checkpointSha) return textResult(verified?.reason ?? 'the exact origin checkpoint could not be verified', true);
     if (typeof deps.startRecovery !== 'function') return textResult('Recovery start is unavailable in this session.', true);
-    const started = await deps.startRecovery({ id, branch: record.branch, base: record.checkpointSha, profile: record.profile ?? undefined, model: record.model || undefined, machine: record.machineKind, size: record.size ?? undefined, egress: record.egress, harness: record.harness, prompt: message.trim(), description: `Recovered agent ${id}`, workspace: workspaceRel, turnSequence: record.turnSequence ?? 1, recoveryRecord: record }, target, { release, previous });
+    const started = await deps.startRecovery({ id, branch: record.branch, base: record.checkpointSha, profile: record.profile ?? undefined, model: record.model || undefined, machine: record.machineKind, size: record.size ?? undefined, egress: record.egress, harness: record.harness, prompt: message.trim(), description: `Recovered agent ${id}`, workspace: workspaceRel, turnSequence: record.turnSequence ?? 1, recoveryRecord: record }, automatic ? eligible : eligible[0], { release, previous, automatic });
     if (started?.isError) return textResult(started.content?.find((item) => item.type === 'text')?.text ?? 'The recovery worker could not be started.', true);
     lockTransferred = true;
-    const note = `Recovery start requested on ${target.name} from verified checkpoint ${record.checkpointSha}. It will restore ${record.branch} under agent id ${id} and start a fresh ${record.harness} conversation. The previous prompt and conversation were not replayed.`;
+    const selectedProvider = automatic ? (started?.structuredContent?.provider ?? started?.structuredContent?.actual_provider) : eligible[0].name;
+    const placement = automatic ? (selectedProvider ? `on ${selectedProvider}` : 'using automatic provider placement') : `on ${eligible[0].name}`;
+    const note = `Recovery start requested ${placement} from verified checkpoint ${record.checkpointSha}. It will restore ${record.branch} under agent id ${id} in workspace ${workspaceRel || '.'} and start a fresh ${record.harness} conversation. The previous prompt and conversation were not replayed.`;
     for (const item of started?.content ?? []) if (item.type === 'text') item.text += `\n${note}`;
-    started.structuredContent = { status: 'starting', error: false, agent_id: id, branch: record.branch, requested_provider: target.name, checkpoint_sha: record.checkpointSha, message: note };
+    started.structuredContent = { status: 'starting', error: false, agent_id: id, branch: record.branch, ...(selectedProvider && { provider: selectedProvider }), requested_provider: automatic ? 'auto' : eligible[0].name, checkpoint_sha: record.checkpointSha, workspace: workspaceRel || '.', message: note };
     return started;
   } finally { if (!lockTransferred) await release().catch(() => {}); }
 }

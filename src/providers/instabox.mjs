@@ -28,7 +28,7 @@ const KEY_HOSTS = { CLAUDE_CODE_OAUTH_TOKEN: 'api.anthropic.com', ANTHROPIC_API_
 
 // Attach the org's GH_TOKEN secret (a proxy placeholder) plus any MCP_<NAME>_TOKEN secrets in one PATCH (the selection is
 // replaced, so all names go together), and wait until Instabox has applied them.
-export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 2000, timeoutMs = 60_000 } = {}) {
+export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 2000, timeoutMs = 60_000, includeGithubToken = true } = {}) {
   const url = `${API}/${encodeURIComponent(id)}/secrets`;
   // The fields errorScreen renders are our authored words only; transport and HTTP body text is diagnostic
   // detail — server text can carry a forged label line, so it never goes into short/reason/next (#185).
@@ -52,7 +52,7 @@ export async function attachSecrets(id, apiKey, fetchFn, names = [], { pollMs = 
     }
     return res;
   };
-  await call('PATCH', JSON.stringify({ secrets: ['GH_TOKEN', ...names] }));
+  await call('PATCH', JSON.stringify({ secrets: [...(includeGithubToken ? ['GH_TOKEN'] : []), ...names] }));
   const applied = (x) => x?.appliedRevision >= x?.revision;
   for (const deadline = Date.now() + timeoutMs; ; await new Promise((r) => setTimeout(r, pollMs))) {
     const d = await (await call('GET')).json().catch(() => ({}));
@@ -364,7 +364,7 @@ export function createProvider(env, deps = {}) {
     },
 
     // `secrets` are MCP secret names; the adapter adds GH_TOKEN itself and never sees a token value.
-    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size, egress } = {}) {
+    async create({ image = 'agent-browser', envs, labels, name, ttlSeconds = workerSeconds(env), secrets = [], neverSuspend = false, retry = true, kind, size, egress, includeGithubToken = true } = {}) {
       if (egress) throw Object.assign(new Error('Instabox cannot limit where a machine connects.'), { code: 'egress_unsupported', local: true });
       const key = apiKey();
       const kindName = kind?.name ?? 'linux';
@@ -384,7 +384,7 @@ export function createProvider(env, deps = {}) {
         });
       } catch (e) { throw e?.code === 'no_capacity' || (kindName !== 'linux' && e?.status === 503 && !e.code) ? Object.assign(e, { code: 'machine_no_capacity' }) : normalize(e); }
       try {
-        await attachSecrets(sbx.sandboxId, key, fetchFn, secrets, deps.timing);
+        if (includeGithubToken || secrets.length) await attachSecrets(sbx.sandboxId, key, fetchFn, secrets, { ...deps.timing, includeGithubToken });
       } catch (e) {
         try { await sbx.kill(); }
         catch {

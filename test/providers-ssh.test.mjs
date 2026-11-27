@@ -80,6 +80,21 @@ test('stdin arrives intact and stdout streams before the promise resolves', asyn
   } finally { h.cleanup(); }
 });
 
+test('stderr streams as decoded chunks once while buffered stderr remains complete', async () => {
+  const h = harness(async (c) => {
+    c.stderr.write(Buffer.from([0xe2]));
+    await new Promise((r) => setImmediate(r));
+    c.stderr.write(Buffer.from([0x82, 0xac, 0x0a]));
+    c.emit('close', 0, null);
+  });
+  try {
+    const chunks = [];
+    const r = await h.make().run('echo warning >&2', { onStderr: (s) => chunks.push(s) });
+    assert.equal(r.stderr, '€\n');
+    assert.equal(chunks.join(''), r.stderr, 'the UTF-8 sequence is decoded and delivered once');
+  } finally { h.cleanup(); }
+});
+
 test('exit 255 is transient and names the host', async () => {
   const h = harness((c) => exit(c, 255, '', 'ssh: connect to host box port 22: Connection refused\n'));
   try {

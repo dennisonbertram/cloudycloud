@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,7 @@ import { FIRST_RUN_SCRIPT } from './first-run.mjs';
 import { MERGE_MCP_SCRIPT } from './worker-mcp.mjs';
 import { createSnapshotManager } from './snapshot.mjs';
 import { checkpointRecord, recoverFromCheckpoint, saveCheckpoint, updateCheckpointPlacement, verifyOriginCheckpoint } from './recovery.mjs';
+import { classifyCreateFailure, reconcileCreate } from './create-routing.mjs';
 
 const run = promisify(execFile);
 const SAFE = /^[A-Za-z0-9._:-]+$/;
@@ -201,7 +203,28 @@ const ctxOf = (deps, tool) => {
   return { ...deps, env: deps.env ?? process.env, ...helpers(deps.env ?? process.env, deps.literals, deps.provider?.keyName, tool) };
 };
 const hasMcp = (a) => Object.keys(a.mcp?.servers ?? {}).length > 0;
-const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
+const STARTUP_PHASES = ['queue_wait', 'repo_preparation', 'provider_creation', 'upload', 'harness_startup', 'first_tool_call'];
+const beginStartupTiming = (a, phase) => { a.startupTimingStarts ??= {}; a.startupTimingStarts[phase] ??= performance.now(); };
+const endStartupTiming = (a, phase, status = 'complete', durationMs) => {
+  a.startupTimings ??= {};
+  if (a.startupTimings[phase]) return;
+  const started = a.startupTimingStarts?.[phase];
+  const duration = durationMs ?? (started === undefined ? null : Math.max(0, performance.now() - started));
+  const value = { duration_ms: duration === null ? null : Math.round(duration * 100) / 100, status };
+  a.startupTimings[phase] = value;
+  a.emit?.({ type: 'startup_timing', phase, ...value });
+};
+const addStartupTiming = (a, phase, durationMs, status = 'complete') => {
+  a.startupTimings ??= {};
+  const old = a.startupTimings[phase];
+  const value = { duration_ms: Math.round(((old?.duration_ms ?? 0) + durationMs) * 100) / 100, status };
+  a.startupTimings[phase] = value;
+  a.emit?.({ type: 'startup_timing', phase, ...value });
+};
+const finishStartupTimings = (a) => {
+  for (const phase of STARTUP_PHASES) if (!a.startupTimings?.[phase]) endStartupTiming(a, phase, 'unavailable', null);
+};
+const lifecycle = (a, extra = {}) => ({ status: a.status, agent_id: a.id, ...(a.branch && { branch: a.branch }), ...(a.profile?.name && { profile: a.profile.name }), ...(a.sandbox && a.provider?.name && { provider: a.provider.name }), ...(a.recoveryRecord && { checkpoint_sha: a.recoveryRecord.checkpointSha, workspace: a.workspaceRel || '.' }), ...(a.turn && { turn_id: a.turn.id, turn_status: a.turn.status }), ...(a.startupTimings && { startup_timings: { ...a.startupTimings } }), ...(a.result && { result: a.result.text, error: !!a.result.error, ...pushLifecycle(a.result) }), ...extra });
 const remoteWorkspace = (a) => `${a.home}/repo${a.workspaceRel ? `/${a.workspaceRel.split(/[\\/]/).join('/')}` : ''}`;
 const harnessOf = (a) => a.profile?.harness ?? 'claude'; // 'claude' | 'pi' | 'omp' | 'codex' | 'opencode'
 const PROGRESS = { claude: createProgress, pi: createPiProgress, omp: createOmpProgress, codex: createCodexProgress, opencode: createOpencodeProgress };
@@ -530,17 +553,27 @@ async function turnOnce(a, message, ctx, t, deadline) {
   if (!a.pruned) { a.pruned = true; pruneStreams(streamsDir(ctx.env)); }
   await writeMeta(a, ctx);
   const local = createLocalStream(join(streamsDir(ctx.env), a.id, `t${t.n}.jsonl`), { scrub });
+  const harnessStarted = performance.now();
+  let sawStream = false;
   try {
     const ompCmd = harnessOf(a) === 'omp' && ompCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
     const codexCmd = harnessOf(a) === 'codex' && codexCommand(a.profile, { home: a.home, sessionId: a.sessionId, hint });
     const ocCmd = harnessOf(a) === 'opencode' && opencodeCommand(a.profile, { home: a.home, sessionId: a.sessionId });
     if (ocCmd) await a.sandbox.files.write(opencodeInstructions(a.home), hint); // opencode has no system-prompt flag; its config lists this file
     stdout = (await a.sandbox.commands.run(teed(ompCmd || codexCmd || ocCmd || (harnessOf(a) === 'pi' ? piCmd : cmd), t.n), {
-      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => { local.write(chunk); t.progress.feed(chunk); if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) }); },
+      cwd: remoteWorkspace(a), timeoutMs: turnMs, signal: t.abort.signal, onStdout: (chunk) => {
+        sawStream = true;
+        if (!a.startupTimings?.harness_startup) endStartupTiming(a, 'harness_startup', 'complete', performance.now() - harnessStarted);
+        const beforeTools = t.progress.tools;
+        local.write(chunk); t.progress.feed(chunk);
+        if (beforeTools === 0 && t.progress.tools > 0 && !a.startupTimings?.first_tool_call) endStartupTiming(a, 'first_tool_call', 'complete', performance.now() - harnessStarted);
+        if (t.progress.step !== t.lastStep) a.emit?.({ type: 'progress', text: (t.lastStep = t.progress.step) });
+      },
     })).stdout;
   } catch (e) {
     failure = e;
   }
+  if (!sawStream && !a.startupTimings?.harness_startup) endStartupTiming(a, 'harness_startup', 'unavailable', null);
   t.progress.end();
   local.end();
   if (validSession(a, t.progress.sessionId)) a.sessionId = t.progress.sessionId; // also when the turn died before its result
@@ -662,13 +695,6 @@ function credentialsFor(candidate, a, env) {
   return { envs, keySecrets, coord };
 }
 
-const failoverHow = (e) => {
-  const code = String(e?.code ?? '');
-  if (isRateLimited(e) || isQuotaExceeded(e) || code === 'no_key' || code === 'machine_no_capacity'
-    || code === 'size_not_allowed' || code === 'machine_not_on_plan' || code === 'machine_gpu_limit') return 'next';
-  if (code === 'transient' || code === 'create_unknown' || code === 'ambiguous' || (!code && classifyProviderError(e?.message)?.kind === 'connection')) return 'reconcile';
-};
-
 // Sandbox creation, upload, repo setup and the first push. Runs in the background.
 async function setup(a, ctx) {
   const { env } = ctx;
@@ -678,6 +704,7 @@ async function setup(a, ctx) {
   const branch = a.branch;
   let bundleSnapshot;
   try {
+    beginStartupTiming(a, 'repo_preparation');
     // Snapshot tracked files (including uncommitted edits) without touching the worktree or index.
     // Many agents starting together can collide on index.lock here; wait and retry.
     let snap;
@@ -692,6 +719,7 @@ async function setup(a, ctx) {
     const usableLimit = (p) => Math.max(0, uploadLimit(p) - BUNDLE_MARGIN);
     const max = ctx.bundleMax ?? Math.max(...cands.map(usableLimit));
     bundleSnapshot = await ctx.snapshots.acquire(a.root, head, snap, max);
+    endStartupTiming(a, 'repo_preparation');
     if (ctx.bundleMax === undefined && Number.isFinite(bundleSnapshot.size)) {
       const tooSmall = cands.filter((p) => bundleSnapshot.size > usableLimit(p));
       cands = cands.filter((p) => bundleSnapshot.size <= usableLimit(p));
@@ -741,7 +769,14 @@ async function setup(a, ctx) {
           a.createAttempt = attempt;
           a.machineCreatingProvider = p;
           let sbx;
-          try { sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p); }
+          const createStarted = performance.now();
+          try {
+            sbx = await createSandbox({ ...envs, ...baseEnvs }, { deleteAfterSeconds, signal: a.createAbort.signal, ...(a.kind.name !== 'linux' && { kind: a.kind }), ...(a.size && { size: a.size }), ...(a.role === 'coordinator' && { role: 'coordinator' }), ...(secrets.length && { secrets }), ...(a.egressAllow && { egress: { allow: a.egressAllow } }) }, labels, p);
+            addStartupTiming(a, 'provider_creation', performance.now() - createStarted);
+          } catch (error) {
+            addStartupTiming(a, 'provider_creation', performance.now() - createStarted, 'failed');
+            throw error;
+          }
           finally { delete a.machineCreatingProvider; }
           a.provider = p;
           a.createAttempt = undefined;
@@ -769,7 +804,7 @@ async function setup(a, ctx) {
             if (next) a.emit?.({ type: 'progress', text: `${p.name} cannot run this request (${why}); trying ${next.name}` });
             continue;
           }
-          const how = failoverHow(error);
+          const how = classifyCreateFailure(error);
           if (how === 'next') {
             if (a.createAttempt?.provider === p) a.createAttempt = undefined;
             if (a.uncertainCreate?.provider === p) a.uncertainCreate = undefined;
@@ -783,24 +818,15 @@ async function setup(a, ctx) {
           if (how === 'reconcile') {
             // Transient transport failures may hide a successful create. Reconcile this stable agent label;
             // only one confirmed machine can be adopted. Zero, multiple, or unlistable matches fail closed.
-            let matches;
-            let listError;
-            try {
-              const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
-              matches = await p.list(attempt.labels, { onError: (e) => { listError ??= e; } });
-              if (listError) throw listError;
-              matches = matches.filter((machine) => Object.entries(attempt.labels).every(([key, value]) => machine.labels?.[key] === value));
-            }
-            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create and its machines could not be listed; refusing another create.`), { code: 'ambiguous' }); }
-            if (matches.length !== 1) throw Object.assign(new Error(matches.length ? `Provider ${p.name} returned an uncertain create and multiple machines carry agent ${a.id}; refusing to select one.` : `Provider ${p.name} returned an uncertain create and no matching machine could be confirmed; refusing another create.`), { code: 'ambiguous' });
-            try { a.sandbox = await p.connect(matches[0].id); }
-            catch { throw Object.assign(new Error(`Provider ${p.name} returned an uncertain create; machine ${matches[0].id} could not be connected, so another create was refused.`), { code: 'ambiguous' }); }
+            const attempt = a.uncertainCreate ?? { provider: p, labels: { purpose: 'cloudy-cloud', ...(ctx.owner && { owner: ctx.owner }), ...(labels.parent && { parent: labels.parent }), agent: labels.agent } };
+            const adopted = await reconcileCreate(p, attempt.labels);
+            a.sandbox = adopted.sandbox;
             a.createAttempt = undefined;
             a.uncertainCreate = undefined;
             const { envs } = credentialsFor(p, a, env);
             a.provider = p;
             a.envs = { ...envs, ...baseEnvs };
-            a.deleteAt = matches[0].deleteAt ? new Date(matches[0].deleteAt).getTime() : Date.now() + workerSeconds(env, p.caps.maxTtlSeconds) * 1000;
+            a.deleteAt = adopted.machine.deleteAt ? new Date(adopted.machine.deleteAt).getTime() : Date.now() + workerSeconds(env, p.caps.maxTtlSeconds) * 1000;
             a.serverTtl = p.caps.hasServerTTL;
             a.tokenOnBox = !p.caps.hasProxySecrets && p.caps.hasConsentedSecrets ? (p.text?.hostLabel ?? p.name) : '';
             a.providerNote = `Recovered the existing machine on ${p.name} after an uncertain create response.`;
@@ -827,6 +853,7 @@ async function setup(a, ctx) {
       throw error;
     };
     try {
+      a.onQueueGrant = (ms) => addStartupTiming(a, 'queue_wait', ms);
       a.sandbox = await ctx.queue.create(a, async () => {
         a.machineCreating = true;
         try { return await place(); }
@@ -835,7 +862,7 @@ async function setup(a, ctx) {
     } catch (error) {
       if (a.cancelled) throw new Error('cancelled');
       throw error;
-    }
+    } finally { delete a.onQueueGrant; }
     if (a.cancelled) throw new Error('cancelled'); // stop owns deletion once this setup settles
     if (a.sandbox.deleteAt) a.deleteAt = a.sandbox.deleteAt; // the deadline the provider accepted beats the requested one
     a.home = a.sandbox.home ?? '/home/user';
@@ -847,11 +874,17 @@ async function setup(a, ctx) {
     log(`sandbox up, id ${a.id}, ${a.description}`);
     if (a.kind.name !== 'linux') await checkTools(a);
     data = await bundleSnapshot.read(); // Do not retain bundle bytes while waiting for provider capacity.
-    if (data) await a.sandbox.files.write(`${a.home}/in.bundle`, data);
+    if (data) {
+      const uploadStarted = performance.now();
+      try { await a.sandbox.files.write(`${a.home}/in.bundle`, data); addStartupTiming(a, 'upload', performance.now() - uploadStarted); }
+      catch (error) { addStartupTiming(a, 'upload', performance.now() - uploadStarted, 'failed'); throw error; }
+    } else endStartupTiming(a, 'upload', 'unavailable', null);
     const repo = { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS };
     const ghAuth = () => a.sandbox.commands.run('gh auth setup-git', repo).catch((e) => {
       throw new Error(`Could not run \`gh auth setup-git\` in the sandbox (is gh installed there?): ${tail(e?.stderr ?? e?.message)}`);
     });
+    const repoSetupStarted = performance.now();
+    try {
     const init = `git init -q repo && cd repo && git config user.name cloudy-cloud && git config user.email cloudy-cloud@localhost`;
     // a.origin passed GITHUB_URL, which has no quote or shell character, so it is safe in single quotes.
     if (!prereqs.length) {
@@ -884,6 +917,11 @@ async function setup(a, ctx) {
         await (ctx.sleep ?? sleep)(n === 1 ? 5000 : 15000);
       }
     }
+    addStartupTiming(a, 'repo_preparation', performance.now() - repoSetupStarted);
+    } catch (error) {
+      addStartupTiming(a, 'repo_preparation', performance.now() - repoSetupStarted, 'failed');
+      throw error;
+    }
     const apt = aptPackages(env).list; // validated at start
     if (apt.length) await a.sandbox.commands.run(`sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${apt.join(' ')}`, { cwd: a.home, timeoutMs: INSTALL_MS }).catch((e) => { throw new Error(`Could not install the apt packages ${apt.join(' ')} on the worker: ${ctx.scrub(tail(e?.stderr ?? e?.message))}`); });
     if (a.role === 'coordinator') await installCoordinator(a, ctx, a.envs);
@@ -903,6 +941,9 @@ async function setup(a, ctx) {
     else if (harnessOf(a) === 'codex') await setupCodex(a, ctx, { tail, installMs: INSTALL_MS, setupMs: SETUP_MS });
     else if (harnessOf(a) === 'opencode') await setupOpencode(a, ctx);
     else if (a.profile?.format === 'openai') await startGateway(a, ctx);
+  } catch (error) {
+    if (a.startupTimingStarts?.repo_preparation !== undefined && !a.startupTimings?.repo_preparation) endStartupTiming(a, 'repo_preparation', 'failed');
+    throw error;
   } finally {
     await bundleSnapshot?.release();
   }
@@ -1246,7 +1287,8 @@ async function work(a, message, first, ctx, t) {
   const dead = first ? r.error && !r.retryableTransport && !r.uncertainExecution && !r.pushOnly && (r.gone || !a.sessionId) : r.gone;
   if (r.error && !/Next step:/.test(r.text)) r = { ...r, text: `${r.text}\n${guide(dead ? 'agent_failed' : first ? 'turn_failed_open' : 'worker_error', { id: a.id, branch: a.branch, minutes: turnMinutes(ctx.env, (a.provider ?? ctx.provider)?.caps?.maxTtlSeconds).minutes })}` };
   if (r.error && a.recoveryPreviousAgent?.result) r = { ...r, text: `${r.text}\n\nOriginal agent result retained from before recovery:\n${a.recoveryPreviousAgent.result.text}` };
-  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, ...pushLifecycle(r) };
+  finishStartupTimings(a);
+  a.result = { text: ctx.scrub(r.text), error: r.error, reported: false, startup_timings: { ...a.startupTimings }, ...pushLifecycle(r) };
   a.status = dead ? 'failed' : 'idle';
   // The private preview link goes only to the caller in the result; the logged reply says a link was returned.
   a.emit?.({ type: 'reply', text: a.previewUrl ? a.result.text.split(a.previewUrl).join('a private preview link was returned to the caller') : a.result.text, error: r.error });
@@ -1358,14 +1400,22 @@ export async function cancelTask(taskId, deps) {
 
 // cloud_agent: returns at once; the sandbox starts in the background.
 export async function runSubagent(args, deps) {
-  deps.refreshEnv?.(); // keys added to the env file since startup apply to this agent
+  const explainOnly = deps.explainOnly === true;
+  if (!explainOnly) deps.refreshEnv?.(); // keys added to the env file since startup apply to this agent
   const ctx = ctxOf(deps, 'cloud_agent');
-  ctx.queue.learnPlan?.(); // fire and forget; the pace follows once the plan arrives
+  if (!explainOnly) ctx.queue.learnPlan?.(); // fire and forget; the pace follows once the plan arrives
   const { fail, ok } = ctx;
   // Only recoverAgent can pass this context through deps; public MCP arguments cannot override it.
   const recovery = deps.recoveryStart;
   let cands = ctx.providers?.length ? [...ctx.providers] : ctx.provider?.providers?.length ? [...ctx.provider.providers] : [ctx.provider];
-  if (recovery && (!recovery.recoveryRecord || cands.length !== 1 || cands[0]?.name !== recovery.targetProvider || recovery.targetProvider === recovery.recoveryRecord.provider)) return fail('invalid internal recovery target');
+  if (recovery) {
+    const automatic = Array.isArray(recovery.candidates);
+    if (!recovery.recoveryRecord || (automatic
+      ? (!recovery.candidates.length || recovery.candidates.some((p) => !p?.name || p.name === recovery.recoveryRecord.provider) || new Set(recovery.candidates.map((p) => p.name)).size !== recovery.candidates.length)
+      : (cands.length !== 1 || cands[0]?.name !== recovery.targetProvider || recovery.targetProvider === recovery.recoveryRecord.provider))) return fail('invalid internal recovery target');
+    if (automatic) cands = [...recovery.candidates];
+  }
+  const unknownChecks = [];
   const skipped = [];
   const narrow = (keep, why) => {
     const dropped = cands.filter((p) => !keep(p));
@@ -1431,8 +1481,11 @@ export async function runSubagent(args, deps) {
         // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
         if (!err && args.preflight !== false && !p.caps.localSecrets) {
           preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
-          const pf = await preflightPromise;
-          if (!pf.ok) err = pf.error;
+          if (explainOnly) unknownChecks.push(`profile preflight on ${p.name} (one-token model request)`);
+          else {
+            const pf = await preflightPromise;
+            if (!pf.ok) err = pf.error;
+          }
         }
         if (err) rejected.push({ provider: p, result: r, error: ctx.scrub(err) });
         else eligible.push({ provider: p, profile: r.ok });
@@ -1474,11 +1527,12 @@ export async function runSubagent(args, deps) {
     if (EXPENSIVE.includes(kind.name)) return fail('gpu and macos machines have their own sizes, so size cannot be used with them. Call cloud_agent again without size.');
     if ((why = narrow((p) => p.caps.hasSizes, (p) => `size is not available: the ${p.name} provider has one machine size. Call cloud_agent again without size.`))) return fail(why);
     const has = (p) => p?.specs?.some((s) => s.vcpus === size.vcpus && s.memMiB === size.memMiB);
-    const plans = new Map(await Promise.all(cands.map(async (p) => {
+    const plans = explainOnly ? new Map() : new Map(await Promise.all(cands.map(async (p) => {
       let plan = await ctx.queue.planFor?.(p) ?? await p.plan?.().catch(() => null);
       if (plan?.specs && !has(plan)) plan = await p.plan({ refresh: true }).catch(() => null);
       return [p, plan];
     })));
+    if (explainOnly) unknownChecks.push('provider plan size availability and current running-machine capacity');
     const rejected = cands.filter((p) => plans.get(p)?.specs && !has(plans.get(p)));
     const compatible = cands.filter((p) => !rejected.includes(p));
     if (!compatible.length) return fail(sizeGuide(size, plans.get(cands[0])));
@@ -1496,16 +1550,17 @@ export async function runSubagent(args, deps) {
     if (typeof base !== 'string' || !BASE_REF.test(base) || base.includes('..') || base.includes('//') || base.endsWith('/') || base.endsWith('.lock')) return fail('invalid base: use a branch name (letters, digits, . _ / -) or a commit SHA of 7 to 40 hex characters. Fix the value, or leave base out to start from the local HEAD.');
     const resolve = (r) => git(root, 'rev-parse', '--verify', '--quiet', `${r}^{commit}`).catch(() => '');
     let sha = await resolve(base);
-    if (!sha && SHA.test(base)) sha = await git(root, 'fetch', '-q', 'origin', base).then(() => base, () => ''); // a full sha not on a branch can still be fetched
+    if (!sha && SHA.test(base) && !explainOnly) sha = await git(root, 'fetch', '-q', 'origin', base).then(() => base, () => ''); // a full sha not on a branch can still be fetched
     if (!sha) {
       // A branch name resolves on origin, never to a stale remote-tracking ref or an unrelated FETCH_HEAD:
       // ls-remote names the sha, then exactly that sha is fetched (a fetch that fails is a failure, not a fallback).
-      const remote = await git(root, 'ls-remote', 'origin', `refs/heads/${base}`).catch(() => '');
+      const remote = explainOnly ? '' : await git(root, 'ls-remote', 'origin', `refs/heads/${base}`).catch(() => '');
       sha = /^([0-9a-f]{40})\t/.exec(remote)?.[1] ?? '';
       if (sha && !(await git(root, 'fetch', '-q', 'origin', sha).then(() => true, () => false)))
         return fail(`base ${base} is on origin at ${sha.slice(0, 7)} but could not be fetched. Check the network and token, then start the agent again.`);
+      if (explainOnly && !sha) unknownChecks.push(`whether base ${base} exists on origin and can be fetched`);
     }
-    if (!sha) return fail(`base ${base} was not found locally or on origin. Check the name, or push it to GitHub first, then start the agent again.`);
+    if (!sha && !explainOnly) return fail(`base ${base} was not found locally or on origin. Check the name, or push it to GitHub first, then start the agent again.`);
     baseInfo = { ref: base, sha };
   }
   const depth = (Number(ctx.env.CLOUDY_CLOUD_DEPTH) || 0) + 1;
@@ -1544,7 +1599,8 @@ export async function runSubagent(args, deps) {
     if (!Number.isInteger(n) || n < 1) return fail(what);
     const fetchIssue = deps.fetchIssue ?? ((num, repo) => run('gh', ['issue', 'view', String(num), '--repo', repo, '--json', 'title,body'], { cwd: root, maxBuffer: 1 << 22 }).then((r) => JSON.parse(r.stdout)));
     let it;
-    try { it = await fetchIssue(n, originRepo); } catch (e) {
+    if (explainOnly) unknownChecks.push(`GitHub issue #${n} availability and issue text`);
+    else try { it = await fetchIssue(n, originRepo); } catch (e) {
       return fail(`gh could not read issue ${n} in ${originRepo}${e?.stderr || e?.message ? ` (${ctx.scrub(tail(e?.stderr ?? e?.message))})` : ''}. Check \`gh auth status\` and that the issue number is right.`);
     }
     const quote = (s) => s.split('\n').map((l) => `> ${l}`).join('\n');
@@ -1567,6 +1623,18 @@ export async function runSubagent(args, deps) {
     const dlFix = 'remove the download source (cloudy-cloud mcp rm <name> for an MCP server, clear CLOUDY_CLOUD_APT_PACKAGES for apt packages), or remove CLOUDY_CLOUD_EGRESS_ALLOW from ~/.config/cloudy-cloud/env, then call cloud_agent again';
     if (downloads.length) return fail(`CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start: ${downloads.join('; ')}. Next step: ${dlFix}.`, false, { local: true, short: 'CLOUDY_CLOUD_EGRESS_ALLOW would block a download this agent makes at start.', next: dlFix });
     allowList = egressHosts(profile, mcp, ctx.env, egress.list);
+  }
+  if (explainOnly) {
+    if (!unknownChecks.some((check) => check.includes('provider plan'))) unknownChecks.push('provider capacity and machine creation acceptance');
+    if (args.preflight !== false && profile && cands.some((p) => !p.caps?.localSecrets)) unknownChecks.push('model preflight outcome');
+    const value = {
+      status: unknownChecks.length ? 'conditional' : 'eligible',
+      eligible_providers: cands.map((p) => ({ name: p.name, ...(profile && { profile: profile.name }) })),
+      rejected_providers: skipped.map((x) => ({ name: x.name, reason: x.why })),
+      unknown_checks: [...new Set(unknownChecks)],
+      request: { role, ...(profileName && { profile: profileName }), machine: kind.label, ...(size && { size: size.label }), ...(previewPort && { preview_port: previewPort }) },
+    };
+    return ok(`Request is ${value.status}. Locally eligible providers: ${value.eligible_providers.map((p) => p.name).join(', ') || 'none'}.${value.unknown_checks.length ? ` Checks still unknown: ${value.unknown_checks.join('; ')}.` : ''}`, value);
   }
   // Awaited calls above (issue fetch, coordinator repo checks) let a parallel call win the slot; check again with no await before the increment.
   const id = recovery?.id ?? randomUUID().slice(0, 8);
@@ -1597,6 +1665,16 @@ export async function runSubagent(args, deps) {
   return ok(`agent_id: ${id}\nstatus: starting\nIt will push to ${a.branch}.\n${baseInfo ? `Started from ${baseInfo.ref} at ${baseInfo.sha.slice(0, 7)}; uncommitted edits are ignored.\n` : ''}${skippedCoordinatorKeys.length ? `Not sent to the coordinator (not stored as proxy secrets): ${skippedCoordinatorKeys.join(', ')}. Store them with \`cloudy-cloud setup --more\`.\n` : ''}${EXPENSIVE.includes(kind.name) ? `${PRICE[kind.name]}. Stop it with cloud_agent_stop as soon as it is done.\n` : ''}${size ? `${priceOf({ size, sizeNote })}\n` : ''}${a.egressAllow ? `Network: only ${a.egressAllow.join(', ')}.\n` : ''}Call cloud_agent_wait with the agent_ids to get the result.`, lifecycle(a));
 }
 
+// Runs exactly the public launch eligibility path, then stops before provider reads, model preflight, or machine creation.
+export async function explainSubagent(args, deps) {
+  const result = await runSubagent(args, { ...deps, explainOnly: true });
+  if (result?.structuredContent?.status === 'failed') {
+    const value = { status: 'ineligible', eligible_providers: [], rejected_providers: [], unknown_checks: [], message: result.structuredContent.message ?? result.content?.[0]?.text ?? 'The request is not eligible.' };
+    return { content: [{ type: 'text', text: `Request is ineligible. ${value.message}` }], structuredContent: value };
+  }
+  return result;
+}
+
 // Recover only the verified branch checkpoint, then start a fresh conversation with the user's new message.
 export async function recoverAgent(args, deps) {
   return recoverFromCheckpoint(args, {
@@ -1604,12 +1682,13 @@ export async function recoverAgent(args, deps) {
     validateWorkspace: (workspace) => resolveWorkspace(deps.cwd ?? process.cwd(), workspace || undefined),
     startRecovery: async (r, provider, control) => {
       if (control.previous) deps.open?.delete(r.id);
+      const candidates = control.automatic ? provider : [provider];
       const started = await runSubagent({ prompt: r.prompt, description: r.description, role: 'worker', profile: r.profile, model: r.model, base: r.base, machine: r.machine, size: r.size, workspace: r.workspace || undefined, fallback: [] }, {
         ...deps,
-        provider,
-        providers: [provider],
+        provider: candidates[0],
+        providers: candidates,
         asTask: false,
-        recoveryStart: { ...r, targetProvider: provider.name, release: control.release },
+        recoveryStart: { ...r, ...(control.automatic ? { candidates } : { targetProvider: provider.name }), release: control.release },
         recoveryPreviousAgent: control.previous,
       });
       if (started?.isError && control.previous) deps.open.set(r.id, control.previous);

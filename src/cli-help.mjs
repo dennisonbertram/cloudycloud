@@ -80,7 +80,7 @@ const cmds = {
     ['--repo PATH', 'Bind workers to this workspace (default: the current directory)'],
     ['--session NAME', 'Share workers across MCP client connections and reconnects; combine with --repo'],
   ], note: 'Named sessions use one private local owner process while workers are open. The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
-  run: { desc: 'Run one Cloudy Cloud worker in the foreground and print its result when it finishes.', usages: [['run', '--repo', 'PATH', '[--profile NAME]', '[--workspace PATH]', '[--session NAME]', '[--timeout SECONDS]', '[--description TEXT]', '[--model NAME]', '[--issue N]', '[--base REF]', '[--json]', '--', '<prompt>']], rows: [
+  run: { desc: 'Run one Cloudy Cloud worker in the foreground and print its result when it finishes.', usages: [['run', '--repo', 'PATH', '[--profile NAME]', '[--workspace PATH]', '[--session NAME]', '[--timeout SECONDS]', '[--description TEXT]', '[--model NAME]', '[--issue N]', '[--base REF]', '[--explain]', '[--json]', '--', '<prompt>']], rows: [
     ['--repo PATH', 'Required repository with a github.com origin'],
     ['--profile NAME', 'Worker profile (default: saved default profile)'],
     ['--workspace PATH', 'Run the worker in a directory inside the bound repository'],
@@ -90,9 +90,21 @@ const cmds = {
     ['--model NAME', 'Model override where the worker profile supports it'],
     ['--issue N', 'GitHub issue number or URL'],
     ['--base REF', 'Branch name or commit SHA to start from'],
+    ['--explain', 'Preview local eligibility without starting a worker'],
     ['--prompt TEXT', 'Task prompt, equivalent to text after --'],
     ['--json', 'Write one structured result object to stdout'],
-  ], note: 'The command waits for the worker result and exits with its status. Use -- to separate options from the prompt. Any legacy-config migration notice is written to stderr.' },
+  ], note: 'A real run prints its run ID to stderr after worker admission and record persistence, before waiting. Resume it as the same local user with `cloudy-cloud resume RUN-ID`; the saved repo is used. Use -- to separate options from the prompt. Any legacy-config migration notice is written to stderr.' },
+  resume: { desc: 'Reconnect to a foreground run started on this computer.', usages: [['resume', 'RUN-ID', '[--json]', '[--timeout SECONDS]']], rows: [
+    ['RUN-ID', 'The ID printed by `cloudy-cloud run`'],
+    ['--json', 'Write one structured result object to stdout'],
+    ['--timeout SECONDS', 'Maximum wait for the worker result'],
+  ], note: 'Default timeout: 2100 seconds; maximum: 86400. Run as the same local user; the saved repo is used. A cached result remains available after its owner exits. Active work needs the original owner running. Resume never starts a replacement worker.' },
+  exec: { desc: 'Run a command in a fresh Linux sandbox seeded from a local git snapshot.', usages: [['exec', '--repo', 'PATH', '[--timeout SECONDS]', '[--json]', '--', 'COMMAND', '[ARG ...]']], rows: [
+    ['--repo PATH', 'Required local git repository to snapshot'],
+    ['--timeout SECONDS', 'Maximum command execution time'],
+    ['--json', 'Write one structured result object to stdout'],
+    ['-- COMMAND', 'Literal command and arguments for the sandbox'],
+  ], note: 'No model or GitHub credentials are sent. The default timeout is 2100 seconds (35 minutes); minimum 1, maximum 86400. Clean, unchanged sandboxes are deleted. Dirty or uncertain state is retained with an inspection command. The CLI streams output where supported; buffered adapters report it at completion.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],

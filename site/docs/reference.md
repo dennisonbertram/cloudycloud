@@ -353,10 +353,26 @@ Runs the Cloudy Cloud MCP server on stdio for an MCP client configured outside t
 ### cloudy-cloud run
 
 ```
-cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--description TEXT] [--model NAME] [--issue N] [--base REF] [--json] -- PROMPT
+cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--description TEXT] [--model NAME] [--issue N] [--base REF] [--explain] [--json] -- PROMPT
 ```
 
-Runs one worker to completion in the required repository, which must be a git repository with a `github.com` origin. The profile is optional; `--workspace` selects a directory within the bound repository. `--session` attaches to a named MCP owner session; without it, the command creates a temporary owner. `--json` writes only the structured result to stdout; any legacy-configuration migration notice is written to stderr. The command waits for the worker, stops it after collecting the result, and exits nonzero when startup or the worker turn fails. Use `cloudy-cloud setup --default-profile NAME` to set the default worker profile; without that setting, Claude Code remains the default.
+Runs one worker to completion in the required repository, which must be a git repository with a `github.com` origin. The profile is optional; `--workspace` selects a directory within the bound repository. `--session` attaches to a named MCP owner session; without it, the command creates a temporary owner. `--explain` asks for a local launch preview and exits without starting a worker. The preview reports locally eligible and rejected providers, plus checks that remain unknown until a real launch, such as current capacity, provider acceptance, and model preflight. It does not create a machine or call a model provider. `--json` writes the structured result to stdout; any legacy-configuration migration notice and run ID are written to stderr. For a real run, the ID is printed after worker admission and private record persistence, before waiting for the result. Use `cloudy-cloud resume RUN-ID` to reconnect after interruption. The command waits for the worker, stops it after collecting the result, and exits nonzero when startup or the worker turn fails. Use `cloudy-cloud setup --default-profile NAME` to set the default worker profile; without that setting, Claude Code remains the default.
+
+### cloudy-cloud resume
+
+```
+cloudy-cloud resume RUN-ID [--json] [--timeout SECONDS]
+```
+
+Resumes a `cloudy-cloud run` as the same local user, using its saved repository from any current directory. The private record in `~/.config/cloudy-cloud/runs` includes the original agent and turn IDs. If the run completed and its result was cached, resume returns that result even after the owner exits. Active or incomplete work needs the original owner to still be running; a missing or stale owner fails closed. Resume only collects or stops the recorded turn, never a newer concurrent turn, and never creates a replacement owner or worker. The default timeout is 2100 seconds; the maximum is 86400.
+
+### cloudy-cloud exec
+
+```
+cloudy-cloud exec --repo PATH [--timeout SECONDS] [--json] -- COMMAND [ARG ...]
+```
+
+Runs literal command arguments in a fresh Linux sandbox seeded from the tracked index and working-tree state of a local Git root with at least one commit. A GitHub origin is not required. Untracked files are omitted. It does not send model or GitHub credentials. The command runs outside your local working tree. The default timeout is 2100 seconds (35 minutes), minimum 1 second and maximum 86400 seconds. A verified clean, unchanged workspace is deleted even after a nonzero command exit; the exact exit code is reported. Dirty or changed state, uncertain transport, or failed inspection retains the sandbox and returns a provider-qualified owner selector and an inspection command. The CLI streams stdout and stderr where supported; buffered providers return both at completion. Example: `cloudy-cloud exec --repo . -- npm test`.
 
 ## Tools the session uses (MCP)
 
@@ -396,14 +412,22 @@ The call is refused if the session has already started `CLOUDY_CLOUD_MAX_AGENTS_
 
 Reports configured worker profiles, providers and machine kinds. It reads local configuration and does not create a machine or call a model provider. Provider readiness and capabilities in the result describe the active local configuration; they do not prove that a live provider or model call will succeed.
 
+### cloud_agent_explain
+
+Previews the same local request eligibility checks used by `cloud_agent`, without creating a machine, checking provider plans or capacity, probing a model, or making a provider create request. It reports `eligible`, `conditional` or `ineligible`, eligible and rejected providers, and unknown checks. Dynamic capacity, provider acceptance, and model preflight remain unknown. The arguments match `cloud_agent`.
+
+### cloud_exec
+
+Runs a command as literal argv in a fresh Linux sandbox from tracked local git state. Arguments are `argv` (required string array), optional `repo` (defaults to the MCP-bound repository), and optional `timeout_seconds` (default 2100, range 1-86400). The repository must be a Git root with at least one commit; it needs no GitHub origin. Untracked files are omitted. It does not send model or GitHub credentials. Captured stdout and stderr are each limited to 131072 bytes and report `output_truncated` when clipped. When the MCP client supplies a `progressToken`, output chunks are also sent as ordered `notifications/progress` messages with increasing integer progress values. Each message identifies `stdout` or `stderr` and contains scrubbed text. Without a token, no progress notifications are sent. Instabox buffers output until the command completes; `stderr_streamed` indicates whether stderr chunks were streamed by the provider. A verified clean, unchanged workspace is deleted, even when the command exits nonzero. Dirty, changed, unverified or transport-lost state is retained with an owner selector and inspection command. Results include exit code, stdout and stderr, workspace state, provider, machine and owner, and whether cleanup or retention occurred.
+
 ### cloud_agent_recover
 
-Starts a fresh worker conversation from a previously confirmed, pushed checkpoint. It requires a configured provider different from the worker's recorded provider, confirms the old machine is positively absent and that the origin branch still points to the exact checkpoint SHA, then starts the same agent ID and branch using only the new message. It does not replay the old prompt or restore in-memory conversation state. It refuses when the old machine is live or its state is unknown, the checkpoint is missing or the branch moved, the provider/profile is not allowed, or the workspace/user does not match.
+Starts a fresh worker conversation from a previously confirmed, pushed checkpoint. It confirms the old machine is positively absent and that the origin branch still points to the exact checkpoint SHA, then starts the same agent ID and branch using only the new message. A named provider targets that provider. `provider: "auto"` tries eligible configured providers other than the checkpoint's original provider; candidates must support the saved profile, harness and egress policy. The normal placement rules only fall through after a definite refusal; an ambiguous create stops without another attempt. It does not replay the old prompt or restore in-memory conversation state. It refuses when the old machine is live or its state is unknown, the checkpoint is missing or the branch moved, or the workspace/user does not match.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `agent_id` | string | yes | The failed worker's agent ID with a confirmed checkpoint. |
-| `provider` | string | yes | A configured alternate provider allowed for this worker. |
+| `provider` | string | yes | A configured alternate provider allowed for this worker, or `auto` to try eligible configured alternates. |
 | `message` | string | yes | The new message for the fresh worker conversation. |
 
 ### cloud_agent_message

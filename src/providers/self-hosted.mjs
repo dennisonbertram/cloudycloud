@@ -76,12 +76,12 @@ export function createProvider(env = process.env, deps = {}) {
         },
       },
       commands: {
-        async run(cmd, { cwd, timeoutMs, signal, onStdout } = {}) {
+        async run(cmd, { cwd, timeoutMs, signal, onStdout, onStderr } = {}) {
           const marker = randomBytes(8).toString('hex');
           const secs = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0;
           const inner = `set -a; [ ! -f ${SECRETS} ] || . ${SECRETS}; set +a; CC_RUN=${marker} exec ${secs ? `timeout -k 5 ${secs} ` : ''}sh -c ${q(cmd)}`;
           try {
-            return await exec(inner, { signal, onStdout }, ['-i', '-w', cwd || HOME]);
+            return await exec(inner, { signal, onStdout, onStderr }, ['-i', '-w', cwd || HOME]);
           } catch (e) {
             if (e?.name === 'AbortError') { // ssh only dropped the connection: end the process inside the container
               const scan = `for p in /proc/[0-9]*; do tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -qx CC_RUN=${marker} && kill -TERM \${p#/proc/}; done; true`;
@@ -107,7 +107,7 @@ export function createProvider(env = process.env, deps = {}) {
       machineKinds: ['linux'], hasShell: true, hasDisplay: false, hasMetrics: false, hasSizes: false, hasEgressPolicy: false,
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind, egress } = {}) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: from, role = labels.role, kind, egress, includeGithubToken = true } = {}) {
       if (egress) throw fail('egress_unsupported', 'self-hosted cannot limit where a machine connects.');
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `self-hosted runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`);
       getSsh();
@@ -115,7 +115,7 @@ export function createProvider(env = process.env, deps = {}) {
       // The GitHub token consent (setup) covers GH_TOKEN only; it goes in like Instabox's GH_TOKEN secret. Any other secret is
       // an MCP token the core asked for after the user allowed that server (--allow-literal); it comes from this machine's env.
       // Values go only into the tmpfs env file through stdin, never argv, labels or `docker inspect`.
-      for (const n of [...(consented ? ['GH_TOKEN'] : []), ...secrets]) {
+      for (const n of [...(consented && includeGithubToken ? ['GH_TOKEN'] : []), ...secrets]) {
         if ((n === 'GH_TOKEN' && !consented) || env[n] === undefined) throw fail('no_key', `The secret ${n} cannot be put on ${host}. ${api.text.githubTokenHelp}`);
         vars[n] = env[n];
       }

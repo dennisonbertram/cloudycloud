@@ -92,7 +92,7 @@ export function createProvider(env = process.env, deps = {}) {
 
   // One `msb` call: argv only (never a shell). opts.env holds *extra* child env vars — how secret and env
   // values reach `msb create` without appearing in argv.
-  const once = (args, { stdin, onStdout, signal, env: extra, onSpawn } = {}) => new Promise((resolve, reject) => {
+  const once = (args, { stdin, onStdout, onStderr, signal, env: extra, onSpawn } = {}) => new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(aborted());
     let child;
     try { child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: childEnv(extra) }); }
@@ -105,7 +105,7 @@ export function createProvider(env = process.env, deps = {}) {
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     child.stdout.on('data', (d) => { d = String(d); stdout += d; try { onStdout?.(d); } catch { /* a bad callback must not kill the call */ } });
-    child.stderr.on('data', (d) => { stderr += d; });
+    child.stderr.on('data', (d) => { d = String(d); stderr += d; try { onStderr?.(d); } catch { /* a bad callback must not kill the call */ } });
     child.on('error', (e) => finish(reject, e?.code === 'ENOENT' ? noMsb() : fail('transient', `cannot start ${bin}: ${e.message}`)));
     child.on('close', (code) => {
       if (code === null) return finish(reject, fail('transient', `${bin} was killed`));
@@ -197,7 +197,7 @@ export function createProvider(env = process.env, deps = {}) {
         },
       },
       commands: {
-        async run(cmd, { cwd, timeoutMs, signal, onStdout } = {}) {
+        async run(cmd, { cwd, timeoutMs, signal, onStdout, onStderr } = {}) {
           await guard();
           const marker = randomBytes(8).toString('hex');
           const secs = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0;
@@ -205,7 +205,7 @@ export function createProvider(env = process.env, deps = {}) {
           const inner = `CC_RUN=${marker} exec ${secs ? `timeout -k 5 ${secs} ` : ''}sh -c ${q(cmd)}`;
           let spawned = false; // a queued call that never reached msb has nothing to clean up
           try {
-            return await exec(['--no-stdin', ...(onStdout ? ['--stream'] : []), '-w', cwd || HOME], ['sh', '-c', inner], { signal, onStdout, onSpawn: () => { spawned = true; } });
+            return await exec(['--no-stdin', ...(onStdout || onStderr ? ['--stream'] : []), '-w', cwd || HOME], ['sh', '-c', inner], { signal, onStdout, onStderr, onSpawn: () => { spawned = true; } });
           } catch (e) {
             if (e?.name === 'AbortError') { // the local msb died; end the command inside the guest (same marker scan as self-hosted)
               if (spawned) {
@@ -236,11 +236,11 @@ export function createProvider(env = process.env, deps = {}) {
       machineKinds: ['linux'],
     },
 
-    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress }) {
+    async create({ envs = {}, labels = {}, name, ttlSeconds, secrets = [], image: _ignored, role = labels.role, kind, egress, includeGithubToken = true }) {
       if (kind && kind.name !== 'linux') throw fail('machine_kind_unsupported', `microsandbox runs only linux machines, not ${kind.name}. Use machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox.`, { local: true, short: `microsandbox runs only linux machines, not ${kind.name}.`, next: 'call cloud_agent again with machine "linux", or set CLOUDY_CLOUD_PROVIDER=instabox' });
       if (role === 'coordinator') throw Object.assign(new Error(api.text.coordinatorRefusal), { local: true, short: 'Coordinators are not supported on the microsandbox provider yet.', next: 'start workers directly from your own session with cloud_agent, or set CLOUDY_CLOUD_PROVIDER=instabox' });
       if (!bin) throw noMsb();
-      const want = [...new Set(['GH_TOKEN', ...secrets])]; // GH_TOKEN always goes in, like the other providers
+      const want = [...new Set([...(includeGithubToken ? ['GH_TOKEN'] : []), ...secrets])]; // worker creates carry GH_TOKEN by default
       for (const n of Object.keys(envs)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) throw new Error(`invalid environment variable name "${n}"`);
         if (want.includes(n)) throw new Error(`the env ${n} is also attached as a secret on the microsandbox provider`);

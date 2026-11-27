@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 // Two small schedulers. Both take an injected clock and sleep so tests can run them on fake time.
 const realSleep = (ms) => new Promise((r) => setTimeout(r, ms).unref?.());
 const MINUTE = 60_000;
@@ -82,7 +84,11 @@ export function createStartQueue({ perMin = 25, now = Date.now, sleep = realSlee
     }
     pumping = false;
   };
-  const slot = (a) => new Promise((grant, reject) => { waiting.push({ a, grant, reject, t0: now() }); if (pumping) wake?.(); pump(); });
+  const slot = (a) => new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const grant = () => { a.onQueueGrant?.(Math.max(0, performance.now() - t0)); resolve(); };
+    waiting.push({ a, grant, reject, t0: now() }); if (pumping) wake?.(); pump();
+  });
   const nap = (a, ms) => new Promise((resolve, reject) => {
     sleeping.set(a, () => reject(new Error('cancelled')));
     sleep(ms).then(resolve, reject);
