@@ -137,10 +137,11 @@ const cmds = {
 };
 
 const guides = {
-  image: ['Prepare the image coordinators start from (no sign-in: each coordinator signs in to Claude itself).', 'image [--save]', [
-    ['image', 'Create a machine, install the tools, save it and delete the machine'],
-    ['image --save', 'Finish an image save a previous run left pending'],
-  ], 'The image carries no Claude sign-in — a coordinator signs in at start (coordinator login). The image machine is deleted 2 hours after it is created.'],
+  image: ['Prepare the image coordinators start from (no sign-in: each coordinator signs in to Claude itself).', 'image [--forget]', [
+    ['image', 'Build and save an image in one run (about 20 minutes)'],
+    ['image --save', 'Same as image (kept for old scripts)'],
+    ['image --forget', 'Remove the saved image setting (keeps the snapshot)'],
+  ], 'Optional: start uses the base template without it. Safe to interrupt: run image again to resume. The image carries no Claude sign-in — a coordinator signs in at start (coordinator login). The image machine is deleted 2 hours after it is created.'],
   start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--account LABEL] [--json]', [
     ['NAME', 'Lowercase letters, digits and hyphens, up to 40'],
     ['--repo URL', 'Required GitHub https URL'],
@@ -152,7 +153,7 @@ const guides = {
     ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
     ['--account LABEL', 'Sign in with the saved account LABEL (default: the free account used least recently)'],
     ['--json', 'Print the result as JSON (includes started: true)'],
-  ], 'Run coordinator image once first. A free saved account (cloudy-cloud accounts ls) signs the coordinator in itself; with none free the coordinator waits for its own Claude sign-in: finish it with coordinator login NAME. Stop the coordinator when you are done.'],
+  ], 'No image step is needed. A free saved account (cloudy-cloud accounts ls) signs the coordinator in itself; with none free the coordinator waits for its own Claude sign-in: finish it with coordinator login NAME. Stop the coordinator when you are done.'],
   attach: ['Open a coordinator\'s Claude session.', 'attach NAME', [], 'On a terminal it opens the session. When piped, it prints cloudy-cloud coordinator attach NAME instead; run that in your own terminal.'],
   login: ['Finish a coordinator\'s Claude sign-in and save it as an account the next coordinator reuses.', 'login NAME [--code CODE|-] [--account LABEL]', [
     ['NAME', 'The coordinator that waits for sign-in'],
@@ -195,7 +196,7 @@ export function coordinatorHelp(command) {
     desc: 'Cloudy Cloud coordinators: always-on Claude Code sessions on their own cloud machines. A coordinator always runs Claude Code, never pi, omp, Codex or opencode.',
     usages: [['coordinator', '<command>']],
     rows: [
-      ['image [--save]', 'Save the coordinator image (do this once; no sign-in needed)'],
+      ['image [--forget]', 'Optional: build a saved image (normally unneeded)'],
       ['start NAME --repo URL', 'Start a coordinator'],
       ['login NAME [--code CODE]', 'Finish its Claude sign-in (attaches, or sends the browser code)'],
       ['ls', 'List your coordinators'],

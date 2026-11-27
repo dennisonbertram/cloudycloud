@@ -92,11 +92,10 @@
 <p>There is also a lighter option. A cloud agent started with <code>role: "coordinator"</code> is a Claude subagent that can start its own cloud agents. Use this to build a tree: a coordinator, sub-coordinators for separate areas of the code, then workers. It lives only as long as your session. A cloud coordinator (below) runs on its own machine and keeps working with your laptop closed.</p>
 
 <h2 id="lifecycle">Cloud coordinator lifecycle</h2>
-<h3 id="image">1. Make the coordinator image (once)</h3>
-<p>Remote Control needs a full Claude login. A token from <code>claude setup-token</code> cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so the image carries no sign-in and a copied credential can never race several coordinators into signing each other out.</p>
-<pre><code>cloudy-cloud coordinator image</code></pre>
-<p>This creates a machine and installs <code>cloudy-cloud</code> on it. The command then removes <code>~/.claude/.credentials.json</code> on the image machine — so no Claude credential is ever frozen into a snapshot — saves the snapshot as <code>CLOUDY_CLOUD_COORDINATOR_SNAPSHOT</code> in <code>~/.config/cloudy-cloud/env</code>, and deletes the image machine.</p>
-<p>The server deletes the image machine after 2 hours, and the command prints the time. If the machine is still running, <code>cloudy-cloud coordinator image --save</code> saves the snapshot the same way.</p>
+<h3 id="image">1. No image step</h3>
+<p>Remote Control needs a full Claude login. A token from <code>claude setup-token</code> cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so a copied credential can never race several coordinators into signing each other out.</p>
+<p>Go straight to <code>cloudy-cloud cloud</code>. Coordinators start from the base template, which already has Claude Code, Node, git and gh; the start installs the rest in seconds.</p>
+<p><code>cloudy-cloud coordinator image</code> is optional and normally unnecessary. It builds a saved image in one run (about 20 minutes), removing <code>~/.claude/.credentials.json</code> before the snapshot so the image holds no sign-in. It is safe to interrupt: run it again and it resumes the pending snapshot. <code>--save</code> is an alias. If an older cloudy-cloud saved an image that holds a sign-in, <code>start</code> ignores it; clear the setting with <code>cloudy-cloud coordinator image --forget</code> (the snapshot itself is not deleted).</p>
 
 <h3 id="start">2. Start a coordinator</h3>
 <pre><code>cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branch main --task-file brief.md</code></pre>

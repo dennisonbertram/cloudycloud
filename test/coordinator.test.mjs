@@ -85,7 +85,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     return Response.json({ machines: machines.map((m) => ({ id: m.sandboxId, name: m.name, state: m.state, createdAt: m.startedAt, metadata: m.metadata, deleteAt: m.machine?.deleteAt })) });
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
-  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
+  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot, CLOUDY_CLOUD_SNAPSHOT_CLEAN: '1' }), PATH: '/x' };
   // Provider CLI calls (instabox secrets ...) are recorded, never run: argv plus what stdin would carry.
   // `secrets ls --json` answers the names in store.remote (default: the current CLOUDY_CLOUD_PROXY_SECRETS).
   const store = { calls: [], fail: false, lsFail: false, remote: undefined };
@@ -149,7 +149,6 @@ test('image reuses a running image machine and snapshots it instead of making an
   IMG(f);
   await main(['image'], f.deps);
   assert.equal(f.log.create.length, 0);
-  assert.ok(!f.log.cmds.some((c) => /npm install/.test(c)));
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, ['m_img']);
 });
@@ -164,25 +163,78 @@ test('image --save snapshots whatever the machine has: the sign-in state is neve
   assert.ok(!f.log.cmds.some((c) => /auth status/.test(c)), 'no auth status check remains');
 });
 
-test('image --save with no image machine explains the 2 hour deletion', async () => {
-  const f = fixture();
-  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found\. Image machines are deleted 2 hours after[\s\S]*Run: cloudy-cloud coordinator image/);
-});
-
-test('image --save records the snapshot id and deletes the image machine', async () => {
+test('image --save is an alias: with no image machine it does the whole one-run image', async () => {
   const f = fixture({ snapshot: '' });
-  IMG(f);
   await main(['image', '--save'], f.deps);
+  assert.equal(f.log.create.length, 1);
   assert.equal(f.log.snapshots.length, 1);
-  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
-  assert.equal(statSync(f.configFile).mode & 0o777, 0o600);
-  assert.deepEqual(f.log.killed, ['m_img']);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$\n?[\s\S]*CLOUDY_CLOUD_SNAPSHOT_CLEAN=1/m);
 });
 
-test('start without a snapshot fails and points to coordinator image', async () => {
+test('image in one run creates, installs, removes the credential, snapshots, saves the clean key and deletes the machine', async () => {
   const f = fixture({ snapshot: '' });
-  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), /coordinator image/);
-  assert.equal(f.log.create.length, 0);
+  const err = [];
+  await main(['image'], { ...f.deps, stderr: { isTTY: true, write: (x) => err.push(x) } });
+  assert.match(err.join(''), /safe to interrupt/);
+  assert.equal(f.log.create.length, 1);
+  assert.ok(f.log.cmds.some((c) => /rm -f "\$c"/.test(c)));
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.match(cfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+  assert.match(cfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.doesNotMatch(cfg, /PENDING/);
+  assert.match(f.log.out.join('\n'), /cloudy-cloud cloud/);
+});
+
+test('image interrupted by the wait limit leaves a pending record, and the rerun resumes the same snapshot', async () => {
+  let ready = false;
+  const f = fixture({ snapshot: '', snapStatus: () => (ready ? 'ready' : 'pending') });
+  let t = 0; const clk = { now: () => t, sleep: async (ms) => { t += ms; } };
+  await assert.rejects(main(['image'], { ...f.deps, ...clk }), /still saving\. Run cloudy-cloud coordinator image again/);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PENDING_SNAPSHOT=m_new:sn_new$/m);
+  ready = true;
+  await main(['image'], { ...f.deps, ...clk });
+  assert.equal(f.log.create.length, 1, 'no second machine');
+  assert.equal(f.log.snapshots.length, 1, 'no second snapshot');
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+});
+
+test('start with no snapshot creates the coordinator from the base template and installs the tools', async () => {
+  const f = fixture({ snapshot: '' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create.length, 1);
+  assert.equal(f.log.create[0].template, 'agent-browser');
+  assert.equal(f.log.create[0].opts.metadata.role, 'coordinator');
+  assert.ok(f.log.cmds.some((c) => /gh auth setup-git/.test(c)), 'installTool ran');
+  assert.equal(f.log.snapshots.length, 0);
+});
+
+test('start with a legacy unclean snapshot uses the base template and prints the forget note', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN;
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...f.deps, note: (s) => notes.push(s) });
+  assert.equal(f.log.create[0].template, 'agent-browser');
+  assert.match(notes.join('\n'), /holds a Claude sign-in and is no longer needed[\s\S]*cloudy-cloud coordinator image --forget/);
+});
+
+test('start with a clean snapshot uses it', async () => {
+  const f = fixture({ snapshot: 'sn_ok' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create[0].template, 'sn_ok');
+});
+
+test('image --forget clears only the image config keys and deletes nothing', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_old\nCLOUDY_CLOUD_SNAPSHOT_CLEAN=1\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=x\n', { mode: 0o600 });
+  await main(['image', '--forget'], f.deps);
+  assert.equal(readFileSync(f.configFile, 'utf8').trim(), 'KEEP=1');
+  assert.match(f.log.out.join('\n'), /npx instabox snapshot rm ID/);
+  assert.deepEqual(f.log.killed, []);
+  assert.equal(f.log.snapshots.length, 0);
 });
 
 test('the coordinator own Claude starts without the setup-token or API key, so its saved full login is used (#67)', async () => {
@@ -484,7 +536,7 @@ test('empty list on a terminal points to image or start; piped output stays "No 
     await main(['ls'], f.deps);
     const text = f.log.out.join('\n');
     assert.match(text, /No coordinators yet/);
-    assert.ok(text.includes(snapshot ? 'coordinator start NAME' : 'coordinator image'));
+    assert.ok(text.includes('cloudy-cloud cloud'));
     f.log.out.length = 0;
     f.deps.ui = makeUi({ tty: false });
     await main(['ls'], f.deps);
@@ -579,7 +631,7 @@ test('start asks the provider for a never-suspending machine from the snapshot w
       commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
   };
   const out = [];
-  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_SNAPSHOT_CLEAN: '1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), sleep: async () => {}, out: (x) => out.push(x) });
   assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   // A fresh coordinator waits for its own Claude sign-in: the piped output says so and names the login command.
@@ -1308,7 +1360,7 @@ test('--save times out after 30 minutes, then a later --save waits on the same s
   const f = fixture({ snapStatus: () => (ready ? 'ready' : 'pending') });
   IMG(f);
   let t = 0; const clk = { now: () => t, sleep: async (ms) => { t += ms; } };
-  await assert.rejects(main(['image', '--save'], { ...f.deps, ...clk }), /The snapshot is still saving\. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one\./);
+  await assert.rejects(main(['image', '--save'], { ...f.deps, ...clk }), /The snapshot is still saving\. Run cloudy-cloud coordinator image again to finish; it will not start a second one\./);
   assert.ok(t >= 30 * 60_000 && t < 31 * 60_000, `waited ${t} ms`);
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, []);
@@ -1495,11 +1547,6 @@ test('ls measures wide characters as two cells and never splits one', async () =
   f.deps.ui = tty();
   await main(['ls'], f.deps);
   for (const l of plainText(f.log.out.join('\n')).split('\n')) assert.ok(cellWidth(l) <= 80, l);
-});
-
-test('a missing coordinator image stays neutral through the start error wrapper', async () => {
-  const f = fixture({ snapshot: '' });
-  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator image');
 });
 
 // ---- r2: coordinator key self-storage (P1) ----
@@ -1737,9 +1784,6 @@ test('every coordinator screen fits 80 cells at cols=80 (colour)', async () => {
   sv.machines[0].metadata.install = sv.iid;
   sv.deps.ui = tty(); await main(['image', '--save'], sv.deps); check('image --save', sv.log.out.join('\n'));
   check('errorScreen', errorScreen(Object.assign(new Error('m'), { local: true, short: 'The coordinator session started but is not working.', reason: 'screen: spend limit; the machine was deleted', next: 'check the plan at claude.ai, then start boss again' }), tty()));
-  const e = fixture(); // the no-snapshot guided error renders its lines too
-  const thrown = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...e.deps, env: { ...e.deps.env, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: '' } }).then(() => { throw new Error('start did not fail'); }, (x) => x);
-  check('guided error', errorScreen(thrown, tty()));
 });
 
 // ---- r2 review: remote-checked coordinator-key store, failure surface, script-stable output ----
@@ -2460,9 +2504,8 @@ test('errorScreen does not print the same line twice when short equals What happ
 test('an image machine without the cloudy-cloud purpose label is never snapshotted or deleted', async () => {
   const f = fixture({ snapshot: '' });
   f.machines.push(f.mk('m_img', 'img-1', { role: 'coordinator-image' })); // role matches; purpose does not
-  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found/);
-  assert.equal(f.log.snapshots.length, 0);
-  assert.deepEqual(f.log.killed, []);
+  await main(['image', '--save'], f.deps); // the alias never reuses it either: a new labelled machine is made
+  assert.deepEqual(f.log.killed, ['m_new']);
   // and the plain `image` run does not reuse it: a new labelled machine is created
   const g = fixture({ snapshot: '' });
   g.machines.push(g.mk('m_img', 'img-1', { role: 'coordinator-image' }));
@@ -2565,12 +2608,6 @@ test('an image machine of another installation is never touched: a fresh one is 
   await main(['image'], f.deps);
   assert.equal(f.log.create.length, 1, 'our own image machine is created');
   assert.deepEqual(f.log.killed, ['m_new'], 'the foreign machine was left alone');
-  // --save likewise finds no image machine of ours.
-  const g = fixture({ snapshot: '' });
-  g.machines.push(g.mk('m_foreign', 'img-foreign', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: 'otherinstall1234' }));
-  await assert.rejects(main(['image', '--save'], g.deps), /No image machine found/);
-  assert.equal(g.log.snapshots.length, 0);
-  assert.deepEqual(g.log.killed, []);
 });
 
 test('a provider error cannot forge our guidance: its labels print as dim diagnostics under a generic Next', () => {
@@ -3486,15 +3523,16 @@ test('loggedIn true with a non-claude.ai authMethod still needs sign-in, checked
 // ---- P1-3: a saved image without CLOUDY_CLOUD_SNAPSHOT_CLEAN gets one warning line on start ----
 test('start warns once when the saved image predates the credential check, and never when it is marked clean', async () => {
   const f = fixture();
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN;
   const notes = [];
   await main(START, { ...f.deps, note: (s) => notes.push(s) });
-  assert.ok(notes.some((n) => /older cloudy-cloud and still contains a Claude sign-in/.test(n)), JSON.stringify(notes));
+  assert.ok(notes.some((n) => /holds a Claude sign-in and is no longer needed/.test(n)), JSON.stringify(notes));
   // The marker finishSave writes keeps an image saved by this version quiet.
   const g = fixture();
   g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // the value loadEnv reads back from the saved config
   const gNotes = [];
   await main(START, { ...g.deps, note: (s) => gNotes.push(s) });
-  assert.ok(!gNotes.some((n) => /older cloudy-cloud/.test(n)), JSON.stringify(gNotes));
+  assert.ok(!gNotes.some((n) => /no longer needed/.test(n)), JSON.stringify(gNotes));
 });
 
 test('finishSave marks the saved snapshot clean', async () => {

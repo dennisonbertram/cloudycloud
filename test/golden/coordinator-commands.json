@@ -99,7 +99,7 @@
       }
     ],
     "out": [
-      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
+      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nNext: run cloudy-cloud cloud inside a repository, or cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
     ]
   },
   "image --save": {
@@ -125,6 +125,36 @@
       },
       {
         "sdk": "commands.run",
+        "cmd": "printf %s \"$HOME\"",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; } >/dev/null 2>&1; command -v tmux >/dev/null || { echo 'tmux is not installed on the machine' >&2; exit 1; }",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "gh auth setup-git",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "git config --global user.name 'Gold Tester (coordinator)' && git config --global user.email 'gold@example.com'",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "files.write",
+        "path": "/data/home/cloudy-cloud.bundle"
+      },
+      {
+        "sdk": "commands.run",
+        "cmd": "rm -rf cloudy-cloud && git init -q cloudy-cloud && cd cloudy-cloud && git fetch -q /data/home/cloudy-cloud.bundle refs/cc-keep/tool-<RAND> && git checkout -q --detach <SHA> && git remote add origin 'https://github.com/gold/tool.git' && npm install --no-audit --no-fund",
+        "cwd": "/data/home",
+        "timeoutMs": 600000
+      },
+      {
+        "sdk": "commands.run",
         "cmd": "c=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json\"; rm -f \"$c\" && [ ! -e \"$c\" ]",
         "timeoutMs": 30000
       },
@@ -144,7 +174,7 @@
       }
     ],
     "out": [
-      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
+      "Saved snapshot sn_new as CLOUDY_CLOUD_COORDINATOR_SNAPSHOT in <CONFIG_FILE> and deleted the image machine.\nNext: run cloudy-cloud cloud inside a repository, or cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO"
     ]
   },
   "start": {
@@ -186,7 +216,7 @@
       },
       {
         "sdk": "Sandbox.create",
-        "template": "sn_1",
+        "template": "agent-browser",
         "opts": {
           "apiKey": "<API_KEY>",
           "name": "coord-boss",
@@ -400,7 +430,7 @@
       },
       {
         "sdk": "Sandbox.create",
-        "template": "sn_1",
+        "template": "agent-browser",
         "opts": {
           "apiKey": "<API_KEY>",
           "name": "coord-boss",

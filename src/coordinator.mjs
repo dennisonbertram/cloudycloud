@@ -1,5 +1,5 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
+// Usage: node coordinator.mjs image | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
 import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync, existsSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -380,7 +380,7 @@ const SNAPSHOT_CLEAN_KEY = 'CLOUDY_CLOUD_SNAPSHOT_CLEAN';
 const LEGACY_ACCOUNT_KEYS = ['CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_PENDING_ACCOUNT'];
 const SNAPSHOT_WAIT_MS = 30 * 60_000;
 const gone = (e) => e?.code === 'not_found' || e?.status === 404;
-// Known limit: two --save runs at the same moment can both start a snapshot; nothing serialises them.
+// Known limit: two image runs at the same moment can both start a snapshot; nothing serialises them.
 const readKey = (file, name) => { // throws on anything but a missing file, so a read error never looks like "no snapshot pending"
   try { return readFileSync(file, 'utf8').split('\n').findLast((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch (e) { if (e.code === 'ENOENT') return ''; throw e; }
 };
@@ -390,20 +390,20 @@ async function finishSave(c, sbx, snap) {
   const t0 = c.now(); let shown = 0;
   while (snap.status === 'pending') {
     const waited = c.now() - t0;
-    if (waited >= SNAPSHOT_WAIT_MS) guided(`The snapshot is still saving. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`, { short: 'The snapshot is still saving.', reason: `Snapshot ${snap.id}; the image machine was kept.`, next: 'cloudy-cloud coordinator image --save' });
+    if (waited >= SNAPSHOT_WAIT_MS) guided(`The snapshot is still saving. Run cloudy-cloud coordinator image again to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`, { short: 'The snapshot is still saving.', reason: `Snapshot ${snap.id}; the image machine was kept.`, next: 'cloudy-cloud coordinator image' });
     await c.sleep(5000);
     const half = Math.floor((c.now() - t0) / 30_000); // progress every 30 s of wall-clock time
     if (half > shown) { shown = half; c.progress(`Saving the image snapshot... ${Math.floor(half / 2)} min`); }
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image --save' }); }
+  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image' }); }
   updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: '1' }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
   updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
   if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${safeText(snap.id)}`, 'the image machine is deleted'),
     hintFit(c.ui, `Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
-    c.ui.next('cloudy-cloud coordinator start NAME --repo URL')].join('\n'));
-  c.out(`Saved snapshot ${safeText(snap.id)} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+    c.ui.next('cloudy-cloud cloud')].join('\n'));
+  c.out(`Saved snapshot ${safeText(snap.id)} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nNext: run cloudy-cloud cloud inside a repository, or cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
 // If an earlier run left a snapshot pending, finish that one (even when its machine is gone). Returns false when none is pending.
@@ -428,7 +428,7 @@ async function resumePending(c) {
   // The recorded machine id is only a claim: connect (and so finishSave's delete) happens only when a fresh
   // listing verifies it is still our image machine — purpose, role AND this installation's install label.
   // A machine that exists but no longer verifies stays untouched and the pending record is kept, so a later
-  // --save can finish it; only a machine that is really gone falls through to finishSave, which clears the
+  // image run can finish it; only a machine that is really gone falls through to finishSave, which clears the
   // record after saving the snapshot id.
   try {
     // Unfiltered: a role-filtered list would miss the machine entirely if its role label is what changed.
@@ -436,7 +436,7 @@ async function resumePending(c) {
     if (row && OUR_PURPOSES.has(row.labels?.purpose) && row.labels?.role === 'coordinator-image' && row.labels?.install === installId(c.env)) sbx = await providerFor(c.provider, row).connect(mid, { retry: false });
     else foreign = !!row;
   } catch (e) { if (!gone(e)) throw e; }
-  if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image --save again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
+  if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
   await finishSave(c, sbx, snap);
   return true;
 }
@@ -499,15 +499,20 @@ async function storeCoordinatorSecret(c) {
   return 'skip'; // the local list claims it and the remote could not be checked: keep the name
 }
 
-// Builds (or finishes) the coordinator image: install the tool, remove any Claude credential so no
+// Optional and normally unnecessary: start uses the base template. Builds (or finishes) the coordinator image: install the tool, remove any Claude credential so no
 // sign-in ever rides a snapshot, snapshot, delete the image machine. Each coordinator signs in for
 // itself at `start` — there is no sign-in here anymore. A leftover image machine (the provider stops
-// these 2 hours after creation) is snapshotted by `image --save` instead of starting another machine.
+// these 2 hours after creation) is reused by `image` instead of starting another machine.
 // Only an image machine of THIS installation is ever reused, wiped, snapshotted or deleted: the workspace
 // is shared, so a same-labelled machine of another installation — or one without an install label (made
 // before image machines carried one) — is left alone with a guided message naming it.
 async function image(c, args) {
   refuseEgress(c.env, 'image');
+  if (args.includes('--forget')) { // only the config keys; the snapshot itself is never deleted
+    updateConfig(c.configFile, {}, [SNAPSHOT_KEY, SNAPSHOT_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+    return c.out('Forgot the saved coordinator image setting. The snapshot itself was not deleted; delete it with: npx instabox snapshot rm ID');
+  }
+  c.progress('Making the coordinator image takes about 20 minutes. It is safe to interrupt: run cloudy-cloud coordinator image again and it resumes.');
   const stored = await storeCoordinatorSecret(c); // repair the coordinator key on every path; a failed store is not silent
   if (await resumePending(c)) return storeNotice(c, stored);
   const mine = installId(c.env);
@@ -520,17 +525,11 @@ async function image(c, args) {
     const names = unlabeled.map((m) => safeText(mach(m) ?? m.id)).join(', ');
     guided(`An image machine (${names}) is still running, but it has no installation label — it may belong to another cloudy-cloud installation or predate labelling, so it was left alone.\nNext step: check it with cloudy-cloud machines; if it is a leftover of yours, delete it and run cloudy-cloud coordinator image again`, { short: 'An unlabeled image machine was left alone.', reason: `machine ${names} has no installation label`, next: 'cloudy-cloud machines' });
   }
-  if (args.includes('--save')) {
-    if (!img) guided('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image', { short: 'No image machine found.', reason: 'Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them.', next: 'cloudy-cloud coordinator image', neutral: true });
-    const sbx = await providerFor(c.provider, img).connect(img.id, { retry: false });
-    const r = await saveNew(c, sbx);
-    storeNotice(c, stored);
-    return r;
-  }
   let sbx;
   if (img) {
     c.progress(`Using the image machine ${safeText(img.name)} you already started.`);
     sbx = await providerFor(c.provider, img).connect(img.id, { retry: false });
+    await installTool(sbx, c.root); // an earlier run may have stopped during the install
   } else {
     c.progress('Creating the image machine...');
     sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image', install: mine }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
@@ -612,11 +611,13 @@ async function start(c, args) {
   const hours = flag(args, '--max-hours') === undefined ? maxHours : Number(flag(args, '--max-hours'));
   const seconds = Math.round(hours * 3600);
   if (!(seconds >= 60 && seconds <= maxHours * 3600)) usageError(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).`, 'start', `--max-hours must be a number up to ${maxHours}.`, [`${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours.`]);
-  const snapshot = c.env[SNAPSHOT_KEY];
-  if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved image; each signs in to Claude at start.', next: 'cloudy-cloud coordinator image', neutral: true });
-  // An image saved before the credential check shipped still holds a Claude sign-in — one warning line (stderr),
-  // never a stop: launch.sh still removes its copy on each coordinator's first launch.
-  if (!c.env[SNAPSHOT_CLEAN_KEY]) c.note('Your coordinator image was saved by an older cloudy-cloud and still contains a Claude sign-in. Make a clean one with: cloudy-cloud coordinator image');
+  // Coordinators start from the base template unless a clean saved image is configured. An image saved before
+  // the credential check still holds a Claude sign-in, so it is ignored (one note, never a stop).
+  let snapshot = c.env[SNAPSHOT_KEY] || TEMPLATE;
+  if (c.env[SNAPSHOT_KEY] && !c.env[SNAPSHOT_CLEAN_KEY]) {
+    snapshot = TEMPLATE;
+    c.note('Your saved coordinator image holds a Claude sign-in and is no longer needed; coordinators now start from the base template. Remove the image setting with: cloudy-cloud coordinator image --forget');
+  }
   // The duplicate check lists by name on the primary provider only (find's role-only scan is for selector
   // lookups); its errors go through the same incomplete-inventory check before a start proceeds.
   const providerErrors = [];
@@ -1054,7 +1055,7 @@ async function ls(c) {
     if (!c.ui.term) return c.out('No coordinators.');
     // On a provider that cannot run coordinators there is no coordinator command to point at.
     if (c.provider.text?.coordinatorRefusal || !c.primary.caps?.hasSnapshots) return c.out('  No coordinators yet.');
-    return c.out(['  No coordinators yet.', c.ui.next(c.env[SNAPSHOT_KEY] ? 'cloudy-cloud coordinator start NAME --repo URL' : 'cloudy-cloud coordinator image')].join('\n'));
+    return c.out(['  No coordinators yet.', c.ui.next('cloudy-cloud cloud')].join('\n'));
   }
   // Names and states come from the server, so strip terminal control characters before printing them.
   const clean = (v) => safeText(v ?? '').replace(/\n/g, ' ');
@@ -1275,7 +1276,7 @@ function validateArgs(cmd, args) {
     }
     return;
   }
-  if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
+  if (cmd === 'image') { if (args.some((a) => a !== '--save' && a !== '--forget') || args.length > 1) bad('Expected image, image --save or image --forget.'); return; }
   if (cmd === 'status') { if (!SELECTOR_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }

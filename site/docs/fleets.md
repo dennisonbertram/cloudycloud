@@ -30,17 +30,13 @@ There is also a lighter option. A cloud agent started with `role: "coordinator"`
 
 ## Cloud coordinator lifecycle
 
-### 1. Make the coordinator image (once)
+### 1. No image step
 
-Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so the image carries no sign-in and a copied credential can never race several coordinators into signing each other out.
+Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so a copied credential can never race several coordinators into signing each other out.
 
-```
-cloudy-cloud coordinator image
-```
+Go straight to `cloudy-cloud cloud`. Coordinators start from the base template, which already has Claude Code, Node, git and gh; the start installs the rest in seconds.
 
-This creates a machine and installs `cloudy-cloud` on it. The command then removes `~/.claude/.credentials.json` on the image machine — so no Claude credential is ever frozen into a snapshot — saves the snapshot as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine.
-
-The server deletes the image machine after 2 hours, and the command prints the time. If the machine is still running, `cloudy-cloud coordinator image --save` saves the snapshot the same way.
+`cloudy-cloud coordinator image` is optional and normally unnecessary. It builds a saved image in one run (about 20 minutes), removing `~/.claude/.credentials.json` before the snapshot so the image holds no sign-in. It is safe to interrupt: run it again and it resumes the pending snapshot. `--save` is an alias. If an older cloudy-cloud saved an image that holds a sign-in, `start` ignores it; clear the setting with `cloudy-cloud coordinator image --forget` (the snapshot itself is not deleted).
 
 ### 2. Start a coordinator
 

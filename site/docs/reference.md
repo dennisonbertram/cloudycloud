@@ -219,7 +219,7 @@ Creates a GitHub ruleset named "cloudy-cloud: protect the default branch" on the
 ### cloudy-cloud coordinator
 
 ```
-cloudy-cloud coordinator image [--save]
+cloudy-cloud coordinator image [--forget]
 cloudy-cloud coordinator start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--account LABEL] [--json]
 cloudy-cloud coordinator login NAME [--code CODE] [--account LABEL]
 cloudy-cloud coordinator attach NAME
@@ -233,15 +233,16 @@ Manages cloud coordinators: long-lived Claude Code sessions that run on their ow
 
 #### coordinator image
 
-Builds the machine image that coordinators start from. It is a one-time step. It creates an image machine (or reuses one you already started), installs cloudy-cloud on it, removes `~/.claude/.credentials.json` on the machine — the image never holds a Claude sign-in, because each coordinator signs in for itself when it starts — then saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. `--save` does the same wipe-and-save on an image machine that is still running. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
+Optional and normally unnecessary: coordinators start from the base template when no image is saved. The command builds a saved image in one run (about 20 minutes). It creates an image machine (or reuses one you already started), installs cloudy-cloud on it, removes `~/.claude/.credentials.json` on the machine — the image never holds a Claude sign-in, because each coordinator signs in for itself when it starts — then saves a snapshot, stores its id as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in the config file, and deletes the image machine. It is safe to interrupt: run it again and it resumes the pending snapshot without starting a second one. The server deletes an unsaved image machine after 2 hours. Only one image machine can exist at a time.
 
 | Flag | Meaning |
 |---|---|
-| `--save` | Save the image machine as a snapshot and delete the machine. |
+| `--save` | Alias for plain `coordinator image`, kept for old scripts. |
+| `--forget` | Remove the saved image setting from the config file. The snapshot is not deleted; delete it with `npx instabox snapshot rm ID`. `start` ignores an image that holds a sign-in and says so. |
 
 #### coordinator start
 
-Starts a coordinator named NAME on a new machine from the saved image. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude` through a launcher (`~/.config/cloudy-cloud/launch.sh`) that runs `claude auth login` while the coordinator is not signed in, then execs the session with Remote Control under the name NAME. A fresh coordinator waits at the sign-in until you finish it with `coordinator login NAME` — waiting for sign-in is a normal state and the machine is never deleted for it; on a terminal `start` attaches you to that pane so you sign in there. The coordinator never pauses. The server deletes its machine after `--max-hours`. Once signed in you can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
+Starts a coordinator named NAME on a new machine from the saved clean image, or from the base template when none is saved. It sends this copy of cloudy-cloud (the checkout — a bundle of its committed state plus tracked uncommitted edits, leaving out files named like credentials, untracked files and staged additions — or the npm package's files), writes the coordinator's key file (mode 600), clones your repository to `~/repo`, and starts Claude Code in a `tmux` session called `claude` through a launcher (`~/.config/cloudy-cloud/launch.sh`) that runs `claude auth login` while the coordinator is not signed in, then execs the session with Remote Control under the name NAME. A fresh coordinator waits at the sign-in until you finish it with `coordinator login NAME` — waiting for sign-in is a normal state and the machine is never deleted for it; on a terminal `start` attaches you to that pane so you sign in there. The coordinator never pauses. The server deletes its machine after `--max-hours`. Once signed in you can reach it from claude.ai/code or the Claude app (pick the session named NAME) or from a terminal with `coordinator attach`. The coordinator's Claude runs with permission checks off, like a worker, and the machine is set up so the bypass-mode confirmation and the folder-trust dialog never appear. If one still waits on a prompt, `coordinator ls` and `coordinator status` show it, and you attach and answer it. The first time, attach once and accept any Remote Control prompt.
 
 | Argument or flag | Default | Meaning |
 |---|---|---|
@@ -577,7 +578,7 @@ Environment variables win over values in the config file. An empty value counts 
 
 | Path | What it holds |
 |---|---|
-| `~/.config/cloudy-cloud/env` | The config file. One `NAME=value` per line, mode 600. `cloudy-cloud setup` writes it. Only the settings and keys listed above are read from it, plus `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT`, which `coordinator image --save` writes. Change the location with `CLOUDY_CLOUD_CONFIG`. |
+| `~/.config/cloudy-cloud/env` | The config file. One `NAME=value` per line, mode 600. `cloudy-cloud setup` writes it. Only the settings and keys listed above are read from it, plus `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT`, which `coordinator image` writes (optional). Change the location with `CLOUDY_CLOUD_CONFIG`. |
 | `~/.config/cloudy-cloud/codex-auth.json` | Optional. A copy of `~/.codex/auth.json` (mode 600) for the `codex-chatgpt` profile. Create it with `install -m 600 ~/.codex/auth.json ~/.config/cloudy-cloud/codex-auth.json`. Set `CLOUDY_CLOUD_CODEX_AUTH` to use another path. |
 | `~/.config/cloudy-cloud/profiles.json` | Optional. Adds or overrides model profiles, including each profile's `harness`. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
 | `~/.config/cloudy-cloud/mcp.json` | Optional. The MCP servers that cloud subagents get, in Claude Code's `mcpServers` format, mode 600. `cloudy-cloud mcp add` writes it. Secret values are stored as `${MCP_<NAME>_TOKEN}` references unless you used `--allow-literal`. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html). |
