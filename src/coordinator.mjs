@@ -259,69 +259,105 @@ const machineLease = (c, m) => {
   const mid = m?.id ?? m?.sandboxId;
   if (!mid) return null;
   const dir = accounts.accountsDir(c.env);
-  return accounts.leasedAccounts(dir).find((a) => a.leasedBy?.machineId === mid && (a.leasedBy.provider ?? c.primary.name) === (m.provider ?? c.primary.name)) ?? null;
+  // The LOCAL index is the only trusted record: a lease must name this machine's id and provider,
+  // and a pending start reservation is not a usable lease until its credential is delivered.
+  return accounts.leasedAccounts(dir).find((a) => !a.leasedBy?.pending && a.leasedBy?.machineId === mid && (a.leasedBy.provider ?? c.primary.name) === (m.provider ?? c.primary.name)) ?? null;
 };
-const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? m.labels?.account || machineLease(c, m)?.label || '' : '');
+// The account a coordinator uses. Read-back and release decisions are bound to the locally recorded
+// lease (provider + machineId) — never to an `account` label alone, which a coordinator sharing our
+// install id could carry while its lease lives on another laptop.
+const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? machineLease(c, m)?.label || '' : '');
 
 // After a finished browser sign-in (login --code, or an interactive attach that detached): read the
 // machine's credential back and save it under the label the coordinator already leases (the slot the
 // sign-in revives), else --account, else the auth-status email sanitised to [a-z0-9._@-], else
 // account-N. The account is then leased to this coordinator in the same step — the sign-in is live
-// on this machine only, so a second start must never pick it while it runs. Returns the label saved
-// under; '' when nothing signed-in-shaped was found to save.
+// on this machine only, so a second start must never pick it while it runs. One Claude account gets
+// one label: a sign-in whose identity already names an account updates it or — when it is leased to
+// another machine — is reported, never saved under a second label. Returns the label; '' when
+// nothing signed-in-shaped was found to save.
 const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = {}) => {
-  if (m?.labels?.install && m.labels.install !== installId(c.env)) return '';
+  // An exact install-label match is required before any credential is read back — a machine that
+  // carries no install label cannot be verified as this installation's.
+  if (m?.labels?.install !== installId(c.env)) return '';
   const [got, j] = await Promise.all([accounts.readMachineCredential(sbx).catch(() => null), authStatus(sbx)]);
   if (!got || j?.loggedIn !== true || j?.authMethod !== 'claude.ai') return '';
   const mid = m?.id ?? m?.sandboxId;
-  const carried = m?.labels?.account || machineLease(c, m)?.label || '';
+  const carried = machineLease(c, m)?.label || (accounts.validLabel(m?.labels?.account) ? m.labels.account : '');
   if (carried && labelArg && carried !== labelArg) usageError(`Coordinator ${m.labels?.name ?? ''} uses account ${carried} — one account serves one coordinator at a time, so --account ${labelArg} does not apply here.`, 'login', '--account names the label a sign-in is saved under; a leased coordinator keeps its own.');
   const dir = accounts.accountsDir(c.env);
-  let label = carried || labelArg || accounts.emailLabel(j.email) || accounts.nextAccountLabel(dir);
-  // The label another coordinator's lease already holds is never overwritten: an explicit --account is
-  // refused naming its holder; a derived one (the sign-in email) falls back to a fresh account-N label.
-  const holder = accounts.readIndex(dir)[label]?.leasedBy;
-  if (holder?.name && holder.machineId !== mid) {
-    if (labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
-    label = accounts.nextAccountLabel(dir);
-  }
-  accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, credText: got.text, now: c.now() });
-  // The lease this machine already holds was the save's slot and stays as it is; a fresh save is
-  // leased to this coordinator (name, machine id, provider, deleteAt — the same record start writes).
-  if (mid && !(holder?.name && holder.machineId === mid)) {
-    const deleteAt = m?.deleteAt && Number.isFinite(new Date(m.deleteAt).getTime()) ? new Date(m.deleteAt).toISOString() : undefined;
-    accounts.lease(dir, label, { name: m?.labels?.name || name, machineId: mid, provider: m?.provider ?? c.primary.name, deleteAt }, c.now());
-  }
-  return label;
+  // The identity check, the save and the lease are one locked step: the index cannot change between
+  // them, and a concurrent save cannot slide an older credential under this one.
+  const saved = accounts.withLock(dir, () => {
+    const idx = accounts.readIndex(dir);
+    let label = carried || labelArg || accounts.emailLabel(j.email) || '';
+    const dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
+    if (dupe) label = dupe; // the identity already has a label — this sign-in updates it
+    else label ||= accounts.nextAccountLabel(dir);
+    const holder = idx[label]?.leasedBy;
+    if (holder?.name && holder.machineId !== mid) {
+      if (dupe || accounts.sameAccount(idx[label], j)) { c.out(`This Claude account is already saved as ${label} and used by coordinator ${holder.name} — the sign-in was not saved under a second label.`); return ''; }
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
+      // A derived label another coordinator's lease already holds falls back to a fresh account-N.
+      label = accounts.nextAccountLabel(dir);
+    }
+    accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, accountUuid: typeof j.accountUuid === 'string' ? j.accountUuid : undefined, credText: got.text, now: c.now() });
+    // The lease this machine already holds was the save's slot and stays as it is; a fresh save is
+    // leased to this coordinator (name, machine id, provider, deleteAt — the record start writes).
+    if (mid && !(holder?.name && holder.machineId === mid)) {
+      const deleteAt = m?.deleteAt && Number.isFinite(new Date(m.deleteAt).getTime()) ? new Date(m.deleteAt).toISOString() : undefined;
+      accounts.lease(dir, label, { name: m?.labels?.name || name, machineId: mid, provider: m?.provider ?? c.primary.name, deleteAt }, c.now());
+    }
+    return label;
+  });
+  if (saved) accounts.ensureWatcher(c.env, c.spawnWatcher); // a live lease starts the sync watcher now
+  return saved;
 };
 
 // What a coordinator's screen means for the account it uses: a usage-limit line marks the account
 // limitedUntil so the next start picks another (a running coordinator's account never switches); a
-// sign-in state means the delivered sign-in died in place — mark needsSignIn, leave the lease in
-// place (nothing is released silently); a healthy running one syncs its credential back.
+// sign-in state means the delivered sign-in may have died — needsSignIn is persisted only when the
+// machine's own `claude auth status` confirms signed out, never on pane text alone; a healthy
+// running one syncs its credential back.
 const accountFromScreen = async (c, m, st) => {
-  const label = ownAccount(c, m);
+  let label = '';
+  try { label = ownAccount(c, m); } catch { return; } // a damaged index never blocks the listing
   if (!label || !st?.read) return;
-  const dir = accounts.accountsDir(c.env);
-  if (st.blocked && accounts.LIMIT_LINE.test(st.blocked)) { accounts.markLimited(dir, label, accounts.limitUntil(st.blocked, c.now())); return; }
-  if (st.signin) { accounts.markNeedsSignIn(dir, label); return; }
   try {
+    const dir = accounts.accountsDir(c.env);
+    if (st.blocked && accounts.LIMIT_LINE.test(st.blocked)) { accounts.markLimited(dir, label, accounts.limitUntil(st.blocked, c.now())); return; }
     const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
+    if (st.signin) {
+      const j = await authStatus(sbx);
+      if (j?.loggedIn === true) await accounts.syncBack(dir, sbx, label, c.now());
+      else if (j) accounts.markNeedsSignIn(dir, label); // auth status confirmed the sign-in died
+      return; // an unparseable status confirms nothing — the account is left as it is
+    }
     await accounts.syncBack(dir, sbx, label, c.now());
-  } catch { /* a failed sync loses only the newest credential copy */ }
+  } catch { /* a failed check loses only the newest credential copy */ }
 };
 
-// A lease outlives its machine by nothing: when a COMPLETE listing no longer shows the machine that
-// holds it, the lease is released. providerErrors mean the inventory is partial — never release on a
-// failed listing (the same incomplete-inventory rule uniqueCoordinator applies).
-const releaseStaleLeases = (c, rows) => {
+// A lease outlives its machine by nothing: when a COMPLETE listing of the lease's own provider no
+// longer shows the machine that holds it, the lease is released — conditionally, so a lease that
+// moved to another machine since `leased` was read is kept. `leased` must be the pre-listing
+// snapshot: a lease created after it is never touched here. providerErrors mean the inventory is
+// partial — never release on a failed listing (the same incomplete-inventory rule uniqueCoordinator
+// applies), and a lease whose provider is not configured was never listed at all. A released
+// account whose newest credential died with the machine is uncertain: it is marked needsSignIn
+// before it goes back on offer. A start reservation that never got a machine expires by age.
+const releaseStaleLeases = (c, rows, leased) => {
   const errors = rows.providerErrors ?? [];
   const dir = accounts.accountsDir(c.env);
-  for (const a of accounts.leasedAccounts(dir)) {
+  const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
+  for (const a of leased) {
     const l = a.leasedBy;
-    if (errors.some((e) => !e.provider || e.provider === l.provider)) continue;
+    if (l.pending && !l.machineId) {
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS) accounts.release(dir, a.label, { pending: true });
+      continue;
+    }
+    if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) continue;
     const alive = rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
-    if (!alive) accounts.release(dir, a.label);
+    if (!alive && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending) accounts.markNeedsSignIn(dir, a.label);
   }
 };
 
@@ -334,36 +370,53 @@ const syncAccounts = async (c) => {
   if (!leased.length) return ['No leased accounts.'];
   const rows = await find(c.provider, 'coordinator');
   const errors = rows.providerErrors ?? [];
+  const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
   const lines = [];
   for (const a of leased) {
     const l = a.leasedBy;
-    if (errors.some((e) => !e.provider || e.provider === l.provider)) { lines.push(`${a.label}: ${l.provider} could not be listed; left alone.`); continue; }
+    if (l.pending && !l.machineId) {
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS && accounts.release(dir, a.label, { pending: true })) lines.push(`${a.label}: the reservation for ${l.name} expired — released.`);
+      else lines.push(`${a.label}: the reservation for ${l.name} is still starting; left alone.`);
+      continue;
+    }
+    if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) { lines.push(`${a.label}: ${l.provider} could not be listed; left alone.`); continue; }
     const m = rows.find((x) => (x.provider ?? c.primary.name) === l.provider && x.id === l.machineId);
-    if (!m) { accounts.release(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); continue; }
+    if (!m) {
+      if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
+      else lines.push(`${a.label}: the lease moved to another machine; left alone.`);
+      continue;
+    }
+    if (l.pending) { lines.push(`${a.label}: the reservation for ${l.name} is not delivered yet; left alone.`); continue; }
     if (m.labels?.install !== installId(c.env)) { lines.push(`${a.label}: ${l.name} is not this installation's; left alone.`); continue; }
     if (m.state !== 'running') { lines.push(`${a.label}: ${l.name} is ${safeText(m.state) || 'not running'}; left alone.`); continue; }
     try {
       const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
-      lines.push(`${a.label}: ${await accounts.syncBack(dir, sbx, a.label, c.now()) ? 'synced a newer credential.' : 'already current.'}`);
+      const r = await accounts.syncBack(dir, sbx, a.label, c.now());
+      lines.push(`${a.label}: ${r === 'synced' ? 'synced a newer credential.' : r === 'current' ? 'already current.' : 'could not read the credential.'}`);
     } catch (e) { lines.push(`${a.label}: could not read the machine (${safeText(e.message ?? e)}).`); }
   }
   return lines;
 };
 
-// `accounts sync --watch`: the detached process `start` launches once a lease exists. One instance
-// at a time (a pid file; a second one exits at once); syncs every 30 minutes and once more about 10
-// minutes before the earliest machine deletion; exits when no leased coordinator remains — the next
-// cloudy-cloud command resumes it.
+// `accounts sync --watch`: the detached process a delivery launches once a lease exists. One
+// instance at a time (an exclusive pid file; a second one exits at once); syncs every 30 minutes
+// and once more about 10 minutes before the earliest machine deletion; exits when no leased
+// coordinator remains — the next cloudy-cloud command resumes it. A failed pass is retried with
+// backoff (1m, 2m, 4m … capped at the normal cadence) instead of exiting.
 const watchAccounts = async (c) => {
   const dir = accounts.accountsDir(c.env);
   if (!accounts.acquireWatcher(dir)) return;
+  let failures = 0;
   try {
     for (;;) {
       if (!accounts.leasedAccounts(dir).length) return;
-      for (const line of await syncAccounts(c)) c.note(`accounts sync: ${line}`);
+      let failed = false;
+      try { for (const line of await syncAccounts(c)) c.note(`accounts sync: ${line}`); failures = 0; }
+      catch (e) { failed = true; c.note(`accounts sync: a pass failed (${safeText(e.message ?? e)}); retrying.`); }
       const leased = accounts.leasedAccounts(dir);
       if (!leased.length) return;
-      const wake = Math.min(accounts.SYNC_EVERY_MS, ...leased.map((a) => Math.max(0, (a.leasedBy.deleteAt ? new Date(a.leasedBy.deleteAt).getTime() : Infinity) - accounts.BEFORE_DELETE_MS - c.now())));
+      const wake = failed ? Math.min(accounts.SYNC_EVERY_MS, 60_000 * 2 ** failures++)
+        : Math.min(accounts.SYNC_EVERY_MS, ...leased.map((a) => Math.max(0, (a.leasedBy.deleteAt ? new Date(a.leasedBy.deleteAt).getTime() : Infinity) - accounts.BEFORE_DELETE_MS - c.now())));
       await c.sleep(Math.max(60_000, wake));
     }
   } finally { accounts.releaseWatcher(dir); }
@@ -600,7 +653,7 @@ async function start(c, args) {
   const model = flag(args, '--model');
   if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) usageError('--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.', 'start', '--model has characters that are not allowed.', ['Use a model name such as claude-opus-5-5 or an alias such as opus.']);
   const accountArg = flag(args, '--account');
-  if (accountArg !== undefined && !accounts.LABEL_RE.test(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@- (list them with: cloudy-cloud accounts ls).', 'start', '--account takes a saved account label.');
+  if (accountArg !== undefined && !accounts.validLabel(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@- (list them with: cloudy-cloud accounts ls).', 'start', '--account takes a saved account label.');
   const taskFile = flag(args, '--task-file');
   const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
   if (task !== undefined) {
@@ -669,12 +722,18 @@ async function start(c, args) {
   // sign-in (which then saves as another account).
   const accDir = accounts.accountsDir(c.env);
   let useAccount = '';
-  if (accountArg) {
-    const entry = accounts.readIndex(accDir)[accountArg];
-    if (!entry || !existsSync(accounts.credFile(accDir, accountArg))) guided(`There is no saved account ${accountArg}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
-    if (entry.leasedBy?.name) guided(`Account ${accountArg} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: pick another with cloudy-cloud accounts ls, or stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${accountArg} is in use by ${entry.leasedBy.name}.`, next: 'cloudy-cloud accounts ls' });
-    useAccount = accountArg;
-  } else useAccount = accounts.freeAccounts(accDir, c.now())[0]?.label ?? '';
+  // Selection and reservation are ONE locked step before the machine exists, so a second start can
+  // never pick the same account. The lease is written pending: it is not eligible for sync until the
+  // credential is delivered (a watcher cannot overwrite the saved file with the image's credential).
+  accounts.withLock(accDir, () => {
+    if (accountArg) {
+      const entry = accounts.readIndex(accDir)[accountArg];
+      if (!entry || !existsSync(accounts.credFile(accDir, accountArg))) guided(`There is no saved account ${accountArg}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
+      if (entry.leasedBy?.name) guided(`Account ${accountArg} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: pick another with cloudy-cloud accounts ls, or stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${accountArg} is in use by ${entry.leasedBy.name}.`, next: 'cloudy-cloud accounts ls' });
+      useAccount = accountArg;
+    } else useAccount = accounts.freeAccounts(accDir, c.now())[0]?.label ?? '';
+    if (useAccount) accounts.lease(accDir, useAccount, { name, pending: true }, c.now());
+  });
   c.progress('Creating the coordinator machine...');
   // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
   // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
@@ -687,14 +746,17 @@ async function start(c, args) {
   // the timestamp taken just before create — never rows[0].
   const row = await find(c.provider, 'coordinator', name).then((rows) => rows.find((m) => m.id === sbx.id)).catch(() => null);
   const deleteAt = row?.deleteAt && Number.isFinite(new Date(row.deleteAt).getTime()) ? new Date(row.deleteAt).toISOString() : new Date(t0 + seconds * 1000).toISOString();
-  // One account serves one coordinator at a time: the lease is recorded with the machine id and the
-  // delete deadline (the sync watcher wakes about 10 minutes before it), and is released on stop or
-  // when a complete listing no longer shows the machine.
+  // One account serves one coordinator at a time: the pending reservation is bound to this machine's
+  // id (the lease generation) and delete deadline — the sync watcher wakes about 10 minutes before
+  // it — and released on stop or when a complete listing no longer shows the machine. If the
+  // reservation is no longer ours (it expired or moved), the credential is never delivered.
   let leased = '';
-  if (useAccount) {
-    accounts.lease(accDir, useAccount, { name, machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name, deleteAt }, c.now());
-    leased = useAccount;
+  if (useAccount && accounts.bindLease(accDir, useAccount, { name, machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name, deleteAt, pending: true }, c.now())) leased = useAccount;
+  if (useAccount && !leased) {
+    await sbx.kill().catch(() => {}); // the machine carries the label but never got the credential
+    guided(`Account ${useAccount} was claimed by another coordinator while this machine was being created; the credential was not delivered and the machine was deleted.`, { short: `Account ${useAccount} could not be reserved.`, next: 'cloudy-cloud accounts ls' });
   }
+  let delivered = false;
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root, c.note);
@@ -735,8 +797,14 @@ async function start(c, args) {
     // A leased account's credential is delivered before the session starts: the file is created
     // mode-600, its body travels the secret-file route (never a command string, never logged), and
     // the .credentials-removed marker goes in first so launch.sh's one-time image-credential
-    // removal skips what was just delivered instead of deleting it.
-    if (leased) await accounts.deliverCredential(sbx, dir, accounts.readCredential(accDir, leased));
+    // removal skips what was just delivered instead of deleting it. Only then does the lease become
+    // eligible for sync — and the sync watcher starts now, before any blocking attach.
+    if (leased) {
+      await accounts.deliverCredential(sbx, dir, accounts.readCredential(accDir, leased));
+      accounts.markDelivered(accDir, leased, sbx.id ?? sbx.sandboxId);
+      delivered = true;
+      accounts.ensureWatcher(c.env, c.spawnWatcher);
+    }
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`sh ${dir}/launch.sh ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} CLOUDY_CLOUD_NAME=${name} CLOUDY_CLOUD_PEERS=${peers.join(',')} CLOUDY_CLOUD_REPO=${q(repoPath(repo))} CLOUDY_CLOUD_BRANCH=${q(branch ?? '')} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`)}`);
     // The deadline watchdog runs in its own tmux session so a Claude restart never stops it.
     await sbx.files.write(`${home}/watchdog.sh`, WATCHDOG_SCRIPT);
@@ -798,7 +866,20 @@ async function start(c, args) {
         if (!waiting) link = await readLink(sbx);
       }
     }
-  } catch (e) { e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values]; await sbx.kill().catch(() => {}); if (leased) accounts.release(accDir, leased); throw e; }
+  } catch (e) {
+    e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values];
+    // The newest credential may already be on the machine: copy it back unless that read fails, in
+    // which case the account is uncertain and marked needsSignIn. The lease is released only when
+    // the machine's deletion is confirmed — while it may live, the lease stays with it.
+    let failedRead = false;
+    if (leased && delivered) failedRead = (await accounts.syncBack(accDir, sbx, leased, c.now()).catch(() => 'failed')) === 'failed';
+    const killed = await sbx.kill().then(() => true).catch(() => false);
+    if (leased && killed) {
+      if (failedRead) accounts.markNeedsSignIn(accDir, leased);
+      accounts.release(accDir, leased, { machineId: sbx.id ?? sbx.sandboxId });
+    }
+    throw e;
+  }
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
   // Printed commands need a selector that resolves: with more than one provider configured a bare name can
@@ -943,7 +1024,7 @@ async function login(c, args) {
   const name = args[0];
   let code = flag(args, '--code');
   const accountArg = flag(args, '--account');
-  if (accountArg !== undefined && !accounts.LABEL_RE.test(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@-.', 'login', '--account takes a saved account label.');
+  if (accountArg !== undefined && !accounts.validLabel(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@-.', 'login', '--account takes a saved account label.');
   if (code === '-') code = (await c.stdin()).split('\n')[0].trim();
   if (code !== undefined && !CODE_RE.test(code)) usageError('--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.', 'login', '--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.');
   const m = uniqueCoordinator(await find(c.provider, 'coordinator', name), name);
@@ -1046,10 +1127,14 @@ async function status(c, args) {
 }
 
 async function ls(c) {
+  // The lease snapshot is taken BEFORE the listing: a lease created while the inventory is in
+  // flight is newer than it, so it is never a release candidate here.
+  let preLeases = [];
+  try { preLeases = accounts.leasedAccounts(accounts.accountsDir(c.env)); } catch { /* a damaged index must not break the listing — nothing is released on it */ }
   const rows = await find(c.provider, 'coordinator');
   // A complete listing is also how stale leases die: a coordinator the listing no longer shows
   // cannot still hold its account. providerErrors mean the inventory is partial — release nothing.
-  releaseStaleLeases(c, rows);
+  if (preLeases.length) releaseStaleLeases(c, rows, preLeases);
   for (const e of rows.providerErrors ?? []) c.note(`cloudy-cloud coordinator: could not list ${e.provider}; that provider's coordinators are omitted.`);
   if (!rows.length) {
     if (!c.ui.term) return c.out('No coordinators.');
@@ -1116,18 +1201,24 @@ async function stop(c, args) {
   const m = uniqueCoordinator(await find(c.provider, 'coordinator', name), name);
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   const accLabel = ownAccount(c, m);
-  // Before the machine goes, its newest credential comes back to the laptop — a failed read still
-  // deletes (the newest token is all that is lost).
+  // Before the machine goes, its newest credential comes back to the laptop. 'failed' — or no read
+  // at all — means the saved copy was never verified current: the machine carries the newer token
+  // away, so the account is marked needsSignIn before its lease is released.
+  let verified = false;
   if (accLabel && m.state === 'running') {
     try {
       const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
-      await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now());
+      verified = (await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now())) !== 'failed';
     } catch (e) { c.note(`cloudy-cloud: could not sync the credential back to account ${accLabel} (${safeText(e.message ?? e)}); the newest token goes with the machine.`); }
   }
   c.progress('Deleting the coordinator machine...');
   const selected = providerFor(c.provider, m);
   await selected.delete(m.id, { sdk: true });
-  if (accLabel) accounts.release(accounts.accountsDir(c.env), accLabel);
+  if (accLabel) {
+    const dir = accounts.accountsDir(c.env);
+    if (!verified) accounts.markNeedsSignIn(dir, accLabel);
+    accounts.release(dir, accLabel, { machineId: m.id });
+  }
   // Both name our own command when the provider has one (listMachinesUi), so the provider stays behind cloudy-cloud.
   if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`${(c.provider.providers?.length ?? 1) > 1 ? `${selected.name} ` : ''}machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
@@ -1228,8 +1319,9 @@ async function accountsCmd(c, args) {
   const sub = args[0];
   if (sub === 'ls') {
     // A leased account whose coordinator no longer exists is freed here too — the same complete-
-    // inventory check `coordinator ls` runs, skipped when there is nothing leased to check.
-    if (accounts.leasedAccounts(dir).length) releaseStaleLeases(c, await find(c.provider, 'coordinator'));
+    // inventory check `coordinator ls` runs, with the lease snapshot taken before the listing.
+    const pre = accounts.leasedAccounts(dir);
+    if (pre.length) releaseStaleLeases(c, await find(c.provider, 'coordinator'), pre);
     const now = c.now(), list = accounts.listAccounts(dir);
     if (args.includes('--json')) return c.out(JSON.stringify(list.map((a) => accounts.accountRow(a, now))));
     if (!list.length) return c.out('No saved accounts yet — a coordinator sign-in is saved as an account automatically.');
@@ -1238,11 +1330,18 @@ async function accountsCmd(c, args) {
   }
   if (sub === 'rm') {
     const label = args[1];
-    if (!accounts.LABEL_RE.test(label ?? '')) guided(`Usage: cloudy-cloud accounts rm LABEL`, { short: 'accounts rm needs a saved account label.', details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]', 'List them with: cloudy-cloud accounts ls'], next: 'cloudy-cloud accounts ls' });
+    if (!accounts.validLabel(label ?? '')) guided(`Usage: cloudy-cloud accounts rm LABEL`, { short: 'accounts rm needs a saved account label.', details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]', 'List them with: cloudy-cloud accounts ls'], next: 'cloudy-cloud accounts ls' });
     const entry = accounts.readIndex(dir)[label];
     if (!entry && !existsSync(accounts.credFile(dir, label))) guided(`There is no saved account ${label}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${label}.`, next: 'cloudy-cloud accounts ls', neutral: true });
     if (entry?.leasedBy?.name) guided(`Account ${label} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${label} is in use by ${entry.leasedBy.name}.`, next: `cloudy-cloud coordinator stop ${entry.leasedBy.name}` });
-    try { unlinkSync(accounts.credFile(dir, label)); } catch { /* the file may be index-only or already gone */ }
+    // The credential file plus leftover temp files of its writes go together. Only a missing file
+    // is ignored — any other unlink failure is reported, and the index entry stays while the
+    // credential file does (the account is still there).
+    const { gone, failed } = accounts.removeAccountFiles(dir, label);
+    if (!gone || failed.length) {
+      if (entry && gone) accounts.updateAccount(dir, label, () => null);
+      guided(`Could not remove every file of saved account ${label}: ${failed.map((p) => safeText(p)).join('; ')}.${gone ? ' Its index entry was removed anyway.' : ' The account is still saved.'}`, { short: `Could not remove every file of ${label}.`, next: `check the account files under ${tilde(dir, c.env)}, then run cloudy-cloud accounts rm ${label} again` });
+    }
     if (entry) accounts.updateAccount(dir, label, () => null);
     return c.out(`Removed saved account ${label}. The Claude account itself is unaffected — only this laptop's saved credential and lease record were deleted.`);
   }

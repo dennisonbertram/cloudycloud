@@ -199,6 +199,16 @@ export function createProvider(env, deps = {}) {
             throw Object.assign(new Error(`The file upload route of this Instabox machine is not available, so ${path} (it holds a secret) was not written: the only other route sends the file inside a shell command, where it can appear in logs.\nNext step: start the agent again in a minute. If it keeps failing, do not use a login file or an MCP server with a real token (cloudy-cloud mcp rm NAME), and use proxy secrets instead.`), { code: 'secret_write_unsupported', local: true });
           }
         }),
+        // files.read falls back to returning the file as base64 in exec stdout when the content route is
+        // missing — the credential would then travel through command output and logs. readSecret uses
+        // the download route only (the SDK's readStream) and fails closed when it is not there.
+        readSecret: (path) => call(async () => {
+          const bytes = typeof sbx.files.readStream === 'function' ? await sbx.files.readStream(path, 4 * 1024 * 1024) : undefined;
+          if (bytes == null) {
+            throw Object.assign(new Error(`The file download route of this Instabox machine is not available, so ${path} (it holds a secret) was not read: the only other route sends the file through command output, where it can appear in logs.\nNext step: try again in a minute.`), { code: 'secret_read_unsupported', local: true });
+          }
+          return bytes;
+        }),
       },
       kill: () => sbx.kill(),
       // The server's machine name, fetched on demand (the coordinator asks after setup, as it did before the adapter).

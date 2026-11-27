@@ -1,7 +1,7 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -58,7 +58,9 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     getInfo: async () => ({ name }),
     files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; },
       // files.read answers the machine's credential file (cred option); anything else is "not there".
-      read: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return v; } },
+      read: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return v; },
+      // readStream is the SDK's file-content route — the same bytes files.read returns.
+      readStream: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return new TextEncoder().encode(v); } },
     commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
       if (/test -f .*login-active/.test(cmd)) { if (!loginActive) throw Object.assign(new Error('no login-active'), { exitCode: 1 }); return { stdout: '', stderr: '', exitCode: 0 }; }
       if (/task\.md/.test(cmd)) return { stdout: task, stderr: '', exitCode: 0 };
@@ -97,7 +99,9 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
   const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s), cliSpawn };
   // Notes still go to stderr (deps.stderr when a test injects it, the real one otherwise); log.notes only records.
   deps.note = (s) => { log.notes.push(s); (deps.stderr ?? process.stderr).write(`${s}\n`); };
-  deps.spawnWatcher = () => { log.watchers++; };
+  // The real watcher drops a pid file when it starts; the stub does the same so a second
+  // ensureWatcher sees the live watcher instead of spawning another.
+  deps.spawnWatcher = () => { log.watchers++; try { writeFileSync(join(accounts.accountsDir(env), accounts.WATCH_PID), String(process.pid)); } catch {} };
   // This installation's id: machines of "ours" carry it as the `install` label.
   const iid = installId(env);
   return { log, deps, configFile, mk, machines, store, iid };
@@ -3745,7 +3749,9 @@ test('ls releases a lease whose coordinator a complete listing no longer shows, 
 });
 
 test('a dead sign-in on a leased account marks it needsSignIn; the lease stays and login is the next step', async () => {
-  const f = fixture({ pane: 'OAuth session expired and could not be refreshed\n', cred: CRED(9e12) });
+  // The pane shows an expired session and the machine's own auth status confirms signed out —
+  // pane text alone never marks an account.
+  const f = fixture({ pane: 'OAuth session expired and could not be refreshed\n', cred: CRED(9e12), auth: [NOT_YET] });
   ownMachine(f, 'boss', { account: 'work' });
   seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
   await main(['status', 'boss'], f.deps);
@@ -3928,6 +3934,7 @@ test('a sign-in saved by login is leased to its coordinator: ls shows it used, a
   assert.equal(readFileSync(accounts.credFile(dir, 'me@example.com'), 'utf8'), newest, 'stop synced the newest credential back');
   assert.equal(accounts.readIndex(dir)['me@example.com'].leasedBy, undefined, 'stop released the lease');
   // With no lease left the watcher exits at its next tick and releases its pid file.
+  unlinkSync(join(dir, accounts.WATCH_PID)); // the earlier watcher's pid file
   await main(['accounts', 'sync', '--watch'], f.deps);
   assert.equal(existsSync(join(dir, accounts.WATCH_PID)), false);
   assertNoToken(f);
@@ -3940,4 +3947,270 @@ test('limitUntil parses reset times from the limit line, else defaults to five h
   const at = accounts.limitUntil('limit reached — resets at 15:30', now);
   assert.ok(at > now && at <= now + 24 * 3_600_000);
   assert.match(String(accounts.LIMIT_LINE.source), /limit|Credit balance/i);
+});
+
+// ---- Astra review: a sign-in is live on exactly one machine at a time ----
+
+test('two concurrent starts cannot claim the same saved account', async () => {
+  const f = fixture({ cred: CRED(9e12), auth: [SIGNED_IN, NOT_YET, NOT_YET, NOT_YET] });
+  seedAccount(f, 'work', { email: 'a@x' });
+  await Promise.all([
+    main(['start', 'one', '--repo', 'https://github.com/o/r'], f.deps),
+    main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps),
+  ]);
+  const claimed = f.log.create.filter((x) => x.opts.metadata.account === 'work');
+  assert.equal(claimed.length, 1, 'two starts must never lease the same account');
+  const delivered = f.log.writes.filter((w) => /\.credentials\.json$/.test(w.p));
+  assert.equal(delivered.length, 1, 'the refresh token went to exactly one machine');
+  const idx = accounts.readIndex(accDir(f));
+  assert.ok(idx.work.leasedBy?.name === 'one' || idx.work.leasedBy?.name === 'two', 'one lease stands');
+});
+
+test('the account reservation is written before the machine is created, pending until delivery', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  let atCreate;
+  const create0 = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => { atCreate = accounts.readIndex(accDir(f)).work?.leasedBy; return create0(t, o); };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(atCreate?.name, 'boss', 'the lease exists before the machine is created');
+  assert.ok(atCreate?.pending, 'a reservation is not eligible for sync before delivery');
+  const leased = accounts.readIndex(accDir(f)).work.leasedBy;
+  assert.equal(leased?.pending, undefined, 'delivery cleared the pending mark');
+  assert.equal(leased?.machineId, 'm_new');
+});
+
+test('a pending reservation is never synced — an image credential cannot overwrite the saved file', async () => {
+  const f = fixture({ cred: CRED(9e12 + 1) });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox', pending: true } });
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), CRED(9e12), 'the newer machine credential stayed off the saved file');
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.machineId, 'm1', 'the pending lease was not released');
+});
+
+test('index, *.tmp and the watcher pid file are never usable as account labels', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  const indexFile = join(accDir(f), 'index.json');
+  for (const bad of ['index', 'leftover.tmp', accounts.WATCH_PID]) {
+    const e = await main(['accounts', 'rm', bad], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+    assert.ok(e instanceof Error, `accounts rm ${bad} was accepted`);
+  }
+  assert.ok(existsSync(indexFile), 'accounts rm index must never delete the lease database');
+  assert.ok(accounts.readIndex(accDir(f)).work, 'the saved account is intact');
+  const e2 = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'index'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.ok(e2 instanceof Error, '--account index was accepted');
+  assert.equal(f.log.create.length, 0, 'no machine was created for a reserved label');
+});
+
+test('a sign-in cannot be saved under the index filename', async () => {
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_IN, SIGNED_IN] });
+  ownMachine(f, 'boss');
+  await main(['login', 'boss', '--code', 'X', '--account', 'index'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  const indexFile = join(accDir(f), 'index.json');
+  assert.ok(!existsSync(indexFile) || !readFileSync(indexFile, 'utf8').includes(TOK), 'index.json was not overwritten by a credential');
+});
+
+test('a damaged index refuses allocation instead of freeing leased accounts', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  const dir = accDir(f);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'work.json'), CRED(9e12));
+  writeFileSync(join(dir, 'index.json'), '{ not json');
+  const e = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /index/i);
+  assert.equal(f.log.create.length, 0, 'allocation is refused when the index cannot be read');
+  const e2 = await main(['accounts', 'ls'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.ok(e2 instanceof Error, 'accounts ls refuses a damaged index too');
+});
+
+test('a lease created while a listing is in flight is not released by it', async () => {
+  const f = fixture();
+  accounts.saveCredential(accDir(f), 'late', CRED(9e12));
+  const list0 = f.deps.sdk.Sandbox.list;
+  let injected = false;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    const r = await list0(o);
+    if (!injected) { injected = true; accounts.lease(accDir(f), 'late', { name: 'new', machineId: 'm_late', provider: 'instabox' }, Date.now()); }
+    return r;
+  };
+  await main(['ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).late.leasedBy?.machineId, 'm_late', 'a lease newer than the listing is kept');
+});
+
+test('accounts sync releases a lease only for the machine id it checked', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The label moves to a replacement machine between the lease snapshot and the release.
+    accounts.release(accDir(f), 'work');
+    accounts.lease(accDir(f), 'work', { name: 'boss', machineId: 'm2', provider: 'instabox' }, Date.now());
+    f.machines.push({ sandboxId: 'm2', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid, account: 'work' } });
+    return list0(o);
+  };
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.machineId, 'm2', 'the replacement lease was kept');
+});
+
+test('a lease on a provider that is not configured is never released', async () => {
+  const f = fixture();
+  seedAccount(f, 'far', { cred: CRED(9e12), leasedBy: { name: 'x', machineId: 'm_x', provider: 'e2b' } });
+  await main(['ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).far.leasedBy?.provider, 'e2b', 'ls kept it');
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).far.leasedBy?.provider, 'e2b', 'accounts sync kept it');
+});
+
+test('a failed start keeps the lease when machine deletion is not confirmed', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  const create0 = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => {
+    const s = await create0(t, o);
+    const run0 = s.commands.run;
+    s.commands.run = async (cmd, ...r) => (/gh auth setup-git/.test(cmd) ? Promise.reject(new Error('setup failed')) : run0(cmd, ...r));
+    s.kill = async () => { throw new Error('delete failed'); };
+    return s;
+  };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.name, 'boss', 'the lease stays while the machine may still run');
+});
+
+test('an interactive login on a machine with no install label never imports its credential', async () => {
+  const f = fixture({ cred: CRED(9e12), auth: [SIGNED_IN, SIGNED_IN] });
+  f.machines.push({ sandboxId: 'm1', name: 'coord-legacy', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'legacy' } });
+  await main(['login', 'legacy'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(accounts.listAccounts(accDir(f)).length, 0, 'an unverified machine credential was not saved');
+  assertNoToken(f);
+});
+
+test('a machine account label without a matching local lease is never read back or written', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'peer-acc' });
+  await main(['status', 'boss'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f))['peer-acc'], undefined, 'no account materialized from remote metadata');
+  assert.ok(!existsSync(join(accDir(f), 'peer-acc.json')), 'no credential file was written');
+  assertNoToken(f);
+});
+
+test('a remote account label cannot write outside the accounts directory', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'x/../../escaped' });
+  await main(['status', 'boss'], f.deps);
+  assert.ok(!existsSync(join(accDir(f), '..', 'escaped.json')), 'no file escaped the accounts directory');
+});
+
+test('index updates from concurrent processes are serialized by the lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-acc-lock-'));
+  const worker = `import(${JSON.stringify(`file://${resolve('src/accounts.mjs')}`)}).then((a) => new Promise((r) => setTimeout(r, 30)).then(() => a.updateAccount(${JSON.stringify(dir)}, 'shared', (e) => { const t = Date.now(); while (Date.now() - t < 150) {} return { ...e, n: (e.n ?? 0) + 1 }; })));`;
+  const kids = [0, 1].map(() => spawn(process.execPath, ['-e', worker]));
+  await Promise.all(kids.map((k) => new Promise((res, rej) => { k.on('error', rej); k.on('exit', (c) => (c === 0 ? res() : rej(new Error(`worker exit ${c}`)))); })));
+  assert.equal(accounts.readIndex(dir).shared.n, 2, 'a whole-index update was lost');
+});
+
+test('syncBack never lets an older machine read overwrite a newer saved credential', async () => {
+  const f = fixture();
+  const dir = accDir(f);
+  accounts.saveCredential(dir, 'work', CRED(9e12 + 5));
+  const sbx = { files: { read: async () => CRED(9e12) }, commands: { run: async (c) => (/CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) } };
+  assert.equal(await accounts.syncBack(dir, sbx, 'work', 1), 'current', 'the saved copy is verified newer');
+  assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 5), 'the newer file was not overwritten');
+});
+
+test('a sign-in already saved for the same Claude account is reported, not given a second label', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com'].leasedBy.machineId, 'm9', 'the existing lease was untouched');
+  assert.equal(Object.values(idx).filter((e) => e.email === 'me@example.com').length, 1, 'no second label for the same Claude account');
+  assert.match(f.log.out.join('\n'), /already saved/);
+  // The same sign-in on the leasing machine itself still updates the account in place.
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 1), auth: [SIGNED, SIGNED] });
+  ownMachine(g, 'boss', { account: 'work' });
+  seedAccount(g, 'work', { email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], g.deps);
+  assert.equal(Object.values(accounts.readIndex(accDir(g))).filter((e) => e.email === 'me@example.com').length, 1);
+  assert.equal(accounts.readIndex(accDir(g)).work.leasedBy.machineId, 'm1');
+});
+
+test('stop marks the account needsSignIn when the final credential read is not verified current', async () => {
+  const f = fixture({ cred: null });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['stop', 'boss'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.needsSignIn, true, 'an unverified final read marks the account uncertain');
+  assert.equal(idx.work.leasedBy, undefined, 'the lease is still released');
+});
+
+test('the watcher file is exclusive and survives pid reuse', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-acc-watch-'));
+  assert.equal(accounts.acquireWatcher(dir), true, 'the first watcher takes the file');
+  assert.equal(accounts.acquireWatcher(dir), false, 'a second watcher exits at once');
+  accounts.releaseWatcher(dir);
+  // A dead pid's file is reclaimed.
+  writeFileSync(join(dir, accounts.WATCH_PID), '999999 whatever');
+  assert.equal(accounts.acquireWatcher(dir), true, 'a stale watcher file is reclaimed');
+  accounts.releaseWatcher(dir);
+  // A file whose token does not match the live pid (a reused pid) is stale too.
+  writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} not-the-start-token`);
+  assert.equal(accounts.acquireWatcher(dir), true, 'a reused pid does not suppress the watcher');
+  accounts.releaseWatcher(dir);
+});
+
+test('the watcher retries a failed listing with backoff instead of exiting', async () => {
+  const f = fixture();
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  let calls = 0;
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    calls++;
+    if (calls === 1) throw new Error('api down');
+    if (calls === 2) accounts.release(accDir(f), 'work');
+    return list0(o);
+  };
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  assert.ok(calls >= 2, 'the sync pass was retried after the failure');
+});
+
+test('the sync watcher starts when the lease is delivered, before a blocking attach returns', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  let atAttach = -1;
+  const spawn_ = (bin, a, o) => { if (bin !== 'git') atAttach = f.log.watchers; return bin === 'git' ? spawnSync(bin, a, o) : { status: 0 }; };
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, spawn: spawn_ });
+  assert.equal(atAttach, 1, 'the watcher was already running when the blocking attach ran');
+});
+
+test('accounts rm removes leftover temp files and reports unlink failures', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  const tmp = join(accDir(f), 'work.json.tmp-999');
+  writeFileSync(tmp, CRED(9e12));
+  await main(['accounts', 'rm', 'work'], f.deps);
+  assert.equal(existsSync(tmp), false, 'the temp credential went with the account');
+  assert.equal(accounts.readIndex(accDir(f)).work, undefined);
+  // A non-ENOENT unlink failure is reported and the index entry is kept — the account is still there.
+  const g = fixture();
+  seedAccount(g, 'work', { email: 'a@x' });
+  const dir = accDir(g);
+  chmodSync(dir, 0o500);
+  const e = await main(['accounts', 'rm', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x).finally(() => chmodSync(dir, 0o700));
+  assert.match(e.message, /could not remove/i);
+  assert.ok(accounts.readIndex(dir).work, 'the index entry stays while the file does');
+  assert.ok(existsSync(accounts.credFile(dir, 'work')), 'the credential file is still there');
+});
+
+test('a stale-looking pane marks needsSignIn only when auth status confirms signed out', async () => {
+  const f = fixture({ pane: 'OAuth session expired and could not be refreshed\n', cred: CRED(9e12), auth: [SIGNED_IN] });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['status', 'boss'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work.needsSignIn, undefined, 'signed-in per the machine itself: not marked');
 });
