@@ -316,6 +316,18 @@ test('start rejects bad repo urls and duplicate names', async () => {
   await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), /already exists/);
 });
 
+test('start refuses a name equal to an existing machine name or id: even provider-qualified selectors would stay ambiguous', async () => {
+  // boss runs as machine coord-boss; a second coordinator named coord-boss would make
+  // `login instabox:coord-boss` match both rows, so start must refuse like a duplicate name.
+  const f = fixture({ machines: [{ sandboxId: 'm1', name: 'coord-boss', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } }] });
+  await assert.rejects(main(['start', 'coord-boss', '--repo', 'https://github.com/o/r'], f.deps), /already answers to coord-boss|collides|ambiguous|already exists/);
+  assert.equal(f.log.create.length, 0, 'no machine was created');
+  // The machine id is a selector too (find matches it).
+  const g = fixture({ machines: [{ sandboxId: 'm2', name: 'coord-docs', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'docs' } }] });
+  await assert.rejects(main(['start', 'm2', '--repo', 'https://github.com/o/r'], g.deps), /already answers to m2|collides|ambiguous|already exists/);
+  assert.equal(g.log.create.length, 0);
+});
+
 test('ls lists only coordinators', async () => {
   const f = fixture({ machines: [
     { sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss' } },
@@ -355,6 +367,72 @@ test('coordinator names are ambiguous across providers unless qualified', async 
   assert.deepEqual(deleted, []);
   await main(['stop', 'provider-b:boss'], { provider, env: {}, out: () => {} });
   assert.deepEqual(deleted, [['provider-b', 'b1']]);
+});
+
+// With more than one provider configured a bare `coordinator login NAME` can be ambiguous, so the printed
+// next step must carry the provider (start prints primary:name; ls/status print the row's provider:name).
+const twoProviders = (f, pane = '') => {
+  const instabox = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'instabox' });
+  const boat = createFakeProvider({ FAKE_API_KEY: 'k' }, { name: 'boat' });
+  const boxes = new Map();
+  for (const p of [instabox, boat]) {
+    p.create = async (opts) => {
+      p.log.create.push(opts);
+      const sbx = { id: `${p.name}-machine`, name: opts.name, home: '/data/home',
+        files: { write: async (path, data) => p.log.writes.push({ p: path, d: String(data) }) },
+        commands: { run: async (cmd) => ({ stdout: /printf %s/.test(cmd) ? '/data/home' : /auth status/.test(cmd) ? NOT_YET : /capture-pane/.test(cmd) ? pane : '', stderr: '', exitCode: 0 }) } };
+      boxes.set(sbx.id, sbx);
+      p.machines.set(sbx.id, { id: sbx.id, name: sbx.name, labels: opts.labels, state: 'running', startedAt: Date.now() });
+      return sbx;
+    };
+    p.connect = async (id) => boxes.get(id);
+    p.list = async () => [...p.machines.values()];
+  }
+  f.deps.provider = combine([instabox, boat]);
+  return { instabox, boat, boxes };
+};
+const SIGNIN_PANE = '  ⎿  Not logged in · Please run /login';
+
+test('start prints a provider-qualified login command when multiple providers are configured', async () => {
+  const f = fixture();
+  twoProviders(f);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).next, 'cloudy-cloud coordinator login instabox:boss');
+
+  const g = fixture();
+  twoProviders(g);
+  g.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  const text = plainText(g.log.out.join('\n'));
+  assert.match(text, /Sign in\s+cloudy-cloud coordinator login instabox:boss/);
+  assert.match(text, /Next: cloudy-cloud coordinator login instabox:boss/);
+  assert.doesNotMatch(text, /login boss\b/);
+
+  const h = fixture();
+  twoProviders(h);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], h.deps);
+  assert.match(h.log.out.join('\n'), /Sign in to Claude on it:\n {2}cloudy-cloud coordinator login instabox:boss/);
+});
+
+test('status and ls print a provider-qualified login command when multiple providers are configured', async () => {
+  const f = fixture();
+  const { boat, boxes } = twoProviders(f);
+  const bsbx = { id: 'boat-1', name: 'coord-boss', home: '/data/home', files: { write: async () => {} },
+    commands: { run: async (cmd) => ({ stdout: /capture-pane/.test(cmd) ? SIGNIN_PANE : '', stderr: '', exitCode: 0 }) } };
+  boxes.set('boat-1', bsbx);
+  boat.machines.set('boat-1', { id: 'boat-1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid }, state: 'running', startedAt: Date.now() });
+  await main(['status', 'boss', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out[0]).next, 'cloudy-cloud coordinator login boat:boss');
+  await main(['status', 'boat:boss'], f.deps); // an already-qualified selector stays qualified
+  assert.match(f.log.out.at(-1), /Next: cloudy-cloud coordinator login boat:boss/);
+
+  const g = fixture();
+  const { boat: gboat, boxes: gboxes } = twoProviders(g);
+  gboxes.set('boat-1', bsbx);
+  gboat.machines.set('boat-1', { id: 'boat-1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: g.iid }, state: 'running', startedAt: Date.now() });
+  g.deps.ui = tty();
+  await main(['ls'], g.deps);
+  assert.match(plainText(g.log.out.join('\n')), /Next: cloudy-cloud coordinator login boat:boss/);
 });
 
 test('attach off a terminal prints the cloudy-cloud attach command', async () => {

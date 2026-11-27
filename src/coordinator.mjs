@@ -500,10 +500,14 @@ async function start(c, args) {
   const mine = installId(c.env);
   let peers = [];
   try {
-    peers = (await find(c.provider, 'coordinator'))
-      .filter((m) => m.state === 'running' && m.labels?.install === mine && m.labels?.name !== name && NAME_RE.test(m.labels?.name ?? ''))
-      .map((m) => m.labels.name);
-  } catch { c.progress('Could not list the other coordinators; this one starts without peers.'); }
+    const all = await find(c.provider, 'coordinator');
+    // find also matches machine names and ids: a coordinator named like an existing machine on this provider
+    // would make every later selector ambiguous even provider-qualified, so start refuses it like a duplicate.
+    if ((all.providerErrors ?? []).some((e) => !e.provider || e.provider === c.primary.name)) guided(`Could not verify the coordinator list on ${c.primary.name}, so ${name} cannot be checked against its machines. Retry when ${c.primary.name} is reachable.`, { short: `Coordinator lookup is incomplete for ${c.primary.name}.`, next: 'cloudy-cloud coordinator ls' });
+    const alias = all.find((m) => (!m.provider || m.provider === c.primary.name) && m.labels?.name !== name && (m.name === name || m.id === name));
+    if (alias) guided(`A machine on ${c.primary.name} already answers to ${name} (machine ${safeText(mach(alias) ?? alias.id ?? '')}, id ${safeText(String(alias.id ?? ''))}, coordinator ${alias.labels?.name ?? 'unnamed'}). Selectors match names, machine names and ids, so even ${c.primary.name}:${name} would stay ambiguous. Pick another name, or stop it first: cloudy-cloud coordinator stop ${c.primary.name}:${name}`, { short: `A machine on ${c.primary.name} already answers to ${name}.`, next: `cloudy-cloud coordinator stop ${c.primary.name}:${name}` });
+    peers = all.filter((m) => m.state === 'running' && m.labels?.install === mine && m.labels?.name !== name && NAME_RE.test(m.labels?.name ?? '')).map((m) => m.labels.name);
+  } catch (e) { if (e?.local) throw e; c.progress('Could not list the other coordinators; this one starts without peers.'); }
   let link = '';
   let screenRead = true, waiting = ''; // set when the session's screen waits on a prompt a person answers by attaching
   let needsLogin = false, loginUrl = ''; // set while the coordinator waits for its own Claude sign-in (a normal state)
@@ -633,8 +637,11 @@ async function start(c, args) {
   } catch (e) { e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values]; await sbx.kill().catch(() => {}); throw e; }
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
+  // Printed commands need a selector that resolves: with more than one provider configured a bare name can
+  // be ambiguous, so they carry the primary provider prefix; one provider keeps the bare name as before.
+  const sel = (c.provider.providers?.length ?? 1) > 1 ? `${c.primary.name}:${name}` : name;
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${name}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx }; }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx }; }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -651,11 +658,11 @@ async function start(c, args) {
       .find((v) => cellWidth(v) <= room) ?? fitCells(`pick "${name}"`, room);
     const reach = (rows) => u.block('Reach it', rows);
     const full = (v) => reach(needsLogin
-      ? [['Sign in', `cloudy-cloud coordinator login ${name}`], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]
+      ? [['Sign in', `cloudy-cloud coordinator login ${sel}`], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]
       : [['Remote Control', v], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
     const fits = (t) => t.split('\n').every((l) => cellWidth(l) <= u.width);
     const base = fits(full(rc)) ? full(rc)
-      : [reach(needsLogin ? [['Sign in', `cloudy-cloud coordinator login ${name}`]] : [['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+      : [reach(needsLogin ? [['Sign in', `cloudy-cloud coordinator login ${sel}`]] : [['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
     // The URL goes in the block row when it fits; otherwise on its own line below, whole.
     const linkRow = !needsLogin && link && fits(full(link));
     const block = linkRow ? full(link) : base;
@@ -668,11 +675,11 @@ async function start(c, args) {
     c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl, 'Sign-in link') : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
-      ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${name}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
+      ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${sel}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
     return { needsLogin, loginUrl, sbx }; // `cloud` attaches to — and health-checks — this same machine
   }
   c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? (needsLogin ? ' and starts on the task once it is signed in' : ' and has started on the task') : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
-    (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${name}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
+    (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${sel}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
       : `Reach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n  - Terminal: cloudy-cloud coordinator attach ${name}\n\n`) +
     `${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
@@ -836,14 +843,16 @@ async function status(c, args) {
   const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
   const multiProvider = (c.provider.providers?.length ?? 1) > 1;
   const attach = `cloudy-cloud coordinator attach ${name}`;
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, provider: m.provider ?? c.primary.name, machine: shown, state, screenRead: r.read, ...(r.signin ? { needsLogin: true, ...(r.loginUrl && { loginUrl: r.loginUrl }), next: `cloudy-cloud coordinator login ${name}` } : {}), ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
+  // The printed login command must resolve: with several providers configured it carries the row's provider.
+  const sel = multiProvider ? `${m.provider ?? c.primary.name}:${name.slice(name.indexOf(':') + 1)}` : name;
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, provider: m.provider ?? c.primary.name, machine: shown, state, screenRead: r.read, ...(r.signin ? { needsLogin: true, ...(r.loginUrl && { loginUrl: r.loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
   if (c.ui.term) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.signin ? u.paint(u.col.warn, 'waiting for Claude sign-in') : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
     // a stopped coordinator has no live session to attach to: no attach action
-    return c.out([u.block(`Coordinator ${name}`, [...(multiProvider ? [['Provider', m.provider ?? c.primary.name]] : []), ['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), ...(r.loginUrl ? linkLines(u, r.loginUrl, 'Sign-in link') : []), r.signin ? nextFit(u, `cloudy-cloud coordinator login ${name}`) : r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
+    return c.out([u.block(`Coordinator ${name}`, [...(multiProvider ? [['Provider', m.provider ?? c.primary.name]] : []), ['Machine', shown], ['State', state], ['Screen', screen]]), ...(r.link ? [...linkLines(u, r.link), ...qrLines(u, r.link)] : []), ...(r.loginUrl ? linkLines(u, r.loginUrl, 'Sign-in link') : []), r.signin ? nextFit(u, `cloudy-cloud coordinator login ${sel}`) : r.waiting ? nextFit(u, `cloudy-cloud coordinator attach ${name}`) : state === 'running' ? attachFit(u, name) : ''].filter(Boolean).join('\n'));
   }
-  c.out([`Coordinator ${name}${multiProvider ? ` on ${m.provider ?? c.primary.name}` : ''} machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.loginUrl && `Sign-in link: ${r.loginUrl}`, r.signin ? `Next: cloudy-cloud coordinator login ${name}` : r.waiting ? `Answer it by attaching, or with Remote Control: ${attach}` : `Attach: ${attach}`].filter(Boolean).join('\n'));
+  c.out([`Coordinator ${name}${multiProvider ? ` on ${m.provider ?? c.primary.name}` : ''} machine ${shown}: ${state}`, `Screen: ${screenText(r)}`, r.link && `Remote Control: ${r.link}`, r.loginUrl && `Sign-in link: ${r.loginUrl}`, r.signin ? `Next: cloudy-cloud coordinator login ${sel}` : r.waiting ? `Answer it by attaching, or with Remote Control: ${attach}` : `Attach: ${attach}`].filter(Boolean).join('\n'));
 }
 
 async function ls(c) {
@@ -873,7 +882,7 @@ async function ls(c) {
     const argOk = (d, i) => NAME_RE.test(rows[i].labels?.name ?? '');
     const signinRow = data.find((d, i) => d.screen === 'waiting for Claude sign-in' && argOk(d, i));
     const waitingRow = data.find((d, i) => d.screen.startsWith('waiting on a prompt') && argOk(d, i));
-    const nextCmd = signinRow ? `cloudy-cloud coordinator login ${signinRow.name}` : waitingRow ? `cloudy-cloud coordinator attach ${waitingRow.name}` : '';
+    const nextCmd = signinRow ? `cloudy-cloud coordinator login ${multiProvider ? `${signinRow.provider}:${signinRow.name}` : signinRow.name}` : waitingRow ? `cloudy-cloud coordinator attach ${waitingRow.name}` : '';
     const done = (text) => c.out(nextCmd ? `${text}\n\n${nextFit(u, nextCmd)}` : text);
     // DELETES is the relative time only; the ISO date stays in the piped TSV.
     const rowCells = (d, machine) => [d.name, ...(multiProvider ? [d.provider] : []), [[d.state, color[d.state] ?? u.col.err]], u.rel(d.created), ...(machine ? [d.machine] : []),
