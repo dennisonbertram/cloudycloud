@@ -35,6 +35,9 @@ const SELECTOR_RE = /^(?:[a-z0-9][a-z0-9-]{0,39}:)?[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
+// Claude only acts on a first turn, so a coordinator started with peers but no task gets this hello-only
+// prompt: it sends the hello its prompt rules describe to each peer, then waits for the user — no other work.
+const HELLO_TASK = 'Send the start hello your prompt rules describe to each peer coordinator, then wait for the user. There is no task — start no other work.';
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
@@ -140,8 +143,9 @@ async function context(deps) {
   const stderr = deps.stderr ?? process.stderr;
   const ui = deps.ui ?? makeUi();
   const progress = (message) => { if (stderr.isTTY) stderr.write(`${ui.hint(message)}\n`); };
-  // A state change the user should see even when stderr is piped (unlike progress): one line, never stdout.
-  const note = deps.note ?? ((s) => stderr.write(`${s}\n`));
+  // A state change the user should see even when stderr is piped (unlike progress): never stdout. On a
+  // terminal it wraps whole words to the width, so a command in it is never cut; piped it stays one raw line.
+  const note = deps.note ?? ((s) => stderr.write(`${stderr.isTTY ? wrapText(ui, s).join('\n') : s}\n`));
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep, spawn: deps.cliSpawn });
   const primary = provider.providers?.[0] ?? provider;
@@ -475,6 +479,7 @@ const watchAccounts = async (c) => {
 };
 
 const PENDING_KEY = 'CLOUDY_CLOUD_PENDING_SNAPSHOT'; // MACHINE_ID:SNAPSHOT_ID of a snapshot still being saved, so a later run waits on it instead of starting another
+const SKIPPED_KEYS = 'CLOUDY_CLOUD_SKIPPED_KEYS'; // comma list of skipped optional keys whose store instructions were already shown
 // Written with the pending record only after the image machine's credential was verified gone: a pending
 // record without it was started by an older cloudy-cloud and may still hold a sign-in.
 const PENDING_CLEAN_KEY = 'CLOUDY_CLOUD_PENDING_CLEAN';
@@ -776,8 +781,15 @@ async function start(c, args) {
     throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { local: true, code: 'key_on_machine_refused', short: `${k} is set as a real value, not as a proxy secret.`, reason: g.whatHappened, next: g.nextStep.replace(/^Run `?/, '').replaceAll('`', '') });
   }
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
+  // ANTHROPIC_API_KEY is skipped on purpose — the session unsets it itself (env -u in the tmux command) — so a
+  // terminal never warns about it. The piped line and --json fields still name every skipped key, for scripts.
+  const warnSkipped = keys.skipped.filter((k) => k !== 'ANTHROPIC_API_KEY');
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
   const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
+  // On a terminal the full instructions print once per key set (recorded in the config); a set it already
+  // knows gets one line instead. The full text still goes out every time in piped and --json output.
+  const shownSkipped = new Set(readKey(c.configFile, SKIPPED_KEYS).split(/[\s,]+/).filter(Boolean));
+  const newSkipped = warnSkipped.filter((k) => !shownSkipped.has(k));
   // --env FILE variables (and the CLOUDY_CLOUD_ENV_FILES list): a variable whose name is already in
   // CLOUDY_CLOUD_PROXY_SECRETS attaches by name like any other proxy secret; the summary names names only.
   const envFiles = envFileArgs(args, c.env);
@@ -862,7 +874,9 @@ async function start(c, args) {
     for (const f of readdirSync(skillDir)) await sbx.files.write(`${home}/.claude/skills/cloud-fleet/${f}`, readFileSync(join(skillDir, f)));
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
-    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
+    // With peers but no task the hello still needs a first turn, so the session opens on a hello-only prompt.
+    const helloTask = task === undefined && peers.length ? HELLO_TASK : '';
+    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : (helloTask ? ` ${q(helloTask)}` : '');
     // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
     // a setup-token cannot start Remote Control and an env token beats a sign-in (code.claude.com/docs/en/remote-control).
     // CLOUDY_CLOUD_NAME makes the launcher pass --name to claude, so the other coordinators can message this
@@ -901,7 +915,7 @@ async function start(c, args) {
     // The task is typed into the session, so its own lines can be on screen; they are not errors. Configured values are
     // removed before the screen is classified or fitted into an error, same as for `ls`/`status`.
     const scrub = (text) => [...secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)), ...bridged.values].reduce((t, v) => t.split(v).join('[redacted]'), text);
-    const st = paneState(scrub(pane), task ?? '');
+    const st = paneState(scrub(pane), task ?? helloTask);
     const line = st.blocked;
     if (!line && st.waiting) waiting = st.waiting;
     if (line) {
@@ -932,7 +946,7 @@ async function start(c, args) {
       // The sign-in URL can take a few seconds to appear on the pane; look again briefly, never longer.
       for (let i = 0; i < 3 && !loginUrl && screenRead; i++) {
         await c.sleep(3000);
-        try { if (await loginActive(sbx)) loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '').loginUrl; } catch { break; }
+        try { if (await loginActive(sbx)) loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? helloTask).loginUrl; } catch { break; }
       }
     } else if (screenRead && !waiting) {
       // Remote Control can take a few seconds to connect: look again briefly, and stop if a prompt appears. A missing link never fails start.
@@ -940,7 +954,7 @@ async function start(c, args) {
       for (let i = 0; i < 3 && !link && !waiting; i++) {
         await c.sleep(3000);
         try {
-          const again = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '');
+          const again = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? helloTask);
           waiting = again.waiting || again.blocked || '';
         } catch { break; }
         if (!waiting) link = await readLink(sbx);
@@ -992,11 +1006,15 @@ async function start(c, args) {
     const linkRow = !needsLogin && link && fits(full(link));
     const block = linkRow ? full(link) : base;
     // The warning wraps whole words: a key name is never cut, and a custom key keeps its host-specific instructions.
-    const skipBlock = !skipNote ? [] : [
-      ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
-      ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
-      ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
-    ];
+    // The full block prints once per key set; a set the config already recorded gets one short line instead.
+    const skipBlock = !warnSkipped.length ? [] : !newSkipped.length
+      ? [u.warn(`${warnSkipped.length} local key${warnSkipped.length === 1 ? ' was' : 's were'} not sent to the coordinator; see cloudy-cloud setup --more`)]
+      : [
+        ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${warnSkipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
+        ...(custom.length < warnSkipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
+        ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
+      ];
+    if (newSkipped.length) updateConfig(c.configFile, { [SKIPPED_KEYS]: [...shownSkipped, ...newSkipped].join(',') });
     c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl, 'Sign-in link') : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
