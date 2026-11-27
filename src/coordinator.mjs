@@ -268,9 +268,9 @@ const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? machineL
 // machine's credential back and save it under the label the coordinator already leases (the slot the
 // sign-in revives), else --account, else the auth-status email sanitised to [a-z0-9._@-], else
 // account-N. The account is then leased to this coordinator in the same step — the sign-in is live
-// on this machine only, so a second start must never pick it while it runs. One Claude account gets
-// one label: a sign-in whose identity already names an account updates it or — when it is leased to
-// another machine — is reported, never saved under a second label. Returns the label; '' when
+// on this machine only, so a second start must never pick it while it runs. One saved label is one
+// sign-in: a fresh sign-in of a known Claude identity revives a free signed-out label or is saved
+// under a new <email>-N label. Returns the label; '' when
 // nothing signed-in-shaped was found to save.
 const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = {}) => {
   // An exact install-label match is required before any credential is read back — a machine that
@@ -287,9 +287,24 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
   const saved = accounts.withLock(dir, () => {
     const idx = accounts.readIndex(dir);
     let label = carried || labelArg || accounts.emailLabel(j.email) || '';
-    const dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
-    if (dupe) label = dupe; // the identity already has a label — this sign-in updates it
-    else label ||= accounts.nextAccountLabel(dir);
+    let dupe;
+    if (carried) {
+      dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
+      if (dupe) label = dupe; // a replacement sign-in on a leasing coordinator updates the label that names the identity
+    } else {
+      // One label = one sign-in: a fresh sign-in of a known identity revives a free signed-out label,
+      // else it is saved under a new label for the same identity (<email>-2, -3, ...).
+      const same = Object.keys(idx).filter((l) => accounts.sameAccount(idx[l], j));
+      const stale = [labelArg, ...same].find((l) => l && same.includes(l) && !idx[l].leasedBy?.name && idx[l].needsSignIn);
+      if (stale) label = stale;
+      else if (same.length && !(labelArg && (!idx[labelArg] || !same.includes(labelArg)))) {
+        const base = accounts.emailLabel(j.email);
+        const taken = new Set(accounts.listAccounts(dir).map((a) => a.label));
+        label = base ? '' : accounts.nextAccountLabel(dir);
+        for (let i = 2; base && !label; i++) if (!taken.has(`${base}-${i}`)) label = `${base}-${i}`;
+      }
+    }
+    label ||= accounts.nextAccountLabel(dir);
     // The lease this machine holds on the carried label, re-read under the lock: when the sign-in
     // lands under a different label the lease moves with the live credential.
     const ours = mid && carried && idx[carried]?.leasedBy?.machineId === mid ? idx[carried].leasedBy : null;
@@ -1401,9 +1416,9 @@ async function accountsCmd(c, args) {
     const pre = accounts.leasedAccounts(dir);
     if (pre.length) await releaseStaleLeases(c, await find(c.provider, 'coordinator'), pre);
     const now = c.now(), list = accounts.listAccounts(dir);
-    if (args.includes('--json')) return c.out(JSON.stringify(list.map((a) => accounts.accountRow(a, now))));
+    if (args.includes('--json')) return c.out(JSON.stringify(list.map((a) => accounts.accountRow(a, now, list))));
     if (!list.length) return c.out('No saved accounts yet — a coordinator sign-in is saved as an account automatically.');
-    const rows = list.map((a) => accounts.accountRow(a, now));
+    const rows = list.map((a) => accounts.accountRow(a, now, list));
     return c.out(c.ui.table(['LABEL', 'EMAIL', 'STATE', 'LAST USED'], rows.map((r) => [r.label, r.email || '-', r.state, r.lastUsed])));
   }
   if (sub === 'rm') {

@@ -192,9 +192,12 @@ export const listAccounts = (dir) => {
 };
 // Pickable accounts: indexed, saved credential present, not leased, not limited, sign-in not stale —
 // least recently used first, so several accounts rotate instead of wearing out one.
-export const freeAccounts = (dir, now) => listAccounts(dir)
-  .filter((a) => a.indexed && a.saved && !a.leasedBy?.name && !a.needsSignIn && !(Number(a.limitedUntil) > now))
-  .sort((a, b) => (a.lastUsed ?? 0) - (b.lastUsed ?? 0) || a.label.localeCompare(b.label));
+// A usage limit belongs to the Claude account: every label of the same identity shares it.
+const sharesLimit = (a, b) => b.label === a.label || sameAccount(b, a);
+export const limitedAccount = (a, all, now) => all.some((b) => Number(b.limitedUntil) > now && sharesLimit(a, b));
+export const freeAccounts = (dir, now) => { const all = listAccounts(dir); return all
+  .filter((a) => a.indexed && a.saved && !a.leasedBy?.name && !a.needsSignIn && !limitedAccount(a, all, now))
+  .sort((a, b) => (a.lastUsed ?? 0) - (b.lastUsed ?? 0) || a.label.localeCompare(b.label)); };
 export const leasedAccounts = (dir) => listAccounts(dir).filter((a) => a.leasedBy?.name);
 export const nextAccountLabel = (dir) => {
   const used = new Set(listAccounts(dir).map((a) => a.label));
@@ -412,10 +415,10 @@ export const ensureWatcher = (env, spawnIt) => {
 
 // `accounts ls` rows and --json fields. No token ever leaves the credential files into these.
 const shortTime = (t) => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
-export const accountState = (a, now) =>
+export const accountState = (a, now, all = [a]) =>
   !a.indexed || !a.saved ? 'needs sign-in' :
     a.leasedBy?.pending ? `reserved for ${a.leasedBy.name}` :
       a.leasedBy?.name ? `used by ${a.leasedBy.name}` :
         a.needsSignIn ? 'needs sign-in' :
-          Number(a.limitedUntil) > now ? `limited until ${shortTime(a.limitedUntil)}` : 'free';
-export const accountRow = (a, now) => ({ label: a.label, email: a.email ?? '', state: accountState(a, now), lastUsed: a.lastUsed ? shortTime(a.lastUsed) : 'never' });
+          limitedAccount(a, all, now) ? `limited until ${shortTime(Math.max(...all.filter((b) => sharesLimit(a, b)).map((b) => Number(b.limitedUntil) || 0)))}` : 'free';
+export const accountRow = (a, now, all) => ({ label: a.label, email: a.email ?? '', state: accountState(a, now, all), lastUsed: a.lastUsed ? shortTime(a.lastUsed) : 'never' });

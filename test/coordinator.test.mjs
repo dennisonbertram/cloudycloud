@@ -4119,16 +4119,44 @@ test('syncBack never lets an older machine read overwrite a newer saved credenti
   assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 5), 'the newer file was not overwritten');
 });
 
-test('a sign-in already saved for the same Claude account is reported, not given a second label', async () => {
-  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
-  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
-  ownMachine(f, 'boss');
+const SIGNED_ME = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+const loginBoss = async (f) => { ownMachine(f, 'boss'); await main(['login', 'boss', '--code', 'X'], f.deps); return accounts.readIndex(accDir(f)); };
+const mk = (extra = {}) => fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_ME, SIGNED_ME], ...extra });
+test('a second sign-in of the same Claude account while the first label is leased is saved as <email>-2', async () => {
+  const f = mk();
   seedAccount(f, 'me@example.com', { email: 'me@example.com', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
-  await main(['login', 'boss', '--code', 'X'], f.deps);
-  const idx = accounts.readIndex(accDir(f));
+  const idx = await loginBoss(f);
   assert.equal(idx['me@example.com'].leasedBy.machineId, 'm9', 'the existing lease was untouched');
-  assert.equal(Object.values(idx).filter((e) => e.email === 'me@example.com').length, 1, 'no second label for the same Claude account');
-  assert.match(f.log.out.join('\n'), /already saved/);
+  assert.equal(idx['me@example.com-2'].leasedBy.name, 'boss', 'the new label is leased to the new coordinator');
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com-2/);
+});
+test('a third sign-in with both labels leased is saved as <email>-3', async () => {
+  const f = mk();
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', leasedBy: { name: 'a', machineId: 'm8', provider: 'instabox' } });
+  seedAccount(f, 'me@example.com-2', { email: 'me@example.com', leasedBy: { name: 'b', machineId: 'm9', provider: 'instabox' } });
+  const idx = await loginBoss(f);
+  assert.equal(idx['me@example.com-3'].leasedBy.name, 'boss');
+});
+test('a free signed-out label of the same Claude account is updated in place', async () => {
+  const f = mk();
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', needsSignIn: true });
+  const idx = await loginBoss(f);
+  assert.deepEqual(Object.keys(idx), ['me@example.com']);
+  assert.equal(idx['me@example.com'].needsSignIn, undefined);
+  assert.equal(idx['me@example.com'].leasedBy.name, 'boss');
+});
+test('a usage limit on one label blocks its sibling labels, not another Claude account', () => {
+  const f = fixture();
+  const dir = accDir(f);
+  seedAccount(f, 'me', { email: 'me@example.com', limitedUntil: Date.now() + 1e6 });
+  seedAccount(f, 'me-2', { email: 'me@example.com' });
+  seedAccount(f, 'other', { email: 'o@example.com' });
+  assert.deepEqual(accounts.freeAccounts(dir, Date.now()).map((a) => a.label), ['other']);
+  const list = accounts.listAccounts(dir);
+  assert.match(accounts.accountState(list.find((a) => a.label === 'me-2'), Date.now(), list), /^limited until/);
+});
+test('a sign-in already saved for the same Claude account keeps the lease on a replacement sign-in', async () => {
+  const SIGNED = SIGNED_ME;
   // The same sign-in on the leasing machine itself still updates the account in place.
   const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 1), auth: [SIGNED, SIGNED] });
   ownMachine(g, 'boss', { account: 'work' });
