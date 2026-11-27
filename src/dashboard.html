@@ -66,12 +66,14 @@
   .banner.warn::before { background: var(--s-starting); }
   .banner code { background: var(--subtle); padding: 1px 6px; border-radius: 4px; user-select: all; }
 
-  .feed { flex: none; max-height: 30vh; overflow-y: auto; padding: 4px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
-  .feed-row { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; }
-  .feed-row .name { flex: none; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .feed-row .state, .feed-row .age { flex: none; color: var(--text-3); }
-  .feed-row .step { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .feed-row .quiet { flex: none; color: var(--warn-text); background: var(--warn-bg); padding: 0 6px; border-radius: 4px; }
+  .feed { flex: none; padding: 6px 16px 4px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .fd-head { font-size: 11px; font-weight: 500; letter-spacing: .02em; color: var(--text-3); line-height: 18px; }
+  .fd-rows { max-height: 140px; overflow-y: auto; }
+  .fd-row { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 12px; line-height: 1; }
+  .fd-name { flex: none; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .fd-state, .fd-age { flex: none; color: var(--text-3); white-space: nowrap; }
+  .fd-step { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-2); }
+  .fd-quiet { flex: none; white-space: nowrap; color: var(--warn-text); background: var(--warn-bg); padding: 3px 6px; border-radius: 4px; font-size: 11px; }
   main { flex: 1; min-height: 0; display: grid; grid-template-columns: 400px 1fr; }
   .rail { min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); }
   .grp { position: sticky; top: 0; z-index: 1; display: flex; gap: 6px; padding: 12px 16px 6px; font-size: 12px; font-weight: 500; line-height: 1.3; color: var(--text-2); background: var(--surface); }
@@ -219,6 +221,8 @@
   @keyframes shimmer { to { background-position: -200% 0; } }
 
   @media (max-width: 820px) {
+    .fd-state { display: none; }
+    .fd-name { max-width: 12ch; }
     header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; }
     .summary { order: 5; flex-basis: 100%; margin-left: 0; }
     .summary .spend { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -939,13 +943,14 @@
   function renderFeed() {
     const rows = (S.data && S.data.activity) || [], feed = document.getElementById('feed');
     feed.hidden = !rows.length;
-    feed.replaceChildren(...rows.map((r) => h('div', { class: 'feed-row' },
+    const list = h('div', { class: 'fd-rows' }, rows.map((r) => h('div', { class: 'fd-row' },
       h('span', { class: 'sd ' + (r.state === 'working' ? 'running' : r.state === 'idle' ? 'idle' : r.state === 'blocked' ? 'failed' : 'starting') }),
-      h('span', { class: 'name', text: r.name, title: r.id }),
-      h('span', { class: 'state', text: r.state }),
-      h('span', { class: 'step mono', text: r.step || '' }),
-      r.quietMin ? h('span', { class: 'quiet', text: 'quiet for ' + r.quietMin + ' min' }) : null,
-      h('span', { class: 'age', text: dur(now() - r.t) + ' ago' }))));
+      h('span', { class: 'fd-name', text: r.name, title: r.id }),
+      h('span', { class: 'fd-state', text: r.state }),
+      h('span', { class: 'fd-step mono', text: r.step || '' }),
+      r.quietMin ? h('span', { class: 'fd-quiet', text: 'quiet for ' + r.quietMin + ' min' }) : null,
+      h('span', { class: 'fd-age', text: dur(now() - r.t) + ' ago' }))));
+    feed.replaceChildren(h('div', { class: 'fd-head', text: 'Live activity' }), list);
   }
 
   let timer, busy = false;
