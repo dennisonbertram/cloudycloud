@@ -270,7 +270,7 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   // A fresh machine has no git identity; the coordinator needs one to commit merges and its report.
   assert.ok(f.log.cmds.some((c) => c.includes('git config --global user.name') && c.includes('git config --global user.email')), 'git identity set');
   for (const name of ['SKILL.md', 'handoff.md', 'brief-template.md']) assert.ok(f.log.writes.some((w) => w.p === `/data/home/.claude/skills/cloud-fleet/${name}`), `skill file ${name} uploaded`);
-  for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice', 'remoteDialogSeen']) assert.ok(f.log.cmds[prep].includes(k), k);
+  for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice', 'remoteDialogSeen', 'remoteControlAtStartup']) assert.ok(f.log.cmds[prep].includes(k), k);
   const text = f.log.out.join('\n');
   assert.match(text, /"boss"/);
   assert.match(text, /coordinator attach boss/);
@@ -1185,7 +1185,7 @@ test('the first-run script sets remoteDialogSeen in CLAUDE_CONFIG_DIR/.claude.js
   writeFileSync(join(dir, '.claude.json'), '{"keep":1}', { mode: 0o600 });
   execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir } });
   const j = JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'));
-  assert.equal(j.remoteDialogSeen, true);
+  assert.equal(j.remoteDialogSeen, true); assert.equal(j.remoteControlAtStartup, true);
   assert.equal(j.keep, 1);
   assert.equal(statSync(join(dir, '.claude.json')).mode & 0o777, 0o600);
 });
