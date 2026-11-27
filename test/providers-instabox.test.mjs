@@ -697,8 +697,8 @@ test('a prerelease of the floor is below it; a prerelease of a newer version is 
 
 // A command past the 600 s foreground cap runs as a background job: the SDK's startJob rejects
 // stream callbacks (and stdin) outright, so the run must not forward them. The job's one combined
-// log is followed with wait() and delivered to every stream consumer the caller gave.
-test('background commands (timeoutMs > the foreground cap) start without stream callbacks; wait() output reaches both stdout and stderr consumers', async () => {
+// log is followed with wait() and delivered once, to the stdout consumer.
+test('background commands (timeoutMs > the foreground cap) start without stream callbacks; the merged wait() log reaches only the stdout consumer', async () => {
   const runCalls = [];
   const job = {
     killed: 0,
@@ -728,7 +728,7 @@ test('background commands (timeoutMs > the foreground cap) start without stream 
   assert.equal(runCalls[0].opts.onStderr, undefined, 'the background start must not carry onStderr');
   assert.equal(runCalls[0].opts.stdin, undefined, 'the background start must not carry stdin');
   assert.deepEqual(out, ['out-chunk\nerr-chunk\n']);
-  assert.deepEqual(err, ['out-chunk\nerr-chunk\n'], 'the merged background log is delivered to stderr consumers the same way stdout is delivered');
+  assert.deepEqual(err, [], 'the merged background log is delivered once, as stdout; stderr stays empty');
   assert.equal(job.killed, 0);
 });
 

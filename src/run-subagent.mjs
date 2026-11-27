@@ -611,7 +611,7 @@ async function turnOnce(a, message, ctx, t, deadline) {
     // omp, codex and opencode exit 1 with the error in their own events; show that rather than an empty stderr.
     const h = harnessOf(a), f = ['omp', 'codex', 'opencode'].includes(h) && (t.progress.final ?? PARSE[h](failure.stdout ?? '').final);
     const said = f?.is_error && typeof f.result === 'string' ? `${f.result}\n${h === 'codex' ? codexNextStep(f.result) : ''}\n` : '';
-    const stderr = `${said}${String(failure.stderr ?? failure.message ?? '')}`.slice(-4000);
+    const stderr = `${said}${String(failure.stderr || failure.stdout || failure.message || '')}`.slice(-4000);
     const retainedWithoutSession = !turnGone && !a.sessionId && preserve_worker;
     const failureWhere = retainedWithoutSession
       ? where.replace(/Uncommitted changes left in the sandbox \(ask the agent to commit and push\):/g, 'Uncommitted changes left in the sandbox:')

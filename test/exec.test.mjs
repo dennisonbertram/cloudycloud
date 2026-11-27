@@ -131,6 +131,28 @@ test('exec returns the exact nonzero code and cleans an unchanged workspace', as
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
+test('exec prints the log of a failing Instabox-style command once (merged log in stdout, stderr empty)', async () => {
+  const repo = await localRepo(), instance = provider();
+  const create = instance.adapter.create;
+  instance.adapter.create = async (o) => {
+    const sandbox = await create(o), real = sandbox.commands.run;
+    // Instabox background jobs return one merged log: it streams as stdout and the failure carries no stderr.
+    sandbox.commands.run = (cmd, opts = {}) => /; s=\$\?;/.test(cmd)
+      ? (async () => { await opts.onStdout?.('out-ok\nerr-ok\n'); throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: 'out-ok\nerr-ok\n', stderr: '' }); })()
+      : real(cmd, opts);
+    return sandbox;
+  };
+  const streamed = { out: '', err: '' };
+  try {
+    const result = await invoke(repo, instance, ['sh', '-c', 'true'], { stdout: (c) => { streamed.out += c; }, stderr: (c) => { streamed.err += c; } });
+    assert.equal(result.exit_code, 1);
+    assert.equal(streamed.out, 'out-ok\nerr-ok\n');
+    assert.equal(streamed.err, '');
+    assert.equal(result.stdout, 'out-ok\nerr-ok\n');
+    assert.equal(result.stderr, '');
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
 test('exec bounds captured output while continuing to stream the full stdout', async () => {
   const repo = await localRepo(), instance = provider();
   let streamed = 0;

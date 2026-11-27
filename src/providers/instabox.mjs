@@ -216,8 +216,8 @@ export function createProvider(env, deps = {}) {
           if (signal?.aborted) await kill();
           else signal?.addEventListener('abort', kill, { once: true });
           // wait() replays the whole log from the start on every call, so count the characters already delivered
-          // and pass only the new tail. The merged log is delivered to the stderr consumer the same way
-          // stdout is delivered: there is no way to tell the streams apart in one job log.
+          // and pass only the new tail. Instabox background jobs return stdout and stderr merged,
+          // so the log is delivered as stdout only (onStderr gets nothing).
           let delivered = 0;
           let failures = 0; // consecutive transient errors, for the backoff
           const deadline = now() + ms;
@@ -235,8 +235,7 @@ export function createProvider(env, deps = {}) {
                 if (end <= delivered) return;
                 delivered = end;
                 const slice = skip ? chunk.slice(skip) : chunk;
-                await onStdout?.(slice);
-                return onStderr?.(slice);
+                return onStdout?.(slice);
               };
               try {
                 return await call(() => { pos = 0; return job.wait({ timeoutMs: Math.min(sliceMs, left), onStdout: fresh }); });
@@ -246,10 +245,6 @@ export function createProvider(env, deps = {}) {
                 else throw e;
               }
             }
-          } catch (e) {
-            // Background output is one combined log in stdout; surface it as stderr for run-subagent.
-            if (e?.exitCode !== undefined && !e.stderr) e.stderr = e.stdout;
-            throw e;
           } finally {
             signal?.removeEventListener('abort', kill);
           }
