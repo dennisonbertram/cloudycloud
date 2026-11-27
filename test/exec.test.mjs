@@ -23,7 +23,7 @@ async function localRepo() {
 
 function provider({ transportLoss = false, createError, name = 'fake', duplicateMatches = false } = {}) {
   const home = join(tmpdir(), `cc-exec-machine-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const state = { createAttempts: 0, created: 0, deleted: 0, commands: 0, calls: [], labels: undefined, sandbox: undefined };
+  const state = { createAttempts: 0, created: 0, deleted: 0, commands: 0, calls: [], labels: undefined, sandbox: undefined, writes: [], secretWrites: [] };
   const adapter = {
     name,
     caps: { machineKinds: ['linux'], uploadMaxBytes: 10_000_000, maxTtlSeconds: 86_400, hasEgressPolicy: true },
@@ -33,9 +33,10 @@ function provider({ transportLoss = false, createError, name = 'fake', duplicate
       state.created++;
       state.labels = options.labels;
       await mkdir(home, { recursive: true });
+      const put = (list) => async (path, bytes) => { list.push(path); await mkdir(join(path, '..'), { recursive: true }).catch(() => {}); const { writeFile } = await import('node:fs/promises'); await writeFile(path, bytes); };
       const sandbox = {
         id: 'same-id', home,
-        files: { async write(path, bytes) { await mkdir(join(path, '..'), { recursive: true }).catch(() => {}); const { writeFile } = await import('node:fs/promises'); await writeFile(path, bytes); } },
+        files: { write: put(state.writes), writeSecret: put(state.secretWrites) },
         commands: { async run(cmd, opts = {}) {
           state.commands++;
           state.calls.push({ cmd, opts });
@@ -88,6 +89,13 @@ test('shared create routing preserves message-based provider refusal classificat
   assert.equal(classifyCreateFailure(new Error('provider says rate_limited')), 'next');
   assert.equal(classifyCreateFailure(new Error('quota_exceeded')), 'next');
   assert.equal(classifyCreateFailure(new Error('unexpected transport failure')), undefined);
+});
+
+test('create routing honors an explicit transient code before message text', () => {
+  const transient = (message) => Object.assign(new Error(message), { code: 'transient' });
+  assert.equal(classifyCreateFailure(transient('the create request was dropped; response mentioned quota_exceeded')), 'reconcile');
+  assert.equal(classifyCreateFailure(Object.assign(new Error('retry timed out during rate_limited backoff'), { code: 'create_unknown' })), 'reconcile');
+  assert.equal(classifyCreateFailure(Object.assign(new Error('rate_limited'), { code: 'rate_limited' })), 'next');
 });
 
 test('exec preserves literal argv, streams both streams, and deletes a verified clean machine', async () => {
@@ -158,6 +166,29 @@ test('exec keeps dirty work and a clean new commit for inspection', async () => 
     assert.equal(commitResult.preserve_machine, true);
     assert.equal(committed.state.deleted, 0);
   } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(dirty.home, { recursive: true, force: true }), rm(committed.home, { recursive: true, force: true })]); }
+});
+
+test('exec keeps the machine when the command adds a linked worktree with a commit', async () => {
+  const repo = await localRepo(), instance = provider();
+  try {
+    const result = await invoke(repo, instance, [
+      'sh', '-c', 'git worktree add ../linked --detach && cd ../linked && git -c user.name=x -c user.email=x@x commit -qm linked-work --allow-empty',
+    ]);
+    assert.equal(result.preserve_machine, true, JSON.stringify(result));
+    assert.equal(instance.state.deleted, 0);
+  } finally { await Promise.all([rm(repo, { recursive: true, force: true }), rm(instance.home, { recursive: true, force: true })]); }
+});
+
+test('exec never puts argv or the snapshot bundle in a provider command string', async () => {
+  const repo = await localRepo(), instance = provider();
+  try {
+    const result = await invoke(repo, instance, ['node', '-e', 'process.stdout.write("ok")', 'sk-literal-credential-9']);
+    assert.equal(result.status, 'completed', JSON.stringify(result));
+    for (const { cmd } of instance.state.calls) assert.ok(!cmd.includes('sk-literal-credential-9'), `argv leaked into a command string: ${cmd}`);
+    assert.ok(instance.state.secretWrites.some((p) => p.endsWith('/in.bundle')), 'the snapshot bundle must use the upload-only write route');
+    assert.ok(instance.state.secretWrites.some((p) => p.includes('exec-argv')), 'the argv file must use the upload-only write route');
+    assert.ok(!instance.state.writes.some((p) => p.endsWith('/in.bundle') || p.includes('exec-argv')), 'secret material must not use the plain write route when writeSecret exists');
+  } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
 test('CLI returns zero and prints the locator when a successful command leaves dirty work', async () => {

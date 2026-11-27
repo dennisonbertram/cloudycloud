@@ -1480,9 +1480,9 @@ export async function runSubagent(args, deps) {
         let err = r.error;
         // A localSecrets provider substitutes the local value itself, so a preflight here would send a real key off-machine.
         if (!err && args.preflight !== false && !p.caps.localSecrets) {
-          preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
           if (explainOnly) unknownChecks.push(`profile preflight on ${p.name} (one-token model request)`);
           else {
+            preflightPromise ??= preflightProfile(r.ok, ctx.env, { fetchFn: deps.fetchFn });
             const pf = await preflightPromise;
             if (!pf.ok) err = pf.error;
           }
@@ -1849,6 +1849,36 @@ async function usageOf(agents, { provider, usageBudgetMs = 3000 }) {
   return new Map(out); // snapshot: a read that finishes after the budget cannot change the output
 }
 
+// Conditional stop rechecks the live workspace before deleting: the turn-idle guard cannot see work
+// added after the result was collected (e.g. through cloudy-cloud shell). The check pushes any new
+// commit to the agent's branch (safetyPush does), and flags uncommitted files plus repository state
+// outside the reported branch — linked worktrees and local refs — so nothing local-only is deleted.
+async function recheckWorkspace(a, ctx) {
+  if (!a.sandbox) return { safe: false, detail: 'the worker has no live machine to inspect' };
+  const check = await safetyPush(a, ctx);
+  if (check.gone) return { safe: true }; // deletion already happened or was confirmed elsewhere
+  if (check.error || check.failed || check.preserve_worker !== false || check.workspace_dirty !== false) {
+    return { safe: false, detail: check.where ?? 'the workspace could not be verified', check };
+  }
+  let extra;
+  try {
+    const out = String((await a.sandbox.commands.run(
+      `printf 'WTCOUNT %s\\n' "$(git worktree list --porcelain | grep -c '^worktree ')"; git for-each-ref --format='%(refname)' | grep -v '^refs/remotes/' | grep -vx 'refs/heads/${a.branch}' | sed 's/^/XREF /'`,
+      { cwd: `${a.home}/repo`, timeoutMs: SETUP_MS },
+    )).stdout ?? '');
+    const lines = out.split('\n');
+    const worktrees = Number(lines.find((l) => l.startsWith('WTCOUNT '))?.slice(8));
+    extra = [
+      ...(worktrees > 1 ? ['a linked worktree'] : []),
+      ...lines.filter((l) => l.startsWith('XREF ')).map((l) => `local ref ${l.slice(5)}`),
+    ];
+  } catch (e) {
+    return { safe: false, detail: `the workspace could not be fully inspected (${ctx.scrub(e?.message)})`, check };
+  }
+  if (extra.length) return { safe: false, detail: `state outside the reported branch remains (${extra.join(', ')})`, check };
+  return { safe: true, check };
+}
+
 // cloud_agent_stop: idempotent.
 export async function stopAgents(args = {}, deps) {
   const ctx = ctxOf(deps, 'cloud_agent_stop');
@@ -1862,6 +1892,14 @@ export async function stopAgents(args = {}, deps) {
     if (conditional && (!(a.status === 'idle' || a.status === 'stop-pending') || a.turn?.id !== args.expected_turn_id || a.turn?.status !== 'completed')) {
       const action = 'The worker has changed state since this result was collected. Inspect it with cloud_agent_list and decide whether to wait, message, or stop it.';
       return { state: lifecycle(a, { status: 'not-stopped', error: false, message: 'The completed turn is no longer idle; no stop was attempted.', action }), text: `${id}: not stopped (the completed turn is no longer idle).\nNext step: ${action}` };
+    }
+    if (conditional && !a.stopPromise) {
+      const live = await recheckWorkspace(a, ctx);
+      if (!live.safe) {
+        const message = `The worker workspace changed after this result was collected: ${live.detail}. The worker stays open.`;
+        const action = 'Inspect the workspace with cloudy-cloud shell or cloud_agent_list, preserve or push the new work, then call cloud_agent_stop again without the turn guard.';
+        return { state: lifecycle(a, { status: 'not-stopped', error: false, message, action, ...(live.check?.workspace_dirty !== undefined && { workspace_dirty: live.check.workspace_dirty }) }), text: `${id}: not stopped (the workspace changed after this result was collected).\nNext step: ${action}` };
+      }
     }
     try {
       await stop(a, ctx.open, ctx.stoppedBranches);

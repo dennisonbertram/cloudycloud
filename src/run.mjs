@@ -244,6 +244,12 @@ async function run(options, resumeRecord) {
           message: 'The result did not identify its completed turn, so the CLI kept the worker open instead of stopping a possibly resumed task.',
           action: `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list before stopping ${agentId}.` };
       } else {
+        // Persist the completed result before asking the owner to delete the worker: if this process
+        // exits while cleanup is in flight, resume still replays the finished turn.
+        if (typeof final.result === 'string') {
+          record = { ...record, status: 'completed', turn_id: final.turn_id, cached_result: { ...final, run_id: id }, updated_at: Date.now() };
+          writeRunRecord(record);
+        }
         let outcome, stopText = '', stopError;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -260,10 +266,10 @@ async function run(options, resumeRecord) {
         if (stopError) {
           const changedTurn = outcome?.status === 'not-stopped';
           const action = changedTurn
-            ? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${agentId}; a newer turn may be running, so decide manually whether to stop it.`
+            ? (outcome?.action ?? `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and inspect cloud_agent_list for ${agentId}; a newer turn may be running, so decide manually whether to stop it.`)
             : `Reconnect with cloudy-cloud mcp-server --session ${name} --repo ${shellQuote(repo)} and retry cloud_agent_stop for ${agentId}. The worker remains tracked while deletion is unconfirmed.`;
           final = { ...final, status: 'failed', error: true, cleanup_error: true, preserve_worker: !changedTurn, recoverable: true, session: name, repo,
-            message: changedTurn ? 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.' : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`,
+            message: changedTurn ? (stopError || 'The worker resumed before automatic cleanup; the CLI did not stop the newer turn.') : `The worker finished, but deletion was not confirmed after three attempts: ${stopError}`,
             action };
         }
       }
@@ -273,7 +279,8 @@ async function run(options, resumeRecord) {
       ...record,
       status: final.status,
       ...(final.turn_id && { turn_id: final.turn_id }),
-      ...(!timedOut && final.turn_id && typeof final.result === 'string' && { cached_result: final }),
+      ...(final.cleanup_error && { cleanup_error: true }), // cleanup is recorded separately; the completed result above stays replayable
+      ...(!record.cached_result && !timedOut && final.turn_id && typeof final.result === 'string' && { cached_result: final }),
       updated_at: Date.now(),
     };
     writeRunRecord(record);

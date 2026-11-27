@@ -6,7 +6,7 @@ import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createSnapshotManager } from './snapshot.mjs';
 import { egressAllow, loadEnv } from './config.mjs';
-import { loadProviders } from './providers/index.mjs';
+import { loadProviders, writeSecretFile } from './providers/index.mjs';
 import { classifyCreateFailure, reconcileCreate } from './create-routing.mjs';
 
 const runFile = promisify(execFile);
@@ -93,19 +93,23 @@ async function place(providers, env, labels, bundleSize, egress, timeoutSeconds)
 
 async function inspectWorkspace(sandbox, repoPath, originalSha, originalRefs) {
   try {
-    const r = await sandbox.commands.run(String.raw`git status --porcelain --untracked-files=all && printf '\n--CC-HEAD--\n' && git rev-parse HEAD && printf '\n--CC-REFS--\n' && git for-each-ref --format='%(refname) %(objectname)'`, {
+    const r = await sandbox.commands.run(String.raw`git status --porcelain --untracked-files=all && printf '\n--CC-HEAD--\n' && git rev-parse HEAD && printf '\n--CC-REFS--\n' && git for-each-ref --format='%(refname) %(objectname)' && printf '\n--CC-WT--\n' && git worktree list | wc -l`, {
       cwd: repoPath, timeoutMs: 30_000,
     });
     const raw = String(r.stdout ?? '');
     const headMark = '\n--CC-HEAD--\n';
     const refsMark = '\n--CC-REFS--\n';
+    const wtMark = '\n--CC-WT--\n';
     const headAt = raw.lastIndexOf(headMark);
     const refsAt = raw.lastIndexOf(refsMark);
+    const wtAt = raw.lastIndexOf(wtMark);
     const status = headAt < 0 ? '' : raw.slice(0, headAt).trim();
     const currentSha = headAt < 0 || refsAt < headAt ? '' : raw.slice(headAt + headMark.length, refsAt).trim();
-    const refs = refsAt < 0 ? '' : raw.slice(refsAt + refsMark.length).trim();
+    const refs = refsAt < 0 || wtAt < refsAt ? '' : raw.slice(refsAt + refsMark.length, wtAt).trim();
+    const worktrees = wtAt < 0 ? NaN : Number(raw.slice(wtAt + wtMark.length).trim());
     if (!/^[0-9a-f]{40}$/i.test(currentSha)) throw new Error('remote HEAD output was incomplete');
-    return { verified: true, dirty: Boolean(status), changed: currentSha !== originalSha, refsChanged: refs !== originalRefs, head: currentSha };
+    if (!Number.isInteger(worktrees) || worktrees < 1) throw new Error('remote worktree count was incomplete');
+    return { verified: true, dirty: Boolean(status), changed: currentSha !== originalSha, refsChanged: refs !== originalRefs, extraWorktrees: worktrees > 1, head: currentSha };
   } catch (error) {
     return { verified: false, dirty: null, changed: null, error: textOf(error) };
   }
@@ -140,6 +144,7 @@ async function runExec(options, deps) {
   let placement;
   let sandbox;
   let remoteRepo;
+  let argvFile;
   let originalRefs = '';
   try {
     placement = await place(providers, env, labels, snapshot.size, network.list, options.timeout);
@@ -147,7 +152,12 @@ async function runExec(options, deps) {
     remoteRepo = `${sandbox.home ?? '/home/user'}/repo`;
     const bundle = await snapshot.read();
     if (!bundle) throw new Error('the full local repository snapshot could not be read');
-    await sandbox.files.write(`${sandbox.home ?? '/home/user'}/in.bundle`, bundle);
+    // The bundle can carry a credential inside tracked history, so it uses the upload-only route (writeSecret fails closed).
+    await writeSecretFile(sandbox, `${sandbox.home ?? '/home/user'}/in.bundle`, bundle);
+    // argv can hold a credential too, so it is never interpolated into the provider's command string: the script is uploaded
+    // through the same secret route and the remote command names only its path.
+    argvFile = `${sandbox.home ?? '/home/user'}/exec-argv.sh`;
+    await writeSecretFile(sandbox, argvFile, `${shellCommand(options.argv)}\n`);
     const setup = [
       'git init -q repo',
       'cd repo',
@@ -192,7 +202,7 @@ async function runExec(options, deps) {
   let commandError;
   let commandResult;
   try {
-    commandResult = await sandbox.commands.run(shellCommand(options.argv), {
+    commandResult = await sandbox.commands.run(`sh ${quote(argvFile)}`, {
       cwd: remoteRepo,
       timeoutMs: options.timeout * 1000,
       onStdout: (chunk) => {
@@ -225,7 +235,7 @@ async function runExec(options, deps) {
   const inspection = await inspectWorkspace(sandbox, remoteRepo, snapshot.sha, originalRefs);
   const code = commandError ? exitOf(commandError) : Number.isInteger(commandResult?.exitCode) ? commandResult.exitCode : 0;
   const commandKnown = !commandError || code !== undefined;
-  const preserve = !inspection.verified || inspection.dirty === true || inspection.changed === true || inspection.refsChanged === true || !commandKnown;
+  const preserve = !inspection.verified || inspection.dirty === true || inspection.changed === true || inspection.refsChanged === true || inspection.extraWorktrees === true || !commandKnown;
   const owner = placement.owner;
   let cleanupError;
   if (!preserve) {
@@ -247,13 +257,14 @@ async function runExec(options, deps) {
     workspace_dirty: inspection.dirty,
     workspace_changed: inspection.changed,
     refs_changed: inspection.refsChanged,
+    extra_worktrees: inspection.extraWorktrees,
     preserve_machine: preserve || Boolean(cleanupError),
     error: Boolean(commandError || code !== 0 || cleanupError || !inspection.verified),
   };
   if (commandError || code !== 0) output.message = commandKnown ? `Remote command exited with code ${code}.` : `The command result could not be confirmed: ${textOf(commandError)}`;
   else if (cleanupError) output.message = `The command finished, but the provider did not confirm sandbox deletion: ${textOf(cleanupError)}`;
   else if (!inspection.verified) output.message = `The command ended, but the remote workspace could not be verified (${inspection.error}); the sandbox was retained.`;
-  else if (inspection.dirty || inspection.changed || inspection.refsChanged) output.message = 'The command finished with uncommitted files or changed Git commits or branches; the sandbox was retained.';
+  else if (inspection.dirty || inspection.changed || inspection.refsChanged || inspection.extraWorktrees) output.message = 'The command finished with uncommitted files, changed Git commits or branches, or additional worktrees; the sandbox was retained.';
   if (output.preserve_machine) {
     output.action = ownerAction(owner);
     output.cleanup_command = `cloudy-cloud machines stop ${quote(owner.selector)}`;

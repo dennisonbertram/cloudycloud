@@ -212,6 +212,38 @@ test('CLI retries cleanup while the named owner is connected and reports reconne
   assert.equal(stopped.result.structuredContent.agents[0].status, 'stopped');
 });
 
+test('run persists the completed result before requesting worker cleanup', async (t) => {
+  const f = await fixture(t);
+  const session = `${f.session}-prestop`;
+  t.after(() => stopOwner(session, f.repo, f.home));
+  const child = spawn(resolve(root, 'bin/cloudy-cloud'), ['run', '--repo', f.repo, '--session', session, '--timeout', '30', '--json', '--', 'OK quick task'], {
+    cwd: f.repo, env: { ...f.env, CLOUDY_CLOUD_TEST_HANG_KILL: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => child.kill('SIGKILL'));
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const runId = await new Promise((resolveId, reject) => {
+    const timer = setTimeout(() => reject(new Error(`run handle was not printed; stderr=${stderr}`)), 10_000);
+    const poll = () => {
+      const match = /Run ID: ([0-9a-f-]{36})/.exec(stderr);
+      if (match) { clearTimeout(timer); resolveId(match[1]); return; }
+      if (child.exitCode !== null) { clearTimeout(timer); reject(new Error(`run exited before printing its handle; stderr=${stderr}`)); return; }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+  // The sandbox deletion hangs inside the first stop attempt, so a cached_result present in the
+  // record can only have been written before the stop request — never by the post-cleanup write.
+  const recordPath = join(f.home, '.config', 'cloudy-cloud', 'runs', `${runId}.json`);
+  let record;
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline && !record?.cached_result;) {
+    try { record = JSON.parse(await readFile(recordPath, 'utf8')); } catch { /* the record may not exist yet */ }
+    if (!record?.cached_result) await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  }
+  assert.equal(record?.cached_result?.status, 'completed', `the completed result must be persisted before the stop request; record=${JSON.stringify(record)} stderr=${stderr}`);
+  assert.equal(record.cached_result.agent_id, record.agent_id);
+});
+
 test('CLI drains large JSON output before exiting', async (t) => {
   const f = await fixture(t);
   const session = `${f.session}-large-output`;

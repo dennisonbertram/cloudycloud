@@ -81,6 +81,18 @@ test('explain shares local eligibility checks and reports dynamic checks without
   assert.equal(f.deps.open.size, 0);
 });
 
+test('explain does not send the billed profile preflight request', async () => {
+  let fetches = 0;
+  const f = await setup({
+    env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'pk-explain-test', CLOUDY_CLOUD_PROFILES: '/nonexistent/profiles.json' },
+    fetchFn: async () => { fetches++; return { status: 200, text: async () => '{}' }; },
+  });
+  const result = await explainSubagent({ description: 'preview', prompt: 'hi', profile: 'pi-glm' }, f.deps);
+  assert.equal(result.structuredContent.status, 'conditional');
+  assert.ok(result.structuredContent.unknown_checks.some((c) => c.includes('preflight')));
+  assert.equal(fetches, 0, 'explain must not send the one-token preflight request');
+});
+
 test('explain reports locally known launch exclusions using the same request validation', async () => {
   const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_ALLOW_MACHINE_KINDS: '' } });
   const result = await explainSubagent({ description: 'preview', prompt: 'hi', machine: 'not-a-machine' }, f.deps);
@@ -153,6 +165,15 @@ test('cloud_exec does not send MCP progress without a progress token', async () 
   });
   assert.equal(suppliedCallbacks, false);
   assert.equal(notices, 0);
+});
+
+test('cloud_exec refreshes the environment before routing', async () => {
+  const f = await setup();
+  const order = [];
+  const server = buildServer({ ...f.deps, refreshEnv: () => order.push('refresh'), executeRemoteArgv: async () => { order.push('exec'); return { status: 'completed', exit_code: 0 }; } });
+  const call = server._requestHandlers.get('tools/call');
+  await call({ method: 'tools/call', params: { name: 'cloud_exec', arguments: { argv: ['true'] } } }, { mcpReq: { requestState: () => undefined } });
+  assert.deepEqual(order, ['refresh', 'exec'], 'cloud_exec must refresh the environment before it routes');
 });
 
 test('start returns at once with starting, before the sandbox exists', async () => {
@@ -1031,6 +1052,44 @@ test('conditional automatic stop leaves a worker alone after a newer turn starts
   assert.equal(created[0].killed, false);
   await wait([id]);
   await stopAgents({ agent_ids: [id] }, deps);
+});
+
+test('conditional automatic stop rechecks the live workspace before deleting', async () => {
+  const { start, wait, deps, created, remote } = await setup();
+  const id = await start({ prompt: 'EDIT' });
+  await wait([id]);
+  const turn = deps.open.get(id).turn.id;
+  const sbx = created[0];
+  // A file created through cloudy-cloud shell after the result was collected leaves the workspace dirty.
+  await sbx.commands.run('echo shell-edit > shell.txt', { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const dirty = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(dirty.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(sbx.killed, false);
+
+  // Committing the same edit makes it pushable: the recheck preserves it on origin, then deletes.
+  await sbx.commands.run('git add -A && git -c user.name=x -c user.email=x@x commit -qm shell-commit', { cwd: '/home/user/repo', timeoutMs: 5000 });
+  const head = (await sbx.commands.run('git rev-parse HEAD', { cwd: '/home/user/repo', timeoutMs: 5000 })).stdout.trim();
+  const stopped = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+  assert.equal(stopped.structuredContent.agents[0].status, 'stopped');
+  assert.equal(sbx.killed, true);
+  assert.equal(await remote(`git rev-parse refs/heads/cloudy-cloud/${id}`), head, 'the shell commit must be on origin before deletion');
+});
+
+test('conditional automatic stop keeps a worker whose repo gained a linked worktree or extra branch', async () => {
+  for (const make of ['git worktree add ../linked --detach', 'git branch extra-head HEAD~0']) {
+    const { start, wait, deps, created } = await setup();
+    const id = await start({ prompt: 'EDIT' });
+    await wait([id]);
+    const turn = deps.open.get(id).turn.id;
+    const sbx = created[0];
+    await sbx.commands.run(make, { cwd: '/home/user/repo', timeoutMs: 5000 });
+    const r = await stopAgents({ agent_ids: [id], expected_turn_id: turn, expected_status: 'idle' }, deps);
+    assert.equal(r.structuredContent.agents[0].status, 'not-stopped', make);
+    assert.equal(sbx.killed, false, make);
+    // An explicit user-requested stop is not conditional, so it still deletes the machine.
+    await stopAgents({ agent_ids: [id] }, deps);
+    assert.equal(sbx.killed, true);
+  }
 });
 
 

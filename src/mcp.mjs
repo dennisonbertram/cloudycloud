@@ -183,6 +183,7 @@ for (const tool of tools) {
 const handlers = {
   cloud_agent: runSubagent, cloud_agent_explain: explainSubagent, cloud_agent_recover: recoverAgent, cloud_agent_message: messageAgent, cloud_agent_wait: waitAgents, cloud_agent_result: resultAgent,
   cloud_exec: async (args, deps) => {
+    deps.refreshEnv?.(); // keys and network policy added to the env file since startup apply to this exec
     const secrets = secretValues(deps.env ?? process.env, deps.provider?.keyName, [...(deps.literals ?? [])]);
     const scrub = (value) => secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), String(value ?? ''));
     const cleanValue = (value) => typeof value === 'string' ? scrub(value) : Array.isArray(value) ? value.map(cleanValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cleanValue(item)])) : value;

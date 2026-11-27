@@ -117,7 +117,7 @@ export async function fakeSandbox(github = currentGithub) {
 // ---- the in-memory Provider (see src/providers/index.mjs for the interface) ----
 
 // Records every call on `log`. Sandboxes are fakeSandbox()es, so commands really run in a temp dir.
-export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { name = 'fake', hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, hasSudo, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false, deleteFailures = 0 } = {}) {
+export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { name = 'fake', hasSnapshots = true, hasProxySecrets = true, hasConsentedSecrets = false, hasSudo, machineKinds = ['linux', 'android', 'omarchy', 'gpu', 'macos'], plan = null, hasEgressPolicy = false, deleteFailures = 0, hangKill = false } = {}) {
   const log = { create: [], list: [], delete: [], snapshot: [], getSnapshot: [], connect: [], ports: [], display: [], metrics: [], writes: [], cmds: [] }; // writes and cmds: everything that reaches any machine (the leak guard reads them)
   const machines = new Map(); // id -> { id, name, labels, state, status, startedAt, deleteAt }
   const sandboxes = new Map();
@@ -146,6 +146,7 @@ export function createFakeProvider(env = { FAKE_API_KEY: 'fake-key' }, { name = 
       const kill = sbx.kill;
       sbx.kill = async () => {
         if (deleteFailuresRemaining > 0) { deleteFailuresRemaining--; throw new Error('temporary delete failure'); }
+        if (hangKill) await new Promise(() => {}); // a delete that never confirms: the caller's stop stays pending
         await kill(); machines.delete(id);
       };
       return sbx;
