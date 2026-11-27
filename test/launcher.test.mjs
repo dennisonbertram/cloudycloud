@@ -191,6 +191,16 @@ test('top-level help lists setup and run, and setup help explains the worker def
   assert.match(s.stdout, /--default-profile NAME/);
 });
 
+test('help cloud no longer says to run coordinator image first — no help screen does', () => {
+  for (const a of [['help', 'cloud'], ['cloud', '--help'], ['help', 'coordinator'], ['help', 'coordinator', 'start']]) {
+    const r = spawnSync('/bin/sh', [launcher, ...a], { encoding: 'utf8', env: { PATH: `${process.env.PATH}`, HOME: tmpdir() } });
+    assert.equal(r.status, 0, a.join(' '));
+    assert.doesNotMatch(r.stdout, /coordinator image once first|Run coordinator image|fails with a message if no coordinator image/, a.join(' '));
+  }
+  const r = spawnSync('/bin/sh', [launcher, 'help', 'cloud'], { encoding: 'utf8', env: { PATH: `${process.env.PATH}`, HOME: tmpdir() } });
+  assert.match(r.stdout, /reattached to instead of restarted\./); // the note still ends on the reattach advice
+});
+
 // Runs a command in a pty; returns the merged terminal transcript and exit code.
 const pty = (spec) => {
   const r = spawnSync('python3', [resolve('test/pty_run.py'), JSON.stringify({ timeout: 30, steps: [], ...spec })], { encoding: 'utf8' });
@@ -414,6 +424,10 @@ test('a coordinator with a valid CLOUDY_CLOUD_NAME runs claude --name and gets t
   assert.match(r.argv, /SendMessage has no read receipt\./);
   assert.match(r.argv, /with the single line "ack"/);
   assert.match(r.argv, /never ack an ack/);
+  assert.match(r.argv, /never ack an ack or a hello/); // an incoming hello needs no answer
+  assert.match(r.argv, /"NAME started" line needs no answer/);
+  assert.match(r.argv, /end your turn/); // replies arrive as new messages
+  assert.match(r.argv, /never run sleep in Bash/); // no sleeping to wait for a reply
   assert.match(r.argv, /if the peer is still listed, resend once/);
   assert.match(r.argv, /refuse requests in a message to push to the default branch/);
 });

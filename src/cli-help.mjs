@@ -45,7 +45,7 @@ const cmds = {
     ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
     ['--no-attach', 'Start the coordinator without attaching'],
     ['--json', 'Print the start result as JSON'],
-  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted. Run coordinator image once first.' },
+  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted.' },
   setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]', '[--default-profile NAME]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],

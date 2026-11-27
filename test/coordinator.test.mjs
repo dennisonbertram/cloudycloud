@@ -334,6 +334,32 @@ test('a failed peer lookup never fails the start: no peers, one progress line', 
   assert.ok(progress.some((l) => /other coordinators/.test(l)), JSON.stringify(progress));
 });
 
+test('a coordinator with peers but no task opens on a hello-only first prompt, then waits for the user', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  f.machines.push({ sandboxId: 'm1', name: 'coord-m1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'alpha', install: mine } });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const session = sessionCommand(f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  // The hello only goes out on a first turn, so the session gets a prompt that sends it — and nothing else.
+  assert.match(session, /--remote-control 'boss' '[^']*hello[^']*'/, session);
+  assert.match(session, /wait for the user/, session);
+  assert.match(session, /no other work|start no other work/, session);
+  assert.ok(!f.log.writes.some((w) => /task\.md/.test(w.p)), 'no task file for a taskless start');
+});
+
+test('a coordinator with a task keeps the task as its first prompt; without peers it gets no prompt', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  f.machines.push({ sandboxId: 'm1', name: 'coord-m1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'alpha', install: mine } });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', 'do the thing'], f.deps);
+  let session = sessionCommand(f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  assert.match(session, /--remote-control 'boss' "\$\(cat '\/data\/home\/task\.md'\)"/, session);
+  const g = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  session = sessionCommand(g.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  assert.match(session, /--remote-control 'boss'\s*$/, session);
+});
+
 test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {
   const f = fixture();
   const task = "do it; $(rm -rf /) 'quoted'";
@@ -694,6 +720,19 @@ test('start on a terminal: ok with the deadline detail, a Reach it block with a 
   g.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
   assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true });
+});
+
+test('a long note wraps at word boundaries on a terminal — a printed command is never cut', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN; // an image saved before the credential check triggers the forget note
+  delete f.deps.note; // exercise the real default: notes go to stderr
+  const err = [];
+  f.deps.stderr = { isTTY: true, write: (x) => err.push(x) };
+  f.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const lines = plainText(err.join('')).split('\n').filter((l) => l.trim());
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, `line over 80 cells: ${JSON.stringify(l)}`);
+  assert.ok(lines.some((l) => l.includes('cloudy-cloud coordinator image --forget')), err.join(''));
 });
 
 test('a top-level coordinator uses the primary provider coordinator configuration', async () => {
@@ -1105,6 +1144,71 @@ test('an optional profile key set only as a plain value is skipped with a plain 
   assert.match(out, /Not sent to the coordinator[^\n]*OPENROUTER_API_KEY/);
   assert.match(out, /cloudy-cloud setup --more/);
   assert.ok(!out.includes(PROV));
+});
+
+// Two optional profile keys held only as plain values, on a terminal.
+const withSkippedKeys = (f, extra = {}) => {
+  f.deps.ui = tty();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  f.deps.env.PARTICLE_API_KEY = 'pcl_FAKEKEY0123456789';
+  Object.assign(f.deps.env, extra);
+  return f;
+};
+
+test('skipped keys: on a terminal the full instructions print once per key set, then a single line', async () => {
+  const f = withSkippedKeys(fixture());
+  await main(START, f.deps);
+  let text = plainText(f.log.out.join('\n'));
+  assert.match(text, /Not sent to the coordinator \(not stored as proxy secrets\)/);
+  assert.ok(text.includes('OPENROUTER_API_KEY') && text.includes('PARTICLE_API_KEY'), text);
+  assert.match(text, /cloudy-cloud setup --more/);
+  // The same key set on a later start: one short line, no instructions.
+  const g = withSkippedKeys(fixture());
+  g.deps.env.CLOUDY_CLOUD_CONFIG = f.configFile;
+  await main(['start', 'boss2', '--repo', 'https://github.com/o/r'], g.deps);
+  text = plainText(g.log.out.join('\n'));
+  assert.match(text, /2 local keys were not sent to the coordinator; see cloudy-cloud setup --more/);
+  assert.doesNotMatch(text, /Not sent to the coordinator \(not stored|For [A-Z_]+: Run/);
+  // A key set the config already saw still shows the short line, and the marker file did not grow.
+  assert.match(readFileSync(f.configFile, 'utf8'), /CLOUDY_CLOUD_SKIPPED_KEYS=[A-Z_,]*OPENROUTER_API_KEY[A-Z_,]*/);
+});
+
+test('skipped keys: a new key in the set prints the full instructions again', async () => {
+  const f = withSkippedKeys(fixture());
+  await main(START, f.deps);
+  const g = withSkippedKeys(fixture());
+  g.deps.env.CLOUDY_CLOUD_CONFIG = f.configFile;
+  writeFileSync(g.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'm', keyName: 'MINE_API_KEY' } }));
+  g.deps.env.MINE_API_KEY = 'mine_FAKEKEY0123456789';
+  await main(['start', 'boss2', '--repo', 'https://github.com/o/r'], g.deps);
+  const text = plainText(g.log.out.join('\n'));
+  assert.match(text, /Not sent to the coordinator \(not stored as proxy secrets\)/);
+  assert.ok(text.includes('MINE_API_KEY'), text);
+  assert.match(text, /For MINE_API_KEY:/); // a custom key keeps its own store command
+});
+
+test('ANTHROPIC_API_KEY is never named in the skipped-keys warning — the session unsets it on purpose', async () => {
+  const f = withSkippedKeys(fixture(), { ANTHROPIC_API_KEY: 'sk-ant-api03-FAKEKEY0123456789' });
+  f.deps.env.OPENROUTER_API_KEY = undefined;
+  f.deps.env.PARTICLE_API_KEY = undefined;
+  await main(START, f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.doesNotMatch(text, /Not sent to the coordinator|local keys were not sent/);
+  assert.doesNotMatch(text, /ANTHROPIC_API_KEY/);
+});
+
+test('--json reports skippedKeys and the full note even when the terminal block was already shown', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  writeFileSync(f.configFile, 'CLOUDY_CLOUD_SKIPPED_KEYS=OPENROUTER_API_KEY\n', { mode: 0o600 });
+  await main([...START, '--json'], f.deps);
+  const j = JSON.parse(f.log.out.join('\n'));
+  assert.deepEqual(j.skippedKeys, ['OPENROUTER_API_KEY']);
+  assert.match(j.note, /Not sent to the coordinator \(not stored as proxy secrets\): OPENROUTER_API_KEY/);
 });
 
 test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and start continues', async () => {
