@@ -117,6 +117,13 @@ export const ownerFile = (env = process.env) => join(dirname(env.CLOUDY_CLOUD_CO
 // created once — dir 0700, file 0600, written atomically — and never rewritten. Providers stamp it as the
 // `install` label so every session of this installation owns the same workers; the per-session owner id
 // only scopes which machines a reaper may delete.
+// Same id as installId() but never creates anything: '' when this installation has none yet.
+export function readInstallId(env = process.env) {
+  const configured = [env.CLOUDY_CLOUD_INSTALL_ID, savedEnv(env).CLOUDY_CLOUD_INSTALL_ID].find((v) => /^[0-9a-f]{16}$/.test(String(v ?? '')));
+  if (configured) return configured;
+  try { return readFileSync(join(dirname(ownerFile(env)), 'install-id'), 'utf8').trim(); } catch { return ''; }
+}
+
 export function installId(env = process.env) {
   // Trusted config wins: `coordinator start` writes the operator's id into the machine's env file as
   // CLOUDY_CLOUD_INSTALL_ID, so a coordinator keeps classifying this installation's peers as its own.

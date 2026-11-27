@@ -133,7 +133,7 @@ test('a missing key or API failure becomes an error with a fix, and never leaks 
 });
 
 test('liveState retains event history and setup guidance when inventory fails with a reader configured', async () => {
-  const env = {}, provider = createFakeProvider(env);
+  const env = { CLOUDY_CLOUD_INSTALL_ID: 'abcdef0123456789' }, provider = createFakeProvider(env);
   provider.caps.hasMetrics = false;
   const dir = mkdtempSync(join(tmpdir(), 'cc-dashboard-inventory-'));
   const file = join(dir, 'events.jsonl');
@@ -160,7 +160,7 @@ test('liveState retains event history and setup guidance when inventory fails wi
   ]);
   assert.deepEqual(readerCalls, []);
 
-  const partialMachines = [{ id: 'coord-1', name: 'coord', labels: { role: 'coordinator' }, state: 'running', status: 'running' }];
+  const partialMachines = [{ id: 'coord-1', name: 'coord', labels: { role: 'coordinator', install: 'abcdef0123456789' }, state: 'running', status: 'running' }];
   Object.defineProperty(partialMachines, 'providerErrors', { value: [{ provider: 'fake', code: 'transient', message: 'One listing failed' }] });
   const partialState = liveState(env, { provider, file, cacheMs: 0, getReader, list: async () => partialMachines });
   const partial = await partialState();
@@ -518,8 +518,8 @@ test('the demo serves a stream and a pane for its boxes through the same endpoin
 
 // ---- a coordinator's workers, from the coordinator machine's own log and streams ----
 test('a coordinator box is filled from its machine\'s events.jsonl and streams, and the reads are paced', async () => {
-  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
-  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'coord-m1', owner: 'o1' }, ttlSeconds: 600 });
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789', CLOUDY_CLOUD_INSTALL_ID: 'abcdef0123456789' }, provider = createFakeProvider(env);
+  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'coord-m1', install: 'abcdef0123456789', owner: 'o1' }, ttlSeconds: 600 });
   await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'worker', parent: 'coord-m1', agent: 'aaaa1111', owner: 'o2' }, ttlSeconds: 600 });
   const home = join(coord.dir, 'home/.config/cloudy-cloud');
   mkdirSync(join(home, 'streams/aaaa1111'), { recursive: true });
@@ -612,8 +612,8 @@ test('a worker started by the same laptop session as its siblings is nobody\'s c
 });
 
 const coordWithLog = async (lines, clockRef) => {
-  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(env);
-  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'cn', owner: 'o' }, ttlSeconds: 600 });
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789', CLOUDY_CLOUD_INSTALL_ID: 'abcdef0123456789' }, provider = createFakeProvider(env);
+  const coord = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'cn', install: 'abcdef0123456789', owner: 'o' }, ttlSeconds: 600 });
   const home = join(coord.dir, 'home/.config/cloudy-cloud');
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'events.jsonl'), lines.map((e) => JSON.stringify(e)).join('\n') + '\n');
@@ -638,7 +638,7 @@ test('a coordinator\'s event history is bounded, and forgotten once its machine 
   const tails = [];
   let gone = false;
   const r = createMachineReader(provider, { FAKE_API_KEY: 'x' }, { minIntervalMs: 0, cacheMs: 0, cacheDir: mkdtempSync(join(tmpdir(), 'cc-rc-')) });
-  const gs = liveState({ FAKE_API_KEY: 'x' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, now: () => clock.t, list: async (e, p) => (gone ? [] : listMachines(e, p)), getReader: async () => ({ ...r, readTail: (m, name, from) => { tails.push(from); return r.readTail(m, name, from); } }) });
+  const gs = liveState({ FAKE_API_KEY: 'x', CLOUDY_CLOUD_INSTALL_ID: 'abcdef0123456789' }, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, now: () => clock.t, list: async (e, p) => (gone ? [] : listMachines(e, p)), getReader: async () => ({ ...r, readTail: (m, name, from) => { tails.push(from); return r.readTail(m, name, from); } }) });
   await gs(); clock.t += 11_000; await gs();
   assert.ok(tails.at(-1) > 0);
   gone = true; clock.t += 11_000; await gs();
@@ -1688,4 +1688,14 @@ test('a retried turn: a result event in a remote chunk is not complete while mor
 test('page: a finished box keeps pulling stream chunks while they arrive, with a bound of at most 60 hops', () => {
   const m = /\+\+st\.hops <= (\d+)/.exec(PAGE);
   assert.ok(m && Number(m[1]) > 20 && Number(m[1]) <= 60);
+});
+
+test('the dashboard reads only coordinators of this installation (another installation on a shared account is not read)', async () => {
+  const env = { FAKE_API_KEY: 'fakekeyvalue-0123456789', CLOUDY_CLOUD_INSTALL_ID: 'abcdef0123456789' }, provider = createFakeProvider(env);
+  const mine = await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'mine', install: 'abcdef0123456789' }, ttlSeconds: 600 });
+  await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'theirs', install: '0000000000000000' }, ttlSeconds: 600 });
+  await provider.create({ labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'unlabelled' }, ttlSeconds: 600 });
+  const reads = [], getReader = async () => ({ readTail: async (id) => { reads.push(id); return { data: '', from: 0, next: 0, size: 0, fetchedAt: 1 }; }, capturePane: async (id) => { reads.push(`pane ${id}`); return { lines: [], fetchedAt: 1 }; } });
+  await liveState(env, { provider, file: join(mkdtempSync(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, getReader })();
+  assert.deepEqual([...new Set(reads.map((r) => r.replace('pane ', '')))], [mine.id]);
 });

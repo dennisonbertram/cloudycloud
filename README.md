@@ -247,7 +247,7 @@ CLAUDE_CODE_OAUTH_TOKEN=<your Claude token>
 
 ## Live activity
 
-Three views show what cloud agents are doing, all from local files: the dashboard feed (state, current step, age, and a "quiet for N min" warning after 5 minutes without a new step), `cloudy-cloud watch [NAME|ID] [--json]` (one line per new step), and the `cloud_agent_activity` MCP tool, which lets Claude answer "what are they doing?". Coordinators appear while `watch` or the dashboard runs: they read the coordinator's Claude transcript every 10 seconds and cache redacted steps in `~/.config/cloudy-cloud/activity/`.
+Four views show what cloud agents are doing: the dashboard feed (state, current step, age, and a "quiet for N min" warning after 5 minutes without a new step), `cloudy-cloud watch [NAME|ID] [--json]` (one line per new step, and the current state of each agent when `watch` starts), `cloudy-cloud statusline`, and the `cloud_agent_activity` MCP tool, which lets Claude answer "what are they doing?". Workers come from your local event log. Coordinators of this installation appear while `watch` or the dashboard runs: every 10 seconds they read the new part of the transcript of the Claude session in the coordinator's `claude` tmux pane (the first read is the last 256 KiB; later reads start at the saved offset and are skipped when the file did not grow) and keep a snapshot per machine in `~/.config/cloudy-cloud/activity/` with the last 50 steps. A step is only a short summary: the tool name, the file path of a file tool, or the program name of a Bash command (`Bash curl`). Arguments, URLs and command output are never stored, and secrets are removed before any text is shortened. Only one process polls a machine at a time, so the dashboard and `watch` can run together.
 
 To show it in Claude Code's status line, add this to your Claude Code settings (for example `~/.claude/settings.json`). cloudy-cloud does not edit your settings:
 
@@ -255,7 +255,7 @@ To show it in Claude Code's status line, add this to your Claude Code settings (
 { "statusLine": { "type": "command", "command": "cloudy-cloud statusline" } }
 ```
 
-It prints a line such as `☁ 3 working · boss: Bash npm test · 12s ago`, reads local files only and prints nothing when no agent runs.
+It prints a line such as `☁ 2 working, 1 blocked · boss: Bash npm · 12s ago`, with a count for each state, reads local files only and prints nothing when no agent runs.
 
 ## Dashboard
 
@@ -263,7 +263,7 @@ It prints a line such as `☁ 3 working · boss: Bash npm test · 12s ago`, read
 cloudy-cloud dashboard
 ```
 
-This opens a read-only web page on your own machine (`127.0.0.1`) that lists every subagent and coordinator with its status. For subagents started from your session it also shows the model, branch, deadline and the messages between your session and the subagent. Cloud coordinators and machines with no local log show only their status. Add `--demo` to see sample data, `--no-open` to only print the link, or `--port N` to pick a port (default 4477).
+This opens a read-only web page on your own machine (`127.0.0.1`) that lists every subagent and coordinator with its status. For subagents started from your session it also shows the model, branch, deadline and the messages between your session and the subagent. Cloud coordinators of this installation also show their live steps in the activity strip, and the dashboard never reads a coordinator that belongs to another installation on a shared provider account. Other machines with no local log show only their status. Add `--demo` to see sample data, `--no-open` to only print the link, or `--port N` to pick a port (default 4477).
 
 ![Dashboard in list view with demo data: a list of subagents on the left and the activity of one running subagent on the right](https://raw.githubusercontent.com/dennisonbertram/cloudycloud/main/docs/images/dashboard.jpg)
 

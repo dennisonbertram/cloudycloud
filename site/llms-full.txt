@@ -759,6 +759,17 @@ Example:
 cloudy-cloud dashboard --port 5000 --no-open
 ```
 
+### cloudy-cloud watch and statusline
+
+```
+cloudy-cloud watch [NAME|ID] [--json]
+cloudy-cloud statusline
+```
+
+`watch` follows what your running cloud agents do, like `tail -f`. It prints the current state of each agent when it starts, then one line per new step, each state change, and a warning when a working agent has had no step for 5 minutes. `NAME|ID` limits it to one agent. `--json` prints one JSON object per line. Press Ctrl+C to stop. Workers come from the local event log. Coordinators of this installation are read every 10 seconds from the transcript of the Claude session in their `claude` tmux pane, and only a short summary of each tool call is kept: the tool name, a file path, or the program name of a Bash command. Arguments and URLs are never kept.
+
+`statusline` prints one line for a Claude Code status line, such as `☁ 2 working, 1 blocked · boss: Bash npm · 12s ago`, with a count for each state. It reads local files only and prints nothing when no agent runs. Add `{ "statusLine": { "type": "command", "command": "cloudy-cloud statusline" } }` to your Claude Code settings; cloudy-cloud does not edit them.
+
 ### cloudy-cloud branches
 
 ```
@@ -1101,6 +1112,10 @@ Returns an agent's latest result again, as often as asked, even after `cloud_age
 
 Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With `all: true` it instead lists every machine on the provider labelled `purpose=cloudy-cloud` (other sessions and coordinators included), grouped by its `parent` label. Each worker machine carries the labels `role`, `profile` (`claude` for the default), `parent`, `agent` and a short redacted `description`.
 
+### cloud_agent_activity
+
+Shows what running agents do now: state, current step and the last 10 steps of each worker and coordinator, with a quiet warning after 5 minutes without a step. The optional `agent` argument is a name or id. The tool is read-only and reads local files only. Coordinator steps are available while `cloudy-cloud watch` or the dashboard runs.
+
 ### cloud_agent_stop
 
 Stops agents owned by this MCP server and deletes their sandboxes. A successful result means the provider confirmed deletion or confirmed that the machine was already absent. If deletion fails transiently, the agent remains tracked as `stop-pending` and the result gives retry guidance. Stop agents when they are finished, because they otherwise remain open until stopped or idle for 60 minutes.
@@ -1410,6 +1425,8 @@ Boxes are grouped as **Needs you**, **Active** and **Finished**.
 - **Needs you:** agents that are idle, and agents that failed today.
 - **Active:** agents that are queued, starting or running.
 - **Finished:** everything else.
+
+Above the list, a **Live activity** strip shows one line per agent: its state, current step, how long ago it changed, and *quiet for N min* after 5 minutes without a step. Coordinators of this installation appear in it with their steps, read every 10 seconds from the Claude session in their `claude` tmux pane. A step is a short summary only: the tool name, a file path, or the program name of a Bash command. The dashboard never reads a coordinator that belongs to another installation on a shared provider account.
 
 The top bar counts running, starting, idle and failed agents and those finished today. The browser tab title shows the failed and idle counts.
 
