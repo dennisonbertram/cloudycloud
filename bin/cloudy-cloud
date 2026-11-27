@@ -169,7 +169,7 @@ Usage: cloudy-cloud [command] [options]
   free-pi [args]          Start free-pi as the main session (with cloud_agent)
   setup [--more] [--check-only]  Check tools and save keys
   setup --default-profile NAME  Choose the default worker profile
-  exec --repo PATH -- COMMAND [ARG ...]  Run a command on a temporary cloud machine
+  exec --repo PATH -- COMMAND [ARG ...]  Run a command on a temporary machine
   run --repo PATH [--profile NAME] -- PROMPT  Run one worker to completion
   cloud [options]         Start a cloud coordinator and attach to it
   coordinator             Manage always-on cloud coordinators
