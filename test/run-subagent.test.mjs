@@ -39,7 +39,7 @@ async function setup(over = {}) {
   const open = new Map();
   // The default fake has no proxy secrets, so the real Claude key in the default env is delivered by value (the self-hosted path). A provider with
   // proxy secrets refuses a real key (#68): tests of that path pass `provider: proxyProvider()` and a CLOUDY_CLOUD_PROXY_SECRETS env.
-  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), open, cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), /* preflight must never reach the network */ ...over };
+  const deps = { createSandbox, provider: createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { hasProxySecrets: false, hasConsentedSecrets: true }), owner: 'testowner', open, tasks: new Map(), cwd: repo, env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret' }, fetchFn: async () => ({ status: 200, text: async () => '{}' }), bundleRemoteRefs: (root) => sh(root, "git for-each-ref --format='%(objectname)' refs/remotes/origin"), /* preflight must never reach the network */ ...over };
   const text = (r) => r.content[0].text;
   // start an agent, return its id
   const start = async (args = {}) => text(await runSubagent({ description: 'd', prompt: 'hi', ...args }, deps)).match(/agent_id: ([0-9a-f]{8})/)?.[1];
@@ -64,6 +64,88 @@ test('start returns at once with starting, before the sandbox exists', async () 
   assert.match(text(r), /agent_id: [0-9a-f]{8}\nstatus: starting/);
   assert.equal([...deps.open.values()][0].status, 'starting');
   release();
+});
+
+test('cancelling while provider create is pending releases the shared disk snapshot', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { start, stop, deps } = await setup({ createSandbox: async () => { await gate; return fakeSandbox(); } });
+  const id = await start();
+  for (let i = 0; i < 50 && !deps.snapshots?.size; i++) await tick(10);
+  assert.equal(deps.snapshots?.size, 1, 'bundle preparation finished before the provider create');
+  await stop([id]);
+  release();
+  for (let i = 0; i < 50 && deps.snapshots?.size; i++) await tick(10);
+  assert.equal(deps.snapshots?.size, 0, 'cancelled setup releases the bundle and its temporary directory');
+});
+
+test('stop waits for setup to settle after a sandbox handle arrives', async () => {
+  let sandbox, beginSetup, releaseSetup;
+  const setupStarted = new Promise((resolve) => { beginSetup = resolve; });
+  const setupGate = new Promise((resolve) => { releaseSetup = resolve; });
+  const { start, open, deps } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (cmd.includes('git init -q repo')) { beginSetup(); await setupGate; }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  await setupStarted;
+  const stopping = stopAgents({ agent_ids: [id] }, deps);
+  await tick(10);
+  const killedBeforeSetupSettled = sandbox.killed;
+  releaseSetup();
+  await stopping;
+  assert.equal(killedBeforeSetupSettled, false, 'deletion waits for the setup promise even after create returns a handle');
+  assert.equal(sandbox.killed, true);
+  assert.equal(open.has(id), false);
+});
+
+test('concurrent public starts with the same repo prepare one shared snapshot', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let creates = 0;
+  const { wait, deps } = await setup({ createSandbox: async () => { creates++; await gate; return fakeSandbox(); } });
+  const server = buildServer(deps);
+  const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
+  const launch = async () => (await call('cloud_agent', { description: 'd', prompt: 'hi' })).content[0].text.match(/agent_id: ([0-9a-f]{8})/)?.[1];
+  const first = await launch();
+  const second = await launch();
+  for (let i = 0; i < 100 && creates < 2; i++) await tick(10);
+  assert.equal(creates, 2, 'both public starts reached provider creation after snapshot preparation');
+  assert.equal(deps.snapshots.preparations, 1, 'the server shares equivalent snapshots across tool calls');
+  assert.equal(deps.snapshots.size, 1);
+  release();
+  await wait([first, second]);
+  assert.equal(deps.snapshots.size, 0, 'the shared bundle is removed after both setups finish');
+});
+
+test('the configured default worker profile applies when omitted and an explicit profile wins', async () => {
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', PARTICLE_API_KEY: 'synthetic-particle-key', CLOUDY_CLOUD_DEFAULT_PROFILE: 'pi-glm' } });
+  const defaultId = await f.start({ prompt: 'OK default profile' });
+  assert.equal(f.open.get(defaultId).profile.name, 'pi-glm');
+  const explicitId = await f.start({ prompt: 'OK explicit profile', profile: 'pi-particle' });
+  assert.equal(f.open.get(explicitId).profile.name, 'pi-particle');
+  await f.wait([defaultId, explicitId]);
+  await f.stop([defaultId, explicitId]);
+});
+
+test('an explicit built-in Claude profile overrides a saved named profile default', async () => {
+  const f = await setup({ env: { ANTHROPIC_API_KEY: SECRET, GH_TOKEN: 'ghp_secret', CLOUDY_CLOUD_DEFAULT_PROFILE: 'codex' } });
+  delete f.deps.createSandbox;
+  const r = await runSubagent({ description: 'd', prompt: 'hi', profile: 'claude' }, f.deps);
+  assert.notEqual(r.isError, true, r.content?.[0]?.text);
+  const id = r.content[0].text.match(/agent_id: ([0-9a-f]{8})/)?.[1];
+  assert.ok(id, r.content[0].text);
+  await f.wait([id]);
+  assert.equal(f.deps.provider.log.create[0].labels.profile, 'claude');
+  assert.equal(f.deps.open.get(id).profile, undefined, 'built-in Claude is selected without resolving a named profile');
 });
 
 test('an agent writes its events (task, machine, reply, status) with keys redacted', async () => {
@@ -229,6 +311,280 @@ test('stop kills several sandboxes, forgets them, and is idempotent; message aft
   assert.match(await wait([ids[0]], 0.05), /status: stopped/);
 });
 
+test('a rejected stop stays tracked and blocks messages until a retry deletes the machine', async () => {
+  let killCalls = 0;
+  let beganKill, failKill;
+  const killStarted = new Promise((resolve) => { beganKill = resolve; });
+  const firstKill = new Promise((_, reject) => { failKill = reject; });
+  let sandbox;
+  const { start, wait, stop, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const kill = s.kill;
+      s.kill = async () => {
+        if (++killCalls === 1) { beganKill(); await firstKill; }
+        await kill();
+      };
+      sandbox = s;
+      return s;
+    },
+  });
+  const id = await start();
+  await wait([id]);
+  const pendingStop = stop([id]);
+  await killStarted;
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.match(await wait([id]), new RegExp(`status: stop-pending`));
+  assert.equal((await msg(id, 'must not start')).isError, true);
+  const concurrentStop = stop([id]);
+  await tick(0);
+  assert.equal(killCalls, 1, 'concurrent stop calls share one deletion attempt');
+  failKill(new Error('temporary delete failure'));
+  const [first, concurrent] = await Promise.all([pendingStop, concurrentStop]);
+  assert.match(first, /delete failure/i);
+  assert.match(concurrent, /delete failure/i);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(open.has(id), false);
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('a stop after an uncertain create stays pending until exact ownership can be connected', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'uncertain', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  const list = provider.list.bind(provider);
+  const connect = provider.connect.bind(provider);
+  let listUnavailable = true, connectUnavailable = true;
+  provider.create = async (opts) => { await create(opts); throw Object.assign(new Error('create response was lost'), { code: 'transient' }); };
+  provider.list = async (labels = {}) => {
+    if (labels.agent && listUnavailable) throw Object.assign(new Error('provider listing unavailable'), { code: 'transient' });
+    return list(labels);
+  };
+  provider.connect = async (id) => {
+    if (connectUnavailable) throw Object.assign(new Error('machine connection unavailable'), { code: 'transient' });
+    return connect(id);
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, wait, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  assert.match(await wait([id]), /machines could not be listed/);
+  assert.equal(provider.log.create.length, 1);
+  assert.equal(provider.machines.size, 1, 'the provider allocated a machine before its response was lost');
+  assert.equal(open.get(id)?.sandbox, undefined, 'initial reconciliation could not obtain a handle');
+
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1, 'a failed listing is not proof that the machine was deleted');
+
+  listUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1, 'a failed connect is not proof that the machine was deleted');
+  const exactFilter = provider.log.list.at(-1);
+  assert.equal(exactFilter.agent, id);
+  assert.equal(exactFilter.owner, 'testowner');
+  assert.equal(exactFilter.parent, 'testowner');
+  assert.equal(exactFilter.purpose, 'cloudy-cloud');
+
+  connectUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.has(id), false);
+  assert.equal(provider.machines.size, 0, 'the owned machine is deleted only after it is connected');
+  assert.equal(provider.log.create.length, 1, 'stopping never retries the uncertain create');
+});
+
+test('stop waits for an in-flight uncertain create, then deletes its single owned machine', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'late', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  let entered, release;
+  const started = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  provider.create = async (opts) => {
+    entered();
+    await gate;
+    await create(opts);
+    throw Object.assign(new Error('create response was lost'), { code: 'transient' });
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  await started;
+  const stopping = stopAgents({ agent_ids: [id] }, deps);
+  await tick(10);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 0, 'stop waits for the provider create to settle before reconciling');
+  release();
+  await stopping;
+  assert.equal(provider.machines.size, 0);
+  assert.equal(provider.log.create.length, 1);
+  assert.equal(provider.log.connect.length, 1, 'the late allocated machine is connected only for deletion');
+  assert.equal(open.has(id), false);
+});
+
+test('cleanup_unconfirmed keeps a partially provisioned machine stop-pending until direct delete succeeds', async () => {
+  const provider = createFakeProvider({ FAKE_API_KEY: 'fake-key' }, { name: 'partial', hasProxySecrets: false, hasConsentedSecrets: true });
+  const create = provider.create.bind(provider);
+  const remove = provider.delete.bind(provider);
+  let machineId, deleteCalls = 0, deleteUnavailable = true;
+  provider.create = async (opts) => {
+    const sandbox = await create(opts);
+    machineId = sandbox.id;
+    throw Object.assign(new Error('setup failed; cleanup is unconfirmed'), { code: 'cleanup_unconfirmed', provider: 'partial', machineId, allocated: true });
+  };
+  provider.delete = async (id) => {
+    deleteCalls++;
+    if (deleteUnavailable) throw Object.assign(new Error('provider delete unavailable'), { code: 'transient' });
+    return remove(id);
+  };
+  const createSandbox = (envs, options, labels, p) => p.create({
+    envs, labels: { purpose: 'cloudy-cloud', owner: 'testowner', ...labels },
+    ttlSeconds: options.deleteAfterSeconds, signal: options.signal,
+  });
+  const { start, wait, open, deps } = await setup({ provider, createSandbox });
+  const id = await start();
+  assert.match(await wait([id]), /cleanup is unconfirmed/);
+  assert.equal(open.get(id)?.sandbox, undefined);
+  assert.equal(provider.machines.size, 1);
+  assert.equal(provider.log.create.length, 1);
+
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(provider.machines.size, 1);
+  assert.equal(provider.log.connect.length, 0, 'a half-provisioned machine is never adopted as a worker');
+
+  deleteUnavailable = false;
+  await stopAgents({ agent_ids: [id] }, deps);
+  assert.equal(open.has(id), false);
+  assert.equal(provider.machines.size, 0);
+  assert.equal(deleteCalls, 2);
+  assert.equal(provider.log.delete.length, 1);
+  assert.equal(provider.log.create.length, 1, 'cleanup retries delete the known ID and never repeat create');
+});
+
+test('an idle timer handles a rejected stop and leaves the machine retryable', async () => {
+  let killCalls = 0, sandbox;
+  const { start, wait, stop, open } = await setup({
+    idleMs: 30,
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const kill = sandbox.kill;
+      sandbox.kill = async () => { if (++killCalls === 1) throw new Error('temporary delete failure'); await kill(); };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  await wait([id]);
+  for (let i = 0; i < 30 && open.get(id)?.status !== 'stop-pending'; i++) await tick(10);
+  assert.equal(open.get(id)?.status, 'stop-pending');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('failed setup cleanup keeps the sandbox handle available for a later stop retry', async () => {
+  let killCalls = 0, sandbox;
+  const { start, wait, stop, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('git init -q repo')
+        ? Promise.reject(new Error('temporary setup failure'))
+        : run(cmd, opts);
+      const kill = sandbox.kill;
+      sandbox.kill = async () => { if (++killCalls === 1) throw new Error('temporary delete failure'); await kill(); };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  assert.match(await wait([id]), /status: failed/);
+  assert.equal(open.get(id)?.sandbox, sandbox);
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(sandbox.killed, true);
+  assert.equal(killCalls, 2);
+});
+
+test('a command-specific 404 does not mark a reachable sandbox gone', async () => {
+  let sandbox;
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (/claude -p /.test(cmd)) throw Object.assign(new Error('remote command not found'), { code: 'not_found', status: 404 });
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /remote command not found/);
+  assert.equal(open.get(id)?.status, 'idle');
+  assert.equal(sandbox.killed, false, 'the successful safety push proves the machine is still reachable');
+});
+
+test('a transient prompt write failure keeps the existing session open for an explicit retry', async () => {
+  const { start, wait, msg, created, open } = await setup();
+  const id = await start();
+  await wait([id]);
+  const write = created[0].files.write;
+  let failed = false;
+  created[0].files.write = async (path, data) => {
+    if (path.endsWith('/prompt.txt') && !failed) { failed = true; throw new Error('temporary transport error'); }
+    return write(path, data);
+  };
+  await msg(id, 'first explicit turn');
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /temporary transport error/);
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(created[0].killed, false);
+  await msg(id, 'retry by user');
+  assert.match(await wait([id]), /hello/);
+  assert.equal(created[0].cmds.filter((c) => c.includes('claude -p')).length, 2);
+});
+
+test('a lost safety-push connection does not kill the session or replay the completed command', async () => {
+  let lost = false;
+  const { start, wait, msg, created, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = async (cmd, opts) => {
+        if (!lost && cmd.includes('git rev-parse HEAD')) { lost = true; throw new Error('temporary transport error'); }
+        return run(cmd, opts);
+      };
+      created.push(s);
+      return s;
+    },
+  });
+  const id = await start({ prompt: 'EDIT' });
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /could not be reached to push/);
+  assert.match(r, /sandbox file availability are unconfirmed/);
+  assert.doesNotMatch(r, /files remain in the sandbox/);
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(created[0].killed, false);
+  assert.equal(created[0].cmds.filter((c) => c.includes('claude -p')).length, 1);
+});
+
 test('idle timer stops the agent and kills its sandbox; a message resets it', async () => {
   const { start, wait, msg, created, open } = await setup({ idleMs: 150 });
   const id = await start();
@@ -247,7 +603,7 @@ test('list shows status and idle minutes', async () => {
   const { start, wait, deps, text } = await setup();
   const id = await start({ description: 'my task' });
   await wait([id]);
-  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  idle 0 min  deleted at \\S+  my task`));
+  assert.match(text(await listAgents({}, deps)), new RegExp(`${id}  idle  provider fake  idle 0 min  deleted at \\S+  my task`));
 });
 
 test('invalid session_id from the sandbox is refused and the agent is failed', async () => {
@@ -311,6 +667,100 @@ test('a failed turn reports error, scrubs secrets, still pushes commits; agent w
   assert.equal(await remote(`git show cloudy-cloud/${id}:a.txt`), 'changed');
 });
 
+test('a known first-turn failure keeps the worker when uncommitted edits remain', async () => {
+  let sandbox;
+  const { start, wait, stop, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = async (cmd, opts) => {
+        if (/claude -p /.test(cmd)) {
+          try { return await run(cmd, opts); }
+          catch (error) {
+            await writeFile(join(sandbox.dir, 'home', 'repo', 'uncommitted.txt'), 'keep me\n');
+            throw error;
+          }
+        }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Uncommitted changes left in the sandbox.*uncommitted\.txt/);
+  assert.doesNotMatch(r, /ask the agent to commit and push/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, true);
+  assert.equal(agent.result.push_status, 'pushed');
+  assert.equal(sandbox.killed, false);
+  assert.match(await stop([id]), new RegExp(`${id}: stopped`));
+  assert.equal(open.has(id), false);
+  assert.equal(sandbox.killed, true);
+});
+
+test('a known first-turn failure keeps the worker when git status is unconfirmed', async () => {
+  let sandbox;
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('PUSHOK')
+        ? Promise.resolve({ stdout: 'PUSHOK\nREMOTE_SHA abc\nSHA abc\nSTATUS_FAIL\nSTATUSERR status unavailable\n', stderr: '', exitCode: 0 })
+        : run(cmd, opts);
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Git status could not be confirmed/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, null);
+  assert.equal(agent.result.push_status, 'pushed');
+  assert.equal(sandbox.killed, false);
+});
+
+test('a known first-turn failure keeps the worker when its safety push fails', async () => {
+  let sandbox, pushes = 0;
+  const { start, wait, open } = await setup({
+    sleep: async () => {},
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => cmd.includes('PUSHOK')
+        ? Promise.resolve({ stdout: `PUSHFAIL\nERR remote denied\nSHA ${'a'.repeat(40)}\nSTATUS_OK\n`, stderr: '', exitCode: 0, attempt: ++pushes })
+        : run(cmd, opts);
+      return sandbox;
+    },
+  });
+  const id = await start({ prompt: 'FAIL' });
+  const r = await wait([id]);
+  const agent = open.get(id);
+  assert.match(r, /status: failed/);
+  assert.match(r, /Push failed: remote denied/);
+  assert.match(r, /sandbox is retained because workspace or push state may be uncommitted or unconfirmed/);
+  assert.match(r, /No session ID was reported, so this conversation cannot be resumed/);
+  assert.equal(agent.status, 'failed');
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, false);
+  assert.equal(agent.result.push_status, 'failed');
+  assert.equal(pushes, 2);
+  assert.equal(sandbox.killed, false);
+});
+
 test('a failed follow-up keeps the agent open (idle) and pushes changes', async () => {
   const { start, wait, msg, created, open } = await setup();
   const id = await start();
@@ -327,11 +777,11 @@ test('a follow-up to a vanished sandbox fails the agent and says so', async () =
   const { start, wait, msg, created } = await setup();
   const id = await start();
   await wait([id]);
-  created[0].files.write = async () => { throw new Error('sandbox not found'); };
+  created[0].files.write = async () => { throw Object.assign(new Error('sandbox not found'), { code: 'not_found' }); };
   await msg(id, 'hi');
   const r = await wait([id]);
   assert.match(r, /status: failed/);
-  assert.match(r, /no longer reachable/);
+  assert.match(r, /sandbox is confirmed gone/);
   assert.match(r, new RegExp(`already pushed to origin cloudy-cloud/${id}`));
 });
 
@@ -401,9 +851,37 @@ test('wait and stop accept a single id as a string or as agent_id', async () => 
     const r = await stopAgents(args, deps);
     assert.notEqual(r.isError, true, JSON.stringify(r));
     assert.match(r.content[0].text, /x1: not open/);
+    assert.equal(r.structuredContent.agents[0].status, 'not-open');
     const w = await waitAgents({ ...args, timeout_seconds: 1 }, deps);
     assert.notEqual(w.isError, true, JSON.stringify(w));
   }
+});
+
+test('stop reports independent structured outcomes when one provider deletion fails', async () => {
+  const deps = {
+    createSandbox: async () => { throw new Error('unused'); }, provider: createFakeProvider(),
+    open: new Map([['deadbeef', { id: 'deadbeef', branch: 'cloudy-cloud/deadbeef', status: 'idle', sandbox: { kill: async () => { throw new Error('provider offline'); } } }]]),
+  };
+  const r = await stopAgents({ agent_ids: ['deadbeef', 'unknown1'] }, deps);
+  assert.deepEqual(r.structuredContent.agents.map(({ agent_id, status, error }) => [agent_id, status, error]), [
+    ['deadbeef', 'stop-pending', true], ['unknown1', 'not-open', undefined],
+  ]);
+  assert.match(r.content[0].text, /deadbeef: stop pending/);
+  assert.match(r.content[0].text, /unknown1: not open/);
+});
+
+test('conditional automatic stop leaves a worker alone after a newer turn starts', async () => {
+  const { start, wait, msg, deps, created } = await setup();
+  const id = await start();
+  await wait([id]);
+  const completedTurn = deps.open.get(id).turn.id;
+  await msg(id, 'OK follow-up');
+  const r = await stopAgents({ agent_ids: [id], expected_turn_id: completedTurn, expected_status: 'idle' }, deps);
+  assert.equal(r.structuredContent.agents[0].status, 'not-stopped');
+  assert.equal(deps.open.get(id).status, 'running');
+  assert.equal(created[0].killed, false);
+  await wait([id]);
+  await stopAgents({ agent_ids: [id] }, deps);
 });
 
 
@@ -423,6 +901,8 @@ test('follow-up resumes the same session; both turns push to the same GitHub bra
   assert.match(cmd, new RegExp(`--resume ${SID} --dangerously-skip-permissions --output-format stream-json --verbose`));
   assert.match(cmd, /--model haiku/);
   assert.equal(created[0].writes.filter((p) => p.endsWith('in.bundle')).length, 1);
+  const checkout = created[0].cmds.find((command) => command.includes('git fetch -q ../in.bundle'));
+  assert.match(checkout, /git fetch -q \.\.\/in\.bundle [0-9a-f]{40} && git checkout -q --detach [0-9a-f]{40}/);
 });
 
 test('a small repo uploads a full bundle and sets up in the original command order', async () => {
@@ -705,7 +1185,7 @@ test('the safety push retries once', async () => {
       const s = await fakeSandbox();
       const run = s.commands.run;
       s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') && pushes++ === 0
-        ? Promise.resolve({ stdout: 'PUSHFAIL\nERR missing necessary objects\nSHA abc1234\n' })
+        ? Promise.resolve({ stdout: 'PUSHFAIL\nERR missing necessary objects\nSHA abc1234\nSTATUS_OK\n' })
         : run(cmd, o));
       return s;
     },
@@ -716,21 +1196,89 @@ test('the safety push retries once', async () => {
   assert.equal(sleeps.length, 1);
 });
 
-test('a finished turn whose safety push cannot reach the sandbox reports the agent gone', async () => {
-  const { start, wait, open } = await setup({
-    createSandbox: async (envs) => {
-      const s = await fakeSandbox(getGithub());
-      s.envs = envs;
+test('the safety push retry uses the normal NOCHANGE and dirty-file result parser', async () => {
+  let pushes = 0;
+  const { start, wait, deps } = await setup({
+    sleep: async () => {},
+    createSandbox: async () => {
+      const s = await fakeSandbox();
       const run = s.commands.run;
-      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' })) : run(cmd, o));
+      s.commands.run = (cmd, o) => {
+        if (!cmd.includes('PUSHOK')) return run(cmd, o);
+        return Promise.resolve({ stdout: pushes++ === 0
+          ? 'PUSHFAIL\nERR temporary remote failure\nSHA abc1234\nSTATUS_OK\nST ?? untracked.txt\n'
+          : 'NOCHANGE\nSHA abc1234\nSTATUS_OK\nST  M a.txt\nST ?? notes.txt\n', stderr: '', exitCode: 0 });
+      };
+      return s;
+    },
+  });
+  const r = await wait([await start({ prompt: 'DIRTY' })]);
+  assert.match(r, /No new commits/);
+  assert.match(r, /Uncommitted changes left in the sandbox.*a\.txt.*notes\.txt/);
+  const id = [...deps.open.keys()][0];
+  assert.equal(deps.open.get(id).result.preserve_worker, true);
+  assert.equal(deps.open.get(id).result.workspace_dirty, true);
+  assert.equal(deps.open.get(id).result.push_status, 'no-change');
+  assert.equal(pushes, 2);
+});
+
+test('a failed git status check marks workspace state unknown and keeps the worker open', async () => {
+  const { start, wait, deps } = await setup({
+    createSandbox: async () => {
+      const s = await fakeSandbox(getGithub());
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => cmd.includes('git status --porcelain')
+        ? Promise.resolve({ stdout: 'NOCHANGE\nSHA abc1234\nSTATUS_FAIL\nSTATUSERR status unavailable\n', stderr: '', exitCode: 0 })
+        : run(cmd, o);
       return s;
     },
   });
   const id = await start();
   const r = await wait([id]);
-  assert.match(r, /status: failed/);
+  const agent = deps.open.get(id);
+  assert.match(r, /No new commits\. Git status could not be confirmed/);
+  assert.equal(agent.status, 'idle');
+  assert.equal(agent.result.error, true);
+  assert.equal(agent.result.preserve_worker, true);
+  assert.equal(agent.result.workspace_dirty, null);
+  assert.equal(agent.result.push_status, 'no-change');
+});
+
+test('a dirty task result carries typed preservation fields for MCP clients', async () => {
+  const { deps } = await setup();
+  const started = await runSubagent({ prompt: 'DIRTY leave edits', description: 'dirty result' }, { ...deps, asTask: true });
+  const turn = deps.tasks.get(started.taskId);
+  await turn.done;
+  const completed = getTask(started.taskId, deps);
+  assert.equal(completed.status, 'failed');
+  assert.equal(completed.error.data.preserve_worker, true);
+  assert.equal(completed.error.data.workspace_dirty, true);
+  assert.equal(completed.error.data.push_status, 'no-change');
+  assert.match(completed.error.message, /No new commits/);
+  assert.equal(deps.open.get(turn.agent.id).status, 'idle');
+});
+
+test('a finished turn whose safety push loses contact stays open without replaying the turn', async () => {
+  let turnCalls = 0;
+  const { start, wait, open } = await setup({
+    createSandbox: async (envs) => {
+      const s = await fakeSandbox(getGithub());
+      s.envs = envs;
+      const run = s.commands.run;
+      s.commands.run = (cmd, o) => {
+        if (cmd.includes('PUSHOK')) return Promise.reject(Object.assign(new Error('lost'), { stdout: '', stderr: 'connection lost' }));
+        if (cmd.includes('claude -p')) turnCalls++;
+        return run(cmd, o);
+      };
+      return s;
+    },
+  });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
   assert.match(r, /could not be reached to push/);
-  assert.equal(open.get(id).status, 'failed');
+  assert.equal(open.get(id).status, 'idle');
+  assert.equal(turnCalls, 1);
 });
 
 test('a file name containing NOCHANGE is not read as the push result', async () => {
@@ -740,7 +1288,7 @@ test('a file name containing NOCHANGE is not read as the push result', async () 
       const s = await fakeSandbox(getGithub());
       s.envs = envs;
       const run = s.commands.run;
-      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
+      s.commands.run = (cmd, o) => (cmd.includes('PUSHOK') ? Promise.resolve({ stdout: 'PUSHFAIL\nERR denied\nSHA abc1234\nSTATUS_OK\nST ?? NOCHANGE-notes.txt\n', stderr: '', exitCode: 0 }) : run(cmd, o));
       return s;
     },
   });
@@ -1530,12 +2078,39 @@ test('cloud_agent_list all:true groups every cloudy-cloud machine under its pare
   mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
   mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
   mk('m3', { purpose: 'other', owner: 'o3' });
-  mk('m4', { role: 'coordinator', name: 'coord-b', install: 'i1' }); // the name is how other sessions message it
-  const r = text(await listAgents({ all: true }, deps));
+  mk('m4', { owner: 'o4', parent: 'o4', role: 'coordinator', name: 'coord-b', install: 'i1' }); // the name is how other sessions message it
+  const response = await listAgents({ all: true }, deps);
+  const r = text(response);
   assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
   assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
   assert.match(r, /m4[^\n]*coordinator[^\n]*name coord-b/);
   assert.ok(!r.includes('m3'));
+  assert.equal(response.structuredContent.scope, 'provider');
+  assert.deepEqual(response.structuredContent.agents.map(({ id, parent, role, profile, agent_id, description }) => ({ id, parent, role, profile, agent_id, description })), [
+    { id: 'm1', parent: 'o1', role: 'worker', profile: 'claude', agent_id: 'aaaa1111', description: null },
+    { id: 'm2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent_id: 'bbbb2222', description: 'build-the-thing' },
+    { id: 'm4', parent: 'o4', role: 'coordinator', profile: null, agent_id: undefined, description: null },
+  ]);
+  assert.equal(Object.hasOwn(response.structuredContent.agents[2], 'agent_id'), false, 'machines without an agent label omit the optional field');
+});
+
+test('cloud_agent_list all:true returns typed errors when provider fleet listing fails or is partial', async () => {
+  const { deps } = await setup();
+  deps.provider.list = async () => { throw Object.assign(new Error('Boat unavailable'), { code: 'transient', provider: 'boat' }); };
+  const failed = await listAgents({ all: true }, deps);
+  assert.equal(failed.isError, true);
+  assert.equal(failed.structuredContent.scope, 'provider');
+  assert.deepEqual(failed.structuredContent.agents, []);
+  assert.deepEqual(failed.structuredContent.provider_errors, [{ provider: 'boat', code: 'transient', message: 'Could not list cloudy-cloud machines on boat: Boat unavailable' }]);
+
+  deps.provider.list = async (_labels, { onError }) => {
+    onError(Object.assign(new Error('Second provider unavailable'), { code: 'transient', provider: 'secondary' }));
+    return [{ id: 'visible', state: 'running', status: 'running', labels: { purpose: 'cloudy-cloud', owner: 'o1' } }];
+  };
+  const partial = await listAgents({ all: true }, deps);
+  assert.equal(partial.structuredContent.agents[0].id, 'visible');
+  assert.deepEqual(partial.structuredContent.provider_errors.map(({ provider, code }) => [provider, code]), [['secondary', 'transient']]);
+  assert.match(partial.content[0].text, /Provider listing is incomplete: secondary \(transient\)/);
 });
 
 // A coordinator gets the operator's install id as trusted config (CLOUDY_CLOUD_INSTALL_ID): its
@@ -2210,7 +2785,10 @@ test('a stopped issue agent still names its issue branch when cloud_agent_result
   // Calling the exported handlers with `deps` itself would create the shared maps up front and mask the bug.
   const call = (name, args) => server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, { mcpReq: { requestState: () => undefined } });
   const text = (r) => r.content[0].text;
-  const id = text(await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' })).match(/agent_id: ([0-9a-f]{8})/)[1];
+  const started = await call('cloud_agent', { prompt: 'hi', description: 'd', issue: '12' });
+  const id = text(started).match(/agent_id: ([0-9a-f]{8})/)[1];
+  assert.equal(started.structuredContent.branch, `cloudy-cloud/issue-12-${id}`);
+  assert.match(text(started), new RegExp(`It will push to cloudy-cloud/issue-12-${id}`));
   assert.match(text(await call('cloud_agent_wait', { agent_ids: [id], timeout_seconds: 60 })), /status: idle/);
   assert.match(text(await call('cloud_agent_stop', { agent_ids: [id] })), /stopped/);
   assert.match(text(await call('cloud_agent_result', { agent_id: id })), new RegExp(`git fetch origin cloudy-cloud/issue-12-${id}`));
@@ -2351,12 +2929,16 @@ test('#49 a first turn that times out after the init event leaves the agent idle
   assert.match(sbx.agentRuns.at(-1).cmd, new RegExp(`--resume ${SID}`));
 });
 
-test('#49 a first turn that times out before any stream event still fails the agent', async () => {
+test('#49 a first-turn timeout before any stream event keeps unknown execution open', async () => {
   let sbx;
-  const { start, wait } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
-  const r = await wait([await start()]);
-  assert.match(r, /status: failed/);
-  assert.equal(sbx.killed, true);
+  const { start, wait, open } = await setup({ createSandbox: async () => (sbx = await timeoutSandbox({ noInit: true })()) });
+  const id = await start();
+  const r = await wait([id]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /agent is still open/);
+  assert.equal(open.get(id)?.sessionId, undefined);
+  assert.equal(open.get(id)?.status, 'idle');
+  assert.equal(sbx.killed, false);
 });
 
 test('#49 a pi turn that ends with a provider error after the session event stays open and resumable', async () => {
@@ -2457,6 +3039,60 @@ test('a pi turn that fails twice with model_not_found is rerun and succeeds, wai
   assert.ok(events.some((e) => e.type === 'progress' && /attempt 3 of 4/.test(e.text)));
 });
 
+test('a lost command transport with a retryable provider status is not replayed automatically', async () => {
+  answeredProfiles.add('pi-glm');
+  let piRuns = 0, sandbox;
+  const sleeps = [];
+  const { start, wait } = await setup({
+    env: pEnv,
+    sleep: async (ms) => { sleeps.push(ms); },
+    createSandbox: async (envs) => {
+      const sbx = sandbox = await fakeSandbox(getGithub());
+      sbx.envs = envs;
+      const run = sbx.commands.run;
+      sbx.commands.run = async (cmd, opts) => {
+        if (cmd.includes('pi --mode json')) { piRuns++; throw Object.assign(new Error('connection lost after 503 overloaded'), { code: 'transient' }); }
+        return run(cmd, opts);
+      };
+      return sbx;
+    },
+  });
+  const r = await wait([await start({ profile: 'pi-glm' })]);
+  assert.match(r, /status: idle/);
+  assert.match(r, /connection lost after 503 overloaded/);
+  assert.equal(piRuns, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(sandbox.killed, false);
+});
+
+test('an unknown first-turn execution without a session keeps the machine for an explicit retry', async () => {
+  let turnCalls = 0, sandbox;
+  const { start, wait, msg, open } = await setup({
+    createSandbox: async (envs) => {
+      sandbox = await fakeSandbox(getGithub());
+      sandbox.envs = envs;
+      const run = sandbox.commands.run;
+      sandbox.commands.run = (cmd, opts) => {
+        if (cmd.includes('claude -p')) {
+          turnCalls++;
+          if (turnCalls === 1) return Promise.reject(Object.assign(new Error('connection lost after command start'), { code: 'transient' }));
+        }
+        return run(cmd, opts);
+      };
+      return sandbox;
+    },
+  });
+  const id = await start();
+  assert.match(await wait([id]), /status: idle/);
+  assert.equal(open.get(id)?.sessionId, undefined);
+  assert.equal(sandbox.killed, false);
+  assert.equal(turnCalls, 1, 'the uncertain command was not replayed');
+  await msg(id, 'continue explicitly');
+  assert.match(await wait([id]), /hello/);
+  assert.equal(turnCalls, 2);
+  assert.equal(sandbox.killed, false);
+});
+
 test('a 401 from the provider fails at once, without waiting', async () => {
   const { start, wait, sleeps, piRuns } = await retrySetup(9, '401 invalid api key');
   const r = await wait([await start({ profile: 'pi-glm' })]);
@@ -2494,7 +3130,7 @@ test('a push failure after a successful pi turn is not rerun as a provider retry
       const real = sbx.commands.run;
       sbx.commands.run = async (cmd, o) => {
         if (cmd.includes('pi --mode json')) piRuns++;
-        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\n', stderr: '', exitCode: 0 }; }
+        if (cmd.includes('PUSHOK')) { pushes++; return { stdout: 'PUSHFAIL\nERR remote: 502 bad gateway\nSHA abc1234\nSTATUS_OK\n', stderr: '', exitCode: 0 }; }
         return real(cmd, o);
       };
       return sbx;
@@ -2558,10 +3194,12 @@ test('a cancel during the provider retry wait ends the turn instead of running a
   assert.match(await wait([id]), /status: idle/); // turn 1 (pi run 1) is fine
   await msg(id, 'again');
   for (let i = 0; piRuns < 2 && i < 100; i++) await tick(10); // turn 2's first run fails, then the backoff begins
-  await cancelTask(`cc-${id}-t2`, deps);
+  const cancelled = await cancelTask(`cc-${id}-t2`, deps);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.match(cancelled.statusMessage, /Turn cancelled/);
   const r = await wait([id], 5);
   assert.match(r, /status: idle/);
-  assert.match(r, /Turn cancelled/);
+  assert.match(r, /result already delivered/); // tasks/cancel returned the cancelled turn's result
   assert.equal(piRuns, 2); // no retry ran after the cancelled wait
 });
 
@@ -2601,6 +3239,25 @@ test('a profile whose preflight fails falls back to the next profile and says so
   assert.match(r, /hello from pi/);
 });
 
+test('a profile-level fallback survives a preflight failure', async () => {
+  resetPreflightCache();
+  const dir = await mkdtemp(join(tmpdir(), 'cc-prof-preflight-fallback-'));
+  const file = join(dir, 'profiles.json');
+  await writeFile(file, JSON.stringify({ 'pi-glm': { harness: 'pi', format: 'openai', baseUrl: 'https://api.particle.ai/v1', model: 'z-ai/glm-5.3-flash', keyName: 'PARTICLE_API_KEY', fallback: ['pi-particle'] } }));
+  const fetchFn = async (_url, o) => JSON.parse(o.body).model === 'z-ai/glm-5.3-flash'
+    ? { status: 404, text: async () => 'model_not_found' }
+    : { status: 200, text: async () => '{}' };
+  const { deps, wait, text } = await setup({ env: { ...pEnv, CLOUDY_CLOUD_PROFILES: file }, fetchFn });
+  try {
+    const started = await runSubagent({ description: 'd', prompt: 'hi', profile: 'pi-glm' }, deps);
+    assert.notEqual(started.isError, true, text(started));
+    const id = text(started).match(/agent_id: ([0-9a-f]{8})/)?.[1];
+    assert.ok(id, text(started));
+    const r = await wait([id]);
+    assert.match(r, /status: idle\s*\nran on pi-particle \(pi-glm unavailable: Profile pi-glm: api\.particle\.ai answered 404/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('a profile with no key falls back to the profiles.json fallback list', async () => {
   resetPreflightCache();
   const dir = await mkdtemp(join(tmpdir(), 'cc-prof-'));
@@ -2636,6 +3293,40 @@ test('a profile at its maxConcurrent cap queues the next start with a status lin
   assert.ok(started);
   const other = { id: 'd', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
   await q.create(other, async () => {}); // no cap on another profile
+});
+
+test('snapshot preparation does not consume a profile slot', async () => {
+  let now = 0, started = false;
+  const preparing = { id: 'preparing', status: 'starting', profile: { name: 'pi-x' } };
+  const open = new Map([[preparing.id, preparing]]);
+  const q = startQueue({}, undefined, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; if (now >= 20) preparing.status = 'stopped'; }, softPollMs: 1 });
+  const me = { id: 'me', status: 'starting', profile: { name: 'pi-x', maxConcurrent: 1 }, emit() {} };
+  await q.create(me, async () => { started = true; });
+  assert.equal(started, true);
+  assert.equal(now, 0, 'the preparing agent has not created a machine and must not fill maxConcurrent');
+});
+
+test('snapshot preparation does not consume a machine slot', async () => {
+  let now = 0, started = false;
+  const preparing = { id: 'preparing', status: 'starting' };
+  const open = new Map([[preparing.id, preparing]]);
+  const provider = { name: 'fake', caps: { startsPerMin: 25 }, plan: async () => ({ tier: 'pro', specs: [], startsPerMinute: 25, maxRunning: 1 }) };
+  const q = startQueue({}, provider, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; }, softPollMs: 1, softWaitMs: 10 });
+  await q.learnPlan();
+  const me = { id: 'me', status: 'starting', profile: { name: 'pi-y' }, emit() {} };
+  await q.create(me, async () => { started = true; });
+  assert.equal(started, true);
+  assert.equal(now, 0, 'the preparing agent has not created a machine and must not fill maxRunning');
+
+  preparing.machineCreating = true;
+  now = 0;
+  let createStarted = false;
+  const queued = { id: 'queued', status: 'starting', profile: { name: 'pi-z' }, emit() {} };
+  const waitForCreate = startQueue({}, provider, () => open.values(), { now: () => now, sleep: async (ms) => { now += ms; if (now >= 3) preparing.machineCreating = false; }, softPollMs: 1, softWaitMs: 10 });
+  await waitForCreate.learnPlan();
+  await waitForCreate.create(queued, async () => { createStarted = true; });
+  assert.equal(createStarted, true);
+  assert.equal(now, 3, 'an in-flight provider create must reserve a machine slot');
 });
 
 test('the profile cap counts only running or starting machines from provider.list', async () => {

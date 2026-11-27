@@ -386,7 +386,10 @@ export function createProvider(env, deps = {}) {
       try {
         await attachSecrets(sbx.sandboxId, key, fetchFn, secrets, deps.timing);
       } catch (e) {
-        await sbx.kill().catch(() => {});
+        try { await sbx.kill(); }
+        catch {
+          throw Object.assign(new Error(`Instabox machine ${sbx.sandboxId} failed setup and cleanup could not be confirmed; refusing to use it or start another provider.`), { code: 'cleanup_unconfirmed', provider: 'instabox', machineId: sbx.sandboxId, allocated: true });
+        }
         throw e;
       }
       const sandbox = wrap(sbx, name, { retry, nameFromInfo: neverSuspend });

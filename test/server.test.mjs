@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import { join } from 'node:path';
 // serveStdio, the tool handlers and the task methods is real.
 const exec = promisify(execFile);
 const ENTRY = new URL('../support/server-entry.mjs', import.meta.url).pathname;
+const SERVER_ENTRY = new URL('../src/server.mjs', import.meta.url).pathname;
 const TASKS = 'io.modelcontextprotocol/tasks';
 const META = (extensions) => ({
   'io.modelcontextprotocol/protocolVersion': '2026-07-28',
@@ -100,7 +101,29 @@ test('with the tasks extension, cloud_agent answers with a task; tasks/get shows
   const w = await c.call('cloud_agent_wait', { agent_ids: [t.taskId.split('-')[1]], timeout_seconds: 5 });
   assert.match(text(w), /already delivered/);
   const list = text(await c.call('cloud_agent_list', {}));
-  assert.match(list, /idle\s+idle 0 min\s+deleted at \S+\s+d\n\s+cc-[0-9a-f]{8}-t1: 2 tool uses · 1\.0k tokens/);
+  assert.match(list, /idle\s+provider fake\s+idle 0 min\s+deleted at \S+\s+d\n\s+cc-[0-9a-f]{8}-t1: 2 tool uses · 1\.0k tokens/);
+});
+
+test('mcp-server --repo appends every stdio owner for coordinator finish', async () => {
+  const root = await repo();
+  const config = join(root, 'config', 'env'), marker = join(root, 'config', 'owner');
+  const start = () => spawn('node', [SERVER_ENTRY, '--repo', root], {
+    cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CLOUDY_CLOUD_CONFIG: config, CLOUDY_CLOUD_PROVIDER: 'instabox', INSTABOX_API_KEY: '' },
+  });
+  const childrenStarted = [start(), start()];
+  children.push(...childrenStarted);
+  let content;
+  for (let i = 0; i < 100; i++) {
+    try { content = await readFile(marker, 'utf8'); if (content.trim().split(/\s+/).length === 2) break; } catch { /* wait for the server to append */ }
+    await tick(20);
+  }
+  const owners = (content ?? '').trim().split(/\s+/);
+  assert.equal(owners.length, 2, 'both --repo servers register their owners');
+  assert.ok(owners.every((owner) => /^[0-9a-f]{8}-[0-9a-f]{3}$/.test(owner)));
+  assert.notEqual(owners[0], owners[1]);
+  assert.ok(childrenStarted.every((child) => child.exitCode === null), 'the synthetic servers stay alive until the test closes them');
+  childrenStarted.forEach((child) => child.kill());
 });
 
 test('cloud_agent_message answers with a task for turn 2 of the same agent', async () => {
@@ -172,11 +195,11 @@ test('modern revision without the tasks extension: immediate result, cloud_agent
   assert.match(text(w), /Total: 2 tool uses/);
 });
 
-test('older protocol revision (2025-11-25): all six tools are listed and work with immediate results', async () => {
+test('older protocol revision (2025-11-25): all eight tools are listed and work with immediate results', async () => {
   const c = await connect('legacy');
   const list = (await c.rpc('tools/list')).result.tools;
-  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list', 'cloud_agent_stop']);
-  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list']);
+  assert.deepEqual(list.map((t) => t.name), ['cloud_agent', 'cloud_agent_capabilities', 'cloud_agent_recover', 'cloud_agent_message', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list', 'cloud_agent_stop']);
+  assert.deepEqual(list.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name), ['cloud_agent_capabilities', 'cloud_agent_wait', 'cloud_agent_result', 'cloud_agent_list']);
   const r = await c.call('cloud_agent', { prompt: 'OK old', description: 'd' });
   assert.equal(r.result.resultType, undefined);
   const id = text(r).match(/agent_id: ([0-9a-f]{8})/)[1];

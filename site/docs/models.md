@@ -4,9 +4,9 @@
 
 Source: https://cloudycloud.tech/docs/models.html
 
-Cloudy Cloud uses your own keys. By default each subagent runs Claude Code. You can run a subagent on another agent or model by naming a profile.
+Cloudy Cloud uses your own keys. Workers use the configured default profile (Claude Code unless you changed it), or a request can name a profile.
 
-This page covers every worker agent: Claude Code (the default), pi, oh-my-pi (`omp`), Codex and opencode. Each section says which credential that agent needs. The main session, which you start with `cloudy-cloud`, `cloudy-cloud codex`, `cloudy-cloud opencode`, `cloudy-cloud pi` or `cloudy-cloud free-pi`, is covered in [Getting started](https://cloudycloud.tech/docs/index.html#other-hosts).
+This page covers the supported worker profiles: Claude Code, pi, oh-my-pi (`omp`), Codex and opencode. Each section says which credential that agent needs. The main session, which you start with a built-in launcher or connect through the standalone MCP server, is covered in [Getting started](https://cloudycloud.tech/docs/index.html#other-hosts).
 
 ## Bring your own keys
 
@@ -16,7 +16,7 @@ You pay your providers directly. Cloudy Cloud does not resell model access, and 
 
 ## Claude credentials
 
-Applies to: workers that run Claude Code (no profile, or `glm`, `deepseek`, `particle`, `openrouter`) and the Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it only if you choose claude or want Claude workers. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
+Applies to workers whose selected profile runs Claude Code (including the saved default when it resolves to Claude), and to a Claude Code main session. Workers on pi, omp, Codex or opencode profiles do not use it. Setup asks for it if you choose Claude workers. See [Getting started](https://cloudycloud.tech/docs/index.html#agent-credentials).
 
 Claude Code subagents need one Claude credential. The setup step (`cloudy-cloud setup`) asks for it when you choose claude (or want Claude workers); it does not ask if you run only Codex, opencode or pi. Two kinds work:
 
@@ -29,7 +29,7 @@ Setup saves all keys to `~/.config/cloudy-cloud/env`. Setup creates the folder w
 
 ## Default model and choosing another
 
-With no `profile`, a subagent runs Claude Code. To pick a Claude model, pass the optional `model` argument of `cloud_agent`, for example `haiku`.
+When a request has no `profile`, Cloudy Cloud uses the saved default worker profile. It is Claude Code unless you set another profile with `cloudy-cloud setup --default-profile NAME`. To pick a Claude model, pass the optional `model` argument of `cloud_agent`, for example `haiku`.
 
 To run a subagent on another agent or a non-Claude model, pass the `profile` argument of `cloud_agent`. Do not use `model` for non-Claude models, except as noted for `openrouter`, `codex-openrouter` and `opencode-openrouter`. You can ask in plain language, for example "use a glm subagent for this". Follow-up messages to that subagent reuse its profile.
 

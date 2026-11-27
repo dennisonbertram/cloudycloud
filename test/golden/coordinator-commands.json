@@ -221,8 +221,7 @@
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
-          "role": "coordinator",
-          "name": "boss"
+          "role": "coordinator"
         }
       },
       {
@@ -435,8 +434,7 @@
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
-          "role": "coordinator",
-          "name": "boss"
+          "role": "coordinator"
         }
       },
       {
@@ -614,8 +612,7 @@
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
-          "role": "coordinator",
-          "name": "boss"
+          "role": "coordinator"
         }
       }
     ],
@@ -633,8 +630,7 @@
         "sdk": "Sandbox.list",
         "apiKey": "<API_KEY>",
         "metadata": {
-          "role": "coordinator",
-          "name": "boss"
+          "role": "coordinator"
         }
       },
       {

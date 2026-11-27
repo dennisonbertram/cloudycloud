@@ -117,6 +117,7 @@
     "rows": [
       {
         "id": "m1",
+        "provider": "instabox",
         "name": "box",
         "role": "coordinator",
         "owner": "o1",

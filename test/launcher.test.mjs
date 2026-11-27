@@ -64,6 +64,12 @@ test('keys present: claude starts with expected flags and no secret in argv', ()
   assert.doesNotMatch(r.stderr, /warning/);
   for (const flag of ['--mcp-config', '--settings', '--append-system-prompt']) assert.ok(r.argv.includes(flag + '\n'), flag);
   assert.ok(!r.argv.includes(IBK) && !r.argv.includes(TOK));
+  const settings = JSON.parse(r.argv.slice(r.argv.indexOf('--settings\n') + '--settings\n'.length).split('\n')[0]);
+  assert.ok(settings.permissions.allow.includes('mcp__cloud__cloud_agent_capabilities'));
+  assert.ok(!settings.permissions.allow.includes('mcp__cloud__cloud_agent_recover'), 'recovery stays behind host approval');
+  const prompt = r.argv.slice(r.argv.indexOf('--append-system-prompt\n') + '--append-system-prompt\n'.length).split('\n')[0];
+  for (const hint of ['cloud_agent_capabilities', 'CLOUDY_CLOUD_DEFAULT_PROFILE', 'returned branch', 'issue-<number>-<id>', 'explicit new message']) assert.ok(prompt.includes(hint), hint);
+  assert.doesNotMatch(prompt, /Claude Code on another model:|pi-glm, pi-deepseek/);
 });
 
 test('CLOUDY_CLOUD_PROVIDER is passed through Claude Code env expansion', () => {
@@ -176,9 +182,13 @@ test('--version shows the install path with ~ for the home directory', () => {
   assert.equal(v.stdout.trim().split('\n')[1], `installed at ~/${basename(realpathSync(resolve('.')))}`);
 });
 
-test('top-level help lists setup with its --more and --check-only flags, within 80 columns', () => {
+test('top-level help lists setup and run, and setup help explains the worker default profile', () => {
   const r = spawnSync('/bin/sh', [launcher, '--help'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: tmpdir() } });
   assert.match(r.stdout, /^  setup \[--more\] \[--check-only\]/m);
+  assert.match(r.stdout, /^  run --repo PATH/m);
+  for (const line of r.stdout.split('\n')) assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
+  const s = spawnSync('/bin/sh', [launcher, 'setup', '--help'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir(), CLOUDY_CLOUD_CONFIG: '/nonexistent' } });
+  assert.match(s.stdout, /--default-profile NAME/);
 });
 
 // Runs a command in a pty; returns the merged terminal transcript and exit code.
@@ -499,7 +509,7 @@ test('host with no Claude token and no other worker key says to run setup', () =
 });
 
 // `<command> --help` and `help <command>` print that command's help (80 columns at most), exit 0 and never start anything.
-const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard', 'machines', 'branches'];
+const helpCommands = ['setup', 'coordinator', 'coordinator start', 'coordinator status', 'run', 'shell', 'display', 'open', 'mcp', 'protect', 'doctor', 'dashboard', 'machines', 'branches'];
 test('every help screen fits 80 columns and --help / help <command> never run the command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-help-'));
   const env = { PATH: process.env.PATH, HOME: dir, CLOUDY_CLOUD_CONFIG: join(dir, 'none') };

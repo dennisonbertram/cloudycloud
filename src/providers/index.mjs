@@ -72,15 +72,122 @@ const REGISTRY = {
   e2b: () => import('./e2b.mjs'),
 };
 
+/** Ordered, de-duplicated provider configuration. A legacy single setting remains the fallback. */
+export function providerNames(env = process.env) {
+  const configured = [...new Set(String(env.CLOUDY_CLOUD_PROVIDERS ?? '').split(/[\s,]+/).filter(Boolean))];
+  const names = configured.length ? configured : [env.CLOUDY_CLOUD_PROVIDER || 'instabox'];
+  for (const name of names) {
+    if (!Object.hasOwn(REGISTRY, name)) throw new Error(`Unknown CLOUDY_CLOUD_PROVIDER "${name}". Known: ${Object.keys(REGISTRY).join(', ')}.`);
+  }
+  return names;
+}
+
+/** Load each configured adapter in order. */
+export async function loadProviders(env = process.env, deps = {}) {
+  return Promise.all(providerNames(env).map(async (name) => (await REGISTRY[name]()).createProvider(env, deps)));
+}
+
 /**
- * @param {Record<string, string | undefined>} env   reads CLOUDY_CLOUD_PROVIDER (default instabox)
+ * @param {Record<string, string | undefined>} env   reads CLOUDY_CLOUD_PROVIDERS, then CLOUDY_CLOUD_PROVIDER (default instabox)
  * @param {object} [deps]   passed to the adapter's createProvider (injectable sdk, fetchFn, ...)
- * @returns {Promise<Provider>}
+ * @returns {Promise<Provider>} the adapter itself for one provider, otherwise a tagged composite facade
  */
 export async function loadProvider(env = process.env, deps = {}) {
-  const name = env.CLOUDY_CLOUD_PROVIDER || 'instabox';
-  if (!Object.hasOwn(REGISTRY, name)) throw new Error(`Unknown CLOUDY_CLOUD_PROVIDER "${name}". Known: ${Object.keys(REGISTRY).join(', ')}.`);
-  return (await REGISTRY[name]()).createProvider(env, deps);
+  const providers = await loadProviders(env, deps);
+  return providers.length === 1 ? providers[0] : combine(providers);
+}
+
+/**
+ * A provider facade for legacy consumers. Creation stays on the primary; listed rows carry their provider
+ * name, and ID operations use the owner last discovered by list. Duplicate IDs are intentionally ambiguous.
+ */
+export function combine(providers) {
+  if (!providers?.length) throw new Error('At least one provider is required.');
+  const primary = providers[0];
+  const owners = new Map();
+  const duplicate = new Set();
+  let listIncomplete = false;
+  const forMachine = (machineOrId) => {
+    if (machineOrId && typeof machineOrId === 'object') {
+      if (machineOrId.provider) return providers.find((p) => p.name === machineOrId.provider);
+      machineOrId = machineOrId.id;
+    }
+    if (listIncomplete) throw Object.assign(new Error('Machine ownership is unknown because one or more configured providers could not be listed.'), { code: 'provider_ownership_unavailable' });
+    if (duplicate.has(machineOrId)) throw Object.assign(new Error(`Machine ID ${machineOrId} appears on more than one provider.`), { code: 'ambiguous' });
+    return owners.get(machineOrId);
+  };
+  const tagError = (error, name) => {
+    if (error && typeof error === 'object' && typeof error.provider === 'string' && error.provider) return error;
+    if (error && typeof error === 'object') {
+      try { error.provider = name; if (error.provider === name) return error; } catch { /* provider error may be frozen */ }
+    }
+    const tagged = new Error(String(error?.message ?? error), { cause: error });
+    if (error?.name) tagged.name = error.name;
+    for (const key of ['code', 'status', 'exitCode', 'stdout', 'stderr']) if (error?.[key] !== undefined) tagged[key] = error[key];
+    tagged.provider = name;
+    return tagged;
+  };
+  const list = async (labels = {}, opts = {}) => {
+    const reported = providers.map(() => []);
+    const report = (index, error) => {
+      const prior = reported[index].find((entry) => entry.source === error);
+      if (prior) return prior.tagged;
+      const tagged = tagError(error, providers[index].name);
+      reported[index].push({ source: error, tagged });
+      opts.onError?.(tagged);
+      return tagged;
+    };
+    const results = await Promise.allSettled(providers.map((p, index) => p.list(labels, {
+      ...opts,
+      onError: (e) => report(index, e),
+    })));
+    const rows = [], errors = [];
+    results.forEach((result, index) => {
+      const p = providers[index];
+      if (result.status === 'rejected') {
+        report(index, result.reason);
+      }
+      for (const { tagged } of reported[index]) if (!errors.includes(tagged)) errors.push(tagged);
+      if (result.status === 'rejected') return;
+      for (const row of result.value) {
+        if (owners.has(row.id) && owners.get(row.id) !== p) duplicate.add(row.id);
+        owners.set(row.id, p);
+        rows.push({ ...row, provider: p.name });
+      }
+    });
+    listIncomplete = errors.length > 0;
+    if (providers.every((_, i) => results[i].status === 'rejected' || reported[i].length > 0)) throw errors[0];
+    return rows;
+  };
+  const route = async (id) => {
+    let p = forMachine(id);
+    if (!p) {
+      const errors = [];
+      await list({ purpose: 'cloudy-cloud' }, { onError: (e) => errors.push(e) });
+      if (errors.length) throw Object.assign(new Error('Cannot route a bare machine ID while a configured provider could not be listed.'), { code: 'provider_ownership_unavailable', providers: errors.map((e) => e.provider) });
+      p = forMachine(id);
+    }
+    if (!p) throw Object.assign(new Error(`Machine ${id} was not found on a configured provider.`), { code: 'not_found' });
+    return p;
+  };
+  const caps = {};
+  for (const key of new Set(providers.flatMap((p) => Object.keys(p.caps ?? {})))) {
+    const values = providers.map((p) => p.caps?.[key]);
+    caps[key] = values.every((v) => typeof v === 'boolean') ? values.every(Boolean)
+      : Array.isArray(values[0]) ? values[0].filter((v) => values.every((xs) => Array.isArray(xs) && xs.includes(v)))
+      : values[0];
+  }
+  const facade = {
+    name: primary.name, keyName: primary.keyName, caps, text: primary.text, providers, for: forMachine, list,
+    create: (...args) => primary.create(...args),
+    connect: async (id, ...args) => (await route(id)).connect(id, ...args),
+    delete: async (id, ...args) => { await (await route(id)).delete(id, ...args); owners.delete(id); duplicate.delete(id); },
+    metrics: async (id, ...args) => (await route(id)).metrics(id, ...args),
+  };
+  for (const method of ['snapshot', 'getSnapshot', 'forwardPort', 'publishPort', 'unpublishPort', 'shellEnv', 'shellArgv', 'shellSpawnOpts', 'displayLink', 'plan', 'revokeDisplayLinks', 'screenshot', 'localMachineName']) {
+    if (typeof primary[method] === 'function') facade[method] = (...args) => primary[method](...args);
+  }
+  return facade;
 }
 
 /**

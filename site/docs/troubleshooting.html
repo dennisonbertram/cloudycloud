@@ -202,6 +202,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 
 <h3 id="credentials">Which credentials reach the cloud machine</h3>
 <ul>
+<li><strong>Worker credential:</strong> Cloudy Cloud provides the credential required by the selected profile (and a Claude credential to cloud coordinators). Which credential is needed depends on the worker profile and configured sandbox provider.</li>
 <li><strong>Claude token:</strong> placed on each Claude Code worker without a profile (and sent to cloud coordinators for their workers, where the launcher keeps it out of the coordinator's own session). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.</li>
 <li><strong>Coordinator sign-in:</strong> a cloud coordinator's own Claude login (<code>~/.claude/.credentials.json</code>) is created on its machine when you finish <code>cloudy-cloud coordinator login NAME</code>. The coordinator image never holds it — the credential file is removed before the image is saved. It is a real login; use an account you can revoke.</li>
 <li><strong>GitHub token:</strong> never reaches the machine. Instabox stores it as the secret <code>GH_TOKEN</code>. The machine sees a placeholder that Instabox's proxy replaces on requests to <code>github.com</code> and <code>api.github.com</code>.</li>
@@ -230,7 +231,7 @@ npx instabox@latest rm &lt;name&gt;</code></pre>
 <p>The tool itself has no price in this repo. You pay for your Instabox plan, your Claude subscription or API usage, and any open-model provider you use. The free Instabox plan is too small for more than a few subagents at once. Results end with a token total, and a cost when Claude reports one.</p>
 
 <h3 id="faq-models">Which models can subagents use?</h3>
-<p>Claude Code by default. A <code>profile</code> can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. See <a href="models.html">Models and keys</a>.</p>
+<p>Workers use the saved default profile (Claude Code unless changed with <code>cloudy-cloud setup --default-profile NAME</code>). A request can select a profile for one worker. See <a href="models.html">Models and keys</a>.</p>
 
 <h3 id="faq-untracked">Does it copy untracked files?</h3>
 <p>No. A subagent gets files tracked by git, including uncommitted edits to them. Add a new file with <code>git add</code> if the subagent needs it.</p>

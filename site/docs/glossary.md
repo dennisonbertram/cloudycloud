@@ -14,7 +14,7 @@ A helper agent that your main session (Claude Code, Codex, opencode, pi or free-
 
 ### Cloud agent
 
-A subagent started with the `cloud_agent` tool. It runs Claude Code by default, or pi, oh-my-pi, Codex or opencode when a profile says so. It runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.
+A subagent started with the `cloud_agent` tool. It uses the saved default worker profile (Claude Code initially), or a profile selected for that request. It runs in a remote sandbox on the committed and tracked files of your repo and pushes its work to its own branch.
 
 ### Worker
 
@@ -26,11 +26,11 @@ A cloud agent started with `role: "coordinator"`, which gets `cloudy-cloud` inst
 
 ### Box (machine)
 
-The cloud machine, an Instabox sandbox, that Cloudy Cloud creates for one cloud agent. It is deleted when the agent stops or at its delete deadline.
+A sandbox machine created by a configured provider for one cloud agent. It is deleted when the agent stops or at its delete deadline.
 
 ### Profile
 
-A named setting that runs a worker on another model or another agent, such as `glm`, `pi-glm`, `omp-glm`, `codex`, `opencode-glm` or `openrouter`. With no profile, a subagent runs Claude Code. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+A named setting that runs a worker on another model or another agent, such as `glm`, `pi-glm`, `omp-glm`, `codex`, `opencode-glm` or `openrouter`. Without a request-specific profile, a worker uses the saved default profile (Claude Code initially). See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Harness
 
@@ -54,7 +54,7 @@ The way `cloud_agent` runs as a background task when your Claude Code supports M
 
 ### Idle stop
 
-Cloudy Cloud stops a subagent that has been idle for 60 minutes, and stops every subagent when the session ends.
+Cloudy Cloud stops a subagent after 60 idle minutes. Default ephemeral sessions also stop agents when the session ends; named MCP sessions can reconnect to a local owner.
 
 ### Delete deadline
 

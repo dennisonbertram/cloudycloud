@@ -6,16 +6,16 @@ Source: https://cloudycloud.tech/docs/
 
 Cloudy Cloud runs each subagent of your coding agent on its own cloud machine, with a copy of your repo and its own branch. You stay in your local session and fetch the finished work from GitHub.
 
-This page applies to every supported main session (Claude Code, Codex, opencode, pi and free-pi) and every worker agent (Claude Code, pi, oh-my-pi, Codex and opencode). Where steps differ by agent, the step says which.
+The built-in main-session commands cover Claude Code, Codex, opencode, pi and free-pi; other MCP clients can use the standalone server. Workers can use Claude Code, pi, oh-my-pi, Codex and opencode. Live verification differs by client and worker, as the status tables explain.
 
 ## Before you start
 
 You need these accounts and tools:
 
-- **An Instabox account.** Instabox is the cloud provider supported today. The free plan is too small for more than a few subagents at once; swarms need a paid plan.
+- **An account with a configured sandbox provider.** Providers have different feature and credential requirements. You can select one with `CLOUDY_CLOUD_PROVIDER` or configure an ordered provider list with `CLOUDY_CLOUD_PROVIDERS`; see [provider settings](https://cloudycloud.tech/docs/reference.html#env-settings).
 - **A credential for each agent you use.** Claude Code workers (the default) use a Claude subscription token from `claude setup-token`, or an Anthropic API key that is billed separately. Workers on another agent use that profile's key instead: `PARTICLE_API_KEY` for pi, oh-my-pi and opencode, `OPENROUTER_API_KEY` for the OpenRouter profiles, and `OPENAI_API_KEY` or a ChatGPT login file for Codex. [Models and keys](https://cloudycloud.tech/docs/models.html#agents) lists them all. A session that uses only non-Claude workers needs no Claude credential.
 - **A GitHub repository you can push to.** The repo you work in must have a `github.com` remote named `origin`.
-- **On your computer:** macOS or Linux (tested on macOS), `git`, Node.js 20 or later, `npm`, `curl`, and the agent you will start as your main session: [Claude Code](https://code.claude.com) signed in (the default), or Codex, opencode, pi or free-pi (see Start a session with another agent).
+- **On your computer:** macOS (tested); Linux and Windows are not verified, `git`, Node.js 20 or later, `npm`, `curl`, and the agent you will start as your main session: [Claude Code](https://code.claude.com) signed in (the default), or Codex, opencode, pi or free-pi (see Start a session with another agent).
 
 ## Install
 
@@ -62,7 +62,7 @@ Setup asks only for the keys above, plus optional Particle.ai and OpenRouter key
 
 | Worker agent and profile | Credential | How to set it up |
 |---|---|---|
-| Claude Code (no profile) | Claude token or `ANTHROPIC_API_KEY` | Asked by setup (token). The API key is a line in the env file. |
+| Claude Code profile (including the saved default when it resolves to Claude) | Claude token or `ANTHROPIC_API_KEY` | Asked by setup (token). The API key is a line in the env file. |
 | pi, oh-my-pi and opencode profiles, and Claude Code `glm`, `deepseek`, `particle` | `PARTICLE_API_KEY` | Optional step in setup. |
 | `openrouter`, `codex-openrouter`, `opencode-openrouter` | `OPENROUTER_API_KEY` | Optional step in setup. Pass `model` with the OpenRouter model id. |
 | Codex `codex` | `OPENAI_API_KEY` | Not asked by setup. On Instabox: `printf %s "$OPENAI_API_KEY" \| npx --yes instabox@latest secrets set OPENAI_API_KEY --host api.openai.com`, then add `OPENAI_API_KEY` to `CLOUDY_CLOUD_PROXY_SECRETS` in the env file. Self-hosted: add `OPENAI_API_KEY=...` to the env file. |
@@ -73,6 +73,8 @@ More detail is in [Models and keys](https://cloudycloud.tech/docs/models.html#co
 The Instabox key is saved in `~/.config/cloudy-cloud/env` and stays on your computer. The folder has mode 700 and the file is readable only by your user. The Claude token, the provider keys and the GitHub token are stored in Instabox as proxy secrets (for example `GH_TOKEN`), and setup lists their names in `CLOUDY_CLOUD_PROXY_SECRETS`. A subagent's machine only gets a placeholder, never the key. If setup finds a key already in the env file, it asks before moving it into a secret.
 
 Later, `cloudy-cloud setup` runs the installer again from any folder. It shows each saved key masked and asks before replacing it. Restart any open session to use new keys.
+
+Setup can save a worker default with `cloudy-cloud setup --default-profile NAME`. If no default profile is set, workers use Claude Code.
 
 > Warning: Subagents can push to any branch your GitHub token reaches. Add a branch ruleset that blocks direct pushes to your main branch (GitHub: Settings, Rules, Rulesets).
 
@@ -86,6 +88,8 @@ cloudy-cloud
 ```
 
 With no subcommand this is an ordinary Claude Code session with one change: the built-in `Agent` tool is turned off, and every subagent goes to a cloud machine through the `cloud_agent` tools. Plain `claude` is unaffected. If a key is missing, `cloudy-cloud` says `cloudy-cloud is not set up yet` and offers to run setup. If the folder is not a git repo, or has no `github.com` origin, it warns you that subagents cannot start or push.
+
+For another MCP client, run `cloudy-cloud mcp-server --repo PATH` and configure the client to start that command. The server binds every worker call to that repository. It also accepts `--session NAME` if separate client connections should reconnect to one local worker owner. See the [MCP server reference](https://cloudycloud.tech/docs/reference.html#cli-mcp-server).
 
 ### Run without the interactive UI
 
@@ -105,7 +109,7 @@ Put `--allowedTools` after the prompt, because it takes a list. See `claude --he
 
 ## Start a session with another agent
 
-The main session does not have to be Claude Code. Run the subcommand for your agent from inside your repo. The cloud tools are added for that session only, and your own settings for the agent are not edited. All of them need the Instabox key from setup (or the self-hosted settings), and none needs a Claude token.
+The main session does not have to be Claude Code. Run a built-in launcher from inside your repo, or configure another MCP client to start the standalone server. Cloudy Cloud does not change ordinary agent sessions. Provider credentials and feature support vary; a main-session agent does not need a Claude worker token unless its worker profile uses Claude.
 
 | Main session | Command | Install the agent first | Status |
 |---|---|---|---|
@@ -114,6 +118,7 @@ The main session does not have to be Claude Code. Run the subcommand for your ag
 | opencode | `cloudy-cloud opencode` | `npm install -g opencode-ai` | Verified live |
 | pi | `cloudy-cloud pi` | Optional: without `pi` on your PATH it runs a pinned copy through `npx` | Partly verified: MCP connection only, no model turn |
 | free-pi | `cloudy-cloud free-pi` | Optional: without `free-pi-cli` on your PATH it runs a pinned copy through `npx` | Partly verified: `mcp list` only |
+| Another MCP client | `cloudy-cloud mcp-server --repo PATH` | Configure its stdio MCP server command | Protocol entry point; client-specific behavior is not separately verified |
 
 **Signing in to the agent itself.** Cloudy Cloud does not sign you in to your main agent. Sign in to Codex (`codex login`) or opencode the way you normally do before you start `cloudy-cloud codex` or `cloudy-cloud opencode`. pi and free-pi need a model configured in the agent itself; Cloudy Cloud never passes them a key, and how to configure one has not been checked here. `free-pi-cli` asks for consent the first time it runs, and that needs an interactive terminal, so start it once yourself in a terminal. These logins are separate from the worker credentials in [Models and keys](https://cloudycloud.tech/docs/models.html#agents).
 
@@ -131,17 +136,17 @@ These steps are the same on every main session. Ask in plain language. This prom
 use a subagent to run hostname, write it to proof.txt, commit and push, and tell me the result
 ```
 
-Claude starts the subagent and returns at once. In a terminal session on Claude Code 2.1.304 or later, the footer shows a count such as `3 MCP tasks`, and `/tasks` lists each subagent with a progress line, for example:
+The MCP client starts the subagent and returns at once. In a terminal session on Claude Code 2.1.304 or later, the footer shows a count such as `3 MCP tasks`, and `/tasks` lists each subagent with a progress line, for example:
 
 ```
 12 tool uses · 48.2k tokens · 3m10s · Edit src/parser.ts
 ```
 
-`starting machine…` means the machine is not up yet. When the subagent finishes, its result reaches Claude automatically. In the VS Code extension, the desktop app, or a one-shot `claude -p` run, Claude calls `cloud_agent_wait` instead.
+`starting machine…` means the machine is not up yet. An MCP client that supports task notifications receives results automatically. Other clients can call `cloud_agent_wait`.
 
-The answer should name a hostname starting with `instabox-sbx-` and end with `Pushed to origin cloudy-cloud/<id> at <sha>`.
+The answer should identify the provider and machine that ran the task, and end with `Pushed to origin cloudy-cloud/<id> at <sha>`.
 
-The subagent stays open for follow-up messages until it is stopped. It is stopped after 60 idle minutes, and all subagents are stopped when the session ends.
+The subagent stays open for follow-up messages until it is stopped or idle for 60 minutes. In default ephemeral mode it is also stopped when the MCP session ends. A named MCP session can reconnect to its local owner across separate client connections; the provider's machine deadline still applies.
 
 > Note: Subagents see only files tracked by git, including uncommitted edits to tracked files. They do not see untracked files or your settings. They have MCP servers only if you copy them with `cloudy-cloud mcp add`; see [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
@@ -162,7 +167,7 @@ git fetch origin 'refs/heads/cloudy-cloud/*:refs/remotes/origin/cloudy-cloud/*'
 
 ## Stop and clean up
 
-Ask Claude to "stop all subagents", which calls `cloud_agent_stop` and deletes their machines. In `/tasks`, select a task and press `x` to stop a single subagent.
+Ask your session to stop subagents, which calls `cloud_agent_stop`. A stop succeeds only after the provider confirms deletion or confirms the machine is absent; transient failures remain tracked for retry. In Claude Code's `/tasks`, select a task and press `x` to stop a single subagent.
 
 - An idle subagent is stopped after 60 minutes.
 - Every subagent is stopped when you exit the session.

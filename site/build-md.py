@@ -10,10 +10,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 SITE = Path(__file__).resolve().parent
+PACKAGE_VERSION = json.loads((SITE.parent / 'package.json').read_text())['version']
 BASE = 'https://cloudycloud.tech'
 LASTMOD = '2026-11-09'
 DEFINITION = ('Cloudy Cloud is open-source software (MIT license, install with npx cloudycloud setup) that gives '
-              'every subagent of your coding agent its own cloud machine, a copy of your repo, and its own branch.')
+              'coding agents MCP tools for running workers in separate sandbox workspaces and Git branches.')
 GH = 'https://github.com/dennisonbertram/cloudycloud'
 NPM = 'https://www.npmjs.com/package/cloudycloud'
 DOC_SLUGS = ['index', 'how-it-works', 'models', 'reference', 'fleets', 'dashboard', 'mcp', 'self-hosted', 'troubleshooting',
@@ -250,7 +251,7 @@ def ld_blocks(slug):
     if slug == 'home':
         ld.append({"@context": "https://schema.org", "@type": ["SoftwareApplication", "SoftwareSourceCode"], "name": "Cloudy Cloud",
                    "description": DEFINITION, "applicationCategory": "DeveloperApplication",
-                   "operatingSystem": "macOS, Linux", "softwareVersion": "0.3.0",
+                   "operatingSystem": "macOS, Linux", "softwareVersion": PACKAGE_VERSION,
                    "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
                    "license": GH + "/blob/HEAD/LICENSE", "downloadUrl": NPM, "codeRepository": GH,
                    "url": BASE + "/", "isAccessibleForFree": True})
@@ -296,10 +297,10 @@ def main():
         out.write_text(f'# {title}\n\n> {desc}\n\nSource: {page_url(slug)}\n\n{body}\n')
     # llms.txt
     L = ['# Cloudy Cloud', '', f'> {DEFINITION}', '',
-         f'Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version 0.3.0). '
+         f'Cloudy Cloud is open source under the MIT license. The npm package is `cloudycloud` (version {PACKAGE_VERSION}). '
          f'Install and set up with `npx cloudycloud setup`. The code is at {GH}. '
-         'You need an account with a cloud sandbox provider (Instabox is supported today), Claude credentials '
-         '(a Claude subscription or an API key), a GitHub repo you can push to, and Node.js 20 or later. '
+         'You need an account with a configured cloud sandbox provider, credentials for the worker profiles you use, '
+         'a GitHub repo you can push to, and Node.js 20 or later. '
          'Cloudy Cloud has no price of its own; you pay your own providers. A hosted version is coming.', '',
          'Each page below also has its text as Markdown at its URL with `.html` replaced by `.md`. '
          f'[llms-full.txt]({BASE}/llms-full.txt) holds all of them in one file.', '']

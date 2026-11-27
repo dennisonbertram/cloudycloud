@@ -171,6 +171,7 @@ Your main session (Claude Code, Codex, opencode, pi or free-pi) and the `cloudy-
 
 ### Which credentials reach the cloud machine
 
+- **Worker credential:** Cloudy Cloud provides the credential required by the selected profile (and a Claude credential to cloud coordinators). Which credential is needed depends on the worker profile and configured sandbox provider.
 - **Claude token:** placed on each Claude Code worker without a profile (and sent to cloud coordinators for their workers, where the launcher keeps it out of the coordinator's own session). It can only make model requests. Workers on pi, omp, Codex or opencode do not get it.
 - **Coordinator sign-in:** a cloud coordinator's own Claude login (`~/.claude/.credentials.json`) is created on its machine when you finish `cloudy-cloud coordinator login NAME`. The coordinator image never holds it — the credential file is removed before the image is saved. It is a real login; use an account you can revoke.
 - **GitHub token:** never reaches the machine. Instabox stores it as the secret `GH_TOKEN`. The machine sees a placeholder that Instabox's proxy replaces on requests to `github.com` and `api.github.com`.
@@ -207,7 +208,7 @@ The tool itself has no price in this repo. You pay for your Instabox plan, your 
 
 ### Which models can subagents use?
 
-Claude Code by default. A `profile` can run a worker on pi, oh-my-pi, Codex or opencode instead, with open models such as GLM and DeepSeek through Particle.ai, any model on OpenRouter, or OpenAI models through Codex. See [Models and keys](https://cloudycloud.tech/docs/models.html).
+Workers use the saved default profile (Claude Code unless changed with `cloudy-cloud setup --default-profile NAME`). A request can select a profile for one worker. See [Models and keys](https://cloudycloud.tech/docs/models.html).
 
 ### Does it copy untracked files?
 

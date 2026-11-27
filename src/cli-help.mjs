@@ -35,7 +35,7 @@ export function render({ desc, usages, rows = [], note }) {
 }
 
 const ID = '<agent-id-or-machine>';
-const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard.';
+const WHERE = 'The id is the agent_id from cloud_agent or cloud_agent_list, or shown in the dashboard. Use provider:id or provider:name to select a machine when needed.';
 const cmds = {
   cloud: { desc: 'Start a cloud coordinator for this repository and attach to its Claude session, in one command. Run inside a git clone whose origin is on github.com.', usages: [['cloud', '[--name N]', '[--branch B]', '[--max-hours H]', '[--model M]', '[--env FILE]...', '[--no-attach]', '[--json]']], rows: [
     ['--name N', 'Coordinator name (default: <owner>-<repo>-<branch> as a slug)'],
@@ -46,10 +46,12 @@ const cmds = {
     ['--no-attach', 'Start the coordinator without attaching'],
     ['--json', 'Print the start result as JSON'],
   ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted. Run coordinator image once first.' },
-  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
+  setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]', '[--default-profile NAME]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
-    ['--provider NAME', 'instabox (default), self-hosted or microsandbox (not configured by setup; prints the config path)'],
+    ['--provider NAME', 'Check or configure one provider: instabox, self-hosted, microsandbox, boat or e2b'],
+    ['--default-profile NAME', 'Set the worker profile used when a request omits profile'],
+    ['CLOUDY_CLOUD_PROVIDERS', 'Set a comma-separated provider list to check readiness for every configured provider'],
   ], note: 'Run it in a terminal: it asks for your keys.' },
   shell: { desc: 'Open a shell on a cloud machine, or run one command there.', usages: [['shell', ID, '[-- command [args...]]']], rows: [
     ['(no command)', 'Interactive login shell on the machine'],
@@ -61,7 +63,7 @@ const cmds = {
     ['--ttl SECONDS', 'Seconds until the link stops taking new viewers, 60 to 86400'],
     ['--screenshot FILE', 'Write a PNG of the screen to FILE and print the path'],
     ['--unshare', 'Revoke every display link for the machine, including connected viewers'],
-  ], note: `linux, android and gpu machines have a desktop (the first gpu start is slow); omarchy has none and macos is not verified. Display links need the Instabox provider. ${WHERE}` },
+  ], note: `Display links are available only when the machine's provider supports them; omarchy has no desktop and macos is not verified. ${WHERE}` },
   open: { desc: "Reach an app (for example a dev server) running on a cloud agent's machine.", usages: [['open', ID, '<port>', '[--share]'], ['open', ID, '<port>', '--unshare']], rows: [
     ['<port>', 'App port on the machine, or LOCAL:REMOTE to use another port on your computer'],
     ['(default)', 'Private tunnel to http://127.0.0.1:<port> until you press Ctrl-C'],
@@ -74,8 +76,23 @@ const cmds = {
     ['rm <name>', 'Stop giving subagents that server'],
     ['--allow-literal', 'Copy the actual credential value into the worker config file on subagent machines'],
   ], note: "Claude Code's own `mcp list` and `mcp add <name> -- <command>` still go to claude." },
-  'mcp-server': { desc: 'Run the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts.', usages: [['mcp-server']],
-    note: 'The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
+  'mcp-server': { desc: 'Run the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts.', usages: [['mcp-server', '[--repo PATH]', '[--session NAME]']], rows: [
+    ['--repo PATH', 'Bind workers to this workspace (default: the current directory)'],
+    ['--session NAME', 'Share workers across MCP client connections and reconnects; combine with --repo'],
+  ], note: 'Named sessions use one private local owner process while workers are open. The server reads its keys from ~/.config/cloudy-cloud/env itself; run `cloudy-cloud setup` once first. Claude Code, Codex, opencode and pi sessions get the same tools through their own cloudy-cloud host command.' },
+  run: { desc: 'Run one Cloudy Cloud worker in the foreground and print its result when it finishes.', usages: [['run', '--repo', 'PATH', '[--profile NAME]', '[--workspace PATH]', '[--session NAME]', '[--timeout SECONDS]', '[--description TEXT]', '[--model NAME]', '[--issue N]', '[--base REF]', '[--json]', '--', '<prompt>']], rows: [
+    ['--repo PATH', 'Required repository with a github.com origin'],
+    ['--profile NAME', 'Worker profile (default: saved default profile)'],
+    ['--workspace PATH', 'Run the worker in a directory inside the bound repository'],
+    ['--session NAME', 'Attach to a named MCP owner session; without it, the command creates a temporary owner'],
+    ['--timeout SECONDS', 'Maximum wait (default: 2100 seconds; maximum: 86400)'],
+    ['--description TEXT', 'Short worker label'],
+    ['--model NAME', 'Model override where the worker profile supports it'],
+    ['--issue N', 'GitHub issue number or URL'],
+    ['--base REF', 'Branch name or commit SHA to start from'],
+    ['--prompt TEXT', 'Task prompt, equivalent to text after --'],
+    ['--json', 'Write one structured result object to stdout'],
+  ], note: 'The command waits for the worker result and exits with its status. Use -- to separate options from the prompt. Any legacy-config migration notice is written to stderr.' },
   protect: { desc: "Block direct pushes to a repo's default branch with a GitHub ruleset.", usages: [['protect', '[owner/repo]', '[--yes]']], rows: [
     ['owner/repo', 'The repo (default: the repo of the current folder)'],
     ['--yes', 'Do not ask first (you are saying yes to the change shown)'],
@@ -88,11 +105,11 @@ const cmds = {
     ['--prune', 'Delete every file in the streams folder older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
   machines: { desc: 'List or delete the Cloudy Cloud machines of the active provider.', usages: [['machines', '[ls]'], ['machines', 'stop', ID], ['machines', 'stop', '--all', '[--yes]']], rows: [
-    ['ls', 'One line per machine: name, role, state, age and when it is deleted'],
+    ['ls', 'One line per machine: name, provider, role, state, age and deletion time'],
     ['stop <id>', 'Delete one machine at once (an id, a machine name or an agent id)'],
     ['stop --all', 'Delete every machine in the list (asks once on a terminal)'],
     ['--yes', 'Say yes to that question, or delete without a terminal'],
-  ], note: `Only machines Cloudy Cloud made are listed or deleted (labels purpose=cloudy-cloud and the older purpose=claude-cloud); a machine without one is never touched. On microsandbox, listing also removes expired microVMs. ${WHERE}` },
+  ], note: `Only machines Cloudy Cloud made are listed or deleted (labels purpose=cloudy-cloud and the older purpose=claude-cloud); a machine without one is never touched. Use provider:id or provider:name to resolve a shared ID or name. On microsandbox, listing also removes expired microVMs. ${WHERE}` },
   branches: { desc: 'List or delete the cloudy-cloud/<id> branches on origin that add nothing to the default branch (empty, or already merged).', usages: [['branches', 'prune', '[--yes]', '[--dry-run]']], rows: [
     ['(default)', 'Dry run: list what would be deleted'],
     ['--yes', 'Actually delete the listed branches'],
@@ -124,7 +141,7 @@ const guides = {
   ], 'Without --code it attaches to the session so you sign in there. With --code it types the code for you — how an agent finishes a sign-in the user did in the browser.'],
   ls: ['List your cloud coordinators and whether one waits on a prompt.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, WAITING, or "No coordinators.". It reads each running coordinator\'s screen once. "waiting for Claude sign-in" finishes with coordinator login NAME.'],
   status: ['Show one coordinator: state, the prompt it waits on (if any) and the attach command.', 'status NAME [--json]', [], 'Read-only. Reads the screen once. A coordinator runs with permission checks off, so a waiting prompt is unexpected: attach and answer it. A coordinator waiting for its Claude sign-in shows the login command.'],
-  stop: ['Delete one coordinator machine.', 'stop NAME', [], 'Its workers are cleaned up separately; check for remaining machines afterwards.'],
+  stop: ['Delete one coordinator machine.', 'stop NAME', [], 'Use provider:NAME when coordinator names are shared across providers. Its workers are cleaned up separately; check for remaining machines afterwards.'],
   finish: ['Run on a coordinator machine by the coordinator: check nothing is lost, then delete this machine.', 'finish [--force]', [
     ['--force', 'Skip the git and worker checks'],
   ], 'Refuses while work is unpushed or workers are running.'],

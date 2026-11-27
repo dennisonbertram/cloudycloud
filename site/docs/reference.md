@@ -4,9 +4,9 @@
 
 Source: https://cloudycloud.tech/docs/reference.html
 
-This page lists every `cloudy-cloud` command and flag, the six tools your session uses to run cloud agents, and the environment variables and files that change how they behave.
+This page lists Cloudy Cloud's commands, MCP tools, environment variables and local files.
 
-These commands and tools apply to every main session: Claude Code (`cloudy-cloud`), Codex (`cloudy-cloud codex`), opencode (`cloudy-cloud opencode`), pi (`cloudy-cloud pi`) and free-pi (`cloudy-cloud free-pi`). The `cloud_agent` `profile` argument picks the worker agent: Claude Code, pi, oh-my-pi, Codex or opencode. An opencode main session names the tools `cloud_cloud_agent`, `cloud_cloud_agent_wait` and so on.
+The built-in host commands cover Claude Code (`cloudy-cloud`), Codex (`cloudy-cloud codex`), opencode (`cloudy-cloud opencode`), pi (`cloudy-cloud pi`) and free-pi (`cloudy-cloud free-pi`). Other MCP clients can connect through `cloudy-cloud mcp-server --repo PATH`. The `cloud_agent` `profile` argument picks the worker agent: Claude Code, pi, oh-my-pi, Codex or opencode. Live verification differs by client and worker; see [the status table](https://cloudycloud.tech/docs/models.html#verified).
 
 ## Command line
 
@@ -70,7 +70,7 @@ cloudy-cloud --version
 ### cloudy-cloud setup
 
 ```
-cloudy-cloud setup [--more] [--check-only] [--provider instabox|self-hosted|microsandbox]
+cloudy-cloud setup [--more] [--check-only] [--provider instabox|boat|e2b|self-hosted|microsandbox] [--default-profile NAME]
 ```
 
 Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup` does the same, and `npx -y cloudycloud setup` runs it without installing anything first (`-y` skips npm's "Ok to proceed?" question). Setup checks your tools, offers to install the `cloudy-cloud` command (`npm install -g cloudycloud`, or a link when you run it from a git clone), copies the Cloudy Cloud skills into `~/.claude/skills`, uses the saved agent list or the agents it finds on your PATH (a fresh install picks `claude` alone when it is found; it asks which agents you run only when it finds none, and `--more` asks anyway), and asks for your Instabox key and your GitHub token, plus a Claude token only if you chose claude or want Claude workers and an OpenAI key for codex workers (`--more` offers it when codex is chosen or installed; plain setup offers it when codex is chosen and no saved credential could start a first worker — a saved Codex login file counts as one, even one a worker would later reject). Plain setup asks for the other model keys only in that same no-credential case; `--more` adds those steps and the cloud coordinators. Setup exits with status 1 when it ends without any worker credential. If an older `cloudy-cloud` global command blocks the install, setup offers to replace it (`npm rm -g cloudy-cloud`, then `npm install -g cloudycloud`). Run it again to change a key. It needs a terminal because it asks for keys. See [Getting started](https://cloudycloud.tech/docs/).
@@ -78,7 +78,8 @@ Runs the bundled `install.sh`, whatever folder you are in. `cloudy-cloud --setup
 | Flag | Meaning |
 |---|---|
 | `--more` | Add the optional steps: cloud coordinators, Instabox usage alert emails and the other model keys (`PARTICLE_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`). |
-| `--provider instabox\|self-hosted\|microsandbox` | Choose where subagents run without being asked. `self-hosted` asks for your machine instead of an Instabox key. `microsandbox` is not configured by setup: it prints a pointer to the manual steps and exits. Any other value is refused. See [Run on your own machine](https://cloudycloud.tech/docs/self-hosted.html). |
+| `--provider instabox\|boat\|e2b\|self-hosted\|microsandbox` | Choose the provider to configure. Feature support and credential handling vary by provider; see the provider guides. Any other value is refused. |
+| `--default-profile NAME` | Save the worker profile to use when a request or `cloudy-cloud run` does not name one. Claude Code remains the default unless a profile is selected. |
 | `--check-only` | Check the tools, the saved keys and the Instabox usage alert emails (on microsandbox: the `msb` binary, the worker image, the local keys and `CLOUDY_CLOUD_EGRESS_ALLOW` — an empty exported value with none saved in the env file is reported as unset, even though a worker rejects it), then exit. Does not need a terminal and changes nothing. |
 
 Example:
@@ -139,7 +140,7 @@ cloudy-cloud open <agent-id-or-machine> <port> [--share]
 cloudy-cloud open <agent-id-or-machine> <port> --unshare
 ```
 
-Reaches an app, such as a dev server, that runs on a cloud agent's machine. The first argument is an agent id (the `<id>` in the branch `cloudy-cloud/<id>`, shown by `cloud_agent_list`), a machine name or a machine id (a coordinator's machine is named `coord-NAME`). It may use only letters, digits, dots, dashes and underscores. The machine must be running. The command needs your Instabox key.
+Reaches an app, such as a dev server, that runs on a cloud machine. The first argument is an agent id, a machine name or a machine id. Use `provider:id` or `provider:name` (for example `boat:abc123`) when selecting a machine across configured providers. A bare id or name is accepted only when it identifies one listed machine; ambiguous targets are refused. The machine must be running.
 
 With no flag, it opens a private tunnel from `http://127.0.0.1:<port>` on your computer to that port on the machine. It runs until you press Ctrl-C. Start the app in the background on the machine (for example `nohup npm run dev > /tmp/dev.log 2>&1 &`), because the foreground processes of a turn end with the turn. The tunnel and any shared link stop when the machine is deleted.
 
@@ -175,7 +176,7 @@ cloudy-cloud display <agent-id-or-machine> --screenshot FILE
 cloudy-cloud display <agent-id-or-machine> --unshare
 ```
 
-Prints a link to the desktop of a `linux`, `android`, `gpu` or `macos` machine (`macos` is not verified). Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An `omarchy` machine has no display. The first desktop start on a `gpu` machine takes about 2 minutes.
+Prints a link to the desktop of a `linux`, `android`, `gpu` or `macos` machine (`macos` is not verified). The machine argument accepts an agent id, machine name or machine id; use `provider:id` or `provider:name` to identify a machine across providers. Bare ids and names must be unambiguous. Only the link goes to standard output. Anyone with the link can see the screen, so do not paste it into a PR, an issue or a report. An `omarchy` machine has no display. The first desktop start on a `gpu` machine takes about 2 minutes.
 
 | Flag | Meaning |
 |---|---|
@@ -193,12 +194,12 @@ cloudy-cloud machines stop <id-or-name>
 cloudy-cloud machines stop --all [--yes]
 ```
 
-Lists the machines of the active provider that Cloudy Cloud made — machines labelled `purpose=cloudy-cloud`, or the older `purpose=claude-cloud` from before the rename — or deletes them. On microsandbox, listing also deletes expired microVMs as a side effect. In a terminal it prints a table with NAME, ROLE, STATE, AGE and DELETES; when piped it prints tab-separated NAME, ROLE, STATE, STARTED, DELETES and ID. It prints `No Cloudy Cloud machines running.` when there are none.
+Lists Cloudy Cloud machines from the configured providers and can delete one or all of them. On microsandbox, listing also removes expired microVMs as a side effect. In a terminal it prints NAME, PROVIDER, ROLE, STATE, AGE and DELETES; when piped it prints those fields plus STARTED and ID as tab-separated values. Provider listing errors are reported while results from providers that did respond are still shown. It prints `No Cloudy Cloud machines running.` when none are found.
 
 | Argument or flag | Meaning |
 |---|---|
 | `ls` | List the machines (the default). |
-| `stop <id-or-name>` | Delete one machine at once, without asking. The token can be a machine id, an agent id, or a machine name; a name that matches more than one machine is refused. |
+| `stop <id-or-name>` | Delete one machine at once, without asking. Use `provider:id` or `provider:name` to target a machine when IDs or names overlap across providers (for example `boat:abc123`). Bare IDs or names work only when unambiguous. The command rechecks the selected provider and machine before deletion. |
 | `stop --all` | Delete every machine in the list. It asks once on a terminal. |
 | `--yes` | Say yes to that question; needed to delete without a terminal. |
 
@@ -344,14 +345,22 @@ Chooses which of your Claude Code MCP servers cloud subagents get. `add` copies 
 ### cloudy-cloud mcp-server
 
 ```
-cloudy-cloud mcp-server
+cloudy-cloud mcp-server --repo PATH [--session NAME]
 ```
 
-Runs the Cloudy Cloud MCP server on stdio, for MCP clients other than the built-in hosts. It prints nothing itself and runs before the setup check, so an empty config still answers `tools/list`. The server reads its keys from `~/.config/cloudy-cloud/env` itself. Claude Code, Codex, opencode and pi sessions get the same tools through their own `cloudy-cloud` host command.
+Runs the Cloudy Cloud MCP server on stdio for an MCP client configured outside the built-in host commands. Bind it to the repository the client is allowed to use with `--repo`. An optional `--session` names a local owner so separate client connections can reconnect to its workers; without it, the server uses the normal ephemeral lifetime. The server reads its keys from `~/.config/cloudy-cloud/env`. The reported MCP server version comes from this package's version.
+
+### cloudy-cloud run
+
+```
+cloudy-cloud run --repo PATH [--profile NAME] [--workspace PATH] [--session NAME] [--timeout SECONDS] [--description TEXT] [--model NAME] [--issue N] [--base REF] [--json] -- PROMPT
+```
+
+Runs one worker to completion in the required repository, which must be a git repository with a `github.com` origin. The profile is optional; `--workspace` selects a directory within the bound repository. `--session` attaches to a named MCP owner session; without it, the command creates a temporary owner. `--json` writes only the structured result to stdout; any legacy-configuration migration notice is written to stderr. The command waits for the worker, stops it after collecting the result, and exits nonzero when startup or the worker turn fails. Use `cloudy-cloud setup --default-profile NAME` to set the default worker profile; without that setting, Claude Code remains the default.
 
 ## Tools the session uses (MCP)
 
-`cloudy-cloud` adds an MCP server named `cloud` to the session. Claude sees its tools as `mcp__cloud__cloud_agent` and so on. The session is configured to allow these six tools without asking and to deny the built-in `Agent` and `Workflow` tools. You normally ask for subagents in plain language and Claude calls the tools. This section is for when you want to know exactly what each tool takes.
+`cloudy-cloud` adds an MCP server named `cloud` to the session. Claude sees its tools as `mcp__cloud__cloud_agent` and so on. The server includes worker lifecycle tools, capability discovery and checkpoint recovery. Recovery is available only from a confirmed pushed checkpoint and starts a fresh worker conversation on a configured alternate provider. The launcher configures its host tools and turns off local built-in subagents. This section describes the MCP arguments.
 
 In a terminal Claude Code session that supports MCP tasks, `cloud_agent` and `cloud_agent_message` run as background tasks. Their progress shows in `/tasks` and the result arrives on its own with the agent id, so Claude does not need `cloud_agent_wait`. In other clients these two tools return an agent id at once and Claude calls `cloud_agent_wait`. The server also answers the task methods `tasks/get` and `tasks/cancel`.
 
@@ -366,7 +375,8 @@ Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` chang
 | `prompt` | string | yes | none | The full task for the subagent. |
 | `description` | string | yes | none | A short label for the task. |
 | `model` | string | no | the Claude default | A Claude model name, such as `haiku`. For a non-Claude model, use `profile` instead. It is needed with a profile only for `openrouter`, `codex-openrouter` and `opencode-openrouter`, which have no built-in model. It may contain only letters, digits and `. _ : -`. When `profile` is also set, `/` is allowed too. |
-| `profile` | string | no | Claude | Runs the worker on another agent or model. Built in: `glm`, `deepseek`, `particle` and `openrouter` (Claude Code on another model); `pi-glm`, `pi-deepseek` and `pi-particle` (pi); `omp-glm`, `omp-deepseek` and `omp-particle` (oh-my-pi); `codex`, `codex-chatgpt` and `codex-openrouter` (Codex); `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (opencode). You can add names in `profiles.json`, where each entry's `harness` (`claude`, `pi`, `omp`, `codex` or `opencode`) says which agent runs the worker. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `profile` | string | no | saved default profile; Claude Code if unset | Runs the worker on another agent or model. A per-call value overrides the saved default profile. Built in: `glm`, `deepseek`, `particle` and `openrouter` (Claude Code on another model); `pi-glm`, `pi-deepseek` and `pi-particle` (pi); `omp-glm`, `omp-deepseek` and `omp-particle` (oh-my-pi); `codex`, `codex-chatgpt` and `codex-openrouter` (Codex); `opencode-glm`, `opencode-deepseek`, `opencode-particle` and `opencode-openrouter` (opencode). You can add names in `profiles.json`, where each entry's `harness` (`claude`, `pi`, `omp`, `codex` or `opencode`) says which agent runs the worker. An unknown name, or a profile whose key is missing, makes the call fail at once. See [Models and keys](https://cloudycloud.tech/docs/models.html). |
+| `workspace` | string | no | bound repository root | Directory for this worker, relative to the repository bound when the MCP server started. An absolute path is also accepted if it resolves inside that repository. Paths outside the bound repository are refused. |
 | `role` | string, `worker` or `coordinator` | no | `worker` | A worker does the task. A coordinator also gets cloudy-cloud installed and can start its own cloud agents, limited by `CLOUDY_CLOUD_MAX_DEPTH` (default 3). A coordinator always runs Claude Code, so it cannot use a pi, omp, Codex or opencode profile. |
 | `machine` | string | no | `linux` | The kind of machine: `linux`, `android`, `omarchy`, `gpu`, `gpu:TYPE`, `gpu:TYPE:COUNT` (COUNT 1 to 4 for any GPU type), `macos` or `macos:MODEL`. `gpu` and `macos` cost much more (GPU: from $0.765 per GPU-hour; Mac: $0.45 to $1.25 per hour with a 24-hour minimum) and are refused until `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` in `~/.config/cloudy-cloud/env` names them (for example `gpu,macos`). Only on Instabox. |
 | `size` | string | no | `4x8` | Machine size as VCPUSxGIB, for example `2x4`, `4x8` or `8x16`. Your Instabox plan decides which sizes are allowed; a size no plan lists is refused. |
@@ -381,6 +391,20 @@ Each turn is limited to 29 minutes by default. `CLOUDY_CLOUD_TURN_MINUTES` chang
 When `~/.config/cloudy-cloud/mcp.json` holds at least one valid server, a Claude Code subagent (not a pi, omp, Codex or opencode worker) starts with `--mcp-config` for that file and `--strict-mcp-config`, so a repo's own `.mcp.json` is not loaded on the machine. pi, omp, Codex and opencode workers get the same servers in their own config files. The reply ends with an `MCP servers:` line. See [MCP servers for subagents](https://cloudycloud.tech/docs/mcp.html).
 
 The call is refused if the session has already started `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION` agents (default 200), or if the folder is not a git repository with at least one commit and a `github.com` origin.
+
+### cloud_agent_capabilities
+
+Reports configured worker profiles, providers and machine kinds. It reads local configuration and does not create a machine or call a model provider. Provider readiness and capabilities in the result describe the active local configuration; they do not prove that a live provider or model call will succeed.
+
+### cloud_agent_recover
+
+Starts a fresh worker conversation from a previously confirmed, pushed checkpoint. It requires a configured provider different from the worker's recorded provider, confirms the old machine is positively absent and that the origin branch still points to the exact checkpoint SHA, then starts the same agent ID and branch using only the new message. It does not replay the old prompt or restore in-memory conversation state. It refuses when the old machine is live or its state is unknown, the checkpoint is missing or the branch moved, the provider/profile is not allowed, or the workspace/user does not match.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `agent_id` | string | yes | The failed worker's agent ID with a confirmed checkpoint. |
+| `provider` | string | yes | A configured alternate provider allowed for this worker. |
+| `message` | string | yes | The new message for the fresh worker conversation. |
 
 ### cloud_agent_message
 
@@ -414,15 +438,15 @@ Lists every agent with its id, description, status, idle minutes and progress (t
 
 ### cloud_agent_stop
 
-Stops agents and deletes their sandboxes. It is safe to repeat, and safe to call with ids that do not exist. Stop agents when they are finished, because they stay open until stopped or idle for 60 minutes.
+Stops agents owned by this MCP server and deletes their sandboxes. A successful result means the provider confirmed deletion or confirmed that the machine was already absent. If deletion fails transiently, the agent remains tracked as `stop-pending` and the result gives retry guidance. Stop agents when they are finished, because they otherwise remain open until stopped or idle for 60 minutes.
 
 | Parameter | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `agent_ids` | array of strings | yes | none | The agent ids to stop. |
+| `agent_ids` | array of strings | yes | none | The agent ids owned by this server session. Machine IDs and provider-qualified machine selectors are for the `cloudy-cloud machines` command, not this MCP tool. |
 
 ### Limits that apply to the tools
 
-- An agent that is idle for 60 minutes is stopped. Every agent is stopped when the session ends.
+- An agent that is idle for 60 minutes is stopped. Default ephemeral sessions stop their agents when the session ends; named MCP sessions can reconnect to a local owner while that owner is running.
 - A single task is stopped after 29 minutes.
 - Machines start at most `CLOUDY_CLOUD_STARTS_PER_MIN` times a minute. Agents waiting for a machine show the status `queued`.
 - Instabox deletes every machine the tool creates after `CLOUDY_CLOUD_WORKER_HOURS` hours, even if `cloudy-cloud` has died.
@@ -464,7 +488,8 @@ Environment variables win over values in the config file. An empty value counts 
 |---|---|---|
 | `CLOUDY_CLOUD_CONFIG` | `~/.config/cloudy-cloud/env` | Path of the config file. |
 | `CLOUDY_CLOUD_ALLOW_MACHINE_KINDS` | none | Comma-separated machine kinds you allow although they cost much more: `gpu`, `macos`. Without it, `cloud_agent` refuses those kinds and starts nothing. |
-| `CLOUDY_CLOUD_PROVIDER` | `instabox` | Sandbox provider: `instabox`, `self-hosted` or `microsandbox`. |
+| `CLOUDY_CLOUD_PROVIDERS` | unset | Ordered comma- or space-separated provider names to try. Lists must use compatible credential handling: `instabox,microsandbox` keeps model values out of the worker guest through provider proxying or host-side substitution, while `boat,e2b,self-hosted` delivers credentials to the machine only with provider-specific consent. Mixing these groups is refused because failover cannot change the credential model. Cloudy Cloud skips providers that cannot meet the requested machine, feature and credential requirements and advances after eligible definite creation failures such as missing key, capacity, quota or rate limit. A transient or uncertain create response triggers reconciliation using the stable agent label: Cloudy Cloud adopts a match only when exactly one machine is found and connects successfully. If no match, multiple matches, listing errors or connection failure prevent confirmation, it refuses to start another machine. Errors after a sandbox is returned do not trigger provider failover. If unset or empty, the legacy single-provider setting is used. |
+| `CLOUDY_CLOUD_PROVIDER` | `instabox` | Legacy single-provider setting used when `CLOUDY_CLOUD_PROVIDERS` is unset or empty. Providers currently include `instabox`, `boat`, `e2b`, `self-hosted` and `microsandbox`. |
 | `CLOUDY_CLOUD_MSB_BIN` | `~/.local/bin/msb`, then `msb` on PATH | Microsandbox: path of the `msb` program. |
 | `CLOUDY_CLOUD_MSB_SLOTS` | 2 | Microsandbox: how many microVMs run at once. |
 | `CLOUDY_CLOUD_EGRESS_ALLOW` | unset | Hosts a worker machine may connect to, separated by commas or spaces; `*.example.com` covers the domain and its subdomains. The worker can also always reach `github.com`, `api.github.com`, its model host and every configured `https` MCP server host, plus DNS. `off` (or `none`) sets no policy on purpose. Only the `microsandbox` provider enforces the list; on another provider `cloud_agent` refuses to start while it is set, and a set-but-empty value is an error. Workers only, and only Claude Code workers that reach their model host directly. See [Troubleshooting](https://cloudycloud.tech/docs/troubleshooting.html). |

@@ -39,8 +39,8 @@ test('parseArgs accepts ports and flags, rejects bad input', () => {
 
 test('resolveTarget maps agent id and coordinator name; errors are plain', () => {
   const ctx = { machines, events, alive: () => true };
-  assert.equal(resolveTarget('7c1e90ab', ctx), 'mach-aaa');
-  assert.equal(resolveTarget('my-coord', ctx), 'mach-ccc');
+  assert.equal(resolveTarget('7c1e90ab', ctx).id, 'mach-aaa');
+  assert.equal(resolveTarget('my-coord', ctx).id, 'mach-ccc');
   assert.throws(() => resolveTarget('dead0001', ctx), /not running/);
   assert.throws(() => resolveTarget('nope', ctx), /Unknown id "nope".*7c1e90ab/s);
 });
