@@ -309,8 +309,15 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
     // earlier sibling of the same Claude account is never the renewal's target. Only a switch to
     // another identity hops to the sibling label that names it.
     if (carried && !accounts.sameAccount(idx[carried], j)) {
-      dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j));
-      if (dupe) label = dupe; // a replacement sign-in on a leasing coordinator updates the label that names the identity
+      // A switch to another identity revives a label of that identity only when it is free and signed
+      // out; any other label holds a usable sign-in that must survive, so the new one gets a fresh label.
+      dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j) && !idx[l].leasedBy?.name && idx[l].needsSignIn);
+      if (dupe) label = dupe;
+      else {
+        const base = accounts.emailLabel(j.email);
+        label = base && !idx[base] ? base : '';
+        for (let i = 2; base && !label; i++) if (!idx[`${base}-${i}`]) label = `${base}-${i}`;
+      }
     } else if (!carried) {
       // One label = one sign-in: a fresh sign-in of a known identity revives a free signed-out label,
       // else it is saved under a new label for the same identity (<email>-2, -3, ...).
@@ -332,6 +339,7 @@ const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = 
     const ours = mid && carried && idx[carried]?.leasedBy?.machineId === mid ? idx[carried].leasedBy : null;
     const holder = idx[label]?.leasedBy;
     if (holder?.name && holder.machineId !== mid) {
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
       if (dupe || accounts.sameAccount(idx[label], j)) { c.out(`This Claude account is already saved as ${label} and used by coordinator ${holder.name} — the sign-in was not saved under a second label.`); return ''; }
       if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
       // A derived label another coordinator's lease already holds falls back to a fresh account-N.

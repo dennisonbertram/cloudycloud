@@ -4331,8 +4331,8 @@ test('login --account naming a label leased to another coordinator refuses inste
   const f = mk();
   ownMachine(f, 'boss');
   seedAccount(f, 'me@example.com', { cred: CRED(9e12, 'rt-first'), email: 'me@example.com', leasedBy: { name: 'first', machineId: 'm9', provider: 'instabox' } });
-  await main(['login', 'boss', '--code', 'X', '--account', 'me@example.com'], f.deps);
-  assert.match(f.log.out.join('\n'), /already saved as me@example\.com and used by coordinator first/);
+  const e = await main(['login', 'boss', '--code', 'X', '--account', 'me@example.com'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /used by coordinator first/);
   const idx = accounts.readIndex(accDir(f));
   assert.equal(idx['me@example.com'].leasedBy.name, 'first', 'the requested lease is untouched');
   assert.equal(idx['me@example.com-2'], undefined, 'no sign-in was saved under a substituted label');
@@ -4347,7 +4347,7 @@ test('a sign-in switch inside an attach saves the replacement and limits it, not
   const f = fixture({ pane: "You've hit your usage limit", cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
   ownMachine(f, 'boss');
   seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
-  seedAccount(f, 'personal', { email: 'p@x' });
+  seedAccount(f, 'personal', { email: 'p@x', needsSignIn: true });
   const e = await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
   assert.match(e.message, /not working after sign-in/);
   const idx = accounts.readIndex(accDir(f));
@@ -4356,6 +4356,34 @@ test('a sign-in switch inside an attach saves the replacement and limits it, not
   assert.equal(idx.work.limitedUntil, undefined, 'the old label is not charged for the replacement\'s limit');
   assert.equal(idx.work.leasedBy, undefined, 'the old label was released in the same step');
   assert.equal(readFileSync(accounts.credFile(accDir(f), 'personal'), 'utf8'), CRED(9e12 + 9), 'the live credential was saved');
+});
+
+test('a sign-in switch never overwrites a healthy free label of the new identity — it is saved under a new -N label', async () => {
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'p@x', { cred: CRED(9e12, 'rt-healthy'), email: 'p@x' });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x'), 'utf8'), CRED(9e12, 'rt-healthy'), 'the healthy sign-in was not overwritten');
+  assert.equal(idx['p@x'].leasedBy, undefined);
+  assert.equal(idx['p@x-2'].leasedBy?.machineId, 'm1', 'the new label took this machine lease');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x-2'), 'utf8'), CRED(9e12 + 9));
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was released');
+});
+test('a sign-in switch whose destination label is leased elsewhere is saved under a new -N label', async () => {
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'p@x', { cred: CRED(9e12, 'rt-held'), email: 'p@x', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['p@x'].leasedBy.name, 'other', 'the other lease is untouched');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x'), 'utf8'), CRED(9e12, 'rt-held'));
+  assert.equal(idx['p@x-2'].leasedBy?.machineId, 'm1');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x-2'), 'utf8'), CRED(9e12 + 9));
 });
 
 test('stop marks the account needsSignIn when the final credential read is not verified current', async () => {
