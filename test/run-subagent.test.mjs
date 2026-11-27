@@ -11,6 +11,7 @@ import { mkdtemp, mkdir, writeFile, readFile, chmod, access, rm, stat } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStartQueue } from '../src/limits.mjs';
+import { installId } from '../src/config.mjs';
 import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
@@ -1456,18 +1457,20 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   // tool and the deadline hook in bin/cloudy-cloud; DELETE_AT gives them the machine's real deadline.
   assert.match(launched, /COORD=1/);
   assert.match(launched, /DEL=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+  // A nested coordinator has no Remote Control: it never gets the peer variables a top-level one does.
+  for (const c of s.cmds) assert.doesNotMatch(c, /CLOUDY_CLOUD_(NAME|PEERS)=/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
 });
 
 test('a provider that defines coordinatorEnv adds fixed lines and its own names (not the Instabox key) to the shared allowlist; the depth lines are still added (#41)', async () => {
   const x = await setup();
-  x.deps.env = { ...LONG_ENV };
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_CONFIG: join(await mkdtemp(join(tmpdir(), 'cc-id-')), 'env') };
   x.deps.provider.coordinatorEnv = () => ({ fixed: ['CLOUDY_CLOUD_PROVIDER=self-hosted', 'CLOUDY_CLOUD_SELF_HOSTED_LOCAL=1'], names: ['GH_TOKEN'] });
   await withTool(x);
   await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' })]);
   const env = await readFile(join(x.created[0].dir, 'home', '.config/cloudy-cloud/env'), 'utf8');
-  assert.equal(env, 'CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SELF_HOSTED_LOCAL=1\nGH_TOKEN=ghp_secret\nCLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1\nPARTICLE_API_KEY=part-key-1\nCLOUDY_CLOUD_DEPTH=1\nCLOUDY_CLOUD_MAX_DEPTH=3\nCLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200\n');
+  assert.equal(env, `CLOUDY_CLOUD_PROVIDER=self-hosted\nCLOUDY_CLOUD_SELF_HOSTED_LOCAL=1\nGH_TOKEN=ghp_secret\nCLAUDE_CODE_OAUTH_TOKEN=oauth-tok-1\nPARTICLE_API_KEY=part-key-1\nCLOUDY_CLOUD_DEPTH=1\nCLOUDY_CLOUD_MAX_DEPTH=3\nCLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=200\nCLOUDY_CLOUD_INSTALL_ID=${installId(x.deps.env)}\n`);
   assert.doesNotMatch(env, /INSTABOX/);
 });
 
@@ -2069,17 +2072,18 @@ test('a default worker has profile claude', async () => {
   assert.equal(deps.provider.log.create[0].labels.profile, 'claude');
 });
 
-test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent', async () => {
+test('cloud_agent_list all:true groups every cloudy-cloud machine under its parent and shows coordinator names', async () => {
   const { deps, text } = await setup();
   const mk = (id, labels) => deps.provider.machines.set(id, { id, name: id, labels: { purpose: 'cloudy-cloud', ...labels }, state: 'running', status: 'running', startedAt: Date.now() });
   mk('m1', { owner: 'o1', parent: 'o1', role: 'worker', profile: 'claude', agent: 'aaaa1111' });
   mk('m2', { owner: 'o2', parent: 'coord-x', role: 'worker', profile: 'pi-glm', agent: 'bbbb2222', description: 'build-the-thing' });
   mk('m3', { purpose: 'other', owner: 'o3' });
-  mk('m4', { owner: 'o4', parent: 'o4', role: 'coordinator' });
+  mk('m4', { owner: 'o4', parent: 'o4', role: 'coordinator', name: 'coord-b', install: 'i1' }); // the name is how other sessions message it
   const response = await listAgents({ all: true }, deps);
   const r = text(response);
   assert.match(r, /parent o1\n[^\n]*m1[^\n]*aaaa1111/);
   assert.match(r, /parent coord-x\n[^\n]*m2[^\n]*pi-glm[^\n]*build-the-thing/);
+  assert.match(r, /m4[^\n]*coordinator[^\n]*name coord-b/);
   assert.ok(!r.includes('m3'));
   assert.equal(response.structuredContent.scope, 'provider');
   assert.deepEqual(response.structuredContent.agents.map(({ id, parent, role, profile, agent_id, description }) => ({ id, parent, role, profile, agent_id, description })), [
@@ -2107,6 +2111,21 @@ test('cloud_agent_list all:true returns typed errors when provider fleet listing
   assert.equal(partial.structuredContent.agents[0].id, 'visible');
   assert.deepEqual(partial.structuredContent.provider_errors.map(({ provider, code }) => [provider, code]), [['secondary', 'transient']]);
   assert.match(partial.content[0].text, /Provider listing is incomplete: secondary \(transient\)/);
+});
+
+// A coordinator gets the operator's install id as trusted config (CLOUDY_CLOUD_INSTALL_ID): its
+// cloud_agent_list still marks this installation's coordinators instead of seeing them all as foreign.
+test('cloud_agent_list all:true marks this installation\'s coordinators through the CLOUDY_CLOUD_INSTALL_ID override', async () => {
+  const { deps, text } = await setup();
+  deps.env = { CLOUDY_CLOUD_CONFIG: join(await mkdtemp(join(tmpdir(), 'cc-id-')), 'env'), CLOUDY_CLOUD_INSTALL_ID: 'aaaa1111bbbb2222' };
+  const mk = (id, labels) => deps.provider.machines.set(id, { id, name: id, labels: { purpose: 'cloudy-cloud', ...labels }, state: 'running', status: 'running', startedAt: Date.now() });
+  mk('m1', { role: 'coordinator', name: 'coord-b', install: 'aaaa1111bbbb2222' });
+  mk('m2', { role: 'coordinator', name: 'coord-c', install: 'cccc3333dddd4444' });
+  mk('m3', { owner: 'o1', parent: 'o1', role: 'worker', install: 'aaaa1111bbbb2222' });
+  const r = text(await listAgents({ all: true }, deps));
+  assert.match(r, /m1[^\n]*\(this installation\)/);
+  assert.ok(!/m2[^\n]*\(this installation\)/.test(r), 'a foreign install label is never marked');
+  assert.ok(!/m3[^\n]*\(this installation\)/.test(r), 'only coordinators are marked');
 });
 
 // ---- #47: optional apt packages ----

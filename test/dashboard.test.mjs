@@ -841,10 +841,15 @@ test('page: the spend line truncates at tablet widths, wraps under 480px, and is
 
 test('a fatal pane state reaches the box as waiting with fatal; the attach name is the label; a stopped coordinator drops the alert (#88)', async () => {
   const clock = { t: 100_000 }, { getState, reader, env, provider } = await coordWithLog([{ type: 'agent', id: 'aaaa1111', t: 1, description: 'w', role: 'worker' }], clock);
-  reader.capturePane = async () => ({ lines: ['Not logged in \u00b7 Please run /login'], fetchedAt: clock.t });
+  let pane = ["You've hit your usage limit \u00b7 Try again later"];
+  reader.capturePane = async () => ({ lines: pane, fetchedAt: clock.t });
   const co = async () => (await getState()).boxes.find((b) => b.kind === 'coordinator');
   const b = await co();
-  assert.deepEqual([b.waiting, b.fatal, b.labels.name], ['Not logged in \u00b7 Please run /login', true, 'cn']);
+  assert.deepEqual([b.waiting, b.fatal, b.labels.name], ["You've hit your usage limit \u00b7 Try again later", true, 'cn']);
+  clock.t += 40_000; // past the pane-read throttle so the next state reads the new screen
+  pane = ['Not logged in \u00b7 Please run /login'];
+  const s = await co();
+  assert.deepEqual([s.waiting, s.fatal], ['waiting for Claude sign-in', undefined], 'a sign-in screen is a normal wait, never fatal');
   const page = readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8');
   assert.match(page, /attach ' \+ \(b\.labels && b\.labels\.name \|\| b\.id\)/);
   assert.match(page, /b\.fatal/);

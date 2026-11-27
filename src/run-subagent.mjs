@@ -8,7 +8,7 @@ import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createStartQueue, MAX_START_TRIES, QUOTA_GIVE_UP_MS, classifyProviderError, providerDetail, isRateLimited, isQuotaExceeded } from './limits.mjs';
 import { planSnapshot, usageLine, parseMachine, parseSize, sizeLabel, offeredBy, planFee, TIERS, sizeCostLine, EXPENSIVE, PRICE } from './machine.mjs';
-import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow } from './config.mjs';
+import { PROVIDER_KEY, DEFAULT_PROVIDER_KEY, proxySecrets, aptPackages, turnMinutes, defaultWorkerNote, egressAllow, envLine, installId } from './config.mjs';
 import { loadMcp, checkServer, cleanEntry, isLiteralSecret, mcpFile, mcpConfigText, forHarness } from './mcpsync.mjs';
 import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { resolveProfile, preflightProfile, coordinatorKeys, profileHint, profileHost, gatewayConfig, claudeEnv, GATEWAY_PORT, MODEL, PI_VERSION, PI_PROVIDER, piModels, OMP_VERSION, ompModels, ompConfig, ompCommand } from './profiles.mjs';
@@ -929,7 +929,9 @@ async function installCoordinator(a, ctx, envs) {
   // The machine gets no CLOUDY_CLOUD_PROVIDER, so it loads the default provider (Instabox) and reads its key from the placeholder.
   // A provider may instead say which of its own names go in and add fixed lines (self-hosted: local mode, no SSH key, #41).
   const { lines } = coordinatorKeys(env, a.provider ?? ctx.provider, { single: true });
-  lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`);
+  // The operator's install id rides along as trusted config, the same way `coordinator start` writes it, so a
+  // nested coordinator's cloud_agent_list marks the same installation's peers (allMachines uses installId()).
+  lines.push(`CLOUDY_CLOUD_DEPTH=${a.depth}`, `CLOUDY_CLOUD_MAX_DEPTH=${a.maxDepth}`, `CLOUDY_CLOUD_MAX_AGENTS_PER_SESSION=${a.maxAgents}`, envLine('CLOUDY_CLOUD_INSTALL_ID', installId(env)));
   const dir = `${a.home}/.config/cloudy-cloud`;
   await sh(`mkdir -p ${dir}`);
   await a.sandbox.files.write(`${dir}/env`, `${lines.join('\n')}\n`);
@@ -1670,10 +1672,15 @@ export async function waitAgents(args = {}, deps) {
 }
 
 // cloud_agent_list {all: true}: every machine labelled purpose=cloudy-cloud, grouped by parent label.
-async function allMachines({ provider }) {
+// Coordinators of THIS installation (the same install label start stamps) are marked so a coordinator
+// reading the list can tell its own fleet from a teammate's machines in a shared workspace.
+async function allMachines({ provider, env }) {
   const providerErrors = [];
   const rows = await provider.list({ purpose: 'cloudy-cloud' }, { onError: (error) => providerErrors.push(error) });
   if (!rows.length) return { text: 'No cloudy-cloud machines.', agents: [], providerErrors };
+  let mine = '';
+  try { mine = installId(env); } catch { /* an unreadable install id marks nothing */ }
+  const mark = (m) => (mine && m.labels?.role === 'coordinator' && m.labels?.install === mine ? '  (this installation)' : '');
   const groups = new Map();
   for (const m of rows) { const k = m.labels?.parent || m.labels?.owner || 'unknown'; groups.set(k, [...(groups.get(k) ?? []), m]); }
   const agents = rows.map((m) => {
@@ -1690,9 +1697,10 @@ async function allMachines({ provider }) {
       kind: labels.kind ?? null,
       ...(typeof labels.agent === 'string' && { agent_id: labels.agent }),
       description: labels.description ?? null,
+      ...(mine && labels.role === 'coordinator' && labels.install === mine && { mine: true }),
     };
   });
-  let text = [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}${m.provider ? `  provider ${m.provider}` : ''}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}`).join('\n')}`).join('\n');
+  let text = [...groups].map(([parent, ms]) => `parent ${parent}\n${ms.map((m) => `  ${m.id}${m.provider ? `  provider ${m.provider}` : ''}  ${m.state ?? m.status}  ${m.labels?.role ?? '?'}${m.labels?.name ? `  name ${m.labels.name}` : ''}  profile ${m.labels?.profile ?? '?'}${m.labels?.kind ? `  machine ${m.labels.kind}` : ''}  agent ${m.labels?.agent ?? '?'}${m.labels?.description ? `  ${m.labels.description}` : ''}${mark(m)}`).join('\n')}`).join('\n');
   if (providerErrors.length) text += `\nProvider listing is incomplete: ${providerErrors.map((error) => `${error.provider ?? 'unknown provider'} (${error.code ?? 'error'})`).join(', ')}`;
   return { text, agents, providerErrors };
 }
