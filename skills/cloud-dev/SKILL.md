@@ -54,7 +54,7 @@ Never copy production credentials to a cloud machine to make a task fit. Run tha
 
 ## Mode 3: coordinator (recommended)
 
-One-time setup per account: in a terminal, the user runs `cloudy-cloud coordinator image`. It builds and saves the image (10 to 20 minutes) and deletes the image machine. The image carries no Claude sign-in — each coordinator signs in to Claude for itself when it starts, so copied credentials can never race coordinators into signing each other out.
+No image step is needed: `cloudy-cloud cloud` and `coordinator start` create coordinators from the base template. `cloudy-cloud coordinator image` (one run, about 20 minutes) is optional and normally unnecessary. A saved image carries no Claude sign-in, and each coordinator signs in to Claude for itself when it starts, so copied credentials can never race coordinators into signing each other out.
 
 Start, connect and stop:
 

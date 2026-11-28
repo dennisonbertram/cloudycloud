@@ -1,8 +1,8 @@
 import './tmp-cleanup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, existsSync } from 'node:fs';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, chmodSync, existsSync, symlinkSync, unlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -13,6 +13,7 @@ import { installId } from '../src/config.mjs';
 import { redact } from '../src/events.mjs';
 import { combine } from '../src/providers/index.mjs';
 import { createFakeProvider } from './fake-provider.mjs';
+import * as accounts from '../src/accounts.mjs';
 
 const IBK = 'ibk_REALKEY_0123456789';
 const TOK = 'sk-ant-oat01-REALTOKEN0123';
@@ -47,18 +48,24 @@ test('invalid arguments are rejected before keys or the SDK are used', async () 
 });
 
 const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true });
-function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready', loginActive = true, task = '' } = {}) {
-  const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [] };
+function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth = [SIGNED_IN], snapStatus = () => 'ready', loginActive = true, task = '', cred = null } = {}) {
+  const log = { create: [], cmds: [], writes: [], killed: [], snapshots: [], fetches: [], out: [], reads: [], notes: [], watchers: 0 };
   const dir = mkdtempSync(join(tmpdir(), 'cc-coord-'));
   const configFile = join(dir, 'env');
   const mk = (id, name, metadata) => ({ sandboxId: id, name, metadata, state: 'running', startedAt: new Date('2026-01-02T03:04:05Z') });
   const sandbox = (id, name) => ({
     sandboxId: id,
     getInfo: async () => ({ name }),
-    files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; } },
-    commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) return { stdout: auth.length > 1 ? auth.shift() : auth[0], stderr: '', exitCode: 0 };
+    files: { write: async (p, d) => { log.writes.push({ p, d }); }, writeStream: async (p, d) => { log.writes.push({ p, d: new TextDecoder().decode(d) }); return true; },
+      // files.read answers the machine's credential file (cred option); anything else is "not there".
+      read: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return v; },
+      // readStream is the SDK's file-content route — the same bytes files.read returns.
+      readStream: async (p) => { log.reads.push(p); const v = typeof cred === 'function' ? cred(p) : cred; if (v == null) throw Object.assign(new Error('no such file'), { code: 'not_found' }); return new TextEncoder().encode(v); } },
+    commands: { run: async (cmd, o) => { log.cmds.push(cmd); if (/auth status/.test(cmd)) { const s = auth.length > 1 ? auth.shift() : auth[0]; let j; try { j = JSON.parse(s); } catch { /* non-JSON auth payloads still return exit 0 */ } if (j?.loggedIn === false) throw Object.assign(new Error('auth status: signed out'), { exitCode: 1, stdout: s, stderr: '' }); return { stdout: s, stderr: '', exitCode: 0 }; } // the real CLI answers a signed-out status with exit 1
       if (/test -f .*login-active/.test(cmd)) { if (!loginActive) throw Object.assign(new Error('no login-active'), { exitCode: 1 }); return { stdout: '', stderr: '', exitCode: 0 }; }
       if (/task\.md/.test(cmd)) return { stdout: task, stderr: '', exitCode: 0 };
+      // The credential dir command mirrors launch.sh: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}.
+      if (/CLAUDE_CONFIG_DIR/.test(cmd)) return { stdout: '/data/home/.claude', stderr: '', exitCode: 0 };
       return { stdout: /pane_pid/.test(cmd) ? link : /capture-pane/.test(cmd) ? pane : '/data/home', stderr: '', exitCode: 0 }; } },
     createSnapshot: async (o) => { log.snapshots.push(o); return { id: 'sn_new', status: 'pending' }; },
     kill: async () => { log.killed.push(id); return true; },
@@ -80,7 +87,7 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     return Response.json({ machines: machines.map((m) => ({ id: m.sandboxId, name: m.name, state: m.state, createdAt: m.startedAt, metadata: m.metadata, deleteAt: m.machine?.deleteAt })) });
   };
   // The laptop holds the real Instabox key; the Claude token and the provider key are proxy secrets, so env has their names only (#67, #68).
-  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot }), PATH: '/x' };
+  const env = { INSTABOX_API_KEY: IBK, CLOUDY_CLOUD_PROXY_SECRETS: 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY', STRIPE_API_KEY: OTHER, CLOUDY_CLOUD_PROFILES: join(dir, 'profiles.json'), CLOUDY_CLOUD_CONFIG: configFile, ...(snapshot && { CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: snapshot, CLOUDY_CLOUD_SNAPSHOT_CLEAN: snapshot }), PATH: '/x' };
   // Provider CLI calls (instabox secrets ...) are recorded, never run: argv plus what stdin would carry.
   // `secrets ls --json` answers the names in store.remote (default: the current CLOUDY_CLOUD_PROXY_SECRETS).
   const store = { calls: [], fail: false, lsFail: false, remote: undefined };
@@ -90,6 +97,11 @@ function fixture({ machines = [], snapshot = 'sn_1', pane = '', link = '', auth 
     return store.fail ? { code: 1, stdout: '', stderr: typeof store.fail === 'string' ? store.fail : 'denied' } : { code: 0, stdout: '', stderr: '' };
   };
   const deps = { sdk, fetchFn, env, tty: false, root: resolve('.'), sleep: async () => {}, out: (s) => log.out.push(s), cliSpawn };
+  // Notes still go to stderr (deps.stderr when a test injects it, the real one otherwise); log.notes only records.
+  deps.note = (s) => { log.notes.push(s); (deps.stderr ?? process.stderr).write(`${s}\n`); };
+  // The real watcher drops a pid file when it starts; the stub does the same so a second
+  // ensureWatcher sees the live watcher instead of spawning another.
+  deps.spawnWatcher = () => { log.watchers++; try { writeFileSync(join(accounts.accountsDir(env), accounts.WATCH_PID), String(process.pid)); } catch {} };
   // This installation's id: machines of "ours" carry it as the `install` label.
   const iid = installId(env);
   return { log, deps, configFile, mk, machines, store, iid };
@@ -141,7 +153,6 @@ test('image reuses a running image machine and snapshots it instead of making an
   IMG(f);
   await main(['image'], f.deps);
   assert.equal(f.log.create.length, 0);
-  assert.ok(!f.log.cmds.some((c) => /npm install/.test(c)));
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, ['m_img']);
 });
@@ -156,25 +167,78 @@ test('image --save snapshots whatever the machine has: the sign-in state is neve
   assert.ok(!f.log.cmds.some((c) => /auth status/.test(c)), 'no auth status check remains');
 });
 
-test('image --save with no image machine explains the 2 hour deletion', async () => {
-  const f = fixture();
-  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found\. Image machines are deleted 2 hours after[\s\S]*Run: cloudy-cloud coordinator image/);
-});
-
-test('image --save records the snapshot id and deletes the image machine', async () => {
+test('image --save is an alias: with no image machine it does the whole one-run image', async () => {
   const f = fixture({ snapshot: '' });
-  IMG(f);
   await main(['image', '--save'], f.deps);
+  assert.equal(f.log.create.length, 1);
   assert.equal(f.log.snapshots.length, 1);
-  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
-  assert.equal(statSync(f.configFile).mode & 0o777, 0o600);
-  assert.deepEqual(f.log.killed, ['m_img']);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$\n?[\s\S]*CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new/m);
 });
 
-test('start without a snapshot fails and points to coordinator image', async () => {
+test('image in one run creates, installs, removes the credential, snapshots, saves the clean key and deletes the machine', async () => {
   const f = fixture({ snapshot: '' });
-  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), /coordinator image/);
-  assert.equal(f.log.create.length, 0);
+  const err = [];
+  await main(['image'], { ...f.deps, stderr: { isTTY: true, write: (x) => err.push(x) } });
+  assert.match(err.join(''), /safe to interrupt/);
+  assert.equal(f.log.create.length, 1);
+  assert.ok(f.log.cmds.some((c) => /rm -f "\$c"/.test(c)));
+  assert.equal(f.log.snapshots.length, 1);
+  assert.deepEqual(f.log.killed, ['m_new']);
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.match(cfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+  assert.match(cfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new$/m);
+  assert.doesNotMatch(cfg, /PENDING/);
+  assert.match(f.log.out.join('\n'), /cloudy-cloud cloud/);
+});
+
+test('image interrupted by the wait limit leaves a pending record, and the rerun resumes the same snapshot', async () => {
+  let ready = false;
+  const f = fixture({ snapshot: '', snapStatus: () => (ready ? 'ready' : 'pending') });
+  let t = 0; const clk = { now: () => t, sleep: async (ms) => { t += ms; } };
+  await assert.rejects(main(['image'], { ...f.deps, ...clk }), /still saving\. Run cloudy-cloud coordinator image again/);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_PENDING_SNAPSHOT=m_new:sn_new$/m);
+  ready = true;
+  await main(['image'], { ...f.deps, ...clk });
+  assert.equal(f.log.create.length, 1, 'no second machine');
+  assert.equal(f.log.snapshots.length, 1, 'no second snapshot');
+  assert.deepEqual(f.log.killed, ['m_new']);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_new$/m);
+});
+
+test('start with no snapshot creates the coordinator from the base template and installs the tools', async () => {
+  const f = fixture({ snapshot: '' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create.length, 1);
+  assert.equal(f.log.create[0].template, 'agent-browser');
+  assert.equal(f.log.create[0].opts.metadata.role, 'coordinator');
+  assert.ok(f.log.cmds.some((c) => /gh auth setup-git/.test(c)), 'installTool ran');
+  assert.equal(f.log.snapshots.length, 0);
+});
+
+test('start with a legacy unclean snapshot uses the base template and prints the forget note', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN;
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...f.deps, note: (s) => notes.push(s) });
+  assert.equal(f.log.create[0].template, 'agent-browser');
+  assert.match(notes.join('\n'), /holds a Claude sign-in and is no longer needed[\s\S]*cloudy-cloud coordinator image --forget/);
+});
+
+test('start with a clean snapshot uses it', async () => {
+  const f = fixture({ snapshot: 'sn_ok' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create[0].template, 'sn_ok');
+});
+
+test('image --forget clears only the image config keys and deletes nothing', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_old\nCLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_old\nCLOUDY_CLOUD_SNAPSHOT_ACCOUNT=x\n', { mode: 0o600 });
+  await main(['image', '--forget'], f.deps);
+  assert.equal(readFileSync(f.configFile, 'utf8').trim(), 'KEEP=1');
+  assert.match(f.log.out.join('\n'), /npx instabox snapshot rm ID/);
+  assert.deepEqual(f.log.killed, []);
+  assert.equal(f.log.snapshots.length, 0);
 });
 
 test('the coordinator own Claude starts without the setup-token or API key, so its saved full login is used (#67)', async () => {
@@ -210,7 +274,7 @@ test('start creates from the snapshot, attaches GH_TOKEN, writes keys by file an
   // A fresh machine has no git identity; the coordinator needs one to commit merges and its report.
   assert.ok(f.log.cmds.some((c) => c.includes('git config --global user.name') && c.includes('git config --global user.email')), 'git identity set');
   for (const name of ['SKILL.md', 'handoff.md', 'brief-template.md']) assert.ok(f.log.writes.some((w) => w.p === `/data/home/.claude/skills/cloud-fleet/${name}`), `skill file ${name} uploaded`);
-  for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice']) assert.ok(f.log.cmds[prep].includes(k), k);
+  for (const k of ['hasTrustDialogAccepted', 'fullscreenUpsellSeenCount', 'hasSeenAutoDefaultNotice', 'remoteDialogSeen', 'remoteControlAtStartup']) assert.ok(f.log.cmds[prep].includes(k), k);
   const text = f.log.out.join('\n');
   assert.match(text, /"boss"/);
   assert.match(text, /coordinator attach boss/);
@@ -268,6 +332,32 @@ test('a failed peer lookup never fails the start: no peers, one progress line', 
   assert.match(tmux, /CLOUDY_CLOUD_NAME=boss /);
   assert.match(tmux, /CLOUDY_CLOUD_PEERS= /);
   assert.ok(progress.some((l) => /other coordinators/.test(l)), JSON.stringify(progress));
+});
+
+test('a coordinator with peers but no task opens on a hello-only first prompt, then waits for the user', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  f.machines.push({ sandboxId: 'm1', name: 'coord-m1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'alpha', install: mine } });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const session = sessionCommand(f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  // The hello only goes out on a first turn, so the session gets a prompt that sends it — and nothing else.
+  assert.match(session, /--remote-control 'boss' '[^']*hello[^']*'/, session);
+  assert.match(session, /wait for the user/, session);
+  assert.match(session, /no other work|start no other work/, session);
+  assert.ok(!f.log.writes.some((w) => /task\.md/.test(w.p)), 'no task file for a taskless start');
+});
+
+test('a coordinator with a task keeps the task as its first prompt; without peers it gets no prompt', async () => {
+  const f = fixture();
+  const mine = installId(f.deps.env);
+  f.machines.push({ sandboxId: 'm1', name: 'coord-m1', state: 'running', metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'alpha', install: mine } });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--task', 'do the thing'], f.deps);
+  let session = sessionCommand(f.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  assert.match(session, /--remote-control 'boss' "\$\(cat '\/data\/home\/task\.md'\)"/, session);
+  const g = fixture();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], g.deps);
+  session = sessionCommand(g.log.cmds.find((c) => /tmux new-session -d -s claude/.test(c)));
+  assert.match(session, /--remote-control 'boss'\s*$/, session);
 });
 
 test('start --task uploads ~/task.md by file and launches with it as the first prompt', async () => {
@@ -476,7 +566,7 @@ test('empty list on a terminal points to image or start; piped output stays "No 
     await main(['ls'], f.deps);
     const text = f.log.out.join('\n');
     assert.match(text, /No coordinators yet/);
-    assert.ok(text.includes(snapshot ? 'coordinator start NAME' : 'coordinator image'));
+    assert.ok(text.includes('cloudy-cloud cloud'));
     f.log.out.length = 0;
     f.deps.ui = makeUi({ tty: false });
     await main(['ls'], f.deps);
@@ -487,7 +577,6 @@ test('empty list on a terminal points to image or start; piped output stays "No 
 test('progress goes only to an interactive stderr and never contains keys', async () => {
   for (const isTTY of [true, false]) {
     const f = fixture();
-    f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // not under test: keep the unclean-image note out of the count
     const progress = [];
     f.deps.stderr = { isTTY, write: (x) => progress.push(x) };
     await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
@@ -571,7 +660,7 @@ test('start asks the provider for a never-suspending machine from the snapshot w
       commands: { run: async () => ({ stdout: '/h', stderr: '', exitCode: 0 }) } };
   };
   const out = [];
-  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
+  const env = { FAKE_API_KEY: 'k', CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: 'sn_1', CLOUDY_CLOUD_SNAPSHOT_CLEAN: 'sn_1', CLOUDY_CLOUD_CONFIG: join(mkdtempSync(join(tmpdir(), 'cc-dl-')), 'env') };
   await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { provider, env, root: resolve('.'), sleep: async () => {}, out: (x) => out.push(x) });
   assert.deepEqual(provider.log.create, [{ image: 'sn_1', name: 'coord-boss', labels: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', repo: 'o/r', install: installId(env) }, ttlSeconds: 86400, neverSuspend: true, retry: false }]);
   // A fresh coordinator waits for its own Claude sign-in: the piped output says so and names the login command.
@@ -631,6 +720,19 @@ test('start on a terminal: ok with the deadline detail, a Reach it block with a 
   g.deps.ui = tty();
   await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--json'], g.deps);
   assert.deepEqual(JSON.parse(g.log.out.join('\n')), { name: 'boss', machine: 'coord-boss', remoteControlName: 'boss', attach: 'cloudy-cloud coordinator attach boss', started: true });
+});
+
+test('a long note wraps at word boundaries on a terminal — a printed command is never cut', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN; // an image saved before the credential check triggers the forget note
+  delete f.deps.note; // exercise the real default: notes go to stderr
+  const err = [];
+  f.deps.stderr = { isTTY: true, write: (x) => err.push(x) };
+  f.deps.ui = tty();
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const lines = plainText(err.join('')).split('\n').filter((l) => l.trim());
+  for (const l of lines) assert.ok(cellWidth(l) <= 80, `line over 80 cells: ${JSON.stringify(l)}`);
+  assert.ok(lines.some((l) => l.includes('cloudy-cloud coordinator image --forget')), err.join(''));
 });
 
 test('a top-level coordinator uses the primary provider coordinator configuration', async () => {
@@ -1044,6 +1146,85 @@ test('an optional profile key set only as a plain value is skipped with a plain 
   assert.ok(!out.includes(PROV));
 });
 
+// Two optional profile keys held only as plain values, on a terminal.
+const withSkippedKeys = (f, extra = {}) => {
+  f.deps.ui = tty();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  f.deps.env.PARTICLE_API_KEY = 'pcl_FAKEKEY0123456789';
+  Object.assign(f.deps.env, extra);
+  return f;
+};
+
+test('skipped keys: on a terminal the full instructions print once per key set, then a single line', async () => {
+  const f = withSkippedKeys(fixture());
+  await main(START, f.deps);
+  let text = plainText(f.log.out.join('\n'));
+  assert.match(text, /Not sent to the coordinator \(not stored as proxy secrets\)/);
+  assert.ok(text.includes('OPENROUTER_API_KEY') && text.includes('PARTICLE_API_KEY'), text);
+  assert.match(text, /cloudy-cloud setup --more/);
+  // The same key set on a later start: one short line, no instructions.
+  const g = withSkippedKeys(fixture());
+  g.deps.env.CLOUDY_CLOUD_CONFIG = f.configFile;
+  await main(['start', 'boss2', '--repo', 'https://github.com/o/r'], g.deps);
+  text = plainText(g.log.out.join('\n'));
+  assert.match(text, /2 local keys were not sent to the coordinator; see cloudy-cloud setup --more/);
+  assert.doesNotMatch(text, /Not sent to the coordinator \(not stored|For [A-Z_]+: Run/);
+  // A key set the config already saw still shows the short line, and the marker file did not grow.
+  assert.match(readFileSync(f.configFile, 'utf8'), /CLOUDY_CLOUD_SKIPPED_KEYS=[A-Z_,]*OPENROUTER_API_KEY[A-Z_,]*/);
+});
+
+test('skipped keys: a new key in the set prints the full instructions again', async () => {
+  const f = withSkippedKeys(fixture());
+  await main(START, f.deps);
+  const g = withSkippedKeys(fixture());
+  g.deps.env.CLOUDY_CLOUD_CONFIG = f.configFile;
+  writeFileSync(g.deps.env.CLOUDY_CLOUD_PROFILES, JSON.stringify({ mine: { format: 'anthropic', baseUrl: 'https://x.test/api', model: 'm', keyName: 'MINE_API_KEY' } }));
+  g.deps.env.MINE_API_KEY = 'mine_FAKEKEY0123456789';
+  await main(['start', 'boss2', '--repo', 'https://github.com/o/r'], g.deps);
+  const text = plainText(g.log.out.join('\n'));
+  assert.match(text, /Not sent to the coordinator \(not stored as proxy secrets\)/);
+  assert.ok(text.includes('MINE_API_KEY'), text);
+  assert.match(text, /For MINE_API_KEY:/); // a custom key keeps its own store command
+});
+
+test('ANTHROPIC_API_KEY is never named in the skipped-keys warning — the session unsets it on purpose', async () => {
+  const f = withSkippedKeys(fixture(), { ANTHROPIC_API_KEY: 'sk-ant-api03-FAKEKEY0123456789' });
+  f.deps.env.OPENROUTER_API_KEY = undefined;
+  f.deps.env.PARTICLE_API_KEY = undefined;
+  await main(START, f.deps);
+  const text = plainText(f.log.out.join('\n'));
+  assert.doesNotMatch(text, /Not sent to the coordinator|local keys were not sent/);
+  assert.doesNotMatch(text, /ANTHROPIC_API_KEY/);
+});
+
+test('--json reports skippedKeys and the full note even when the terminal block was already shown', async () => {
+  const f = fixture();
+  f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLOUDY_CLOUD_INSTABOX_API_KEY,CLAUDE_CODE_OAUTH_TOKEN';
+  f.deps.env.CLAUDE_CODE_OAUTH_TOKEN = TOK;
+  f.deps.env.OPENROUTER_API_KEY = PROV;
+  writeFileSync(f.configFile, 'CLOUDY_CLOUD_SKIPPED_KEYS=OPENROUTER_API_KEY\n', { mode: 0o600 });
+  await main([...START, '--json'], f.deps);
+  const j = JSON.parse(f.log.out.join('\n'));
+  assert.deepEqual(j.skippedKeys, ['OPENROUTER_API_KEY']);
+  assert.match(j.note, /Not sent to the coordinator \(not stored as proxy secrets\): OPENROUTER_API_KEY/);
+});
+
+test('a skipped-keys write through a symlinked config lands on the real file and keeps the link', async () => {
+  // The config path is a symlink to a managed file: the skipped-keys bookkeeping write must reach
+  // the target, never replace the link itself with a regular file.
+  const f = withSkippedKeys(fixture());
+  const managed = join(mkdtempSync(join(tmpdir(), 'cc-managed-')), 'env');
+  writeFileSync(managed, 'INSTABOX_API_KEY=managed\n', { mode: 0o600 });
+  symlinkSync(managed, f.configFile);
+  await main(START, f.deps);
+  assert.ok(lstatSync(f.configFile).isSymbolicLink(), 'the config path is still a symlink');
+  const text = readFileSync(managed, 'utf8');
+  assert.match(text, /CLOUDY_CLOUD_SKIPPED_KEYS=[A-Z_,]*OPENROUTER_API_KEY[A-Z_,]*/);
+  assert.match(text, /INSTABOX_API_KEY=managed\n/, 'the managed lines were kept');
+});
+
 test('a real INSTABOX_API_KEY is stored as the coordinator secret, once, and start continues', async () => {
   const f = fixture();
   f.deps.env.CLOUDY_CLOUD_PROXY_SECRETS = 'CLAUDE_CODE_OAUTH_TOKEN,OPENROUTER_API_KEY'; // a plain setup: no coordinator copy
@@ -1118,6 +1299,16 @@ test('guidance labels mid-line are not treated as guidance; multiline fields kee
     await assert.rejects(main(['start', 'b', '--repo', 'https://github.com/o/r', '--json'], f.deps));
     check(JSON.parse(f.log.out.at(-1)).error);
   }
+});
+
+test('the first-run script sets remoteDialogSeen in CLAUDE_CONFIG_DIR/.claude.json, merging and keeping mode 600', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rd-'));
+  writeFileSync(join(dir, '.claude.json'), '{"keep":1}', { mode: 0o600 });
+  execFileSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir } });
+  const j = JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'));
+  assert.equal(j.remoteDialogSeen, true); assert.equal(j.remoteControlAtStartup, true);
+  assert.equal(j.keep, 1);
+  assert.equal(statSync(join(dir, '.claude.json')).mode & 0o777, 0o600);
 });
 
 test('the first-run script pre-answers the bypass confirmation and the folder trust, and keeps existing settings (#88)', () => {
@@ -1300,7 +1491,7 @@ test('--save times out after 30 minutes, then a later --save waits on the same s
   const f = fixture({ snapStatus: () => (ready ? 'ready' : 'pending') });
   IMG(f);
   let t = 0; const clk = { now: () => t, sleep: async (ms) => { t += ms; } };
-  await assert.rejects(main(['image', '--save'], { ...f.deps, ...clk }), /The snapshot is still saving\. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one\./);
+  await assert.rejects(main(['image', '--save'], { ...f.deps, ...clk }), /The snapshot is still saving\. Run cloudy-cloud coordinator image again to finish; it will not start a second one\./);
   assert.ok(t >= 30 * 60_000 && t < 31 * 60_000, `waited ${t} ms`);
   assert.equal(f.log.snapshots.length, 1);
   assert.deepEqual(f.log.killed, []);
@@ -1324,7 +1515,7 @@ test('interactive image resumes a pending snapshot instead of starting another',
 });
 
 // A pending record written by a cloudy-cloud that verified the credential removal carries PENDING_CLEAN.
-const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nCLOUDY_CLOUD_PENDING_CLEAN=1\nSECRET_KEEP=abc\n`, { mode: 0o600 });
+const PENDING = (f, v = 'm_img:sn_new') => writeFileSync(f.configFile, `CLOUDY_CLOUD_PENDING_SNAPSHOT=${v}\nCLOUDY_CLOUD_PENDING_CLEAN=${v.split(':')[1]}\nSECRET_KEEP=abc\n`, { mode: 0o600 });
 
 test('--save finishes a pending snapshot by id even when its machine is gone, and keeps other config lines', async () => {
   const f = fixture({ snapshot: '' });
@@ -1461,12 +1652,12 @@ test('a pending record without the clean marker is dropped unadopted; a marked o
   assert.deepEqual(g.log.killed, [], 'the machine is left alone');
   // A marked pending record resumes: its snapshot is saved and marked clean, the account lines go.
   const h = fixture();
-  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=1\n');
+  writeFileSync(h.configFile, 'CLOUDY_CLOUD_SNAPSHOT_ACCOUNT=old@example.com\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_gone:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=sn_p\n');
   await main(['image'], { ...h.deps, tty: true });
   const hcfg = readFileSync(h.configFile, 'utf8');
   assert.doesNotMatch(hcfg, /SNAPSHOT_ACCOUNT|PENDING/);
   assert.match(hcfg, /^CLOUDY_CLOUD_COORDINATOR_SNAPSHOT=sn_p$/m);
-  assert.match(hcfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.match(hcfg, /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_p$/m);
 });
 
 test('the auth-status email is never stored, whatever it looks like', async () => {
@@ -1487,11 +1678,6 @@ test('ls measures wide characters as two cells and never splits one', async () =
   f.deps.ui = tty();
   await main(['ls'], f.deps);
   for (const l of plainText(f.log.out.join('\n')).split('\n')) assert.ok(cellWidth(l) <= 80, l);
-});
-
-test('a missing coordinator image stays neutral through the start error wrapper', async () => {
-  const f = fixture({ snapshot: '' });
-  await assert.rejects(main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps), (e) => e.neutral === true && e.next === 'cloudy-cloud coordinator image');
 });
 
 // ---- r2: coordinator key self-storage (P1) ----
@@ -1729,9 +1915,6 @@ test('every coordinator screen fits 80 cells at cols=80 (colour)', async () => {
   sv.machines[0].metadata.install = sv.iid;
   sv.deps.ui = tty(); await main(['image', '--save'], sv.deps); check('image --save', sv.log.out.join('\n'));
   check('errorScreen', errorScreen(Object.assign(new Error('m'), { local: true, short: 'The coordinator session started but is not working.', reason: 'screen: spend limit; the machine was deleted', next: 'check the plan at claude.ai, then start boss again' }), tty()));
-  const e = fixture(); // the no-snapshot guided error renders its lines too
-  const thrown = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...e.deps, env: { ...e.deps.env, CLOUDY_CLOUD_COORDINATOR_SNAPSHOT: '' } }).then(() => { throw new Error('start did not fail'); }, (x) => x);
-  check('guided error', errorScreen(thrown, tty()));
 });
 
 // ---- r2 review: remote-checked coordinator-key store, failure surface, script-stable output ----
@@ -2067,8 +2250,8 @@ test('a start provider error renders the appended guidance once: short, cause, o
 
 test('coordinator usage errors keep the origin message for scripts and show the relevant usage only on a terminal', async () => {
   for (const [args, message, usage, help] of [
-    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
-    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [['lss'], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] [--account LABEL] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
+    [[], 'Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] [--account LABEL] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', /Usage: cloudy-cloud coordinator <command>/, /Next: cloudy-cloud coordinator --help/],
     [['ls', '--all'], 'ls takes no arguments.\nRun: cloudy-cloud coordinator ls --help', /Usage: cloudy-cloud coordinator ls/, /Next: cloudy-cloud coordinator ls --help/],
     [['stop'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator stop --help', /Usage: cloudy-cloud coordinator stop NAME/, /Next: cloudy-cloud coordinator stop --help/],
     [['start'], 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).\nRun: cloudy-cloud coordinator start --help', /start needs a NAME\./, /Next: cloudy-cloud coordinator start --help/],
@@ -2452,9 +2635,8 @@ test('errorScreen does not print the same line twice when short equals What happ
 test('an image machine without the cloudy-cloud purpose label is never snapshotted or deleted', async () => {
   const f = fixture({ snapshot: '' });
   f.machines.push(f.mk('m_img', 'img-1', { role: 'coordinator-image' })); // role matches; purpose does not
-  await assert.rejects(main(['image', '--save'], f.deps), /No image machine found/);
-  assert.equal(f.log.snapshots.length, 0);
-  assert.deepEqual(f.log.killed, []);
+  await main(['image', '--save'], f.deps); // the alias never reuses it either: a new labelled machine is made
+  assert.deepEqual(f.log.killed, ['m_new']);
   // and the plain `image` run does not reuse it: a new labelled machine is created
   const g = fixture({ snapshot: '' });
   g.machines.push(g.mk('m_img', 'img-1', { role: 'coordinator-image' }));
@@ -2557,12 +2739,6 @@ test('an image machine of another installation is never touched: a fresh one is 
   await main(['image'], f.deps);
   assert.equal(f.log.create.length, 1, 'our own image machine is created');
   assert.deepEqual(f.log.killed, ['m_new'], 'the foreign machine was left alone');
-  // --save likewise finds no image machine of ours.
-  const g = fixture({ snapshot: '' });
-  g.machines.push(g.mk('m_foreign', 'img-foreign', { purpose: 'cloudy-cloud', role: 'coordinator-image', install: 'otherinstall1234' }));
-  await assert.rejects(main(['image', '--save'], g.deps), /No image machine found/);
-  assert.equal(g.log.snapshots.length, 0);
-  assert.deepEqual(g.log.killed, []);
 });
 
 test('a provider error cannot forge our guidance: its labels print as dim diagnostics under a generic Next', () => {
@@ -2956,6 +3132,22 @@ test('cloud reattach attaches the machine it validated, not a same-named one cre
   assert.equal(f.log.create.length, 0);
   assert.match(f.log.out.join('\n'), /Reattaching to boss/);
   assert.match(f.log.out.join('\n'), /cloudy-cloud coordinator attach boss/);
+});
+
+test('cloud --account on a reattach checks the live lease, not the stale machine label', async () => {
+  // The machine's account metadata was written at creation and cannot change; a replacement
+  // sign-in moved the local lease to personal, so --account must match the lease, not the label.
+  const f = fixture();
+  f.machines.push(own(f, 'boss', { account: 'work' }));
+  seedAccount(f, 'personal', { email: 'p@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['cloud', '--name', 'boss', '--account', 'personal'], { ...f.deps, cwd: ghRepo(), spawn: localSpawn([]) });
+  assert.match(f.log.out.join('\n'), /Reattaching to boss/);
+  // And the stale metadata label no longer passes the guard either.
+  const g = fixture();
+  g.machines.push(own(g, 'boss', { account: 'work' }));
+  seedAccount(g, 'personal', { email: 'p@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const e = await main(['cloud', '--name', 'boss', '--account', 'work'], { ...g.deps, cwd: ghRepo(), spawn: localSpawn([]) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /runs on account personal, not work/);
 });
 
 test('coordinator attach refuses a same-named coordinator of a different installation; a legacy one still attaches by name', async () => {
@@ -3478,21 +3670,22 @@ test('loggedIn true with a non-claude.ai authMethod still needs sign-in, checked
 // ---- P1-3: a saved image without CLOUDY_CLOUD_SNAPSHOT_CLEAN gets one warning line on start ----
 test('start warns once when the saved image predates the credential check, and never when it is marked clean', async () => {
   const f = fixture();
+  delete f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN;
   const notes = [];
   await main(START, { ...f.deps, note: (s) => notes.push(s) });
-  assert.ok(notes.some((n) => /older cloudy-cloud and still contains a Claude sign-in/.test(n)), JSON.stringify(notes));
+  assert.ok(notes.some((n) => /holds a Claude sign-in and is no longer needed/.test(n)), JSON.stringify(notes));
   // The marker finishSave writes keeps an image saved by this version quiet.
   const g = fixture();
-  g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = '1'; // the value loadEnv reads back from the saved config
+  g.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = 'sn_1'; // the value loadEnv reads back from the saved config
   const gNotes = [];
   await main(START, { ...g.deps, note: (s) => gNotes.push(s) });
-  assert.ok(!gNotes.some((n) => /older cloudy-cloud/.test(n)), JSON.stringify(gNotes));
+  assert.ok(!gNotes.some((n) => /no longer needed/.test(n)), JSON.stringify(gNotes));
 });
 
 test('finishSave marks the saved snapshot clean', async () => {
   const f = fixture();
   await main(['image'], f.deps);
-  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=1$/m);
+  assert.match(readFileSync(f.configFile, 'utf8'), /^CLOUDY_CLOUD_SNAPSHOT_CLEAN=sn_new$/m);
 });
 
 // ---- P1-4/P2-4: a sign-in URL is reported only for our own coordinator, only while login runs, never truncated ----
@@ -3554,4 +3747,1165 @@ test('the terminal start labels a pending sign-in link "Sign-in link", never "Re
   const src = (await import('node:fs')).readFileSync(new URL('../src/coordinator.mjs', import.meta.url), 'utf8');
   assert.match(src, /linkLines\(u, loginUrl, 'Sign-in link'\)/);
   assert.match(src, /linkLines\(u, r\.loginUrl, 'Sign-in link'\)/);
+});
+
+// ---- Saved Claude accounts: sign in once per account; one account serves one coordinator at a time ----
+// Every assertion about the token: it may travel ONLY as the payload of files.write (the secret route) —
+// never in a command string, output line, note, error or the index.
+const accDir = (f) => accounts.accountsDir(f.deps.env);
+const CRED = (expiresAt, refresh = TOK) => JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-access-x', refreshToken: refresh, expiresAt, scopes: [] } });
+const seedAccount = (f, label, { cred = CRED(9e12), ...entry } = {}) => {
+  const dir = accDir(f);
+  if (cred) accounts.saveCredential(dir, label, cred);
+  if (Object.keys(entry).length) accounts.updateAccount(dir, label, (e) => ({ ...e, ...entry }));
+};
+const assertNoToken = (f, ...extra) => {
+  const all = [...f.log.out, ...f.log.notes, ...f.log.cmds, ...extra].join('\n');
+  assert.ok(!all.includes(TOK), `a token leaked to an output or command: ${all.slice(0, 300)}`);
+};
+const ownMachine = (f, name, extra = {}) => f.machines.push({ sandboxId: 'm1', name: `coord-${name}`, state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name, install: f.iid, ...extra } });
+
+test('login --code saves the finished sign-in as an account under the email label, mode 600 in a mode-700 dir', async () => {
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' })] });
+  ownMachine(f, 'boss');
+  await main(['login', 'boss', '--code', 'ABC123'], f.deps);
+  const dir = accDir(f);
+  assert.equal(readFileSync(accounts.credFile(dir, 'me@example.com'), 'utf8'), CRED(9e12));
+  const idx = accounts.readIndex(dir);
+  assert.equal(idx['me@example.com'].email, 'me@example.com');
+  assert.ok(idx['me@example.com'].lastUsed > 0);
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com; new coordinators reuse it\./);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(statSync(accounts.credFile(dir, 'me@example.com')).mode & 0o777, 0o600);
+  assert.ok(!readFileSync(join(dir, 'index.json'), 'utf8').includes(TOK), 'the index holds no token');
+  assertNoToken(f);
+});
+
+test('login --account LABEL saves under that label; without a label or email the fallback is account-N', async () => {
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12) });
+  ownMachine(f, 'boss');
+  await main(['login', 'boss', '--code', 'X', '--account', 'work'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), CRED(9e12));
+  assert.match(f.log.out.join('\n'), /as account work;/);
+
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12) });
+  ownMachine(g, 'boss');
+  await main(['login', 'boss', '--code', 'X'], g.deps);
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'account-1'), 'utf8'), CRED(9e12));
+  assert.match(g.log.out.join('\n'), /as account account-1;/);
+  assertNoToken(g);
+});
+
+test('start picks the free account used least recently, delivers its credential before tmux and records the lease', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'old', { email: 'a@x', lastUsed: 500 });
+  seedAccount(f, 'new', { email: 'b@x', lastUsed: 100 });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the account label never rides machine metadata (#216)');
+  const delivery = f.log.writes.find((w) => /credentials\.new$/.test(w.p));
+  assert.equal(delivery?.d, CRED(9e12), 'the credential went by file write, never a command string');
+  const marker = f.log.cmds.findIndex((c) => /credentials-removed/.test(c));
+  const tmuxAt = f.log.cmds.findIndex((c) => /tmux new-session/.test(c));
+  assert.ok(marker > -1 && tmuxAt > marker, 'the .credentials-removed marker was written before the tmux session');
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.new.leasedBy.name, 'boss');
+  assert.equal(idx.new.leasedBy.machineId, 'm_new');
+  assert.equal(idx.new.email, 'b@x');
+  assert.ok(idx.new.leasedAt > 0 && idx.new.lastUsed > 0);
+  assert.match(f.log.out.join('\n'), /Signed in with saved account new\./);
+  assertNoToken(f);
+});
+
+test('start --account LABEL picks that account; a leased label is refused naming the holding coordinator', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  seedAccount(f, 'free', { email: 'b@x', lastUsed: 1 });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the account label never rides machine metadata (#216)');
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.name, 'boss', 'the --account pick was leased to this coordinator');
+
+  const g = fixture();
+  seedAccount(g, 'held', { leasedBy: { name: 'other', machineId: 'm2', provider: 'instabox' }, leasedAt: 1 });
+  const e = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'held'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /used by coordinator other/);
+  assert.equal(g.log.create.length, 0, 'no machine was created');
+  const e2 = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'nope'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e2.message, /no saved account nope/i);
+});
+
+test('start with every saved account leased, limited or stale falls back to the browser sign-in', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  seedAccount(f, 'work', { leasedBy: { name: 'other', machineId: 'm2', provider: 'instabox' } });
+  seedAccount(f, 'lim', { limitedUntil: Date.now() + 3_600_000 });
+  seedAccount(f, 'gone', { needsSignIn: true });
+  const r = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(r.needsLogin, true);
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'no account rides the machine labels');
+  assert.ok(!f.log.writes.some((w) => /\.credentials\.json$/.test(w.p)), 'no credential was delivered');
+  assert.match(f.log.out.join('\n'), /waiting for its Claude sign-in/);
+});
+
+test('a delivered account that still signs out is marked needsSignIn and the lease releases on failure', async () => {
+  const f = fixture({ cred: CRED(9e12), auth: [NOT_YET] });
+  seedAccount(f, 'work', { email: 'a@x' });
+  const r = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
+  assert.equal(r.needsLogin, true, 'the coordinator falls back to its browser sign-in');
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.needsSignIn, true, 'the stale delivered credential was marked');
+  assert.equal(idx.work.leasedBy.name, 'boss', 'the lease stays — nothing is released silently');
+});
+
+test('stop syncs the machine credential back before deleting, then releases the lease', async () => {
+  const newer = CRED(9e12 + 1);
+  const f = fixture({ cred: newer });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['stop', 'boss'], f.deps);
+  assert.deepEqual(f.log.killed, ['m1']);
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), newer, 'the newest credential came back to the laptop');
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.leasedBy, undefined, 'the lease was released');
+  assert.equal(idx.work.email, 'a@x', 'the account itself remains saved');
+  assertNoToken(f);
+});
+
+test('ls releases a lease whose coordinator a complete listing no longer shows, and syncs a live one', async () => {
+  const f = fixture({ cred: CRED(9e12 + 1) });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'ghost', { leasedBy: { name: 'gone', machineId: 'm_gone', provider: 'instabox' } });
+  await main(['ls'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.ghost.leasedBy, undefined, 'a machine the listing does not show frees its account');
+  assert.equal(idx.work.leasedBy.name, 'boss', 'a live coordinator keeps its lease');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), CRED(9e12 + 1), 'the live one synced back');
+  assertNoToken(f);
+});
+
+test('a dead sign-in on a leased account marks it needsSignIn; the lease stays and login is the next step', async () => {
+  // The pane shows an expired session and the machine's own auth status confirms signed out —
+  // pane text alone never marks an account.
+  const f = fixture({ pane: 'OAuth session expired and could not be refreshed\n', cred: CRED(9e12), auth: [NOT_YET] });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['status', 'boss'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.needsSignIn, true);
+  assert.equal(idx.work.leasedBy.name, 'boss', 'the lease is not released silently');
+  assert.match(f.log.out.join('\n'), /waiting for Claude sign-in/);
+  assert.match(f.log.out.join('\n'), /coordinator login boss/);
+});
+
+test('a usage-limit screen marks the account limitedUntil so the next start picks another', async () => {
+  const f = fixture({ pane: "You've hit your usage limit\n" });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'alt', { email: 'b@x' });
+  const t0 = Date.now();
+  await main(['status', 'boss'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.ok(idx.work.limitedUntil > t0, 'limitedUntil was set');
+  assert.equal(idx.work.leasedBy.name, 'boss', 'a running coordinator keeps its account');
+  // The next start picks the other free account instead.
+  const g = fixture({ cred: CRED(9e12) });
+  seedAccount(g, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' }, limitedUntil: Date.now() + 3_600_000 });
+  seedAccount(g, 'alt', { email: 'b@x', lastUsed: 5 });
+  await main(['start', 'next', '--repo', 'https://github.com/o/r'], g.deps);
+  assert.equal(accounts.readIndex(accDir(g)).alt.leasedBy?.name, 'next', 'the next start picked the other free account');
+});
+
+test('accounts ls prints label, email, state and last used; --json prints the same rows', async () => {
+  const f = fixture();
+  const now = Date.now();
+  ownMachine(f, 'boss', { account: 'work' }); // the listing shows the lease holder alive
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' }, lastUsed: now });
+  seedAccount(f, 'free', { email: 'b@x', lastUsed: now });
+  seedAccount(f, 'lim', { limitedUntil: now + 3_600_000 });
+  seedAccount(f, 'stale', { needsSignIn: true });
+  await main(['accounts', 'ls'], f.deps);
+  const text = f.log.out.join('\n');
+  for (const l of ['work', 'free', 'lim', 'stale']) assert.match(text, new RegExp(`\\b${l}\\b`));
+  assert.match(text, /used by boss/);
+  assert.match(text, /limited until/);
+  assert.match(text, /needs sign-in/);
+  await main(['accounts', 'ls', '--json'], f.deps);
+  const j = JSON.parse(f.log.out.at(-1));
+  assert.equal(j.length, 4);
+  assert.equal(j.find((r) => r.label === 'work').state, 'used by boss');
+  assert.equal(j.find((r) => r.label === 'free').state, 'free');
+  assert.ok(!JSON.stringify(j).includes(TOK), 'no token in the JSON');
+});
+
+test('accounts ls on an empty index explains itself and never lists a phantom', async () => {
+  const f = fixture();
+  await main(['accounts', 'ls'], f.deps);
+  assert.match(f.log.out.join('\n'), /No saved accounts yet/);
+});
+
+test('accounts rm deletes only the local file and index entry and says the Claude account is unaffected; a leased one refuses', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  await main(['accounts', 'rm', 'work'], f.deps);
+  assert.equal(existsSync(accounts.credFile(accDir(f), 'work')), false);
+  assert.equal(accounts.readIndex(accDir(f)).work, undefined);
+  assert.match(f.log.out.join('\n'), /The Claude account itself is unaffected/);
+  seedAccount(f, 'held', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const e = await main(['accounts', 'rm', 'held'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /used by coordinator boss/);
+  assert.ok(existsSync(accounts.credFile(accDir(f), 'held')), 'a leased account keeps its file');
+  const e2 = await main(['accounts', 'rm', 'nope'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e2.message, /no saved account nope/i);
+});
+
+test('accounts sync copies each leased machine credential back and releases gone coordinators', async () => {
+  const newer = CRED(9e12 + 5);
+  const f = fixture({ cred: newer });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'gone', { leasedBy: { name: 'ghost', machineId: 'm_gone', provider: 'instabox' } });
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), newer);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.gone.leasedBy, undefined, 'the gone coordinator released its account');
+  const text = f.log.out.join('\n');
+  assert.match(text, /work: synced a newer credential\./);
+  assert.match(text, /gone: coordinator ghost is gone/);
+  assertNoToken(f);
+});
+
+test('a leased account relaunches the sync watcher on the next command; the watcher exits when nothing is leased', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['ls'], f.deps);
+  assert.equal(f.log.watchers, 1, 'a leased account with no live watcher resumes the sync');
+  // `accounts sync --watch` itself: one pass over the leased machine, then it loops until nothing is leased —
+  // the machine here stays, so it would loop forever; a second watcher must be refused instead.
+  const piddir = accDir(f);
+  writeFileSync(join(piddir, accounts.WATCH_PID), String(process.pid));
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  assert.ok(!f.log.out.join('\n').includes('synced'), 'a second watcher exits at once without syncing');
+  // With the lock free, a watch run releases leases whose machines are gone, then exits once nothing is leased.
+  unlinkSync(join(piddir, accounts.WATCH_PID));
+  accounts.release(piddir, 'work');
+  seedAccount(f, 'gone', { leasedBy: { name: 'ghost', machineId: 'm_gone', provider: 'instabox' } });
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.gone.leasedBy, undefined, 'the watch pass released the gone coordinator');
+  assert.equal(existsSync(join(piddir, accounts.WATCH_PID)), false, 'the pid file was released on exit');
+});
+
+test('a saved credential never reaches a command, an output or the index — only the secret-file write', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
+  assertNoToken(f);
+  assert.ok(!readFileSync(join(accDir(f), 'index.json'), 'utf8').includes(TOK));
+  assert.ok(f.log.writes.some((w) => w.p.endsWith('credentials.new') && w.d === CRED(9e12)), 'the token rode the file route only');
+});
+
+test('accounts --help prints its own usage within 80 columns; unknown subcommands are guided', async () => {
+  const out = [];
+  await main(['accounts', '--help'], { env: {}, out: (s) => out.push(s), get sdk() { throw new Error('must not load SDK'); } });
+  assert.match(out.join('\n'), /Usage: cloudy-cloud accounts/);
+  for (const l of out.join('\n').split('\n')) assert.ok(l.length <= 80, `${l.length} columns: ${l}`);
+  const f = fixture();
+  const e = await main(['accounts', 'bogus'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /cloudy-cloud accounts/);
+});
+
+test('login --account on a coordinator already leasing another account refuses instead of renaming it', async () => {
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const e = await main(['login', 'boss', '--code', 'X', '--account', 'other'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /uses account work/);
+});
+
+// The live sequence: a coordinator started with no saved accounts sits at its browser sign-in, and
+// `coordinator login` saves the finished sign-in. That account is live on the machine that made it —
+// it must be leased to that coordinator in the same step, or a second start takes it and the two
+// machines sign each other out (the refresh token is single-use).
+test('a sign-in saved by login is leased to its coordinator: ls shows it used, a second start cannot take it, stop releases it', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  let reads = 0, newest = '';
+  const cred = () => (newest = CRED(9e12 + 1000 * ++reads)); // every read back is a newer credential
+  const f = fixture({ pane: 'Enter the code from your browser', cred, auth: [NOT_YET, SIGNED, SIGNED, NOT_YET] });
+  const dir = accDir(f);
+  const r1 = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(r1.needsLogin, true, 'no saved account: the browser sign-in path');
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'the machine carries no account label');
+  f.machines[0].deleteAt = '2026-01-03T03:04:05Z'; // the provider reports the deadline on its list rows
+  await main(['login', 'boss', '--code', 'ABC123'], f.deps);
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com; new coordinators reuse it\./);
+  const lease = accounts.readIndex(dir)['me@example.com'].leasedBy;
+  assert.equal(lease?.name, 'boss', 'the saved sign-in is leased to the coordinator that made it');
+  assert.equal(lease?.machineId, 'm_new');
+  assert.equal(lease?.provider, 'instabox');
+  assert.equal(lease?.deleteAt, '2026-01-03T03:04:05.000Z');
+  assert.equal(f.log.watchers, 1, 'the lease resumed the detached sync watcher');
+  // `accounts ls` shows the account in use — never free while its coordinator runs.
+  await main(['accounts', 'ls'], f.deps);
+  assert.match(f.log.out.at(-1), /me@example\.com.*used by boss/);
+  // status finds the lease by machine id — the machine has no account label to read.
+  const connect0 = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const s = await connect0(id), run0 = s.commands.run;
+    s.commands.run = async (cmd, ...rest) => (/capture-pane/.test(cmd) ? { stdout: 'working', stderr: '', exitCode: 0 } : run0(cmd, ...rest));
+    return s;
+  };
+  await main(['status', 'boss', '--json'], f.deps);
+  assert.equal(JSON.parse(f.log.out.at(-1)).account, 'me@example.com');
+  // An interactive attach syncs the newest credential back under the same lease (it never releases).
+  await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(accounts.readIndex(dir)['me@example.com'].leasedBy?.name, 'boss', 'attach keeps the lease');
+  // A second start without --account cannot take the leased account: browser sign-in again.
+  const r2 = await main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(r2.needsLogin, true, 'the leased account is not pickable');
+  assert.equal(f.log.create[1].opts.metadata.account, undefined, 'the second machine got no account label either');
+  // stop copies the newest credential back and releases the lease; the account goes free again.
+  await main(['stop', 'boss'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(dir, 'me@example.com'), 'utf8'), newest, 'stop synced the newest credential back');
+  assert.equal(accounts.readIndex(dir)['me@example.com'].leasedBy, undefined, 'stop released the lease');
+  // With no lease left the watcher exits at its next tick and releases its pid file.
+  unlinkSync(join(dir, accounts.WATCH_PID)); // the earlier watcher's pid file
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  assert.equal(existsSync(join(dir, accounts.WATCH_PID)), false);
+  assertNoToken(f);
+});
+
+test('limitUntil parses reset times from the limit line, else defaults to five hours', () => {
+  const now = Date.now();
+  assert.equal(accounts.limitUntil("You've hit your usage limit", now), now + 5 * 3_600_000);
+  assert.equal(accounts.limitUntil('Credit balance is too low. resets in 2 hours', now), now + 2 * 3_600_000);
+  const at = accounts.limitUntil('limit reached — resets at 15:30', now);
+  assert.ok(at > now && at <= now + 24 * 3_600_000);
+  assert.match(String(accounts.LIMIT_LINE.source), /limit|Credit balance/i);
+});
+
+// ---- Astra review: a sign-in is live on exactly one machine at a time ----
+
+test('two concurrent starts cannot claim the same saved account', async () => {
+  const f = fixture({ cred: CRED(9e12), auth: [SIGNED_IN, NOT_YET, NOT_YET, NOT_YET] });
+  seedAccount(f, 'work', { email: 'a@x' });
+  await Promise.all([
+    main(['start', 'one', '--repo', 'https://github.com/o/r'], f.deps),
+    main(['start', 'two', '--repo', 'https://github.com/o/r'], f.deps),
+  ]);
+  assert.ok(f.log.create.every((x) => x.opts.metadata.account === undefined), 'the account label never rides machine metadata (#216)');
+  const delivered = f.log.writes.filter((w) => /credentials\.new$/.test(w.p));
+  assert.equal(delivered.length, 1, 'the refresh token went to exactly one machine');
+  const idx = accounts.readIndex(accDir(f));
+  assert.ok(idx.work.leasedBy?.name === 'one' || idx.work.leasedBy?.name === 'two', 'one lease stands');
+});
+
+test('the account reservation is written before the machine is created, pending until delivery', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  let atCreate;
+  const create0 = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => { atCreate = accounts.readIndex(accDir(f)).work?.leasedBy; return create0(t, o); };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(atCreate?.name, 'boss', 'the lease exists before the machine is created');
+  assert.ok(atCreate?.pending, 'a reservation is not eligible for sync before delivery');
+  const leased = accounts.readIndex(accDir(f)).work.leasedBy;
+  assert.equal(leased?.pending, undefined, 'delivery cleared the pending mark');
+  assert.equal(leased?.machineId, 'm_new');
+});
+
+test('a pending reservation is never synced — an image credential cannot overwrite the saved file', async () => {
+  const f = fixture({ cred: CRED(9e12 + 1) });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox', pending: true } });
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'work'), 'utf8'), CRED(9e12), 'the newer machine credential stayed off the saved file');
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.machineId, 'm1', 'the pending lease was not released');
+});
+
+test('index, *.tmp and the watcher pid file are never usable as account labels', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  const indexFile = join(accDir(f), 'index.json');
+  for (const bad of ['index', 'leftover.tmp', accounts.WATCH_PID]) {
+    const e = await main(['accounts', 'rm', bad], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+    assert.ok(e instanceof Error, `accounts rm ${bad} was accepted`);
+  }
+  assert.ok(existsSync(indexFile), 'accounts rm index must never delete the lease database');
+  assert.ok(accounts.readIndex(accDir(f)).work, 'the saved account is intact');
+  const e2 = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'index'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.ok(e2 instanceof Error, '--account index was accepted');
+  assert.equal(f.log.create.length, 0, 'no machine was created for a reserved label');
+});
+
+test('a sign-in cannot be saved under the index filename', async () => {
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_IN, SIGNED_IN] });
+  ownMachine(f, 'boss');
+  await main(['login', 'boss', '--code', 'X', '--account', 'index'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  const indexFile = join(accDir(f), 'index.json');
+  assert.ok(!existsSync(indexFile) || !readFileSync(indexFile, 'utf8').includes(TOK), 'index.json was not overwritten by a credential');
+});
+
+test('a damaged index refuses allocation instead of freeing leased accounts', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  const dir = accDir(f);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'work.json'), CRED(9e12));
+  writeFileSync(join(dir, 'index.json'), '{ not json');
+  const e = await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /index/i);
+  assert.equal(f.log.create.length, 0, 'allocation is refused when the index cannot be read');
+  const e2 = await main(['accounts', 'ls'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.ok(e2 instanceof Error, 'accounts ls refuses a damaged index too');
+});
+
+test('a lease created while a listing is in flight is not released by it', async () => {
+  const f = fixture();
+  accounts.saveCredential(accDir(f), 'late', CRED(9e12));
+  const list0 = f.deps.sdk.Sandbox.list;
+  let injected = false;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    const r = await list0(o);
+    if (!injected) { injected = true; accounts.lease(accDir(f), 'late', { name: 'new', machineId: 'm_late', provider: 'instabox' }, Date.now()); }
+    return r;
+  };
+  await main(['ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).late.leasedBy?.machineId, 'm_late', 'a lease newer than the listing is kept');
+});
+
+test('accounts sync releases a lease only for the machine id it checked', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The label moves to a replacement machine between the lease snapshot and the release.
+    accounts.release(accDir(f), 'work');
+    accounts.lease(accDir(f), 'work', { name: 'boss', machineId: 'm2', provider: 'instabox' }, Date.now());
+    f.machines.push({ sandboxId: 'm2', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid, account: 'work' } });
+    return list0(o);
+  };
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.machineId, 'm2', 'the replacement lease was kept');
+});
+
+test('a lease on a provider that is not configured is never released', async () => {
+  const f = fixture();
+  seedAccount(f, 'far', { cred: CRED(9e12), leasedBy: { name: 'x', machineId: 'm_x', provider: 'e2b' } });
+  await main(['ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).far.leasedBy?.provider, 'e2b', 'ls kept it');
+  await main(['accounts', 'sync'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).far.leasedBy?.provider, 'e2b', 'accounts sync kept it');
+});
+
+test('a failed start keeps the lease when machine deletion is not confirmed', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  const create0 = f.deps.sdk.Sandbox.create;
+  f.deps.sdk.Sandbox.create = async (t, o) => {
+    const s = await create0(t, o);
+    const run0 = s.commands.run;
+    s.commands.run = async (cmd, ...r) => (/gh auth setup-git/.test(cmd) ? Promise.reject(new Error('setup failed')) : run0(cmd, ...r));
+    s.kill = async () => { throw new Error('delete failed'); };
+    return s;
+  };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(accounts.readIndex(accDir(f)).work.leasedBy?.name, 'boss', 'the lease stays while the machine may still run');
+});
+
+test('an interactive login on a machine with no install label never imports its credential', async () => {
+  const f = fixture({ cred: CRED(9e12), auth: [SIGNED_IN, SIGNED_IN] });
+  f.machines.push({ sandboxId: 'm1', name: 'coord-legacy', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'legacy' } });
+  await main(['login', 'legacy'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(accounts.listAccounts(accDir(f)).length, 0, 'an unverified machine credential was not saved');
+  assertNoToken(f);
+});
+
+test('a machine account label without a matching local lease is never read back or written', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'peer-acc' });
+  await main(['status', 'boss'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f))['peer-acc'], undefined, 'no account materialized from remote metadata');
+  assert.ok(!existsSync(join(accDir(f), 'peer-acc.json')), 'no credential file was written');
+  assertNoToken(f);
+});
+
+test('a remote account label cannot write outside the accounts directory', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  ownMachine(f, 'boss', { account: 'x/../../escaped' });
+  await main(['status', 'boss'], f.deps);
+  assert.ok(!existsSync(join(accDir(f), '..', 'escaped.json')), 'no file escaped the accounts directory');
+});
+
+test('index updates from concurrent processes are serialized by the lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-acc-lock-'));
+  const worker = `import(${JSON.stringify(`file://${resolve('src/accounts.mjs')}`)}).then((a) => new Promise((r) => setTimeout(r, 30)).then(() => a.updateAccount(${JSON.stringify(dir)}, 'shared', (e) => { const t = Date.now(); while (Date.now() - t < 150) {} return { ...e, n: (e.n ?? 0) + 1 }; })));`;
+  const kids = [0, 1].map(() => spawn(process.execPath, ['-e', worker]));
+  await Promise.all(kids.map((k) => new Promise((res, rej) => { k.on('error', rej); k.on('exit', (c) => (c === 0 ? res() : rej(new Error(`worker exit ${c}`)))); })));
+  assert.equal(accounts.readIndex(dir).shared.n, 2, 'a whole-index update was lost');
+});
+
+test('syncBack never lets an older machine read overwrite a newer saved credential', async () => {
+  const f = fixture();
+  const dir = accDir(f);
+  accounts.updateAccount(dir, 'work', (e) => ({ ...e, email: 'a@x' })); // the index row marks the owner — a bare credential file is never synced into
+  accounts.saveCredential(dir, 'work', CRED(9e12 + 5));
+  const sbx = { files: { read: async () => CRED(9e12) }, commands: { run: async (c) => (/CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) } };
+  assert.equal(await accounts.syncBack(dir, sbx, 'work', 1), 'current', 'the saved copy is verified newer');
+  assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 5), 'the newer file was not overwritten');
+});
+
+const SIGNED_ME = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+const loginBoss = async (f) => { ownMachine(f, 'boss'); await main(['login', 'boss', '--code', 'X'], f.deps); return accounts.readIndex(accDir(f)); };
+const mk = (extra = {}) => fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_ME, SIGNED_ME], ...extra });
+test('a second sign-in of the same Claude account while the first label is leased is saved as <email>-2', async () => {
+  const f = mk();
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  const idx = await loginBoss(f);
+  assert.equal(idx['me@example.com'].leasedBy.machineId, 'm9', 'the existing lease was untouched');
+  assert.equal(idx['me@example.com-2'].leasedBy.name, 'boss', 'the new label is leased to the new coordinator');
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com-2/);
+});
+test('a third sign-in with both labels leased is saved as <email>-3', async () => {
+  const f = mk();
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', leasedBy: { name: 'a', machineId: 'm8', provider: 'instabox' } });
+  seedAccount(f, 'me@example.com-2', { email: 'me@example.com', leasedBy: { name: 'b', machineId: 'm9', provider: 'instabox' } });
+  const idx = await loginBoss(f);
+  assert.equal(idx['me@example.com-3'].leasedBy.name, 'boss');
+});
+test('a free signed-out label of the same Claude account is updated in place', async () => {
+  const f = mk();
+  seedAccount(f, 'me@example.com', { email: 'me@example.com', needsSignIn: true });
+  const idx = await loginBoss(f);
+  assert.deepEqual(Object.keys(idx), ['me@example.com']);
+  assert.equal(idx['me@example.com'].needsSignIn, undefined);
+  assert.equal(idx['me@example.com'].leasedBy.name, 'boss');
+});
+test('a usage limit on one label blocks its sibling labels, not another Claude account', () => {
+  const f = fixture();
+  const dir = accDir(f);
+  seedAccount(f, 'me', { email: 'me@example.com', limitedUntil: Date.now() + 1e6 });
+  seedAccount(f, 'me-2', { email: 'me@example.com' });
+  seedAccount(f, 'other', { email: 'o@example.com' });
+  assert.deepEqual(accounts.freeAccounts(dir, Date.now()).map((a) => a.label), ['other']);
+  const list = accounts.listAccounts(dir);
+  assert.match(accounts.accountState(list.find((a) => a.label === 'me-2'), Date.now(), list), /^limited until/);
+});
+test('a sign-in already saved for the same Claude account keeps the lease on a replacement sign-in', async () => {
+  const SIGNED = SIGNED_ME;
+  // The same sign-in on the leasing machine itself still updates the account in place.
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 1), auth: [SIGNED, SIGNED] });
+  ownMachine(g, 'boss', { account: 'work' });
+  seedAccount(g, 'work', { email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], g.deps);
+  assert.equal(Object.values(accounts.readIndex(accDir(g))).filter((e) => e.email === 'me@example.com').length, 1);
+  assert.equal(accounts.readIndex(accDir(g)).work.leasedBy.machineId, 'm1');
+});
+
+test('a re-login on a leased sibling label renews only its own label — the sibling keeps its credential', async () => {
+  // The coordinator leases <email>-2 and signs the same Claude account in again: the earlier
+  // <email> label is a sibling, never the renewal's target — its credential and its freedom stay.
+  const SIBLING = CRED(9e12, 'rt-older-sibling');
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 7), auth: [SIGNED_ME, SIGNED_ME] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'me@example.com', { cred: SIBLING, email: 'me@example.com' });
+  seedAccount(f, 'me@example.com-2', { cred: CRED(9e12 + 5), email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com'].leasedBy, undefined, 'the earlier sibling stays free');
+  assert.equal(idx['me@example.com-2'].leasedBy?.machineId, 'm1', 'the coordinator keeps its own lease');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com'), 'utf8'), SIBLING, 'the sibling credential was not overwritten');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com-2'), 'utf8'), CRED(9e12 + 7), 'the renewal landed on the leased label');
+
+  // And while the earlier sibling is leased to another coordinator the renewal still saves.
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 7), auth: [SIGNED_ME, SIGNED_ME] });
+  ownMachine(g, 'boss');
+  seedAccount(g, 'me@example.com', { cred: SIBLING, email: 'me@example.com', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  seedAccount(g, 'me@example.com-2', { cred: CRED(9e12 + 5), email: 'me@example.com', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], g.deps);
+  const gidx = accounts.readIndex(accDir(g));
+  assert.equal(gidx['me@example.com'].leasedBy.name, 'other', 'the sibling lease is untouched');
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'me@example.com'), 'utf8'), SIBLING);
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'me@example.com-2'), 'utf8'), CRED(9e12 + 7), 'the renewal is saved even while the sibling is leased');
+});
+
+test('login --account naming a label leased to another coordinator refuses instead of writing a sibling', async () => {
+  const f = mk();
+  ownMachine(f, 'boss');
+  seedAccount(f, 'me@example.com', { cred: CRED(9e12, 'rt-first'), email: 'me@example.com', leasedBy: { name: 'first', machineId: 'm9', provider: 'instabox' } });
+  const e = await main(['login', 'boss', '--code', 'X', '--account', 'me@example.com'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /used by coordinator first/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com'].leasedBy.name, 'first', 'the requested lease is untouched');
+  assert.equal(idx['me@example.com-2'], undefined, 'no sign-in was saved under a substituted label');
+  assert.ok(!existsSync(accounts.credFile(accDir(f), 'me@example.com-2')), 'no credential file was written');
+});
+
+test('a sign-in switch inside an attach saves the replacement and limits it, not the old lease', async () => {
+  // The leased coordinator signed into ANOTHER Claude account and the pane shows that account's
+  // limit: the replacement is saved (the lease travels with the live credential) and the limit
+  // marks the account the machine actually runs — never the old label.
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: "You've hit your usage limit", cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'personal', { email: 'p@x', needsSignIn: true });
+  const e = await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.personal.leasedBy?.machineId, 'm1', 'the lease moved to the replacement account');
+  assert.ok(idx.personal.limitedUntil > Date.now(), 'the limit marks the account that produced it');
+  assert.equal(idx.work.limitedUntil, undefined, 'the old label is not charged for the replacement\'s limit');
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was released in the same step');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'personal'), 'utf8'), CRED(9e12 + 9), 'the live credential was saved');
+});
+
+test('a sign-in switch never overwrites a healthy free label of the new identity — it is saved under a new -N label', async () => {
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'p@x', { cred: CRED(9e12, 'rt-healthy'), email: 'p@x' });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x'), 'utf8'), CRED(9e12, 'rt-healthy'), 'the healthy sign-in was not overwritten');
+  assert.equal(idx['p@x'].leasedBy, undefined);
+  assert.equal(idx['p@x-2'].leasedBy?.machineId, 'm1', 'the new label took this machine lease');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x-2'), 'utf8'), CRED(9e12 + 9));
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was released');
+});
+test('a sign-in switch whose destination label is leased elsewhere is saved under a new -N label', async () => {
+  const PERSONAL = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'p@x' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12 + 9), auth: [PERSONAL, PERSONAL] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'p@x', { cred: CRED(9e12, 'rt-held'), email: 'p@x', leasedBy: { name: 'other', machineId: 'm9', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['p@x'].leasedBy.name, 'other', 'the other lease is untouched');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x'), 'utf8'), CRED(9e12, 'rt-held'));
+  assert.equal(idx['p@x-2'].leasedBy?.machineId, 'm1');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'p@x-2'), 'utf8'), CRED(9e12 + 9));
+});
+
+test('stop marks the account needsSignIn when the final credential read is not verified current', async () => {
+  const f = fixture({ cred: null });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['stop', 'boss'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.needsSignIn, true, 'an unverified final read marks the account uncertain');
+  assert.equal(idx.work.leasedBy, undefined, 'the lease is still released');
+});
+
+test('the watcher file is exclusive and survives pid reuse', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-acc-watch-'));
+  assert.equal(accounts.acquireWatcher(dir), true, 'the first watcher takes the file');
+  assert.equal(accounts.acquireWatcher(dir), false, 'a second watcher exits at once');
+  accounts.releaseWatcher(dir);
+  // A dead pid's file is reclaimed.
+  writeFileSync(join(dir, accounts.WATCH_PID), '999999 whatever');
+  assert.equal(accounts.acquireWatcher(dir), true, 'a stale watcher file is reclaimed');
+  accounts.releaseWatcher(dir);
+  // A file whose token does not match the live pid (a reused pid) is stale too.
+  writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} not-the-start-token`);
+  assert.equal(accounts.acquireWatcher(dir), true, 'a reused pid does not suppress the watcher');
+  accounts.releaseWatcher(dir);
+});
+
+test('the watcher retries a failed listing with backoff instead of exiting', async () => {
+  const f = fixture();
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  let calls = 0;
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    calls++;
+    if (calls === 1) throw new Error('api down');
+    if (calls === 2) accounts.release(accDir(f), 'work');
+    return list0(o);
+  };
+  await main(['accounts', 'sync', '--watch'], f.deps);
+  assert.ok(calls >= 2, 'the sync pass was retried after the failure');
+});
+
+test('the sync watcher starts when the lease is delivered, before a blocking attach returns', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'work', { email: 'a@x' });
+  let atAttach = -1;
+  const spawn_ = (bin, a, o) => { if (bin !== 'git') atAttach = f.log.watchers; return bin === 'git' ? spawnSync(bin, a, o) : { status: 0 }; };
+  await main(['cloud', '--name', 'boss'], { ...f.deps, cwd: ghRepo(), tty: true, spawn: spawn_ });
+  assert.equal(atAttach, 1, 'the watcher was already running when the blocking attach ran');
+});
+
+test('accounts rm removes leftover temp files and reports unlink failures', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  const tmp = join(accDir(f), 'work.json.tmp-999');
+  writeFileSync(tmp, CRED(9e12));
+  await main(['accounts', 'rm', 'work'], f.deps);
+  assert.equal(existsSync(tmp), false, 'the temp credential went with the account');
+  assert.equal(accounts.readIndex(accDir(f)).work, undefined);
+  // A non-ENOENT unlink failure is reported and the index entry is kept — the account is still there.
+  // (A non-empty directory at the credential path is what makes the unlink itself fail; a read-only
+  // dir would fail earlier, at lock acquisition — also a safe refusal.)
+  const g = fixture();
+  seedAccount(g, 'work', { email: 'a@x' });
+  const dir = accDir(g);
+  unlinkSync(accounts.credFile(dir, 'work'));
+  mkdirSync(join(dir, 'work.json'));
+  writeFileSync(join(dir, 'work.json', 'x'), '1');
+  const e = await main(['accounts', 'rm', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /could not remove/i);
+  assert.ok(accounts.readIndex(dir).work, 'the index entry stays while the file does');
+  assert.ok(existsSync(accounts.credFile(dir, 'work')), 'the credential path is still there');
+});
+
+test('a stale-looking pane marks needsSignIn only when auth status confirms signed out', async () => {
+  const f = fixture({ pane: 'OAuth session expired and could not be refreshed\n', cred: CRED(9e12), auth: [SIGNED_IN] });
+  ownMachine(f, 'boss', { account: 'work' });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['status', 'boss'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work.needsSignIn, undefined, 'signed-in per the machine itself: not marked');
+});
+
+// ---- Astra round 2 ----
+
+// P1-4/P2-3: only claudeAiOauth is ever saved, read back or delivered — MCP OAuth entries and other
+// secrets in a credentials file are stripped on the way in and out.
+test('only claudeAiOauth is saved and read back — other credential keys are stripped', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cc-acc-')), 'accounts');
+  const dirty = JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] }, mcpOAuth: { 'm|x': { accessToken: 'mcp-secret' } }, otherSecret: 's' });
+  accounts.saveCredential(dir, 'work', dirty);
+  assert.deepEqual(JSON.parse(accounts.readCredential(dir, 'work')), { claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] } }, 'a saved file is stripped to claudeAiOauth when read');
+  const sbx = { files: { read: async () => dirty }, commands: { run: async (c) => (/CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) } };
+  const got = await accounts.readMachineCredential(sbx);
+  assert.ok(got, 'the machine credential parsed');
+  assert.deepEqual(JSON.parse(got.text), { claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 9e12, scopes: [] } }, 'the machine read keeps only claudeAiOauth');
+  assert.ok(!got.text.includes('mcp-secret'), 'an MCP OAuth entry never leaves the machine');
+});
+
+// P1-4/P2-3: delivery merges our claudeAiOauth over the machine's existing file through a staged
+// file inside the mode-700 config dir — the credentials path is never written directly.
+test('the delivered credential is staged in the mode-700 config dir, merged over the machine\'s other keys, then moved into place', async () => {
+  const existing = JSON.stringify({ claudeAiOauth: { accessToken: 'old', refreshToken: 'old', expiresAt: 1, scopes: [] }, mcpOAuth: { github: { accessToken: 'mcp-tok' } } });
+  const f = fixture({ cred: existing });
+  seedAccount(f, 'work', { cred: CRED(9e12), email: 'a@x' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps);
+  assert.ok(!f.log.writes.some((w) => /\.claude\/\.credentials\.json$/.test(w.p)), 'nothing is written at the credentials path directly');
+  const staged = f.log.writes.find((w) => /credentials\.new$/.test(w.p));
+  assert.ok(staged, 'the credential was staged inside the config dir');
+  assert.match(staged.p, /^\/data\/home\/\.config\/cloudy-cloud\//, 'the staged file sits under the mode-700 config dir');
+  const body = JSON.parse(staged.d);
+  assert.equal(body.mcpOAuth?.github?.accessToken, 'mcp-tok', 'the machine\'s other credential keys were kept');
+  assert.equal(body.claudeAiOauth?.refreshToken, TOK, 'the saved sign-in was merged in');
+  assert.ok(f.log.cmds.some((c) => /chmod 700/.test(c) && /credentials\.new/.test(c)), 'the staged file was created empty inside a mode-700 dir');
+  assert.ok(f.log.cmds.some((c) => /mv -f .*credentials\.new.*\.credentials\.json/.test(c)), 'the staged file was moved into place');
+  assertNoToken(f);
+});
+
+// P1-1: an expired reservation must still be THIS run's reservation — a lease bound (or re-reserved)
+// while the listing was in flight is never released under it.
+test('a reservation bound while a listing is in flight is not expired under it', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', pending: true, resId: 'r1' }, leasedAt: 1 });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The start that made the reservation binds it to the new machine while the listing is in flight.
+    accounts.bindLease(accDir(f), 'work', { name: 'boss', machineId: 'm1', provider: 'instabox', pending: true }, Date.now());
+    return list0(o);
+  };
+  await main(['accounts', 'ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy?.machineId, 'm1', 'the just-bound lease was released by the stale sweep');
+});
+
+test('an expired reservation releases only itself — a newer reservation of the label survives', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { cred: CRED(9e12), leasedBy: { name: 'boss', pending: true, resId: 'r1' }, leasedAt: 1 });
+  const list0 = f.deps.sdk.Sandbox.list;
+  f.deps.sdk.Sandbox.list = async (o) => {
+    // The stale reservation was released and start reserved again while the listing was in flight.
+    accounts.release(accDir(f), 'work');
+    accounts.lease(accDir(f), 'work', { name: 'boss', pending: true, resId: 'r2' }, Date.now());
+    return list0(o);
+  };
+  await main(['accounts', 'ls'], f.deps);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy?.resId, 'r2', 'the replacement reservation was expired under the old listing');
+});
+
+// P2-4: a create that never produces a machine frees the reservation so a retry can start at once.
+test('a create refusal releases the account reservation this start made', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  f.deps.sdk.Sandbox.create = async () => { throw Object.assign(new Error('quota'), { code: 'quota_exceeded' }); };
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'work'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.equal(accounts.readIndex(accDir(f)).work?.leasedBy, undefined, 'the refused create freed the reservation');
+});
+
+// P1-2: a credential file with no index row has no verified owner — it lists as needing attention
+// and is never delivered to a machine.
+test('a credential file with no index row is listed as needing attention and is never picked', async () => {
+  const f = fixture({ auth: [NOT_YET] });
+  accounts.saveCredential(accDir(f), 'work', CRED(9e12)); // a file dropped without its index row
+  await main(['accounts', 'ls'], f.deps);
+  assert.match(f.log.out.at(-1), /work.*needs sign-in/);
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  assert.equal(f.log.create[0].opts.metadata.account, undefined, 'a file without an index row was not delivered');
+  assert.ok(!f.log.writes.some((w) => /credentials\.new|\.credentials\.json/.test(w.p)), 'no credential was delivered');
+});
+
+// P1-3: the credential read and the index write are separated by time; under the lock the entry
+// must still exist, still hold the lease we synced for, and still be the same Claude identity.
+test('syncBack re-verifies under the lock: the lease it expected and the same Claude identity — a removed account is not recreated', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cc-acc-')), 'accounts');
+  const mkSbx = (email) => ({
+    files: { read: async () => CRED(9e12 + 9) },
+    commands: { run: async (c) => (/auth status/.test(c) ? { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email }) } : /CLAUDE_CONFIG_DIR/.test(c) ? { stdout: '/h/.claude' } : { stdout: '' }) },
+  });
+  // An account removed while the read was in flight is never recreated.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'gone', 1, { machineId: 'm1', provider: 'instabox' }), 'moved');
+  assert.equal(accounts.readIndex(dir).gone, undefined, 'no index row was recreated');
+  assert.equal(existsSync(accounts.credFile(dir, 'gone')), false, 'no credential file was recreated');
+  accounts.updateAccount(dir, 'work', (e) => ({ ...e, email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } }));
+  // A different Claude identity on the machine is not written under this label.
+  assert.equal(await accounts.syncBack(dir, mkSbx('b@x'), 'work', 1, { machineId: 'm1', provider: 'instabox' }), 'moved');
+  assert.equal(existsSync(accounts.credFile(dir, 'work')), false);
+  // A lease that moved to another machine refuses the write.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'work', 1, { machineId: 'm_old', provider: 'instabox' }), 'moved');
+  assert.equal(existsSync(accounts.credFile(dir, 'work')), false);
+  // The same lease and identity still syncs.
+  assert.equal(await accounts.syncBack(dir, mkSbx('a@x'), 'work', 1, { machineId: 'm1', provider: 'instabox' }), 'synced');
+  assert.equal(readFileSync(accounts.credFile(dir, 'work'), 'utf8'), CRED(9e12 + 9));
+});
+
+// P1-5: the lock never reclaims a live holder by age alone, and release removes only the claim the
+// holder itself wrote.
+test('a live process keeps the accounts lock — its claim is never reclaimed by age or a dead-owner check', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-'));
+  const kid = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  try {
+    // A live holder's claim names a live pid with its start token: however old it looks, it is never
+    // reclaimed — and never removed.
+    mkdirSync(join(dir, 'index.lock.d'), { recursive: true });
+    const claim = join(dir, 'index.lock.d', `claim-${kid.pid}-00000000-0000-4000-8000-000000000000`);
+    writeFileSync(claim, `${kid.pid} 00000000-0000-4000-8000-000000000000 1 0 ${accounts.watcherToken(kid.pid)}`, { mode: 0o600 });
+    const past = new Date(Date.now() - 10 * 60_000);
+    utimesSync(claim, past, past); // far older than the former 120 s stale window
+    const t0 = Date.now();
+    assert.throws(() => accounts.withLock(dir, () => {}), /Timed out waiting for the accounts lock/);
+    assert.ok(Date.now() - t0 > 10_000, 'a live holder was never reclaimed');
+    assert.ok(existsSync(claim), 'the live holder\'s claim was never removed');
+  } finally { kid.kill('SIGKILL'); }
+});
+
+test('releasing the accounts lock removes only the holder\'s own claim — another owner\'s files stay', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-rel-'));
+  const foreign = join(dir, 'index.lock.d', 'claim-999999-00000000-0000-4000-8000-000000000000');
+  accounts.withLock(dir, () => {
+    // A foreign claim appearing mid-section is not the holder's to remove: release touches only our own.
+    writeFileSync(foreign, '999999 00000000-0000-4000-8000-000000000000 9 0 whatever', { mode: 0o600 });
+  });
+  assert.equal(readFileSync(foreign, 'utf8'), '999999 00000000-0000-4000-8000-000000000000 9 0 whatever', 'another owner\'s claim was not removed');
+});
+
+// P1-6: a machine that vanished only from the label-filtered listing still exists — the lease is
+// released only after an unfiltered id lookup in its provider also fails to find it.
+test('a lease whose machine vanished only from the role-filtered listing is kept', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  // The machine is still there but lost its purpose/role labels — the coordinator listing cannot see it.
+  f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { name: 'boss', install: f.iid } });
+  seedAccount(f, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['accounts', 'ls'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.leasedBy?.machineId, 'm1', 'a label change alone must not free the account');
+  assert.equal(idx.work.needsSignIn, undefined);
+  const g = fixture({ cred: CRED(9e12) });
+  g.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { name: 'boss', install: g.iid } });
+  seedAccount(g, 'work', { leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['accounts', 'sync'], g.deps);
+  assert.equal(accounts.readIndex(accDir(g)).work.leasedBy?.machineId, 'm1');
+});
+
+// An explicit --account never overrides a needsSignIn mark: the saved credential may be dead.
+test('start --account refuses an account marked needsSignIn', async () => {
+  const f = fixture();
+  seedAccount(f, 'stale', { email: 'a@x', needsSignIn: true });
+  const e = await main(['start', 'boss', '--repo', 'https://github.com/o/r', '--account', 'stale'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /needs a fresh sign-in|needs sign-in/i);
+  assert.equal(f.log.create.length, 0, 'no machine was created');
+});
+
+// P2: `accounts rm` temp-file cleanup matches the exact `<label>.json.tmp-<pid>` format only — a
+// sibling label that shares the prefix must survive.
+test('accounts rm deletes only this label\'s exact temp files — a sibling label\'s file survives', async () => {
+  const f = fixture();
+  seedAccount(f, 'work', { email: 'a@x' });
+  accounts.saveCredential(accDir(f), 'work.json.tmp-team', CRED(9e12)); // shares the tmp- prefix
+  await main(['accounts', 'rm', 'work'], f.deps);
+  assert.equal(existsSync(accounts.credFile(accDir(f), 'work.json.tmp-team')), true, 'another label\'s file was not swept up');
+  assert.equal(existsSync(accounts.credFile(accDir(f), 'work')), false);
+});
+
+// P2: a finished sign-in colliding with a DIFFERENT identity's label falls back to a fresh label —
+// that account's saved credential is never overwritten. An explicit --account naming it refuses.
+test('a sign-in colliding with another identity\'s label falls back to a fresh label; an explicit --account naming it refuses', async () => {
+  const SIGNED_B = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'dev+ops@example.com' });
+  // emailLabel('dev+ops@example.com') === 'dev-ops@example.com' — already another account's label.
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_B, SIGNED_B] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'dev-ops@example.com', { cred: CRED(1), email: 'dev-ops@example.com' });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'dev-ops@example.com'), 'utf8'), CRED(1), 'the other identity\'s credential was not overwritten');
+  const fresh = Object.keys(idx).find((l) => l !== 'dev-ops@example.com');
+  assert.ok(fresh, 'the sign-in was saved under a fresh label');
+  assert.equal(idx[fresh].email, 'dev+ops@example.com');
+  assert.equal(idx[fresh].leasedBy?.machineId, 'm1');
+  const g = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED_B, SIGNED_B] });
+  ownMachine(g, 'boss');
+  seedAccount(g, 'work', { cred: CRED(1), email: 'someone@example.com' });
+  const e = await main(['login', 'boss', '--code', 'X', '--account', 'work'], g.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /different|another/i);
+  assert.equal(readFileSync(accounts.credFile(accDir(g), 'work'), 'utf8'), CRED(1), 'the saved credential survived');
+});
+
+// P2: `claude auth status` exit 1 is the CLI's definite signed-out answer — it parses from the
+// error's stdout; only a transport failure (no exit code) is inconclusive.
+test('a claude auth status exit 1 carrying signed-out JSON still reads as signed out', async () => {
+  const sbx = { commands: { run: async (c) => { if (/auth status/.test(c)) throw Object.assign(new Error('exit 1'), { exitCode: 1, stdout: NOT_YET, stderr: '' }); return { stdout: '' }; } } };
+  const j = await accounts.authStatus(sbx);
+  assert.equal(j?.loggedIn, false, 'a definite signed-out status on exit 1 is not inconclusive');
+  const dead = { commands: { run: async () => { throw new Error('connection reset'); } } };
+  assert.equal(await accounts.authStatus(dead), null, 'a transport failure stays inconclusive');
+});
+
+// P2: the watcher file's lstart token and the live token must compare in the same normalized form —
+// macOS ps pads single-digit days with a second space.
+test('the watcher lstart token compares the same normalized form it was stored with', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-watch-norm-'));
+  const bin = mkdtempSync(join(tmpdir(), 'cc-ps-'));
+  const raw = 'Thu Nov  5 10:00:00 2026'; // what ps really prints on a single-digit day
+  writeFileSync(join(bin, 'ps'), `#!/bin/sh\necho '${raw}'\n`, { mode: 0o755 });
+  const path0 = process.env.PATH;
+  process.env.PATH = `${bin}:${path0}`;
+  try {
+    writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} ${raw}`);
+    assert.equal(accounts.watcherAlive(dir), true, 'the stored and live tokens must compare whitespace-normalized');
+    writeFileSync(join(dir, accounts.WATCH_PID), `${process.pid} foreign-token`);
+    accounts.releaseWatcher(dir);
+    assert.ok(existsSync(join(dir, accounts.WATCH_PID)), 'a foreign token\'s file is not released');
+  } finally { process.env.PATH = path0; }
+});
+
+// P2-8: SNAPSHOT_CLEAN must equal the saved snapshot id — a marker naming another snapshot proves
+// nothing about this one.
+test('SNAPSHOT_CLEAN must equal the saved snapshot id — a marker naming another snapshot is not trusted', async () => {
+  const f = fixture({ snapshot: 'sn_old' });
+  f.deps.env.CLOUDY_CLOUD_SNAPSHOT_CLEAN = 'sn_other'; // proves only that SOME image was clean, not this one
+  const notes = [];
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], { ...f.deps, note: (s) => notes.push(s) });
+  assert.equal(f.log.create[0].template, 'agent-browser', 'a clean marker for another snapshot is not trusted');
+});
+
+// P2-8: --forget drops the pending record too, and a save finishing after a forget does not write
+// the snapshot back.
+test('image --forget also drops the pending record', async () => {
+  const f = fixture({ snapshot: '' });
+  writeFileSync(f.configFile, 'KEEP=1\nCLOUDY_CLOUD_PENDING_SNAPSHOT=m_img:sn_p\nCLOUDY_CLOUD_PENDING_CLEAN=sn_p\n', { mode: 0o600 });
+  await main(['image', '--forget'], f.deps);
+  assert.equal(readFileSync(f.configFile, 'utf8').trim(), 'KEEP=1', 'the pending record was forgotten too');
+});
+
+test('a save that finishes after image --forget does not write the snapshot back', async () => {
+  const f = fixture({ snapshot: '', snapStatus: () => 'pending' });
+  let forgot = false;
+  f.deps.sdk.Sandbox.getSnapshot = async (id, o) => {
+    if (!forgot) { forgot = true; writeFileSync(f.configFile, '', { mode: 0o600 }); } // the concurrent forget
+    return { id, status: 'ready' };
+  };
+  await main(['image'], f.deps);
+  const cfg = readFileSync(f.configFile, 'utf8');
+  assert.doesNotMatch(cfg, /CLOUDY_CLOUD_COORDINATOR_SNAPSHOT|CLOUDY_CLOUD_SNAPSHOT_CLEAN|CLOUDY_CLOUD_PENDING/, 'the finished snapshot was not written back after a forget');
+});
+
+// P2: the first-run script must handle a CLAUDE_CONFIG_DIR that differs from HOME and may not
+// exist yet — both .claude.json and settings.json land there.
+test('the first-run script works with a CLAUDE_CONFIG_DIR that differs from HOME and may not exist', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cc-home-'));
+  const cc = join(home, 'claude-conf'); // deliberately missing
+  const r = spawnSync(process.execPath, ['-e', FIRST_RUN_SCRIPT], { env: { HOME: home, CLAUDE_CONFIG_DIR: cc, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(readFileSync(join(cc, '.claude.json'), 'utf8')).hasCompletedOnboarding, true);
+  assert.equal(JSON.parse(readFileSync(join(cc, 'settings.json'), 'utf8')).skipDangerousModePermissionPrompt, true);
+  assert.ok(!existsSync(join(home, '.claude', 'settings.json')), 'settings went to CLAUDE_CONFIG_DIR, not ~/.claude');
+});
+
+// P2: `cloud --account X` reattaching to a coordinator that runs another account silently ignores
+// the flag — refuse instead.
+test('cloud --account refuses to reattach to a coordinator that uses a different account', async () => {
+  const f = fixture();
+  f.machines.push({ sandboxId: 'm1', name: 'coord-boss', state: 'running', startedAt: new Date(), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'boss', install: f.iid, repo: 'owner/cloudrepo', branch: 'main', account: 'work' } });
+  const e = await main(['cloud', '--name', 'boss', '--account', 'other', '--json'], { ...f.deps, cwd: ghRepo() }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /does not use account|runs on account work/i);
+  assert.ok(!/Reattaching to|reattached.: ?true/i.test(f.log.out.join('\n')), 'no reattach happened');
+});
+
+// ---- Devin Review (PR #216) ----
+
+// #216-1 (red): a replacement sign-in on a leased coordinator is saved UNDER THE SAME LEASE — the
+// lease moves to the sign-in's label and the old label is unbound in the same locked step, so a
+// second start can never pick the new sign-in while it is live on that machine.
+test('a replacement sign-in on a leased coordinator is saved under the existing lease', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  seedAccount(f, 'work', { email: 'w@x', needsSignIn: true, leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  await main(['login', 'boss', '--code', 'X'], f.deps);
+  const dir = accDir(f);
+  const idx = accounts.readIndex(dir);
+  const label = Object.keys(idx).find((l) => l !== 'work');
+  assert.ok(label, 'the different sign-in was saved under its own label');
+  assert.equal(idx[label].email, 'me@example.com');
+  assert.deepEqual(idx[label].leasedBy, { name: 'boss', machineId: 'm1', provider: 'instabox' }, 'the machine\'s lease moved to the sign-in\'s label');
+  assert.equal(idx.work.leasedBy, undefined, 'the old label was unbound in the same step');
+  assert.equal(idx.work.email, 'w@x', 'the old account stayed saved');
+  assert.ok(!accounts.freeAccounts(dir, Date.now()).some((a) => a.label === label), 'a second start cannot pick the live sign-in');
+  assertNoToken(f);
+});
+
+// #216-2 (red): a coordinator that finishes normally releases its account cleanly — a credential
+// verified current or synced while the machine lived is never marked needsSignIn on release; only
+// an unverified one is (the stale-sign-in safeguard).
+test('a gone coordinator releases a verified account cleanly; only an unverified one is marked needsSignIn', async () => {
+  const f = fixture({ cred: CRED(9e12 + 1) });
+  ownMachine(f, 'boss', { account: 'work' });
+  f.machines.push({ sandboxId: 'm2', name: 'coord-two', state: 'running', startedAt: new Date('2026-01-02T03:04:05Z'), metadata: { purpose: 'cloudy-cloud', role: 'coordinator', name: 'two', install: f.iid } });
+  seedAccount(f, 'work', { email: 'a@x', leasedBy: { name: 'boss', machineId: 'm1', provider: 'instabox' } });
+  seedAccount(f, 'fresh', { leasedBy: { name: 'two', machineId: 'm2', provider: 'instabox' } });
+  seedAccount(f, 'uncertain', { leasedBy: { name: 'ghost', machineId: 'm_gone', provider: 'instabox' } });
+  // The live machines sync — their saved credentials verify; the already-gone unverified one is marked.
+  await main(['accounts', 'sync'], f.deps);
+  let idx = accounts.readIndex(accDir(f));
+  assert.ok(idx.work.verifiedAt > 0, 'a synced credential records its verification');
+  assert.ok(idx.fresh.verifiedAt > 0);
+  assert.equal(idx.uncertain.needsSignIn, true, 'a credential that was never verified stays marked');
+  assert.equal(idx.uncertain.leasedBy, undefined);
+  // Both coordinators finish — the machines vanish from the next complete listing.
+  f.machines.length = 0;
+  await main(['accounts', 'sync'], f.deps);
+  idx = accounts.readIndex(accDir(f));
+  assert.equal(idx.work.leasedBy, undefined, 'the finished coordinator released its lease');
+  assert.equal(idx.work.needsSignIn, undefined, 'a verified credential releases cleanly — no needsSignIn');
+  assert.equal(idx.fresh.needsSignIn, undefined);
+  assertNoToken(f);
+});
+
+// #216-3 (red): stale-lock cleanup must never remove a live holder's lock — only files whose
+// recorded owner is provably dead are ever unlinked, and a live holder's claim is never such a file.
+test('stale-lock cleanup can never remove a live holder\'s lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-lock-race-'));
+  const lib = `file://${resolve('src/accounts.mjs')}`;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
+  const until = async (cond, ms = 10_000) => { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  // A holder writes a marker inside its critical section, then spins — the lock stays held.
+  const hold = (marker, ms) => spawn(process.execPath, ['-e',
+    `import(${JSON.stringify(lib)}).then((a) => a.withLock(${JSON.stringify(dir)}, () => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1'); const t = Date.now(); while (Date.now() - t < ${ms}) {} }))`], { stdio: 'ignore' });
+  // The lock artifacts that exist right now — whatever the protocol's on-disk shape.
+  const lockFiles = () => {
+    const files = [];
+    if (existsSync(join(dir, 'index.lock'))) files.push(join(dir, 'index.lock'));
+    const d = join(dir, 'index.lock.d');
+    if (existsSync(d)) for (const f of readdirSync(d)) if (!f.endsWith('.tmp')) files.push(join(d, f));
+    return files;
+  };
+  const liveArtifacts = () => lockFiles().filter((p) => { try { const pid = Number(readFileSync(p, 'utf8').trim().split(/\s+/)[0]); return pid > 0 && alive(pid); } catch { return false; } });
+  // A holder killed mid-section leaves dead-owner artifacts behind — what a reclaimer inspects.
+  const deadMark = join(dir, 'dead-inside');
+  const dead = hold(deadMark, 60_000);
+  await until(() => existsSync(deadMark));
+  const deadExit = new Promise((r) => dead.on('exit', r));
+  dead.kill('SIGKILL');
+  await deadExit;
+  const stale = lockFiles();
+  assert.ok(stale.length, 'the killed holder left lock artifacts');
+  // A live holder takes the lock — reclaiming the dead owner's artifacts if the protocol does that.
+  const aMark = join(dir, 'a-inside');
+  const a = hold(aMark, 3_000);
+  await until(() => existsSync(aMark));
+  // Replay the second reclaimer's step: it inspected the dead owner's files while stale and unlinks
+  // them by pathname. Under a vulnerable protocol those paths now name the live holder's lock.
+  for (const p of stale) try { unlinkSync(p); } catch { /* already gone */ }
+  assert.ok(liveArtifacts().length, 'the live holder\'s lock survived the reclaim step');
+  // A real second contender still cannot enter while the holder is inside.
+  const bMark = join(dir, 'b-inside');
+  const b = hold(bMark, 60_000);
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(existsSync(bMark), false, 'a second process did not enter the held lock');
+  b.kill('SIGKILL');
+  if (a.exitCode == null && a.signalCode == null) await new Promise((r) => a.on('exit', r));
+});
+
+// #216-4 (yellow): a usage limit after a successful sign-in keeps the sign-in — it is saved and
+// leased first, and the limit is recorded on the saved account instead of discarding it.
+test('a usage limit after sign-in keeps the sign-in saved and marks the account limited', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  // login --code: the sign-in lands, then the pane reports the exhausted account.
+  const f = fixture({ pane: 'Enter the code from your browser', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  const connect = f.deps.sdk.Sandbox.connect;
+  f.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect(id); const run = sbx.commands.run; let n = 0;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) && n++ >= 1 ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  const t0 = Date.now();
+  const e = await main(['login', 'boss', '--code', 'X'], f.deps).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e.message, /not working after sign-in/);
+  const idx = accounts.readIndex(accDir(f));
+  assert.ok(idx['me@example.com'], 'the successful sign-in was still saved');
+  assert.ok(idx['me@example.com'].limitedUntil > t0, 'the usage limit was recorded on the saved account');
+  assert.equal(idx['me@example.com'].leasedBy?.machineId, 'm1', 'the saved sign-in is leased to this coordinator');
+  assert.equal(readFileSync(accounts.credFile(accDir(f), 'me@example.com'), 'utf8'), CRED(9e12));
+  assertNoToken(f);
+  // Interactive login (attach + postAttach) orders the save before the health check the same way.
+  const g = fixture({ cred: CRED(9e12), auth: [SIGNED, SIGNED, SIGNED] });
+  ownMachine(g, 'boss');
+  const connect2 = g.deps.sdk.Sandbox.connect;
+  g.deps.sdk.Sandbox.connect = async (id) => {
+    const sbx = await connect2(id); const run = sbx.commands.run;
+    sbx.commands.run = async (cmd, ...r) => (/capture-pane/.test(cmd) ? { stdout: "You've hit your usage limit", stderr: '', exitCode: 0 } : run(cmd, ...r));
+    return sbx;
+  };
+  const e2 = await main(['login', 'boss'], { ...g.deps, tty: true, spawn: () => ({ status: 0 }) }).then(() => { throw new Error('no fail'); }, (x) => x);
+  assert.match(e2.message, /not working after sign-in/);
+  const idx2 = accounts.readIndex(accDir(g));
+  assert.ok(idx2['me@example.com']?.limitedUntil > t0, 'interactive login: the sign-in was saved and marked limited');
+  assert.equal(idx2['me@example.com'].leasedBy?.machineId, 'm1');
+  assertNoToken(g);
+});
+
+// #216-5 (yellow): a direct `coordinator attach` runs the shared post-attach account logic — a
+// sign-in finished in the pane is saved and leased to that machine, exactly like `login`.
+test('a direct attach saves a sign-in finished in the pane under a lease to that coordinator', async () => {
+  const SIGNED = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', storedClaudeAiLogin: true, email: 'me@example.com' });
+  const f = fixture({ pane: 'working', cred: CRED(9e12), auth: [SIGNED, SIGNED] });
+  ownMachine(f, 'boss');
+  const code = await main(['attach', 'boss'], { ...f.deps, tty: true, spawn: () => ({ status: 0 }) });
+  assert.equal(code, 0, 'the attach exit status passes through');
+  const idx = accounts.readIndex(accDir(f));
+  assert.equal(idx['me@example.com']?.leasedBy?.name, 'boss', 'the sign-in was saved and leased to the coordinator');
+  assert.equal(idx['me@example.com']?.leasedBy?.machineId, 'm1');
+  assert.match(f.log.out.join('\n'), /Saved this sign-in as account me@example\.com/);
+  assertNoToken(f);
+});
+
+// #216-6 (yellow): the account a coordinator uses lives in the local index lease — never in machine
+// metadata, where other workspace members could read an email-derived label.
+test('start never publishes the account label in machine metadata', async () => {
+  const f = fixture({ cred: CRED(9e12) });
+  seedAccount(f, 'me@example.com', { email: 'me@example.com' });
+  await main(['start', 'boss', '--repo', 'https://github.com/o/r'], f.deps);
+  const meta = f.log.create[0].opts.metadata;
+  assert.equal(meta.account, undefined, 'no account label rides the machine');
+  assert.ok(!JSON.stringify(meta).includes('me@example.com'), 'no email-derived value reaches machine metadata');
+  assert.equal(accounts.readIndex(accDir(f))['me@example.com'].leasedBy?.name, 'boss', 'the lease is recorded locally');
+  assert.ok(f.log.writes.some((w) => /credentials\.new$/.test(w.p) && w.d === CRED(9e12)), 'the credential still delivered');
 });

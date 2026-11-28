@@ -30,17 +30,13 @@ There is also a lighter option. A cloud agent started with `role: "coordinator"`
 
 ## Cloud coordinator lifecycle
 
-### 1. Make the coordinator image (once)
+### 1. No image step
 
-Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so the image carries no sign-in and a copied credential can never race several coordinators into signing each other out.
+Remote Control needs a full Claude login. A token from `claude setup-token` cannot open Remote Control sessions. Each coordinator signs in to Claude for itself when it starts, so a copied credential can never race several coordinators into signing each other out.
 
-```
-cloudy-cloud coordinator image
-```
+Go straight to `cloudy-cloud cloud`. Coordinators start from the base template, which already has Claude Code, Node, git and gh; the start installs the rest in seconds.
 
-This creates a machine and installs `cloudy-cloud` on it. The command then removes `~/.claude/.credentials.json` on the image machine — so no Claude credential is ever frozen into a snapshot — saves the snapshot as `CLOUDY_CLOUD_COORDINATOR_SNAPSHOT` in `~/.config/cloudy-cloud/env`, and deletes the image machine.
-
-The server deletes the image machine after 2 hours, and the command prints the time. If the machine is still running, `cloudy-cloud coordinator image --save` saves the snapshot the same way.
+`cloudy-cloud coordinator image` is optional and normally unnecessary. It builds a saved image in one run (about 20 minutes), removing `~/.claude/.credentials.json` before the snapshot so the image holds no sign-in. It is safe to interrupt: run it again and it resumes the pending snapshot. `--save` is an alias. If an older cloudy-cloud saved an image that holds a sign-in, `start` ignores it; clear the setting with `cloudy-cloud coordinator image --forget` (the snapshot itself is not deleted).
 
 ### 2. Start a coordinator
 
@@ -54,11 +50,12 @@ cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO --branc
 - `--task TEXT` or `--task-file PATH`: the brief. Optional, up to 100 KB. Without one, the coordinator waits for you.
 - `--max-hours N`: when the server deletes the machine. Default and maximum 24.
 - `--model NAME`: the Claude Code model for the coordinator's session, such as `opus` or `claude-opus-5-5`. Optional.
-- `--json`: print the machine name, Remote Control name and attach command as JSON, with `started: true`.
+- `--account LABEL`: sign the coordinator in with the saved Claude account LABEL instead of the least-recently-used free one (see Saved Claude accounts below). A label another coordinator holds is refused, naming that coordinator.
+- `--json`: print the machine name, Remote Control name and attach command as JSON, with `started: true`. A coordinator on a saved account also reports `account: LABEL`.
 
 The coordinator sees only the brief and the repo on GitHub. Commit and push everything it needs first. Give it exact acceptance commands, the files each work package owns, and a default for every question you can foresee, because nobody is there to answer.
 
-A fresh coordinator then waits at `claude auth login` — a normal state the machine is never deleted for. `coordinator start` prints the sign-in command (and the `claude.ai` sign-in URL when the pane shows one); `cloudy-cloud cloud` on a terminal attaches you to the sign-in pane itself: open the URL it shows, sign in in your browser, and paste the code if asked. `start --json` reports `needsLogin: true`, the URL as `loginUrl`, and `next: cloudy-cloud coordinator login NAME`. Finish the sign-in with `cloudy-cloud coordinator login NAME` (attaches to the pane on a terminal) or `cloudy-cloud coordinator login NAME --code CODE` (sends the code the browser showed; `--code -` reads it from stdin, the recommended form for agents; refused unless the pane is at the code prompt while the sign-in runs). `coordinator ls` and `coordinator status NAME` show `waiting for Claude sign-in` until then.
+A coordinator with a free saved account starts already signed in — no browser step. With none saved or free, a fresh coordinator waits at `claude auth login` — a normal state the machine is never deleted for. `coordinator start` prints the sign-in command (and the `claude.ai` sign-in URL when the pane shows one); `cloudy-cloud cloud` on a terminal attaches you to the sign-in pane itself: open the URL it shows, sign in in your browser, and paste the code if asked. `start --json` reports `needsLogin: true`, the URL as `loginUrl`, and `next: cloudy-cloud coordinator login NAME`. Finish the sign-in with `cloudy-cloud coordinator login NAME` (attaches to the pane on a terminal) or `cloudy-cloud coordinator login NAME --code CODE` (sends the code the browser showed; `--code -` reads it from stdin, the recommended form for agents; refused unless the pane is at the code prompt while the sign-in runs). `coordinator ls` and `coordinator status NAME` show `waiting for Claude sign-in` until then.
 
 ### 3. Reach it
 
@@ -75,11 +72,26 @@ The first time, attach once and accept any trust or Remote Control prompts. To l
 
 > Warning: A coordinator is billed until it is stopped, finished or deleted. Its `~/.config/cloudy-cloud/env` holds the names of your proxy secrets, and its own Claude sign-in (`~/.claude/.credentials.json`, created when you finish `coordinator login`) is a real login. Anyone who can SSH into the machine can use them. Use an account you can revoke.
 
+## Saved Claude accounts
+
+When a coordinator finishes its browser sign-in, cloudy-cloud reads the machine's credential back and saves it on your laptop under `~/.config/cloudy-cloud/accounts/` — each sign-in is saved once and reused by later coordinators. One saved label is one sign-in. The label is the account email (or `--account LABEL` on `coordinator login`, or `account-N` when neither applies). Each coordinator that runs at the same time needs its own sign-in: sign in once per simultaneous coordinator, never again. A second browser sign-in to the same Claude account is saved as `EMAIL-2`, then `-3`, and so on. Several sign-ins of one Claude account share that account's usage limit: when one is limited, `accounts ls` shows all of them as limited and a new coordinator takes a different Claude account.
+
+One sign-in serves one coordinator at a time: the refresh token rotates about every eight hours and a second machine renewing with an old copy loses the sign-in. So a saved account is **leased** to exactly one coordinator — the machine carries an `account: LABEL` label, and the index records who holds it. `coordinator start` (and `cloudy-cloud cloud`) picks `--account LABEL` if given, else the free account used least recently; it delivers the credential before the session starts, so the coordinator is signed in with no prompt. With every saved account leased, usage-limited or stale, the coordinator falls back to the browser sign-in — which is then saved as another account (a new label, even for the same Claude account).
+
+The machine's newest credential comes back to your laptop on `coordinator stop` (before the machine is deleted), on `coordinator ls`, `status` and after an attach, and from a detached `accounts sync --watch` process that `start` launches — the next cloudy-cloud command resumes it if the laptop slept. A lease releases on `coordinator stop` and whenever a complete machine listing no longer shows the holder — a failed listing never frees one. A coordinator whose saved sign-in expired shows `waiting for Claude sign-in` and marks the account `needs sign-in`; sign it in again and the new credential overwrites the label.
+
+```
+cloudy-cloud accounts ls          # label, email, state (free / used by NAME / limited until T / needs sign-in), last used
+cloudy-cloud accounts ls --json   # the same as JSON
+cloudy-cloud accounts rm LABEL    # forget one (refuses while leased; the Claude account itself is unaffected)
+cloudy-cloud accounts sync        # copy every leased machine's newest credential back now
+```
+
 ## Coordinators talking to each other
 
-Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it greets each peer `ListAgents` shows as a Remote Control session with `NAME started`. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name and marks the ones this installation made.
+Two cloud coordinators can message each other over Remote Control with Claude's built-in `ListAgents`/`SendMessage` tools — **only when they run on the same Claude account**. Those tools reach sessions on the same account, so coordinators signed in with different saved accounts cannot message each other that way. `coordinator start` names the session `--name NAME` and tells it which coordinators of this installation were already running, so it greets each peer `ListAgents` shows as a Remote Control session with `NAME started`. Claude only acts on a first turn, so a start with peers but no `--task` opens on a hello-only prompt — it sends the hello, then waits for the user, starting no other work. `ListAgents` shows only sessions alive when it runs, so a peer finds a coordinator that started later by calling `ListAgents` again or by `cloud_agent_list` with `all: true`, which prints each coordinator's session name and marks the ones this installation made.
 
-`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack` to each message received (never ack an ack), resend once after 3 minutes without an ack, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
+`SendMessage` delivery has no built-in receipt, so coordinators use an ack convention: reply `ack` to each real message received — never to an ack or a hello (a `NAME started` line needs no answer). Waiting for a reply means ending the turn, since replies arrive as new messages — never running `sleep` in Bash. If a later turn still shows no ack, resend once, then report the peer as gone. A nested coordinator (`cloud_agent` with `role: "coordinator"`) has no Remote Control session and does not take part.
 
 ## Getting one result from many workers
 

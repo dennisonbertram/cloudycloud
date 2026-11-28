@@ -261,7 +261,7 @@ test('coordinators: skipped on N; yes runs "coordinator image" alone and reports
   const s = coordStub();
   const cfg = join(tmp(), 'env');
   const skip = fn(`${TTY} yn() { echo "ASKED: $1"; return 1; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], { CLOUDY_CLOUD_CONFIG: cfg });
-  assert.match(skip.stdout, /ASKED: Set up cloud coordinators now\? It saves an image with the tools \(no sign-in: each coordinator signs in at start\); this takes 10 to 20 minutes\./);
+  assert.match(skip.stdout, /ASKED: Build the optional cloud-coordinator image now\? Coordinators work without it; the image only carries the tools preinstalled \(no sign-in: each coordinator signs in at start\)\. This takes 10 to 20 minutes\./);
   assert.match(skip.stdout, /declined/);
   assert.ok(!existsSync(join(s.dir, 'calls')));
   const r = fn(`${TTY} yn() { return 0; }; setup_coordinators "$1"; echo "$STATUS_COORD"`, [s.root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
@@ -290,7 +290,7 @@ test('coordinators from an npm install: the step is offered, never says it needs
   chmodSync(join(s.dir, 'git'), 0o755);
   const cfg = join(tmp(), 'env');
   const r = fn(`${TTY} PROVIDER=instabox; yn() { echo "ASKED: $1"; return 0; }; offer_coordinators "$1"; echo "$STATUS_COORD"`, [root], withPath(s.dir, { CLOUDY_CLOUD_CONFIG: cfg }));
-  assert.match(r.stdout, /ASKED: Set up cloud coordinators/);
+  assert.match(r.stdout, /ASKED: Build the optional cloud-coordinator image/);
   assert.match(r.stdout, /^ready$/m);
   assert.doesNotMatch(r.stdout + r.stderr, /needs a git clone|from a clone/);
   assert.ok(!existsSync(join(s.dir, 'gitcalls')), 'no git call on the package root');
@@ -877,7 +877,7 @@ test('pty: the coordinator copy of the Instabox key is stored only in --more, ev
   const plain = g.run(answers);
   assert.equal(plain.code, 0, plain.text);
   assert.ok(!existsSync(log) || !/secrets set CLOUDY_CLOUD_INSTABOX_API_KEY/.test(readFileSync(log, 'utf8')), 'plain setup stores no coordinator secret');
-  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinators now.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinator image now.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.match(readFileSync(log, 'utf8'), /secrets set CLOUDY_CLOUD_INSTABOX_API_KEY --host api\.instabox\.sh/);
   assert.equal(readFileSync(stdin, 'utf8'), KEY);
@@ -1307,12 +1307,12 @@ test('check-only finds a ChatGPT login at CLOUDY_CLOUD_CODEX_AUTH, as the runtim
 
 test('pty: --more asks for usage alerts, Particle.ai and OpenRouter keys, then coordinators, after the base steps', () => {
   const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
-  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud coordinators now.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['cloud-coordinator image now.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Particle\.ai key/);
   assert.match(r.text, /OpenAI key/);
   assert.match(r.text, /OpenRouter key/);
-  assert.match(r.text, /Set up cloud coordinators now\? It saves an image with the tools \(no sign-in: each coordinator signs in at start\); this takes 10 to 20 minutes\./);
+  assert.match(r.text, /Build the optional cloud-coordinator image now\? Coordinators work without it; the image only carries the tools preinstalled \(no sign-in: each coordinator signs in at start\)\. This takes 10 to 20 minutes\./);
   assert.equal(readFileSync(g.cfg, 'utf8').includes('PARTICLE'), false);
 });
 
@@ -1358,7 +1358,7 @@ test('pty: a saved self-hosted machine stays self-hosted when Enter answers the 
 
 test('pty: --more offers the OpenAI key when codex is installed even though claude is the agent list', () => {
   const g = rig({ saved: savedBoth + 'CLOUDY_CLOUD_AGENTS=claude\n' });
-  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinators now.*\\[y/N\\]', 'n\n']] });
+  const r = pty({ cmd: ['/bin/bash', script, '--more'], env: g.env, steps: [['Which agents do you run', '\n'], ...answers, ['Paste it', '\n'], ['Paste it', '\n'], ['Paste it', '\n'], ['coordinator image now.*\\[y/N\\]', 'n\n']] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Saved: claude\./);
   assert.match(r.text, /OpenAI key for Codex workers/);

@@ -45,7 +45,7 @@ const cmds = {
     ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
     ['--no-attach', 'Start the coordinator without attaching'],
     ['--json', 'Print the start result as JSON'],
-  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted. Run coordinator image once first.' },
+  ], note: 'The repo is the origin URL and the machine clones from GitHub, so local commits and uncommitted edits are flagged first — on a terminal you confirm, off one the command refuses and names the push command. A running coordinator of the same name whose repo and branch match is reattached to instead of restarted.' },
   setup: { desc: 'Check your tools and save your keys.', usages: [['setup', '[--more]', '[--check-only]', '[--default-profile NAME]'], ['setup', '--provider instabox|self-hosted|microsandbox']], rows: [
     ['--more', 'Add coordinators, usage alerts and other model keys'],
     ['--check-only', 'Check everything and change nothing'],
@@ -132,14 +132,22 @@ const cmds = {
     ['--yes', 'Actually delete the listed branches'],
     ['--dry-run', 'List only, even together with --yes'],
   ], note: 'Only branches named cloudy-cloud/<id> are ever listed; every other name is skipped. Run it inside a git repo whose origin you can access.' },
+  accounts: { desc: 'List, remove and re-sync the saved Claude accounts that coordinators sign in with. A saved account serves one coordinator at a time.', usages: [['accounts', 'ls', '[--json]'], ['accounts', 'rm', '<label>'], ['accounts', 'sync', '[--watch]']], rows: [
+    ['ls', 'One line per account: label, email, state and last use'],
+    ['ls --json', 'The same as a JSON array'],
+    ['rm <label>', 'Forget a saved account; refuses while a coordinator holds it'],
+    ['sync', 'Copy every leased machine\'s newest credential back to this laptop'],
+    ['sync --watch', 'Keep syncing until no leased coordinator remains (start launches it; running it twice is harmless)'],
+  ], note: 'A finished coordinator sign-in is saved as an account automatically; the next coordinator start reuses a free one, or the label given with --account. Saved credentials live under ~/.config/cloudy-cloud/accounts (mode 600; the index holds no tokens). Removing an account deletes only this laptop\'s saved credential — the Claude account itself is unaffected. Coordinators on different Claude accounts cannot message each other through Claude\'s ListAgents/SendMessage.' },
 };
 
 const guides = {
-  image: ['Prepare the image coordinators start from (no sign-in: each coordinator signs in to Claude itself).', 'image [--save]', [
-    ['image', 'Create a machine, install the tools, save it and delete the machine'],
-    ['image --save', 'Finish an image save a previous run left pending'],
-  ], 'The image carries no Claude sign-in — a coordinator signs in at start (coordinator login). The image machine is deleted 2 hours after it is created.'],
-  start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json]', [
+  image: ['Prepare the image coordinators start from (no sign-in: each coordinator signs in to Claude itself).', 'image [--forget]', [
+    ['image', 'Build and save an image in one run (about 20 minutes)'],
+    ['image --save', 'Same as image (kept for old scripts)'],
+    ['image --forget', 'Remove the saved image setting (keeps the snapshot)'],
+  ], 'Optional: start uses the base template without it. Safe to interrupt: run image again to resume. The image carries no Claude sign-in — a coordinator signs in at start (coordinator login). The image machine is deleted 2 hours after it is created.'],
+  start: ['Start an always-on cloud coordinator (it runs Claude Code).', 'start NAME --repo URL [--branch BRANCH] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--account LABEL] [--json]', [
     ['NAME', 'Lowercase letters, digits and hyphens, up to 40'],
     ['--repo URL', 'Required GitHub https URL'],
     ['--branch BRANCH', 'Branch to clone (default: the repo default)'],
@@ -148,14 +156,16 @@ const guides = {
     ['--max-hours N', 'Delete the machine after N hours (up to 24, the default)'],
     ['--model NAME', 'Claude Code model for the session (for example opus or claude-opus-5-5)'],
     ['--env FILE', 'Bridge variables from a dotenv file (repeatable)'],
+    ['--account LABEL', 'Sign in with the saved account LABEL (default: the free account used least recently)'],
     ['--json', 'Print the result as JSON (includes started: true)'],
-  ], 'Run coordinator image once first. A new coordinator waits for its own Claude sign-in: finish it with coordinator login NAME. Stop the coordinator when you are done.'],
+  ], 'No image step is needed. A free saved account (cloudy-cloud accounts ls) signs the coordinator in itself; with none free the coordinator waits for its own Claude sign-in: finish it with coordinator login NAME. Stop the coordinator when you are done.'],
   attach: ['Open a coordinator\'s Claude session.', 'attach NAME', [], 'On a terminal it opens the session. When piped, it prints cloudy-cloud coordinator attach NAME instead; run that in your own terminal.'],
-  login: ['Finish a coordinator\'s Claude sign-in.', 'login NAME [--code CODE|-]', [
+  login: ['Finish a coordinator\'s Claude sign-in and save it as an account the next coordinator reuses.', 'login NAME [--code CODE|-] [--account LABEL]', [
     ['NAME', 'The coordinator that waits for sign-in'],
     ['--code CODE', 'The code the browser sign-in showed, sent to the pane\'s prompt (letters, digits, #, _ and -)'],
     ['--code -', 'Read the code from stdin (first line) — the recommended form for agents'],
-  ], 'Without --code it attaches to the session so you sign in there. With --code it types the code for you — how an agent finishes a sign-in the user did in the browser.'],
+    ['--account LABEL', 'Save the sign-in under this label instead of the account email'],
+  ], 'Without --code it attaches to the session so you sign in there. With --code it types the code for you — how an agent finishes a sign-in the user did in the browser. A finished sign-in is saved as an account (cloudy-cloud accounts ls) unless the machine already leases one.'],
   ls: ['List your cloud coordinators and whether one waits on a prompt.', 'ls', [], 'When piped, prints tab-separated NAME, STATE, CREATED, MACHINE, DELETES, WAITING, or "No coordinators.". It reads each running coordinator\'s screen once. "waiting for Claude sign-in" finishes with coordinator login NAME.'],
   status: ['Show one coordinator: state, the prompt it waits on (if any) and the attach command.', 'status NAME [--json]', [], 'Read-only. Reads the screen once. A coordinator runs with permission checks off, so a waiting prompt is unexpected: attach and answer it. A coordinator waiting for its Claude sign-in shows the login command.'],
   stop: ['Delete one coordinator machine.', 'stop NAME', [], 'Use provider:NAME when coordinator names are shared across providers. Its workers are cleaned up separately; check for remaining machines afterwards.'],
@@ -191,7 +201,7 @@ export function coordinatorHelp(command) {
     desc: 'Cloudy Cloud coordinators: always-on Claude Code sessions on their own cloud machines. A coordinator always runs Claude Code, never pi, omp, Codex or opencode.',
     usages: [['coordinator', '<command>']],
     rows: [
-      ['image [--save]', 'Save the coordinator image (do this once; no sign-in needed)'],
+      ['image [--forget]', 'Optional: build a saved image (normally unneeded)'],
       ['start NAME --repo URL', 'Start a coordinator'],
       ['login NAME [--code CODE]', 'Finish its Claude sign-in (attaches, or sends the browser code)'],
       ['ls', 'List your coordinators'],
@@ -200,7 +210,7 @@ export function coordinatorHelp(command) {
       ['stop NAME', 'Delete one'],
       ['finish [--force]', 'Used by a coordinator itself to delete its own machine'],
     ],
-    note: 'More on one command: cloudy-cloud coordinator <command> --help. Each coordinator signs in to Claude for itself (coordinator login). Machines do not pause on their own. Stop coordinators when you are done.',
+    note: 'More on one command: cloudy-cloud coordinator <command> --help. Each coordinator signs in to Claude for itself (coordinator login); a finished sign-in is saved as an account the next coordinator reuses — see cloudy-cloud accounts --help. Machines do not pause on their own. Stop coordinators when you are done.',
   });
 }
 
@@ -214,7 +224,7 @@ const hosts = {
 // `node cli-help.mjs <command> [subcommand]` (from bin/cloudy-cloud for `help <command>` and `<command> --help`).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [name, sub, ...extra] = process.argv.slice(2).filter((a) => a !== '--help' && a !== '-h');
-  const subs = { mcp: ['add', 'ls', 'rm'], machines: ['ls', 'stop'], branches: ['prune'] };
+  const subs = { mcp: ['add', 'ls', 'rm'], machines: ['ls', 'stop'], branches: ['prune'], accounts: ['ls', 'rm', 'sync'] };
   // Options after a known command do not change which help is shown (e.g. `machines stop --all --help`).
   const opts = extra.every((a) => a.startsWith('-'));
   const ok = (name === 'coordinator' && (sub === undefined || Object.hasOwn(guides, sub)) && opts)
