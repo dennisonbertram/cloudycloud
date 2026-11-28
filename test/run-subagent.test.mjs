@@ -15,6 +15,7 @@ import { installId } from '../src/config.mjs';
 import { resetPreflightCache } from '../src/profiles.mjs';
 import { fakeSandbox, setGithub, getGithub, SID, createFakeProvider } from './fake-provider.mjs';
 import { buildServer } from '../src/mcp.mjs';
+import { liveState } from '../src/dashboard.mjs';
 import { answeredProfiles, startQueue, sharedQueue, runSubagent, explainSubagent, messageAgent, waitAgents, resultAgent, listAgents, stopAgents, killAll, getTask, cancelTask, secretValues } from '../src/run-subagent.mjs';
 
 const exec = promisify(execFile);
@@ -1863,6 +1864,22 @@ test('a coordinator gets cloudy-cloud at the laptop commit from a bundle, instal
   for (const c of s.cmds) assert.doesNotMatch(c, /CLOUDY_CLOUD_(NAME|PEERS)=/);
   assert.ok(s.cmds.some((c) => c.includes('/cloudy-cloud/bin/cloudy-cloud -p')));
   assert.match(await x.text(await listAgents({}, x.deps)), /role coordinator/);
+});
+
+test('a nested coordinator machine is labelled with the install id, so the dashboard reads its log (and a worker is not)', async () => {
+  const x = await setup(), seen = [], orig = x.deps.createSandbox;
+  x.deps.env = { ...LONG_ENV, CLOUDY_CLOUD_CONFIG: join(await mkdtemp(join(tmpdir(), 'cc-id-')), 'env') };
+  x.deps.createSandbox = async (envs, opts, labels, p) => { seen.push(labels); return orig(envs, opts, labels, p); };
+  await withTool(x);
+  await x.wait([await x.start({ role: 'coordinator', prompt: 'hi' }), await x.start({ prompt: 'hi' })]);
+  const coord = seen.find((l) => l.role === 'coordinator'), worker = seen.find((l) => l.role === 'worker');
+  assert.equal(coord.install, installId(x.deps.env));
+  assert.equal(worker.install, undefined);
+  // the dashboard of the same installation reads that machine's log
+  const denv = { ...x.deps.env, FAKE_API_KEY: 'fakekeyvalue-0123456789' }, provider = createFakeProvider(denv), m = await provider.create({ labels: { purpose: 'cloudy-cloud', ...coord }, ttlSeconds: 600 });
+  const reads = [], getReader = async () => ({ readTail: async (id) => { reads.push(id); return { data: '', from: 0, next: 0, size: 0, fetchedAt: 1 }; }, capturePane: async () => ({ lines: [], fetchedAt: 1 }) });
+  await liveState(denv, { provider, file: join(await mkdtemp(join(tmpdir(), 'cc-ev-')), 'e'), cacheMs: 0, getReader })();
+  assert.ok(reads.includes(m.id));
 });
 
 test('a provider that defines coordinatorEnv adds fixed lines and its own names (not the Instabox key) to the shared allowlist; the depth lines are still added (#41)', async () => {

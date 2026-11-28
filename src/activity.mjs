@@ -28,6 +28,7 @@ const CHUNK_BYTES = 1024 * 1024; // later reads: at most 1 MiB past the saved of
 const LOCK_MS = 90_000;
 const NAME_OK = /^[A-Za-z0-9._-]{1,64}$/;
 const STATES = { running: 'working', idle: 'idle', queued: 'queued', starting: 'starting' };
+const END = { stopped: 'stopped', failed: 'failed' };
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const CLOUD_VERBS = { cloud_agent: 'starting a worker', cloud_agent_wait: 'waiting for a worker', cloud_agent_stop: 'stopping a worker', cloud_agent_message: 'messaging a worker', cloud_agent_list: 'listing agents' };
 const tidy = (s, n = 200) => safeText(s).replace(/\s+/g, ' ').trim().slice(0, n); // one line of plain text
@@ -72,11 +73,12 @@ export function stepFromText(text, clean = redactText) {
 const withQuiet = (row, now) => (row.state === 'working' && row.t && now - row.t >= QUIET_MS ? { ...row, quietMin: Math.floor((now - row.t) / 60_000) } : row);
 
 // Rows for workers (and coordinators started with cloud_agent), newest first, from the event log.
-export function workerRows(events, { alive, now = Date.now() } = {}) {
-  return foldAgents(events, { alive, now }).filter((a) => STATES[a.status]).map((a) => {
+// With `ended`, workers whose log says stopped or failed are included too (state "stopped"/"failed", ended: true), for `watch` only.
+export function workerRows(events, { alive, now = Date.now(), ended = false } = {}) {
+  return foldAgents(events, { alive, now }).filter((a) => STATES[a.status] || (ended && !a.sessionEnded && END[a.status])).map((a) => {
     const steps = a.messages.filter((m) => m.kind === 'progress').slice(-KEEP).map((m) => ({ t: m.t, step: stepFromText(m.text) })).filter((s) => s.step);
     const last = steps.at(-1);
-    return withQuiet({ id: a.id, name: a.description || a.id, kind: a.role === 'coordinator' ? 'coordinator' : 'worker', state: STATES[a.status],
+    return withQuiet({ id: a.id, name: a.description || a.id, kind: a.role === 'coordinator' ? 'coordinator' : 'worker', state: STATES[a.status] ?? END[a.status], ...(END[a.status] && { ended: true }),
       step: last?.step ?? (a.status === 'running' ? 'thinking' : ''), t: last?.t ?? a.lastActivity, steps }, now);
   });
 }
@@ -98,7 +100,7 @@ function withAgentMeta(events, dir, now) {
 }
 
 // Rows for the coordinators of this installation whose poller wrote a snapshot recently.
-export function coordinatorRows(dir, now = Date.now(), install = '') {
+export function coordinatorRows(dir, now = Date.now(), install = '', { ended = false } = {}) {
   let names;
   try { names = readdirSync(dir).filter((f) => /^[0-9a-f]{24}\.json$/.test(f)); } catch { return []; }
   if (!install) return [];
@@ -110,9 +112,9 @@ export function coordinatorRows(dir, now = Date.now(), install = '') {
       const st = j.state ?? { state: 'working', t: j.t }, last = steps.at(-1), signal = !['working', 'idle'].includes(st.state);
       const name = tidy(j.name ?? j.machine, 64);
       // The coordinator's own workers, from its machine's event log: marked with their coordinator ("boss › fix parser").
-      const workers = Object.entries(j.workers ?? {}).filter(([, w]) => STATES[w?.status]).map(([id, w]) => {
+      const workers = Object.entries(j.workers ?? {}).filter(([, w]) => STATES[w?.status] || (ended && END[w?.status])).map(([id, w]) => {
         const ws = (Array.isArray(w.steps) ? w.steps : []).slice(-KEEP).map((x) => ({ t: x.t, step: String(x.step) })).filter((x) => x.step), wl = ws.at(-1);
-        return withQuiet({ id: tidy(id, 64), name: `${name} › ${tidy(w.description || id, 64)}`, kind: 'worker', state: STATES[w.status], step: wl?.step ?? (w.status === 'running' ? 'thinking' : ''), t: wl?.t ?? w.t, steps: ws }, now);
+        return withQuiet({ id: tidy(id, 64), name: `${name} › ${tidy(w.description || id, 64)}`, kind: 'worker', state: STATES[w.status] ?? END[w.status], ...(END[w.status] && { ended: true }), step: wl?.step ?? (w.status === 'running' ? 'thinking' : ''), t: wl?.t ?? w.t, steps: ws }, now);
       });
       return [withQuiet({ id: j.machine, name, kind: 'coordinator', state: String(st.state), step: signal ? tidy(st.note || st.state) : (last?.step ?? ''),
         t: Math.max(last?.t ?? 0, signal ? st.t : 0) || st.t || j.t, steps }, now), ...workers];
@@ -121,10 +123,10 @@ export function coordinatorRows(dir, now = Date.now(), install = '') {
 }
 
 // All rows. `events` may be passed in; otherwise the event log is read (a bounded tail with `maxBytes`, for speed).
-export function readActivity({ env = process.env, events, now = Date.now(), alive, maxBytes, dir = activityDir(env) } = {}) {
+export function readActivity({ env = process.env, events, now = Date.now(), alive, maxBytes, dir = activityDir(env), ended = false } = {}) {
   let ev = events;
   try { ev ??= readEvents(eventsFile(env), maxBytes ? { maxBytes } : undefined); } catch { ev = []; }
-  return [...workerRows(withAgentMeta(ev, dir, now), { alive, now }), ...coordinatorRows(dir, now, readInstallId(env))];
+  return [...workerRows(withAgentMeta(ev, dir, now), { alive, now, ended }), ...coordinatorRows(dir, now, readInstallId(env), { ended })];
 }
 
 // What a coordinator's tmux screen says, as { state, note? }. Claude Code prints "esc to interrupt" while it works.
@@ -179,7 +181,7 @@ async function readWorkers(run, snap, t, clean) {
   if (snap.evOff === undefined && start > 0) { const cut = buf.indexOf(10) < 0 ? buf.length : buf.indexOf(10) + 1; from += cut; buf = buf.subarray(cut); } // the first line of a tail is cut off
   const end = buf.lastIndexOf(10) + 1; // an unfinished last line is read next time
   snap.evOff = end || buf.length < CHUNK_BYTES ? from + end : from + buf.length; // a single line over 1 MiB is skipped
-  const workers = snap.workers ??= {};
+  const workers = snap.workers = Object.assign(Object.create(null), snap.workers); // no prototype: an id such as "constructor" or "__proto__" from a remote log is a plain key
   for (const l of buf.subarray(0, end).toString('utf8').split('\n')) {
     let e; try { e = JSON.parse(l); } catch { continue; }
     if (!e || typeof e.id !== 'string' || !NAME_OK.test(e.id) || typeof e.t !== 'number') continue;
@@ -198,9 +200,12 @@ async function readWorkers(run, snap, t, clean) {
 // during a poll joins it), at most `concurrency` machines are read at once, and stop() cancels what is outstanding.
 export function createCoordinatorPoller({ provider, env = process.env, scrub = (s) => s, dir = activityDir(env), now = Date.now, concurrency = 3 }) {
   const sbxs = new Map(), ac = new AbortController(), limiter = createLimiter(concurrency);
-  const stopped = new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new Error('stopped')), { once: true }));
-  stopped.catch(() => {});
-  const guard = (p) => Promise.race([p, stopped]);
+  // Each guarded call has its own abort listener, removed when the call settles, so a finished call (and its result) is not kept alive.
+  const guard = (p) => new Promise((res, rej) => {
+    const onAbort = () => rej(new Error('stopped'));
+    if (ac.signal.aborted) onAbort(); else ac.signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(p).then(res, rej).finally(() => ac.signal.removeEventListener('abort', onAbort)); // the call's own rejection stays handled after an abort
+  });
   const clean = (s) => redactText(scrub(String(s)));
   async function one(m, install) {
     const id = { install, provider: m.provider ?? provider.name ?? '', machine: m.id };
@@ -304,6 +309,10 @@ export async function follow({ read, out, json = false, filter, sleep = (ms) => 
   let first = true;
   while (!signal?.aborted) {
     for (const r of read().filter((x) => !filter || x.id === filter || x.name === filter || x.id.startsWith(filter))) {
+      if (r.ended) { // stopped or failed in its log: said once for an agent already followed, then dropped
+        if (seen.has(r.id)) { emit(r, now(), `state: ${r.state}`); seen.delete(r.id); lastState.delete(r.id); warned.delete(r.id); }
+        continue;
+      }
       const keys = r.steps.map((s) => `${s.n ?? ''}|${s.t}|${s.step}`), known = seen.get(r.id);
       if (!known) { if (r.steps.length) emit(r, r.steps.at(-1).t, r.steps.at(-1).step); else emit(r, r.t ?? now(), r.step || `state: ${r.state}`); }
       else r.steps.forEach((s, i) => { if (!known.has(keys[i])) emit(r, s.t, s.step); });
@@ -333,7 +342,7 @@ export async function watchMain(argv, deps = {}) {
       const tick = () => poller.poll().catch(() => {});
       tick(); timer = setInterval(tick, 10_000);
     }
-    await follow({ read: () => readActivity({ env, now: now() }), out, json, filter: rest[0], sleep, signal: ac.signal, intervalMs, now });
+    await follow({ read: () => readActivity({ env, now: now(), ended: true }), out, json, filter: rest[0], sleep, signal: ac.signal, intervalMs, now });
   } finally { clearInterval(timer); poller?.stop(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
   return 0;
 }

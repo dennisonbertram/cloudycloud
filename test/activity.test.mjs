@@ -316,6 +316,47 @@ test('follow prints each new step once, then state changes and the quiet warning
   assert.deepEqual(json.map((j) => [j.name, j.step, j.state]), [['w', 'one', 'working']]);
 });
 
+test('follow says once that a followed worker stopped or failed, then drops it; an ended worker never seen is not shown', async () => {
+  const row = (id, state, extra = {}) => ({ id, name: id, kind: 'worker', state, step: 's', t: NOW, steps: [{ t: NOW, step: `s ${id}` }], ...extra });
+  const frames = [[row('w1', 'idle'), row('w2', 'working')], [row('w1', 'stopped', { ended: true }), row('w2', 'failed', { ended: true }), row('old', 'stopped', { ended: true })], [row('w1', 'stopped', { ended: true })]];
+  let i = 0; const ac = new AbortController(), out = [];
+  await follow({ read: () => frames[i], out: (s) => out.push(s), sleep: async () => { if (++i >= frames.length) ac.abort(); }, signal: ac.signal, now: () => NOW });
+  assert.deepEqual(out.join('').trim().split('\n').map((l) => l.slice(9)), ['w1 (w1) s w1', 'w2 (w2) s w2', 'w1 (w1) state: stopped', 'w2 (w2) state: failed']);
+  // the rows come from the log's own stopped/failed events, only when asked for
+  const evs = [ev('aaaa1111', NOW - 9000, { type: 'agent', description: 'a' }), ev('aaaa1111', NOW - 8000, { type: 'status', status: 'stopped' }),
+    ev('bbbb2222', NOW - 9000, { type: 'agent', description: 'b' }), ev('bbbb2222', NOW - 8000, { type: 'status', status: 'failed' })];
+  assert.deepEqual(workerRows(evs, { alive, now: NOW }), []);
+  assert.deepEqual(workerRows(evs, { alive, now: NOW, ended: true }).map((r) => [r.id, r.state, r.ended]), [['aaaa1111', 'stopped', true], ['bbbb2222', 'failed', true]]);
+});
+
+test('a completed guarded call is not kept alive after it settles', async () => {
+  const dir = tmp(), env = ENV(dir);
+  const f = fakeMachine({ transcript: asst('t1', 'Edit', { file_path: 'a.ts' }) });
+  const refs = [], connect = f.provider.connect;
+  f.provider.connect = async (id) => { const sbx = await connect(id); return { ...sbx, commands: { run: async (...a) => { const r = await sbx.commands.run(...a); r.pad = Buffer.alloc(1 << 20); refs.push(new WeakRef(r)); return r; } } }; };
+  const poller = createCoordinatorPoller({ provider: f.provider, env, now: () => NOW });
+  try {
+    await poller.poll();
+    assert.ok(refs.length >= 4);
+    (await import('node:v8')).setFlagsFromString('--expose-gc');
+    const collect = (await import('node:vm')).runInNewContext('gc');
+    for (let i = 0; i < 5; i++) { await new Promise((r) => setTimeout(r, 5)); collect(); }
+    assert.equal(refs.filter((r) => r.deref()).length, 0, 'command results are still reachable after the poll finished');
+  } finally { poller.stop(); }
+});
+
+test('a remote event log cannot write to Object through worker ids like constructor or __proto__', async () => {
+  const dir = tmp(), env = ENV(dir), e = (o) => `${JSON.stringify({ pid: 1, ...o })}\n`;
+  const f = fakeMachine({ transcript: asst('t1', 'Edit', { file_path: 'a.ts' }) });
+  f.state.events = ['constructor', '__proto__', 'hasOwnProperty'].map((id) => e({ id, t: NOW - 1000, type: 'progress', text: 'Bash node' })).join('');
+  try {
+    await createCoordinatorPoller({ provider: f.provider, env, now: () => NOW }).poll();
+    assert.equal(Object.t, undefined);
+    assert.equal(Object.prototype.t, undefined);
+    assert.deepEqual(Object.keys(snaps(env.CLOUDY_CLOUD_ACTIVITY)[0].workers).sort(), ['__proto__', 'constructor', 'hasOwnProperty']);
+  } finally { delete Object.prototype.t; delete Object.t; }
+});
+
 test('follow filters by name or id', async () => {
   const rows = ['a', 'b'].map((n) => ({ id: `${n}0000000`, name: n, kind: 'worker', state: 'working', step: 's', t: NOW, steps: [{ t: NOW, step: `step ${n}` }] }));
   const ac = new AbortController(), out = [];

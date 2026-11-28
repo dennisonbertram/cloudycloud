@@ -919,7 +919,7 @@
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.autofix, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.autofix, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps), coordSteps(sb).slice(-30).map((x) => x.n + '|' + x.t + '|' + x.step)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();

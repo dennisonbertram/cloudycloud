@@ -1706,6 +1706,10 @@ test('page: a coordinator\'s Activity tab shows its live steps instead of "no st
   assert.match(PAGE, /wide\(prop\('Machine'/);
 });
 
+test('page: the panel signature includes the coordinator steps, so a new live step redraws an open Activity tab', () => {
+  assert.match(PAGE, /JSON\.stringify\(S\.data\.caps\), coordSteps\(sb\)\.slice\(-30\)/);
+});
+
 test('demo data has a coordinator row with steps and a worker row marked with its coordinator', async () => {
   const { demoActivity } = await import('../src/dashboard-demo.mjs');
   const rows = demoActivity(Date.now()), co = demoState().boxes.find((b) => b.kind === 'coordinator');
