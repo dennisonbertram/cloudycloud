@@ -1,6 +1,24 @@
 # Cloudy Cloud: what is built, and what has been proven
 
-This file combines historical live evidence with current release-candidate behavior. Each live result keeps its original date. It does not claim that the complete 0.6.0 integration has been run across all providers and agents. **"Proven live"** means a behavior was run against real infrastructure and its result was checked, not taken from an agent's reply.
+This file combines historical live evidence with current release-candidate behavior. Each live result keeps its original date. It does not claim that the complete 0.7.0 integration has been run across all providers and agents. **"Proven live"** means a behavior was run against real infrastructure and its result was checked, not taken from an agent's reply.
+
+## 0.7.0 release-candidate additions
+
+- **Saved Claude sign-ins.** Each browser sign-in on a coordinator is saved on the laptop (`~/.config/cloudy-cloud/accounts`, files mode 600, only the `claudeAiOauth` sign-in) and leased to one coordinator at a time; new coordinators start already signed in. A second sign-in to the same Claude account is kept as `<email>-2`, `-3`, ..., so a user signs in once per coordinator running at the same time. Sign-ins of one account share its usage limit. `accounts ls|rm|sync` and `--account LABEL`; the newest credential is copied back on stop, ls, status, attach and by `accounts sync --watch`.
+- **No coordinator image needed.** Coordinators start from the provider's base template; `coordinator image` is optional (`--save` alias, `--forget`). A saved image that still holds a Claude sign-in is ignored with a note.
+- **Live status.** `cloudy-cloud watch`, `cloudy-cloud statusline`, the `cloud_agent_activity` MCP tool and a Live activity strip in the dashboard show each coordinator's and worker's current step (an allowlisted summary, never arguments or URLs).
+- **Peer coordinators.** A coordinator with peers and no task sends its hello at start; peers ack real messages only.
+- **0.6.0 fixes (#212, #214).** `exec` on Instabox with the default timeout runs (it failed before the command started in 0.6.0) and prints output once; `resume` and `exec` keep machines with unpushed commits, uncommitted or ignored files, or extra worktrees; secrets never enter provider command text; Instabox worker turns retry transient errors again.
+
+Proven live on Instabox on 2026-11-27, checked by the lead agent:
+
+- A Claude sign-in is single-use per sign-in, not per account: two machines given copies of one sign-in were tested; after one renewed, the other was signed out ("OAuth session expired and could not be refreshed"). Two separate browser sign-ins of the same account ran side by side and messaged each other.
+- `cloudy-cloud cloud` in a terminal reached an attached, signed-in coordinator with Remote Control in about 40 to 50 seconds from the base template, with no image and no sign-in prompt. Two coordinators started at once each took a different saved sign-in, with Remote Control, in 33 seconds.
+- A second coordinator's one browser sign-in was saved as `<email>-2`; the two coordinators exchanged a message and an ack within seconds. After both were stopped, both saved sign-ins showed as free.
+- `watch` showed a coordinator's steps and its worker's steps (as `coordinator › task`) within about 10 to 20 seconds; `statusline` answered in about 50 ms.
+- `exec` on Instabox with the default timeout returned output and exit codes 0 and 3 correctly.
+
+Not run live: providers other than Instabox, and account rotation after a real usage limit.
 
 ## 0.6.0 release-candidate additions
 
