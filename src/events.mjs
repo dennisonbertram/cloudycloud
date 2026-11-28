@@ -45,11 +45,11 @@ export function createEventLog(env, owner, { scrub = (s) => s, file = eventsFile
 }
 
 // Parsed events, oldest first. A missing file is an empty log; damaged lines are skipped.
-export function readEvents(file) {
+export function readEvents(file, { maxBytes = MAX_READ } = {}) {
   let fd;
   try { fd = openSync(file, 'r'); } catch (e) { if (e.code === 'ENOENT') return []; throw e; }
   try {
-    const size = fstatSync(fd).size, start = Math.max(0, size - MAX_READ), buf = Buffer.alloc(size - start);
+    const size = fstatSync(fd).size, start = Math.max(0, size - maxBytes), buf = Buffer.alloc(size - start);
     readSync(fd, buf, 0, buf.length, start);
     const lines = buf.toString('utf8').split('\n');
     if (start > 0) lines.shift(); // first line is cut off

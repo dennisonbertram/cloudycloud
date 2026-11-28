@@ -66,6 +66,14 @@
   .banner.warn::before { background: var(--s-starting); }
   .banner code { background: var(--subtle); padding: 1px 6px; border-radius: 4px; user-select: all; }
 
+  .feed { flex: none; padding: 6px 16px 4px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .fd-head { font-size: 11px; font-weight: 500; letter-spacing: .02em; color: var(--text-3); line-height: 18px; }
+  .fd-rows { max-height: 140px; overflow-y: auto; }
+  .fd-row { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 12px; line-height: 1; }
+  .fd-name { flex: none; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .fd-state, .fd-age { flex: none; color: var(--text-3); white-space: nowrap; }
+  .fd-step { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-2); }
+  .fd-quiet { flex: none; white-space: nowrap; color: var(--warn-text); background: var(--warn-bg); padding: 3px 6px; border-radius: 4px; font-size: 11px; }
   main { flex: 1; min-height: 0; display: grid; grid-template-columns: 400px 1fr; }
   .rail { min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); }
   .grp { position: sticky; top: 0; z-index: 1; display: flex; gap: 6px; padding: 12px 16px 6px; font-size: 12px; font-weight: 500; line-height: 1.3; color: var(--text-2); background: var(--surface); }
@@ -103,6 +111,7 @@
   .pv.note { white-space: normal; align-items: flex-start; }
   .prop.full { grid-column: 1 / -1; }
   .prop.wide { grid-column: span 2; }
+  .prop.wide .pv { flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; }
   .props.cmds { grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 12px; }
   .cmds .prop { display: flex; gap: 12px; align-items: baseline; }
   .cmds .pl { flex: none; width: 64px; margin: 0; }
@@ -213,6 +222,8 @@
   @keyframes shimmer { to { background-position: -200% 0; } }
 
   @media (max-width: 820px) {
+    .fd-state { display: none; }
+    .fd-name { max-width: 12ch; }
     header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; }
     .summary { order: 5; flex-basis: 100%; margin-left: 0; }
     .summary .spend { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -257,6 +268,7 @@
   <div class="live wait" id="live" role="status"><span class="sd running"></span><span id="live-t">Connecting</span></div>
 </header>
 <div class="banner" id="banner" hidden role="alert"></div>
+<section class="feed" id="feed" aria-label="Live activity" hidden></section>
 <main id="main">
   <section class="rail" id="rail" aria-label="Agents"></section>
   <section class="panel" id="panel" aria-label="Agent detail"></section>
@@ -560,6 +572,8 @@
   const num = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
   const CAP = 4096, FULL_CAP = 2_000_000; // characters of Show-all text kept
   const turnOf = (b) => S.turn[b.id] || b.turns || 1;
+  // A coordinator keeps no stream on this computer; its recent steps come from the live activity feed (row id = its machine id).
+  const coordSteps = (b) => b.kind === 'coordinator' ? ((S.data && S.data.activity) || []).find((r) => r.kind === 'coordinator' && r.id === b.machine)?.steps || [] : [];
   const selBox = () => S.data?.boxes.find((b) => b.id === S.sel);
   const redo = () => { S.sigs.p = null; render(); };
   const stOf = (b) => S.st && S.st.box === b.id && S.st.turn === turnOf(b) ? S.st : null;
@@ -571,6 +585,7 @@
     let text, cls = 'badge', at = null;
     if (!st || (!st.loaded && !st.err)) text = term ? 'checking the terminal…' : 'checking the stream…';
     else if (st.err && !st.loaded) { text = 'unavailable: ' + st.err; cls += ' bad'; }
+    else if (src?.kind === 'none' && !term && coordSteps(b).length) { text = 'recent steps from the live feed'; cls += ' live'; }
     else if (src?.kind === 'none') { text = 'unavailable: ' + (NONE[src.reason]?.[0] || src.reason || (term ? 'no terminal' : 'no stream')); cls += ' bad'; }
     else if (src?.kind === 'cache') { text = src.reason === 'machine_gone' ? 'saved copy · machine deleted' : 'from the saved copy (machine not reachable)'; at = src.fetchedAt; }
     else if (src?.kind === 'local') text = 'from local log';
@@ -665,7 +680,9 @@
     if (dropped) kids.push(h('div', { class: 'note', text: 'The messages for turn ' + turn + ' were not kept: the dashboard holds only the most recent 300 messages. The tool calls below come from its stream.' }));
     let run = null;
     const last = msgs.at(-1), nowRow = b.status === 'running' && last?.kind === 'progress' && !hasTools;
-    if (st?.loaded && st.source?.kind === 'none' && NONE[st.source.reason]) kids.push(h('div', { class: 'note', text: NONE[st.source.reason][1] }));
+    const cs = coordSteps(b);
+    if (cs.length) { const r = h('div', { class: 'run', 'aria-label': 'Recent steps' }); for (const x of cs.slice(-30)) r.append(h('div', { class: 'ev prog' }, h('span', { class: 'ptxt', text: x.step }), timeEl('ptime', x.t))); kids.push(r); }
+    else if (st?.loaded && st.source?.kind === 'none' && NONE[st.source.reason]) kids.push(h('div', { class: 'note', text: NONE[st.source.reason][1] }));
     else if (st?.loaded && st.source?.kind === 'none') kids.push(h('div', { class: 'note', text: 'No stream to show: ' + (st.source.reason || 'unknown reason') }));
     for (const { m, e } of items) {
       if (e) { run = null; const r = evRow(e, b, st); if (r) kids.push(r); continue; }
@@ -715,7 +732,7 @@
         prop('Role', b.role && h('span', { text: b.role + (b.profile && b.model ? ' · ' + b.profile : '') }), harnessTag(b)),
         autofixTag(b) && prop('Autofix', autofixTag(b), prLink(b)),
         prop('Started by', b.startedBy && h('span', { text: b.startedBy })),
-        prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), b.provider && h('span', { class: 'providerrep', text: ' · ' + b.provider }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) })),
+        wide(prop('Machine', b.machine && h('span', { class: 'mono', text: b.machine }), b.provider && h('span', { class: 'providerrep', text: ' · ' + b.provider }), kindBadge(b) && h('span', { class: 'kindrep', text: ' · ' + kindBadge(b) }))),
         b.mcp?.length ? wide(prop('MCP', h('span', { class: 'mono', text: b.mcp.join(', ') }))) : null,
         wide(prop('Branch', b.branch && h('span', { class: 'branch' }, h('span', { text: b.branch }), copyBtn(b.branch, 'branch name')), b.branch && b.push && [' · ', pushView(b.push)], b.branch && b.push?.sha && copyBtn(b.push.sha, 'commit hash'))),
         canExpire(b) ? prop('Deletes', h('span', { title: deadlineTitle(b) }, live('until', b.deadline)))
@@ -902,7 +919,7 @@
     if (S.sigs.r !== r) { S.sigs.r = r; railView(roots); }
     const sb = boxes.find((b) => b.id === S.sel);
     const lm = sb.messages?.at(-1);
-    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.autofix, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps)]);
+    const ps = sig(['p', sb.id, sb.status, sb.title, sb.turns, sb.startedBy, sb.messages?.length, lm?.kind, lm?.text, S.tab, sb.machineKind, sb.machine, sb.source, sb.machineState, sb.harness, sb.autofix, sb.usage?.cpuPct, sb.usage?.memUsed, sb.usage?.at, isQuiet(sb), sb.usage?.none, sb.usage?.error?.code, JSON.stringify(S.data.caps), coordSteps(sb).slice(-30).map((x) => x.n + '|' + x.t + '|' + x.step)]);
     if (S.sigs.p !== ps) { S.sigs.p = ps; panelView(sb); }
     streamEnsure(sb); paneEnsure(sb); metricsEnsure(sb);
     tick();
@@ -928,6 +945,20 @@
   $('v-list').onclick = () => setView('list');
   $('v-fleet').onclick = () => setView('fleet');
 
+  // Live feed: one line per agent from /api/state activity (state, current step, age, quiet warning).
+  function renderFeed() {
+    const rows = (S.data && S.data.activity) || [], feed = document.getElementById('feed');
+    feed.hidden = !rows.length;
+    const list = h('div', { class: 'fd-rows' }, rows.map((r) => h('div', { class: 'fd-row' },
+      h('span', { class: 'sd ' + (r.state === 'working' ? 'running' : r.state === 'idle' ? 'idle' : r.state === 'blocked' ? 'failed' : 'starting') }),
+      h('span', { class: 'fd-name', text: r.name, title: r.id }),
+      h('span', { class: 'fd-state', text: r.state }),
+      h('span', { class: 'fd-step mono', text: r.step || '' }),
+      r.quietMin ? h('span', { class: 'fd-quiet', text: 'quiet for ' + r.quietMin + ' min' }) : null,
+      h('span', { class: 'fd-age', text: dur(now() - r.t) + ' ago' }))));
+    feed.replaceChildren(h('div', { class: 'fd-head', text: 'Live activity' }), list);
+  }
+
   let timer, busy = false;
   async function poll() {
     if (busy) return;
@@ -939,7 +970,7 @@
       else { S.data = await r.json(); pruneMetrics(S.metrics, new Set((S.data.boxes || []).map((x) => x.id))); S.skew = S.data.now - Date.now(); S.net = 'ok'; S.lastOk = Date.now(); }
     } catch { S.net = 'down'; }
     busy = false;
-    try { render(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
+    try { render(); renderFeed(); } finally { if (S.net !== 'auth') timer = setTimeout(poll, 3000); }
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && S.net !== 'auth') poll(); });
   render(); poll(); setInterval(tick, 1000);

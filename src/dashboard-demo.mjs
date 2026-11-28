@@ -144,3 +144,10 @@ export const demoStream = {
   metrics: (id) => ({ samples: demoSeries(id), fetchedAt: Date.now(), source: 'live' }),
   pane: (id) => (id === 'fleet-main' ? ['$ claude', '> cloud_agent_list', '  7c1e90ab  running  Add retry with backoff to the upload client', '  b42f0d17  idle     Review the billing webhook for race conditions', '  e08a5c33  starting Port the settings page to the new form components', '  aa9f1e02  idle     Audit the invoice PDFs for missing totals', '> cloud_agent_wait 7c1e90ab b42f0d17', 'Waiting for 2 agents...'] : undefined),
 };
+
+// Made-up live feed rows for --demo (same shape as readActivity in activity.mjs).
+export const demoActivity = (now = Date.now()) => [
+  { id: 'demo-1', name: 'fix parser bug', kind: 'worker', state: 'working', step: 'Bash npm test', t: now - 12_000, steps: [{ t: now - 40_000, step: 'Edit src/parser.ts' }, { t: now - 12_000, step: 'Bash npm test' }] },
+  { id: 'm-fleet-main', name: 'fleet-main', kind: 'coordinator', state: 'working', step: 'waiting for a worker', t: now - 20_000, steps: [{ t: now - 6 * 60_000, step: 'looking up tools' }, { t: now - 5 * 60_000, step: 'starting a worker' }, { t: now - 90_000, step: 'Bash git' }, { t: now - 20_000, step: 'waiting for a worker' }] },
+  { id: '7c1e90ab', name: 'fleet-main › Add retry with backoff to the upload client', kind: 'worker', state: 'working', step: 'Edit src/upload/client.ts', t: now - 9_000, steps: [{ t: now - 2 * 60_000, step: 'Bash npm test -- upload' }, { t: now - 9_000, step: 'Edit src/upload/client.ts' }] },
+];

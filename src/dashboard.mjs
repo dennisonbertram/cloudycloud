@@ -8,7 +8,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { loadEnv, ownerFile } from './config.mjs';
+import { loadEnv, ownerFile, readInstallId } from './config.mjs';
 import { loadProvider } from './providers/index.mjs';
 import { providerFor, machineKey } from './provider-lookup.mjs';
 import { resolveMsbBin } from './providers/microsandbox.mjs';
@@ -18,8 +18,9 @@ import { paneState } from './pane-state.mjs';
 import { secretValues } from './run-subagent.mjs';
 import { consentedLiterals } from './mcpsync.mjs';
 import { planSnapshot } from './machine.mjs';
-import { demoState, demoStream } from './dashboard-demo.mjs';
+import { demoActivity, demoState, demoStream } from './dashboard-demo.mjs';
 import { guideObj } from './errors.mjs';
+import { createCoordinatorPoller, readActivity, scrubberFor } from './activity.mjs';
 import { createLimiter } from './limits.mjs';
 import { normalise, pruneStreams, streamsDir } from './stream.mjs';
 
@@ -348,6 +349,9 @@ export function createHandler({ token, getState, html, streamsDir: sdir = stream
   };
 }
 
+// getState plus the live activity of every agent (see activity.mjs), for the page's feed.
+export const withActivity = (getState, read = readActivity) => async () => ({ ...(await getState()), activity: read() });
+
 const readOwner = (env) => { try { return readFileSync(ownerFile(env), 'utf8').split(/\s+/).filter(Boolean).at(-1); } catch { return undefined; } };
 
 const COORD_MS = 10_000;
@@ -465,7 +469,7 @@ export function liveState(env, { list = listMachines, file = eventsFile(env), ca
     } catch (e) { machineError = { code: e.code ?? 'api', message: String(e.message).split((provider && env[provider.keyName]) || '\0').join('[redacted]') }; }
     const coordLogs = {};
     if (machines) for (const id of logs.keys()) if (!machines.some((m) => machineKey(m) === id)) logs.delete(id); // its machine is gone: forget its history
-    if (getReader && machines) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.status !== 'stopped' && x.state !== 'deleting')) {
+    if (getReader && machines) for (const m of machines.filter((x) => x.labels?.role === 'coordinator' && x.labels?.install && x.labels.install === readInstallId(env) && x.status !== 'stopped' && x.state !== 'deleting')) { // another installation's coordinator on a shared account is never read
       const reader = await readerFor(m).catch(() => null);
       if (!reader) continue;
       await pull(reader, m);
@@ -550,7 +554,16 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const html = () => readFileSync(join(HERE, 'dashboard.html'), 'utf8'); // read per request, so a missing file is a clear 500 and edits show on reload
   const live = demo ? undefined : liveState(env, { getReader });
-  const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live }), port);
+  const server = await listen(createHandler({ token, html, getReader, getSecrets, getMetrics: live?.metrics, ...(demo && { demo: demoStream }), getState: withActivity(demo ? async () => ({ ...demoState(Date.now()), now: Date.now() }) : live, demo ? () => demoActivity(Date.now()) : () => readActivity({ env })) }), port);
+  if (!demo) { // coordinators' transcripts are read every 10 s while the dashboard runs
+    const poller = lazy(async () => { const provider = await getProvider(); return createCoordinatorPoller({ provider, env, scrub: await scrubberFor(provider, env) }); });
+    const poll = async () => { try { await (await poller()).poll(); } catch { /* no provider or machine list: the feed shows workers only */ } };
+    poll();
+    const timer = setInterval(poll, 10_000);
+    timer.unref();
+    const stop = () => { clearInterval(timer); poller().then((p) => p.stop(), () => {}).finally(() => process.exit(0)); };
+    process.once('SIGINT', stop); process.once('SIGTERM', stop);
+  }
   const url = `http://127.0.0.1:${server.address().port}/?t=${token}`;
   console.log(`Cloudy Cloud dashboard${demo ? ' (demo data)' : ''}: ${url}\nRead-only. Press Ctrl+C to stop.`);
   if (!argv.includes('--no-open')) openBrowser(url);

@@ -116,6 +116,11 @@ const cmds = {
     ['--no-open', 'Print the link but do not open a browser'],
     ['--prune', 'Delete every file in the streams folder older than 30 days (then the oldest over 1 GB), then exit'],
   ], note: 'The page is served on 127.0.0.1 only. Press Ctrl+C to stop.' },
+  watch: { desc: 'Follow what your cloud agents do, like tail -f: one line per new step.', usages: [['watch', '[NAME|ID]', '[--json]']], rows: [
+    ['NAME|ID', 'Follow one agent (default: every running agent of this install)'],
+    ['--json', 'Print one JSON object per line'],
+  ], note: 'Each line shows the time, the agent and its step. While it runs, it also reads your running coordinators every 10 seconds. Press Ctrl+C to stop.' },
+  statusline: { desc: 'Print one short line of agent activity for a Claude Code status line.', usages: [['statusline']], note: 'Reads local files only and prints nothing when no agent runs. Coordinators show while cloudy-cloud watch or dashboard runs. Set it in Claude Code settings: "statusLine": {"type": "command", "command": "cloudy-cloud statusline"}.' },
   machines: { desc: 'List or delete the Cloudy Cloud machines of the active provider.', usages: [['machines', '[ls]'], ['machines', 'stop', ID], ['machines', 'stop', '--all', '[--yes]']], rows: [
     ['ls', 'One line per machine: name, provider, role, state, age and deletion time'],
     ['stop <id>', 'Delete one machine at once (an id, a machine name or an agent id)'],

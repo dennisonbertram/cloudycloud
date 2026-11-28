@@ -152,6 +152,12 @@ cloudy-cloud dashboard --prune</code></pre>
 <p>Example:</p>
 <pre><code>cloudy-cloud dashboard --port 5000 --no-open</code></pre>
 
+<h3 id="cli-watch">cloudy-cloud watch and statusline</h3>
+<pre><code>cloudy-cloud watch [NAME|ID] [--json]
+cloudy-cloud statusline</code></pre>
+<p><code>watch</code> follows what your running cloud agents do, like <code>tail -f</code>. It prints the current state of each agent when it starts, then one line per new step, each state change, and a warning when a working agent has had no step for 5 minutes. <code>NAME|ID</code> limits it to one agent. <code>--json</code> prints one JSON object per line. Press Ctrl+C to stop. Workers come from the local event log. Coordinators of this installation are read every 10 seconds from the transcript of the Claude session in their <code>claude</code> tmux pane, and only a short summary of each tool call is kept: the tool name, a file path, or the program name of a Bash command. Arguments and URLs are never kept.</p>
+<p><code>statusline</code> prints one line for a Claude Code status line, such as <code>☁ 2 working, 1 blocked · boss: Bash npm · 12s ago</code>, with a count for each state. It reads local files only and prints nothing when no agent runs. Add <code>{ "statusLine": { "type": "command", "command": "cloudy-cloud statusline" } }</code> to your Claude Code settings; cloudy-cloud does not edit them.</p>
+
 <h3 id="cli-branches">cloudy-cloud branches</h3>
 <pre><code>cloudy-cloud branches prune [--yes] [--dry-run]</code></pre>
 <p>Run it inside your repository. It lists the <code>cloudy-cloud/&lt;8 hex characters&gt;</code> branches on origin (and <code>cloudy-cloud/issue-&lt;n&gt;-&lt;id&gt;</code> branches, for workers started from an issue) and compares each with origin's default branch. A branch that adds no commits to the default branch (it is empty, or already merged) is marked <code>prune</code>. A branch with commits not in the default branch is marked <code>keep</code>. It never touches a branch with another name.</p>
@@ -415,6 +421,9 @@ cloudy-cloud mcp rm NAME</code></pre>
 
 <h3 id="tool-cloud-agent-list">cloud_agent_list</h3>
 <p>Lists every agent with its id, description, status, idle minutes and progress (tool uses, tokens, elapsed time and current step). The tool is read-only. With <code>all: true</code> it instead lists every machine on the provider labelled <code>purpose=cloudy-cloud</code> (other sessions and coordinators included), grouped by its <code>parent</code> label. Each worker machine carries the labels <code>role</code>, <code>profile</code> (<code>claude</code> for the default), <code>parent</code>, <code>agent</code> and a short redacted <code>description</code>.</p>
+
+<h3 id="tool-cloud-agent-activity">cloud_agent_activity</h3>
+<p>Shows what running agents do now: state, current step and the last 10 steps of each worker and coordinator, with a quiet warning after 5 minutes without a step. The optional <code>agent</code> argument is a name or id. The tool is read-only and reads local files only. Coordinator steps are available while <code>cloudy-cloud watch</code> or the dashboard runs.</p>
 
 <h3 id="tool-cloud-agent-stop">cloud_agent_stop</h3>
 <p>Stops agents owned by this MCP server and deletes their sandboxes. A successful result means the provider confirmed deletion or confirmed that the machine was already absent. If deletion fails transiently, the agent remains tracked as <code>stop-pending</code> and the result gives retry guidance. Stop agents when they are finished, because they otherwise remain open until stopped or idle for 60 minutes.</p>

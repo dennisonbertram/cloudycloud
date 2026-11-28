@@ -670,7 +670,7 @@ const limitText = (e, plan, kind) => {
 // Label values: letters, digits, "_", "." and "-" only, at most 60 characters, so no provider rejects them.
 const labelValue = (v) => String(v ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 // What `cloud_agent_list {all: true}` and the dashboard read. The description is redacted first; owner and purpose are added by createSandbox.
-const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, kind: a.kind.name === 'linux' ? '' : a.kind.label, size: a.size?.label, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description) })
+const machineLabels = (a, ctx) => Object.fromEntries(Object.entries({ role: a.role, kind: a.kind.name === 'linux' ? '' : a.kind.label, size: a.size?.label, profile: a.profile?.name ?? 'claude', parent: ctx.owner, agent: a.id, description: ctx.scrub(a.description), install: a.role === 'coordinator' ? installId(ctx.env) : '' })
   .map(([k, v]) => [k, labelValue(v)]).filter(([, v]) => v));
 
 // The hosts a worker machine must reach, deduplicated, in order: github.com and its API (the pushes), the model host
