@@ -1,6 +1,6 @@
 // Cloud coordinators: long-lived Claude Code sessions on their own cloud machines.
-// Usage: node coordinator.mjs image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
-import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
+// Usage: node coordinator.mjs image | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]
+import { readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync, renameSync, existsSync, readlinkSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
@@ -8,6 +8,7 @@ import { homedir, hostname as osHostname, constants as osConstants } from 'node:
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, ownerFile, egressAllow, envLine, proxySecrets, installId, DEFAULT_PROVIDER_KEY } from './config.mjs';
+import * as accounts from './accounts.mjs';
 import { coordinatorKeys, loadProfiles, COORDINATOR_KEY_SECRET } from './profiles.mjs';
 import { WATCHDOG_SCRIPT } from './watchdog.mjs';
 import { LAUNCH_SCRIPT } from './coordinator-launch.mjs';
@@ -16,7 +17,7 @@ import { ownsRepo, toolBundle, toolInstallCmd } from './toolbundle.mjs';
 import { loadProvider, writeSecretFile } from './providers/index.mjs';
 import { providerFor } from './provider-lookup.mjs';
 import { makeUi, cellWidth, fitCells } from './ui.mjs';
-import { coordinatorHelp, coordinatorUsage } from './cli-help.mjs';
+import { coordinatorHelp, coordinatorUsage, helpText } from './cli-help.mjs';
 import { safeText } from './terminal.mjs';
 import { redact } from './events.mjs';
 import { renderUnicodeCompact } from 'uqr';
@@ -34,6 +35,9 @@ const SELECTOR_RE = /^(?:[a-z0-9][a-z0-9-]{0,39}:)?[a-z0-9][a-z0-9-]{0,39}$/;
 const REPO_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(\.git)?\/?$/;
 const SETUP_MS = 600_000;
 const TASK_MAX = 100_000; // bytes
+// Claude only acts on a first turn, so a coordinator started with peers but no task gets this hello-only
+// prompt: it sends the hello its prompt rules describe to each peer, then waits for the user — no other work.
+const HELLO_TASK = 'Send the start hello your prompt rules describe to each peer coordinator, then wait for the user. There is no task — start no other work.';
 const IMAGE_SECONDS = 2 * 3600;
 const deadlineLine = (iso) => `Your machine is deleted by the server at ${iso}; push your work well before then.`;
 const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
@@ -105,17 +109,30 @@ const statusLine = (u, kind, msg, details = []) => {
   return `${u[kind](msg)}${details.length ? `\n    ${u.dim(fitCells(details[0], u.width - 4))}` : ''}`;
 };
 
+// The path a config write lands on: a symlink chain is walked to its end so the temp-file rename
+// replaces the REAL file and a linked config stays a link (a link whose target does not exist yet
+// resolves to that target — the write then creates it). A non-link path resolves to itself.
+const configTarget = (file) => {
+  let p = file;
+  for (let i = 0; i < 16; i++) {
+    let next;
+    try { next = readlinkSync(p); } catch { return p; } // not a link (or nothing there): resolved
+    p = resolve(dirname(p), next);
+  }
+  return p;
+};
 // Sets and drops config lines in ONE write: temp file in the same folder (mode 600), then rename. Errors other than a missing file propagate.
 function updateConfig(file, set = {}, drop = []) {
+  const target = configTarget(file);
   let lines = [];
-  try { lines = readFileSync(file, 'utf8').split('\n'); if (lines.at(-1) === '') lines.pop(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { lines = readFileSync(target, 'utf8').split('\n'); if (lines.at(-1) === '') lines.pop(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const names = new Set([...Object.keys(set), ...drop]);
   lines = lines.filter((l) => !names.has(l.slice(0, l.indexOf('='))));
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp${process.pid}`;
+  mkdirSync(dirname(target), { recursive: true });
+  const tmp = `${target}.tmp${process.pid}`;
   writeFileSync(tmp, `${[...lines, ...Object.entries(set).map(([k, v]) => envLine(k, v))].join('\n')}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  renameSync(tmp, target);
 }
 const saveKey = (file, name, value) => updateConfig(file, { [name]: value });
 
@@ -139,19 +156,22 @@ async function context(deps) {
   const stderr = deps.stderr ?? process.stderr;
   const ui = deps.ui ?? makeUi();
   const progress = (message) => { if (stderr.isTTY) stderr.write(`${ui.hint(message)}\n`); };
-  // A state change the user should see even when stderr is piped (unlike progress): one line, never stdout.
-  const note = deps.note ?? ((s) => stderr.write(`${s}\n`));
+  // A state change the user should see even when stderr is piped (unlike progress): never stdout. On a
+  // terminal it wraps whole words to the width, so a command in it is never cut; piped it stays one raw line.
+  const note = deps.note ?? ((s) => stderr.write(`${stderr.isTTY ? wrapText(ui, s).join('\n') : s}\n`));
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const provider = deps.provider ?? await loadProvider(env, { fetchFn: deps.fetchFn, sdk: deps.sdk, sleep, spawn: deps.cliSpawn });
   const primary = provider.providers?.[0] ?? provider;
   const tty = deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY);
   const spawn = deps.spawn ?? spawnSync;
   const now = deps.now ?? Date.now;
+  // Launches the detached `accounts sync --watch` process (injected in tests; never spawned for real there).
+  const spawnWatcher = deps.spawnWatcher ?? (() => accounts.spawnWatcher(fileURLToPath(import.meta.url)));
   // Prompts write to stderr, never stdout: --json and piped output stay machine-readable.
   const ask = deps.ask ?? (async (question) => { const rl = createInterface({ input: process.stdin, output: process.stderr }); try { return await new Promise((res) => { rl.once('close', () => res('n')); rl.question(question).then(res, () => res('n')); }); } finally { rl.close(); } });
   // `login --code -` reads the code from stdin; an attached terminal blocks on it (the agent form is for pipes).
   const stdin = deps.stdin ?? (async () => { const chunks = []; for await (const x of process.stdin) chunks.push(x); return Buffer.concat(chunks.map((x) => Buffer.from(x))).toString('utf8'); });
-  return { env, provider, primary, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, stdin, cwd: deps.cwd };
+  return { env, provider, primary, configFile, out, root, progress, note, ui, sleep, now, tty, spawn, ask, stdin, cwd: deps.cwd, spawnWatcher };
 }
 
 // The Remote Control session id is in ~/.claude/sessions/<pid>.json once Remote Control connects. Read exactly the files of
@@ -226,15 +246,15 @@ const nameOf = async (sbx) => (await sbx.loadName?.()) ?? sbx.name;
 // The sign-in check and `claude auth login` must run under the same credential-free environment the session
 // itself gets: an API key or OAuth token in the session environment would otherwise satisfy `auth status`
 // (or silently pick a different sign-in method) without the claude.ai sign-in each coordinator needs.
-export const AUTH_STATUS = 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude auth status --json';
+export const AUTH_STATUS = accounts.AUTH_STATUS;
+// The parsed `claude auth status --json` (null when unreadable or transport-failed; the CLI's exit-1
+// signed-out answer still parses): saving an account needs its email too.
+const authStatus = accounts.authStatus;
 // True when the machine's Claude is signed in to claude.ai through the browser (a setup-token cannot open
 // Remote Control sessions); an unreadable status counts as not signed in.
 async function signedIn(sbx) {
-  try {
-    const r = await sbx.commands.run(AUTH_STATUS, { timeoutMs: 60_000 });
-    const j = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
-    return j.loggedIn === true && j.authMethod === 'claude.ai';
-  } catch { return false; }
+  const j = await authStatus(sbx);
+  return j?.loggedIn === true && j?.authMethod === 'claude.ai';
 }
 
 // Is `claude auth login` actually running on the machine? launch.sh holds this marker file for exactly the
@@ -242,7 +262,250 @@ async function signedIn(sbx) {
 // attempt rather than transcript text. Any check failure reads as not active.
 const loginActive = async (sbx) => { try { await sbx.commands.run('test -f "$HOME/.config/cloudy-cloud/login-active"', { timeoutMs: 15_000 }); return true; } catch { return false; } };
 
+// ---- Saved Claude accounts (src/accounts.mjs): sign in once per account, lease one at a time ----
+// The account a coordinator uses is recorded only in the local index lease that names the machine —
+// a sign-in email never rides machine metadata, which the whole workspace can read (a machine
+// created before this may still carry an `account` label; it is read as a fallback only). Only a
+// machine carrying this installation's `install` label is ever delivered a credential or read back —
+// the same check attach and login use before they act on a machine.
+const machineLease = (c, m) => {
+  const mid = m?.id ?? m?.sandboxId;
+  if (!mid) return null;
+  const dir = accounts.accountsDir(c.env);
+  // The LOCAL index is the only trusted record: a lease must name this machine's id and provider,
+  // and a pending start reservation is not a usable lease until its credential is delivered.
+  return accounts.leasedAccounts(dir).find((a) => !a.leasedBy?.pending && a.leasedBy?.machineId === mid && (a.leasedBy.provider ?? c.primary.name) === (m.provider ?? c.primary.name)) ?? null;
+};
+// The account a coordinator uses. Read-back and release decisions are bound to the locally recorded
+// lease (provider + machineId) — never to an `account` label alone, which a coordinator sharing our
+// install id could carry while its lease lives on another laptop.
+const ownAccount = (c, m) => (m?.labels?.install === installId(c.env) ? machineLease(c, m)?.label || '' : '');
+
+// After a finished browser sign-in (login --code, or an interactive attach that detached): read the
+// machine's credential back and save it under the label the coordinator already leases (the slot the
+// sign-in revives), else --account, else the auth-status email sanitised to [a-z0-9._@-], else
+// account-N. The account is then leased to this coordinator in the same step — the sign-in is live
+// on this machine only, so a second start must never pick it while it runs. One saved label is one
+// sign-in: a fresh sign-in of a known Claude identity revives a free signed-out label or is saved
+// under a new <email>-N label. Returns the label; '' when
+// nothing signed-in-shaped was found to save.
+const saveAccountFromMachine = async (c, sbx, m, { labelArg = '', name = '' } = {}) => {
+  // An exact install-label match is required before any credential is read back — a machine that
+  // carries no install label cannot be verified as this installation's.
+  if (m?.labels?.install !== installId(c.env)) return '';
+  const [got, j] = await Promise.all([accounts.readMachineCredential(sbx).catch(() => null), authStatus(sbx)]);
+  if (!got || j?.loggedIn !== true || j?.authMethod !== 'claude.ai') return '';
+  const mid = m?.id ?? m?.sandboxId;
+  const carried = machineLease(c, m)?.label || (accounts.validLabel(m?.labels?.account) ? m.labels.account : '');
+  if (carried && labelArg && carried !== labelArg) usageError(`Coordinator ${m.labels?.name ?? ''} uses account ${carried} — one account serves one coordinator at a time, so --account ${labelArg} does not apply here.`, 'login', '--account names the label a sign-in is saved under; a leased coordinator keeps its own.');
+  const dir = accounts.accountsDir(c.env);
+  // The identity check, the save and the lease are one locked step: the index cannot change between
+  // them, and a concurrent save cannot slide an older credential under this one.
+  const saved = accounts.withLock(dir, () => {
+    const idx = accounts.readIndex(dir);
+    let label = carried || labelArg || accounts.emailLabel(j.email) || '';
+    let dupe;
+    // A re-login of the identity the carried label already names renews that label only — an
+    // earlier sibling of the same Claude account is never the renewal's target. Only a switch to
+    // another identity hops to the sibling label that names it.
+    if (carried && !accounts.sameAccount(idx[carried], j)) {
+      // A switch to another identity revives a label of that identity only when it is free and signed
+      // out; any other label holds a usable sign-in that must survive, so the new one gets a fresh label.
+      dupe = Object.keys(idx).find((l) => accounts.sameAccount(idx[l], j) && !idx[l].leasedBy?.name && idx[l].needsSignIn);
+      if (dupe) label = dupe;
+      else {
+        const base = accounts.emailLabel(j.email);
+        label = base && !idx[base] ? base : '';
+        for (let i = 2; base && !label; i++) if (!idx[`${base}-${i}`]) label = `${base}-${i}`;
+      }
+    } else if (!carried) {
+      // One label = one sign-in: a fresh sign-in of a known identity revives a free signed-out label,
+      // else it is saved under a new label for the same identity (<email>-2, -3, ...).
+      const same = Object.keys(idx).filter((l) => accounts.sameAccount(idx[l], j));
+      const stale = [labelArg, ...same].find((l) => l && same.includes(l) && !idx[l].leasedBy?.name && idx[l].needsSignIn);
+      // An explicit --account that names a leased label stands as requested so the lease guard
+      // below refuses it — a generated sibling must never stand in for a leased request.
+      if (stale) label = stale;
+      else if (same.length && !(labelArg && (!idx[labelArg] || !same.includes(labelArg) || idx[labelArg].leasedBy?.name))) {
+        const base = accounts.emailLabel(j.email);
+        const taken = new Set(accounts.listAccounts(dir).map((a) => a.label));
+        label = base ? '' : accounts.nextAccountLabel(dir);
+        for (let i = 2; base && !label; i++) if (!taken.has(`${base}-${i}`)) label = `${base}-${i}`;
+      }
+    }
+    label ||= accounts.nextAccountLabel(dir);
+    // The lease this machine holds on the carried label, re-read under the lock: when the sign-in
+    // lands under a different label the lease moves with the live credential.
+    const ours = mid && carried && idx[carried]?.leasedBy?.machineId === mid ? idx[carried].leasedBy : null;
+    const holder = idx[label]?.leasedBy;
+    if (holder?.name && holder.machineId !== mid) {
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
+      if (dupe || accounts.sameAccount(idx[label], j)) { c.out(`This Claude account is already saved as ${label} and used by coordinator ${holder.name} — the sign-in was not saved under a second label.`); return ''; }
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} is used by coordinator ${holder.name} — a saved account serves one coordinator at a time.`, 'login', `Account ${labelArg} is in use by ${holder.name}.`);
+      // A derived label another coordinator's lease already holds falls back to a fresh account-N.
+      label = accounts.nextAccountLabel(dir);
+    } else if (idx[label] && !accounts.sameAccount(idx[label], j)) {
+      // The label already names a DIFFERENT Claude identity — its saved credential is never
+      // overwritten (a label collision by sanitised email, or a stolen --account). Explicit
+      // --account refuses; a derived label falls back to a fresh account-N.
+      if (labelArg && label === labelArg) usageError(`Account ${labelArg} already names a different Claude account (${idx[label].email || idx[label].accountUuid}) — its saved credential is never overwritten. Pick another label.`, 'login', `Account ${labelArg} names a different Claude account.`);
+      label = accounts.nextAccountLabel(dir);
+    }
+    accounts.saveAccount(dir, label, { email: typeof j.email === 'string' ? j.email : undefined, accountUuid: typeof j.accountUuid === 'string' ? j.accountUuid : undefined, credText: got.text, now: c.now() });
+    // The lease this machine already holds was the save's slot and stays as it is. A replacement
+    // sign-in saved under a different label keeps that lease: it travels with the live credential
+    // to the saved label, and the old label is unbound in the same locked step — its saved
+    // credential stays (the lease a machine holds always covers the identity it is actually
+    // running; a saved sign-in never sits unleased while it is live on that machine). A fresh save
+    // is leased to this coordinator (name, machine id, provider, deleteAt — the record start
+    // writes).
+    if (mid && ours && label !== carried) {
+      accounts.lease(dir, label, ours, c.now());
+      accounts.release(dir, carried, { machineId: mid });
+    } else if (mid && !(holder?.name && holder.machineId === mid)) {
+      const deleteAt = m?.deleteAt && Number.isFinite(new Date(m.deleteAt).getTime()) ? new Date(m.deleteAt).toISOString() : undefined;
+      accounts.lease(dir, label, { name: m?.labels?.name || name, machineId: mid, provider: m?.provider ?? c.primary.name, deleteAt }, c.now());
+    }
+    return label;
+  });
+  if (saved) accounts.ensureWatcher(c.env, c.spawnWatcher); // a live lease starts the sync watcher now
+  return saved;
+};
+
+// What a coordinator's screen means for the account it uses: a usage-limit line marks the account
+// limitedUntil so the next start picks another (a running coordinator's account never switches); a
+// sign-in state means the delivered sign-in may have died — needsSignIn is persisted only when the
+// machine's own `claude auth status` confirms signed out, never on pane text alone; a healthy
+// running one syncs its credential back.
+const accountFromScreen = async (c, m, st) => {
+  let label = '';
+  try { label = ownAccount(c, m); } catch { return; } // a damaged index never blocks the listing
+  if (!label || !st?.read) return;
+  try {
+    const dir = accounts.accountsDir(c.env);
+    if (st.blocked && accounts.LIMIT_LINE.test(st.blocked)) { accounts.markLimited(dir, label, accounts.limitUntil(st.blocked, c.now())); return; }
+    const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
+    if (st.signin) {
+      const j = await authStatus(sbx);
+      if (j?.loggedIn === true) await accounts.syncBack(dir, sbx, label, c.now(), machineLease(c, m)?.leasedBy);
+      else if (j) accounts.markNeedsSignIn(dir, label); // auth status confirmed the sign-in died
+      return; // an unparseable status confirms nothing — the account is left as it is
+    }
+    await accounts.syncBack(dir, sbx, label, c.now(), machineLease(c, m)?.leasedBy);
+  } catch { /* a failed check loses only the newest credential copy */ }
+};
+
+// Returns a predicate: has the lease's machine id vanished even from an UNFILTERED listing of its
+// provider? The role-filtered coordinator listing misses a machine whose labels merely changed, so
+// absence from it alone never frees an account. The unfiltered listing is fetched once per pass,
+// lazily; a failed fetch or a failed provider slice is inconclusive — the lease stays.
+const goneChecker = (c) => {
+  let check;
+  return async (l) => {
+    check ??= (async () => {
+      const errs = [];
+      const rows = await c.provider.list({}, { sdk: true, onError: (e) => errs.push(e) }).catch(() => null);
+      return { rows, errs };
+    })();
+    const { rows, errs } = await check;
+    if (!rows || errs.some((e) => !e.provider || e.provider === l.provider)) return false;
+    return !rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
+  };
+};
+
+// A lease outlives its machine by nothing: when a COMPLETE listing of the lease's own provider no
+// longer shows the machine that holds it, the lease is released — conditionally, so a lease that
+// moved to another machine since `leased` was read is kept. `leased` must be the pre-listing
+// snapshot: a lease created after it is never touched here. providerErrors mean the inventory is
+// partial — never release on a failed listing (the same incomplete-inventory rule uniqueCoordinator
+// applies), and a lease whose provider is not configured was never listed at all. A released
+// account whose newest credential died with the machine is uncertain: it is marked needsSignIn
+// before it goes back on offer — unless the saved credential was already verified current while
+// the machine lived (`verifiedAt` — a finished sign-in or a successful sync). A start reservation that never got a machine expires by age — and
+// only the still-unbound reservation carrying exactly that resId, never one bound or re-reserved
+// while the listing was in flight.
+const releaseStaleLeases = async (c, rows, leased) => {
+  const errors = rows.providerErrors ?? [];
+  const dir = accounts.accountsDir(c.env);
+  const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
+  const gone = goneChecker(c);
+  for (const a of leased) {
+    const l = a.leasedBy;
+    if (l.pending && !l.machineId) {
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS) accounts.release(dir, a.label, { pending: true, resId: l.resId });
+      continue;
+    }
+    if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) continue;
+    const alive = rows.some((m) => (m.provider ?? c.primary.name) === l.provider && m.id === l.machineId);
+    if (!alive && await gone(l) && accounts.release(dir, a.label, { machineId: l.machineId }) && !l.pending && !a.verifiedAt) accounts.markNeedsSignIn(dir, a.label);
+  }
+};
+
+// `accounts sync` and the watcher's pass: copy each leased account's newest credential back from the
+// machine holding it, and release leases whose machine a complete listing no longer shows. One
+// report line per account; errors fold into their line, never abort the pass.
+const syncAccounts = async (c) => {
+  const dir = accounts.accountsDir(c.env);
+  const leased = accounts.leasedAccounts(dir);
+  if (!leased.length) return ['No leased accounts.'];
+  const rows = await find(c.provider, 'coordinator');
+  const errors = rows.providerErrors ?? [];
+  const queried = new Set((c.provider.providers ?? [c.primary ?? c.provider]).map((p) => p.name));
+  const lines = [];
+  const gone = goneChecker(c);
+  for (const a of leased) {
+    const l = a.leasedBy;
+    if (l.pending && !l.machineId) {
+      if (c.now() - (a.leasedAt ?? 0) > accounts.PENDING_LEASE_MS && accounts.release(dir, a.label, { pending: true, resId: l.resId })) lines.push(`${a.label}: the reservation for ${l.name} expired — released.`);
+      else lines.push(`${a.label}: the reservation for ${l.name} is still starting; left alone.`);
+      continue;
+    }
+    if (!queried.has(l.provider) || errors.some((e) => !e.provider || e.provider === l.provider)) { lines.push(`${a.label}: ${l.provider} could not be listed; left alone.`); continue; }
+    const m = rows.find((x) => (x.provider ?? c.primary.name) === l.provider && x.id === l.machineId);
+    if (!m) {
+      if (!(await gone(l))) lines.push(`${a.label}: ${l.name} is missing only from the filtered listing; left alone.`);
+      else if (accounts.release(dir, a.label, { machineId: l.machineId })) { if (!l.pending && !a.verifiedAt) accounts.markNeedsSignIn(dir, a.label); lines.push(`${a.label}: coordinator ${l.name} is gone — the lease was released.`); }
+      else lines.push(`${a.label}: the lease moved to another machine; left alone.`);
+      continue;
+    }
+    if (l.pending) { lines.push(`${a.label}: the reservation for ${l.name} is not delivered yet; left alone.`); continue; }
+    if (m.labels?.install !== installId(c.env)) { lines.push(`${a.label}: ${l.name} is not this installation's; left alone.`); continue; }
+    if (m.state !== 'running') { lines.push(`${a.label}: ${l.name} is ${safeText(m.state) || 'not running'}; left alone.`); continue; }
+    try {
+      const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
+      const r = await accounts.syncBack(dir, sbx, a.label, c.now(), l);
+      lines.push(`${a.label}: ${r === 'synced' ? 'synced a newer credential.' : r === 'current' ? 'already current.' : r === 'moved' ? 'the account moved or the sign-in changed; left alone.' : 'could not read the credential.'}`);
+    } catch (e) { lines.push(`${a.label}: could not read the machine (${safeText(e.message ?? e)}).`); }
+  }
+  return lines;
+};
+
+// `accounts sync --watch`: the detached process a delivery launches once a lease exists. One
+// instance at a time (an exclusive pid file; a second one exits at once); syncs every 30 minutes
+// and once more about 10 minutes before the earliest machine deletion; exits when no leased
+// coordinator remains — the next cloudy-cloud command resumes it. A failed pass is retried with
+// backoff (1m, 2m, 4m … capped at the normal cadence) instead of exiting.
+const watchAccounts = async (c) => {
+  const dir = accounts.accountsDir(c.env);
+  if (!accounts.acquireWatcher(dir)) return;
+  let failures = 0;
+  try {
+    for (;;) {
+      if (!accounts.leasedAccounts(dir).length) return;
+      let failed = false;
+      try { for (const line of await syncAccounts(c)) c.note(`accounts sync: ${line}`); failures = 0; }
+      catch (e) { failed = true; c.note(`accounts sync: a pass failed (${safeText(e.message ?? e)}); retrying.`); }
+      const leased = accounts.leasedAccounts(dir);
+      if (!leased.length) return;
+      const wake = failed ? Math.min(accounts.SYNC_EVERY_MS, 60_000 * 2 ** failures++)
+        : Math.min(accounts.SYNC_EVERY_MS, ...leased.map((a) => Math.max(0, (a.leasedBy.deleteAt ? new Date(a.leasedBy.deleteAt).getTime() : Infinity) - accounts.BEFORE_DELETE_MS - c.now())));
+      await c.sleep(Math.max(60_000, wake));
+    }
+  } finally { accounts.releaseWatcher(dir); }
+};
+
 const PENDING_KEY = 'CLOUDY_CLOUD_PENDING_SNAPSHOT'; // MACHINE_ID:SNAPSHOT_ID of a snapshot still being saved, so a later run waits on it instead of starting another
+const SKIPPED_KEYS = 'CLOUDY_CLOUD_SKIPPED_KEYS'; // comma list of skipped optional keys whose store instructions were already shown
 // Written with the pending record only after the image machine's credential was verified gone: a pending
 // record without it was started by an older cloudy-cloud and may still hold a sign-in.
 const PENDING_CLEAN_KEY = 'CLOUDY_CLOUD_PENDING_CLEAN';
@@ -253,40 +516,51 @@ const SNAPSHOT_CLEAN_KEY = 'CLOUDY_CLOUD_SNAPSHOT_CLEAN';
 const LEGACY_ACCOUNT_KEYS = ['CLOUDY_CLOUD_SNAPSHOT_ACCOUNT', 'CLOUDY_CLOUD_PENDING_ACCOUNT'];
 const SNAPSHOT_WAIT_MS = 30 * 60_000;
 const gone = (e) => e?.code === 'not_found' || e?.status === 404;
-// Known limit: two --save runs at the same moment can both start a snapshot; nothing serialises them.
+// Known limit: two image runs at the same moment can both start a snapshot; nothing serialises them.
 const readKey = (file, name) => { // throws on anything but a missing file, so a read error never looks like "no snapshot pending"
   try { return readFileSync(file, 'utf8').split('\n').findLast((l) => l.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; } catch (e) { if (e.code === 'ENOENT') return ''; throw e; }
 };
 
 // Waits for the snapshot, saves its id, deletes the image machine (sbx, when it still exists), then drops the pending entry.
-async function finishSave(c, sbx, snap) {
+// `pending` is the pending record THIS run owns (mid:sid): the snapshot id is written only while
+// that record still stands — an `image --forget` that ran during the wait cleared it, and a save
+// must never write the image back after a forget (nor drop another run's pending record).
+async function finishSave(c, sbx, snap, pending) {
   const t0 = c.now(); let shown = 0;
   while (snap.status === 'pending') {
     const waited = c.now() - t0;
-    if (waited >= SNAPSHOT_WAIT_MS) guided(`The snapshot is still saving. Run cloudy-cloud coordinator image --save later to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`, { short: 'The snapshot is still saving.', reason: `Snapshot ${snap.id}; the image machine was kept.`, next: 'cloudy-cloud coordinator image --save' });
+    if (waited >= SNAPSHOT_WAIT_MS) guided(`The snapshot is still saving. Run cloudy-cloud coordinator image again to finish; it will not start a second one. (Snapshot ${snap.id}; the image machine was kept.)`, { short: 'The snapshot is still saving.', reason: `Snapshot ${snap.id}; the image machine was kept.`, next: 'cloudy-cloud coordinator image' });
     await c.sleep(5000);
     const half = Math.floor((c.now() - t0) / 30_000); // progress every 30 s of wall-clock time
     if (half > shown) { shown = half; c.progress(`Saving the image snapshot... ${Math.floor(half / 2)} min`); }
     snap = await c.provider.getSnapshot(snap.id);
   }
-  if (snap.status && snap.status !== 'ready') { updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image --save' }); }
-  updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: '1' }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
+  const owned = () => pending === undefined || readKey(c.configFile, PENDING_KEY) === pending;
+  const dropPending = () => { if (pending !== undefined && owned()) updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY]); };
+  if (snap.status && snap.status !== 'ready') { dropPending(); guided(`Snapshot ${snap.id} has status ${snap.status}. The image machine was kept.`, { short: `Snapshot ${snap.id} has status ${snap.status}.`, reason: 'The image machine was kept.', next: 'cloudy-cloud coordinator image' }); }
+  // SNAPSHOT_CLEAN is exactly the saved snapshot id: a marker naming another snapshot proves nothing.
+  // `recorded` is decided BEFORE the pending record is dropped — dropping it is what flips owned().
+  const recorded = owned();
+  if (recorded) updateConfig(c.configFile, { [SNAPSHOT_KEY]: snap.id, [SNAPSHOT_CLEAN_KEY]: snap.id }, LEGACY_ACCOUNT_KEYS); // the pending entry stays until the machine is deleted, so a failed delete retries only the delete
   if (sbx) await sbx.kill();
-  updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+  dropPending();
+  updateConfig(c.configFile, {}, LEGACY_ACCOUNT_KEYS);
+  if (!recorded) return c.out(`Snapshot ${safeText(snap.id)} finished, but the saved-image record was cleared meanwhile (as by coordinator image --forget) — it was NOT saved as the image. The image machine was deleted.`);
   if (c.ui.term) return c.out([c.ui.ok(`Saved snapshot ${safeText(snap.id)}`, 'the image machine is deleted'),
     hintFit(c.ui, `Saved as ${SNAPSHOT_KEY} in ${tilde(c.configFile, c.env)}`),
-    c.ui.next('cloudy-cloud coordinator start NAME --repo URL')].join('\n'));
-  c.out(`Saved snapshot ${safeText(snap.id)} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nStart a coordinator with: cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
+    c.ui.next('cloudy-cloud cloud')].join('\n'));
+  c.out(`Saved snapshot ${safeText(snap.id)} as ${SNAPSHOT_KEY} in ${c.configFile} and deleted the image machine.\nNext: run cloudy-cloud cloud inside a repository, or cloudy-cloud coordinator start NAME --repo https://github.com/OWNER/REPO`);
 }
 
 // If an earlier run left a snapshot pending, finish that one (even when its machine is gone). Returns false when none is pending.
 async function resumePending(c) {
-  const [mid, sid] = readKey(c.configFile, PENDING_KEY).split(':');
+  const pending = readKey(c.configFile, PENDING_KEY);
+  const [mid, sid] = pending.split(':');
   if (!sid) return false;
-  // A pending record written without PENDING_CLEAN_KEY predates the credential check: that snapshot may still
-  // hold a sign-in, so it is never adopted as the image. The record is dropped but the snapshot and its
-  // machine are left alone (a shared workspace may still want the snapshot by hand).
-  if (readKey(c.configFile, PENDING_CLEAN_KEY) !== '1') {
+  // A pending record whose clean mark does not name THIS snapshot predates the credential check (or was
+  // tampered with): that snapshot may still hold a sign-in, so it is never adopted as the image. The
+  // record is dropped but the snapshot and its machine are left alone.
+  if (readKey(c.configFile, PENDING_CLEAN_KEY) !== sid) {
     updateConfig(c.configFile, {}, [PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
     guided(`The pending snapshot ${sid} was started by an older cloudy-cloud and may still contain a Claude sign-in, so it was not saved as the image (the snapshot and its machine were left alone).\nNext step: make a clean image with cloudy-cloud coordinator image`, { short: 'The pending snapshot may still contain a Claude sign-in.', reason: 'it was started by an older cloudy-cloud; the snapshot and its machine were left alone', next: 'cloudy-cloud coordinator image' });
   }
@@ -301,7 +575,7 @@ async function resumePending(c) {
   // The recorded machine id is only a claim: connect (and so finishSave's delete) happens only when a fresh
   // listing verifies it is still our image machine — purpose, role AND this installation's install label.
   // A machine that exists but no longer verifies stays untouched and the pending record is kept, so a later
-  // --save can finish it; only a machine that is really gone falls through to finishSave, which clears the
+  // image run can finish it; only a machine that is really gone falls through to finishSave, which clears the
   // record after saving the snapshot id.
   try {
     // Unfiltered: a role-filtered list would miss the machine entirely if its role label is what changed.
@@ -309,8 +583,8 @@ async function resumePending(c) {
     if (row && OUR_PURPOSES.has(row.labels?.purpose) && row.labels?.role === 'coordinator-image' && row.labels?.install === installId(c.env)) sbx = await providerFor(c.provider, row).connect(mid, { retry: false });
     else foreign = !!row;
   } catch (e) { if (!gone(e)) throw e; }
-  if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image --save again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
-  await finishSave(c, sbx, snap);
+  if (foreign) guided(`The pending image machine ${mid} still exists, but it could not be verified as ours (its purpose or role labels changed or are gone), so it was left alone and the pending snapshot record was kept.\nNext step: check the machine with cloudy-cloud machines; if it really is a leftover image machine of yours, delete it and run cloudy-cloud coordinator image again.`, { short: `The image machine ${mid} could not be verified as ours.`, reason: 'its labels no longer show it as ours; the machine and the pending record were kept', next: 'cloudy-cloud machines' });
+  await finishSave(c, sbx, snap, pending);
   return true;
 }
 
@@ -321,8 +595,11 @@ async function saveNew(c, sbx) {
   await sbx.commands.run('c="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"; rm -f "$c" && [ ! -e "$c" ]', { timeoutMs: 30_000 });
   c.progress('Saving the image snapshot. This can take 10 to 20 minutes.');
   const snap = await c.provider.snapshot(sbx, { name: `cloudy-cloud-coordinator-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`, description: 'cloudy-cloud coordinator image' });
-  if (snap.status === 'pending') updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}`, [PENDING_CLEAN_KEY]: '1' }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
-  return finishSave(c, sbx, snap);
+  // The pending record goes in even for an instantly-ready snapshot: it is what finishSave checks
+  // before writing the image key (an image --forget during the save must stop the write), and
+  // PENDING_CLEAN names exactly this snapshot — a mark for another id is never trusted.
+  updateConfig(c.configFile, { [PENDING_KEY]: `${sbx.id}:${snap.id}`, [PENDING_CLEAN_KEY]: snap.id }, ['CLOUDY_CLOUD_PENDING_ACCOUNT']);
+  return finishSave(c, sbx, snap, `${sbx.id}:${snap.id}`);
 }
 
 const STORE_NOTE = 'Stored a coordinator copy of your Instabox key as a proxy secret (machines see a placeholder).';
@@ -372,15 +649,21 @@ async function storeCoordinatorSecret(c) {
   return 'skip'; // the local list claims it and the remote could not be checked: keep the name
 }
 
-// Builds (or finishes) the coordinator image: install the tool, remove any Claude credential so no
+// Optional and normally unnecessary: start uses the base template. Builds (or finishes) the coordinator image: install the tool, remove any Claude credential so no
 // sign-in ever rides a snapshot, snapshot, delete the image machine. Each coordinator signs in for
 // itself at `start` — there is no sign-in here anymore. A leftover image machine (the provider stops
-// these 2 hours after creation) is snapshotted by `image --save` instead of starting another machine.
+// these 2 hours after creation) is reused by `image` instead of starting another machine.
 // Only an image machine of THIS installation is ever reused, wiped, snapshotted or deleted: the workspace
 // is shared, so a same-labelled machine of another installation — or one without an install label (made
 // before image machines carried one) — is left alone with a guided message naming it.
 async function image(c, args) {
   refuseEgress(c.env, 'image');
+  if (args.includes('--forget')) { // only the config keys; the snapshot itself is never deleted
+    // The pending record goes too: it is what lets a save still in flight write the snapshot back.
+    updateConfig(c.configFile, {}, [SNAPSHOT_KEY, SNAPSHOT_CLEAN_KEY, PENDING_KEY, PENDING_CLEAN_KEY, ...LEGACY_ACCOUNT_KEYS]);
+    return c.out('Forgot the saved coordinator image setting. The snapshot itself was not deleted; delete it with: npx instabox snapshot rm ID');
+  }
+  c.progress('Making the coordinator image takes about 20 minutes. It is safe to interrupt: run cloudy-cloud coordinator image again and it resumes.');
   const stored = await storeCoordinatorSecret(c); // repair the coordinator key on every path; a failed store is not silent
   if (await resumePending(c)) return storeNotice(c, stored);
   const mine = installId(c.env);
@@ -393,17 +676,11 @@ async function image(c, args) {
     const names = unlabeled.map((m) => safeText(mach(m) ?? m.id)).join(', ');
     guided(`An image machine (${names}) is still running, but it has no installation label — it may belong to another cloudy-cloud installation or predate labelling, so it was left alone.\nNext step: check it with cloudy-cloud machines; if it is a leftover of yours, delete it and run cloudy-cloud coordinator image again`, { short: 'An unlabeled image machine was left alone.', reason: `machine ${names} has no installation label`, next: 'cloudy-cloud machines' });
   }
-  if (args.includes('--save')) {
-    if (!img) guided('No image machine found. Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them. Run: cloudy-cloud coordinator image', { short: 'No image machine found.', reason: 'Image machines are deleted 2 hours after cloudy-cloud coordinator image creates them.', next: 'cloudy-cloud coordinator image', neutral: true });
-    const sbx = await providerFor(c.provider, img).connect(img.id, { retry: false });
-    const r = await saveNew(c, sbx);
-    storeNotice(c, stored);
-    return r;
-  }
   let sbx;
   if (img) {
     c.progress(`Using the image machine ${safeText(img.name)} you already started.`);
     sbx = await providerFor(c.provider, img).connect(img.id, { retry: false });
+    await installTool(sbx, c.root); // an earlier run may have stopped during the install
   } else {
     c.progress('Creating the image machine...');
     sbx = await c.provider.create({ image: TEMPLATE, labels: { purpose: 'cloudy-cloud', role: 'coordinator-image', install: mine }, ttlSeconds: IMAGE_SECONDS, neverSuspend: true, retry: false });
@@ -473,6 +750,8 @@ async function start(c, args) {
   if (branch && !/^[\w./-]+$/.test(branch)) usageError('--branch has characters that are not allowed.', 'start', '--branch has characters that are not allowed.');
   const model = flag(args, '--model');
   if (model !== undefined && !/^[A-Za-z0-9._:\[\]-]+$/.test(model)) usageError('--model has characters that are not allowed. Use a model name such as claude-opus-5-5 or an alias such as opus.', 'start', '--model has characters that are not allowed.', ['Use a model name such as claude-opus-5-5 or an alias such as opus.']);
+  const accountArg = flag(args, '--account');
+  if (accountArg !== undefined && !accounts.validLabel(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@- (list them with: cloudy-cloud accounts ls).', 'start', '--account takes a saved account label.');
   const taskFile = flag(args, '--task-file');
   const task = taskFile ? readFileSync(taskFile, 'utf8') : flag(args, '--task');
   if (task !== undefined) {
@@ -483,11 +762,13 @@ async function start(c, args) {
   const hours = flag(args, '--max-hours') === undefined ? maxHours : Number(flag(args, '--max-hours'));
   const seconds = Math.round(hours * 3600);
   if (!(seconds >= 60 && seconds <= maxHours * 3600)) usageError(`--max-hours must be a number up to ${maxHours} (${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours).`, 'start', `--max-hours must be a number up to ${maxHours}.`, [`${c.provider.name[0].toUpperCase()}${c.provider.name.slice(1)} deletes a machine after at most ${maxHours} hours.`]);
-  const snapshot = c.env[SNAPSHOT_KEY];
-  if (!snapshot) guided('No coordinator image yet. Run: cloudy-cloud coordinator image', { short: 'No coordinator image yet.', reason: 'Coordinators start from a saved image; each signs in to Claude at start.', next: 'cloudy-cloud coordinator image', neutral: true });
-  // An image saved before the credential check shipped still holds a Claude sign-in — one warning line (stderr),
-  // never a stop: launch.sh still removes its copy on each coordinator's first launch.
-  if (!c.env[SNAPSHOT_CLEAN_KEY]) c.note('Your coordinator image was saved by an older cloudy-cloud and still contains a Claude sign-in. Make a clean one with: cloudy-cloud coordinator image');
+  // Coordinators start from the base template unless a clean saved image is configured. An image saved before
+  // the credential check still holds a Claude sign-in, so it is ignored (one note, never a stop).
+  let snapshot = c.env[SNAPSHOT_KEY] || TEMPLATE;
+  if (c.env[SNAPSHOT_KEY] && c.env[SNAPSHOT_CLEAN_KEY] !== c.env[SNAPSHOT_KEY]) {
+    snapshot = TEMPLATE;
+    c.note('Your saved coordinator image holds a Claude sign-in and is no longer needed; coordinators now start from the base template. Remove the image setting with: cloudy-cloud coordinator image --forget');
+  }
   // The duplicate check lists by name on the primary provider only (find's role-only scan is for selector
   // lookups); its errors go through the same incomplete-inventory check before a start proceeds.
   const providerErrors = [];
@@ -526,25 +807,74 @@ async function start(c, args) {
     throw Object.assign(new Error(`${k} is set as a real value, not as a proxy secret.\nWhat happened: ${g.whatHappened}\nLikely cause: ${g.likelyCause}\nNext step: ${g.nextStep}`), { local: true, code: 'key_on_machine_refused', short: `${k} is set as a real value, not as a proxy secret.`, reason: g.whatHappened, next: g.nextStep.replace(/^Run `?/, '').replaceAll('`', '') });
   }
   // An optional key that is not stored as a proxy secret is not sent (never as a value); say so, with the command to store it.
+  // ANTHROPIC_API_KEY is skipped on purpose — the session unsets it itself (env -u in the tmux command) — so a
+  // terminal never warns about it. The piped line and --json fields still name every skipped key, for scripts.
+  const warnSkipped = keys.skipped.filter((k) => k !== 'ANTHROPIC_API_KEY');
   const custom = keys.skipped.filter((k) => !SECRET_HOSTS[k]);
   const skipNote = keys.skipped.length ? `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}. Store them with \`cloudy-cloud setup --more\`${custom.length ? '. For a custom key: ' + custom.map((k) => guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep).join(' ') : ''}` : '';
+  // On a terminal the full instructions print once per key set (recorded in the config); a set it already
+  // knows gets one line instead. The full text still goes out every time in piped and --json output.
+  const shownSkipped = new Set(readKey(c.configFile, SKIPPED_KEYS).split(/[\s,]+/).filter(Boolean));
+  const newSkipped = warnSkipped.filter((k) => !shownSkipped.has(k));
   // --env FILE variables (and the CLOUDY_CLOUD_ENV_FILES list): a variable whose name is already in
   // CLOUDY_CLOUD_PROXY_SECRETS attaches by name like any other proxy secret; the summary names names only.
   const envFiles = envFileArgs(args, c.env);
   const bridged = envFiles.length ? await bridgeEnv(c, envFiles, repo) : { secrets: [], literal: [], values: [], skipped: [], summary: [], text: '' };
   for (const line of bridged.summary) c.note(`Environment: ${line}`);
+  // A saved account starts this coordinator already signed in: --account names one, else the free
+  // account used least recently is picked. A leased label is refused naming the coordinator that
+  // holds it; when every saved account is leased, limited or stale, start falls back to the browser
+  // sign-in (which then saves as another account).
+  const accDir = accounts.accountsDir(c.env);
+  let useAccount = '', resId;
+  // Selection and reservation are ONE locked step before the machine exists, so a second start can
+  // never pick the same account. The lease is written pending: it is not eligible for sync until the
+  // credential is delivered (a watcher cannot overwrite the saved file with the image's credential).
+  // The reservation carries a unique resId — an expiry or a failed create's release touches only
+  // THIS reservation, never a lease that bound or a newer reservation of the same label.
+  accounts.withLock(accDir, () => {
+    if (accountArg) {
+      const entry = accounts.readIndex(accDir)[accountArg];
+      if (!entry || !existsSync(accounts.credFile(accDir, accountArg))) guided(`There is no saved account ${accountArg}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
+      if (entry.leasedBy?.name) guided(`Account ${accountArg} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: pick another with cloudy-cloud accounts ls, or stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${accountArg} is in use by ${entry.leasedBy.name}.`, next: 'cloudy-cloud accounts ls' });
+      if (entry.needsSignIn) guided(`Account ${accountArg} needs a fresh sign-in — its saved credential may be dead, so it is not delivered.\nNext step: sign it in again with cloudy-cloud coordinator login NAME --account ${accountArg} (on a coordinator already leasing it), or pick another account: cloudy-cloud accounts ls`, { short: `Account ${accountArg} needs a fresh sign-in.`, next: 'cloudy-cloud accounts ls' });
+      useAccount = accountArg;
+    } else useAccount = accounts.freeAccounts(accDir, c.now())[0]?.label ?? '';
+    if (useAccount) { resId = randomUUID(); accounts.lease(accDir, useAccount, { name, pending: true, resId }, c.now()); }
+  });
   c.progress('Creating the coordinator machine...');
   // The repo and branch labels are what `cloud` reattach checks against later; repo is the owner/repo path.
   // The install label is this installation's stable id (the same one boat/E2B workers carry): it is what
-  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name.
+  // keeps `cloud` and `coordinator attach` off a teammate's coordinator of the same name. The account a
+  // coordinator uses never rides machine metadata — machine labels are visible to the whole workspace and
+  // the account label is derived from a sign-in email; the local index lease is the only record of it.
   const t0 = Date.now(); // the create timestamp, for the deadline fallback below
-  const sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  let sbx;
+  try {
+    sbx = await c.provider.create({ image: snapshot, name: `coord-${name}`, ...((keys.secrets.length + bridged.secrets.length) && { secrets: [...keys.secrets, ...bridged.secrets] }), labels: { purpose: 'cloudy-cloud', role: 'coordinator', name, repo: repoPath(repo), install: installId(c.env), ...(branch ? { branch } : {}) }, ttlSeconds: seconds, neverSuspend: true, retry: false });
+  } catch (e) {
+    // A create that never produced a machine frees this start's reservation at once — pinned by
+    // resId, so a concurrent start's reservation of the same label is never touched.
+    if (resId) accounts.release(accDir, useAccount, { resId });
+    throw e;
+  }
   // The deadline comes from the machine's own deletion time once the provider reports it — the consent
   // prompts above could otherwise eat into a deadline computed before them. Only the list row of THIS
   // machine counts (another coordinator's deadline is wrong), so the fallback is the requested ttl from
   // the timestamp taken just before create — never rows[0].
   const row = await find(c.provider, 'coordinator', name).then((rows) => rows.find((m) => m.id === sbx.id)).catch(() => null);
   const deleteAt = row?.deleteAt && Number.isFinite(new Date(row.deleteAt).getTime()) ? new Date(row.deleteAt).toISOString() : new Date(t0 + seconds * 1000).toISOString();
+  // One account serves one coordinator at a time: the pending reservation is bound to this machine's
+  // id (the lease generation) and delete deadline — the sync watcher wakes about 10 minutes before
+  // it — and released on stop or when a complete listing no longer shows the machine. If the
+  // reservation is no longer ours (it expired or moved), the credential is never delivered.
+  let leased = '';
+  if (useAccount && accounts.bindLease(accDir, useAccount, { name, machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name, deleteAt, pending: true }, c.now())) leased = useAccount;
+  if (useAccount && !leased) {
+    await sbx.kill().catch(() => {}); // the machine never got the credential
+    guided(`Account ${useAccount} was claimed by another coordinator while this machine was being created; the credential was not delivered and the machine was deleted.`, { short: `Account ${useAccount} could not be reserved.`, next: 'cloudy-cloud accounts ls' });
+  }
+  let delivered = false;
   try {
     c.progress('Connecting GitHub and installing tools (this can take a few minutes)...');
     const home = await installTool(sbx, c.root, c.note);
@@ -570,7 +900,9 @@ async function start(c, args) {
     for (const f of readdirSync(skillDir)) await sbx.files.write(`${home}/.claude/skills/cloud-fleet/${f}`, readFileSync(join(skillDir, f)));
     // The task text goes up as a file, never in a command string; the shell in tmux reads it when Claude starts.
     if (task !== undefined) await sbx.files.write(`${home}/task.md`, `${deadlineLine(deleteAt)}\n\n${task}`);
-    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : '';
+    // With peers but no task the hello still needs a first turn, so the session opens on a hello-only prompt.
+    const helloTask = task === undefined && peers.length ? HELLO_TASK : '';
+    const prompt = task !== undefined ? ` "$(cat ${q(`${home}/task.md`)})"` : (helloTask ? ` ${q(helloTask)}` : '');
     // The secrets stay attached to the machine (workers are attached by name), but this Claude must not see them:
     // a setup-token cannot start Remote Control and an env token beats a sign-in (code.claude.com/docs/en/remote-control).
     // CLOUDY_CLOUD_NAME makes the launcher pass --name to claude, so the other coordinators can message this
@@ -582,6 +914,17 @@ async function start(c, args) {
     // is not signed in, and execs the session command. The pane waits at the sign-in until a person finishes it.
     await sbx.files.write(`${dir}/launch.sh`, LAUNCH_SCRIPT);
     await sbx.commands.run(`chmod 700 ${q(`${dir}/launch.sh`)}`);
+    // A leased account's credential is delivered before the session starts: the file is created
+    // mode-600, its body travels the secret-file route (never a command string, never logged), and
+    // the .credentials-removed marker goes in first so launch.sh's one-time image-credential
+    // removal skips what was just delivered instead of deleting it. Only then does the lease become
+    // eligible for sync — and the sync watcher starts now, before any blocking attach.
+    if (leased) {
+      await accounts.deliverCredential(sbx, dir, accounts.readCredential(accDir, leased));
+      accounts.markDelivered(accDir, leased, sbx.id ?? sbx.sandboxId);
+      delivered = true;
+      accounts.ensureWatcher(c.env, c.spawnWatcher);
+    }
     await sbx.commands.run(`tmux kill-session -t claude 2>/dev/null; tmux new-session -d -s claude -c ~/repo ${q(`sh ${dir}/launch.sh ${q(`${bridged.text ? `set -a; . ${q(`${dir}/env.local`)}; set +a; ` : ''}env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLOUDY_CLOUD_COORDINATOR=1 CLOUDY_CLOUD_DELETE_AT=${deleteAt} CLOUDY_CLOUD_NAME=${name} CLOUDY_CLOUD_PEERS=${peers.join(',')} CLOUDY_CLOUD_REPO=${q(repoPath(repo))} CLOUDY_CLOUD_BRANCH=${q(branch ?? '')} "PATH=${home}/cloudy-cloud/bin:$PATH" ${home}/cloudy-cloud/bin/cloudy-cloud --remote-control ${q(name)}${model ? ` --model ${q(model)}` : ''}${prompt}`)}`)}`);
     // The deadline watchdog runs in its own tmux session so a Claude restart never stops it.
     await sbx.files.write(`${home}/watchdog.sh`, WATCHDOG_SCRIPT);
@@ -598,10 +941,12 @@ async function start(c, args) {
     // The task is typed into the session, so its own lines can be on screen; they are not errors. Configured values are
     // removed before the screen is classified or fitted into an error, same as for `ls`/`status`.
     const scrub = (text) => [...secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)), ...bridged.values].reduce((t, v) => t.split(v).join('[redacted]'), text);
-    const st = paneState(scrub(pane), task ?? '');
+    const st = paneState(scrub(pane), task ?? helloTask);
     const line = st.blocked;
     if (!line && st.waiting) waiting = st.waiting;
     if (line) {
+      // A usage-limit start on a leased account marks it limited so the next start picks another.
+      if (leased && accounts.LIMIT_LINE.test(line)) accounts.markLimited(accDir, leased, accounts.limitUntil(line, c.now()));
       // The code comes from the matched line, never from words in this message (classify would read "spend limit" as the cause).
       const [code, cause, next, nextCmd] = /invalid api key/i.test(line)
         ? ['coordinator_invalid_key', 'the session reports an invalid API key', `check the keys the image settings or your --env files send, then run cloudy-cloud coordinator start ${name} again`, `check the machine's Claude settings and your --env files, then start ${name} again`]
@@ -613,6 +958,13 @@ async function start(c, args) {
     // own login screen. That is normal — the machine stays; `coordinator login NAME` finishes the sign-in. The
     // Remote Control link is read only once it is signed in.
     needsLogin = !(await signedIn(sbx));
+    if (leased) {
+      // Signed-in-false right after delivery means the saved credential was already stale: the
+      // account is marked needsSignIn and the coordinator falls back to its browser sign-in.
+      if (needsLogin) accounts.markNeedsSignIn(accDir, leased);
+      // A first renewal can already have rotated the token on the machine — sync the newest back.
+      else await accounts.syncBack(accDir, sbx, leased, c.now(), { machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name }).catch(() => {});
+    }
     if (needsLogin) {
       // A sign-in URL is read back only while `claude auth login` is actually running (the login-active
       // marker): an unrelated claude.ai link left on the pane must never reach the user as a sign-in link.
@@ -620,7 +972,7 @@ async function start(c, args) {
       // The sign-in URL can take a few seconds to appear on the pane; look again briefly, never longer.
       for (let i = 0; i < 3 && !loginUrl && screenRead; i++) {
         await c.sleep(3000);
-        try { if (await loginActive(sbx)) loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '').loginUrl; } catch { break; }
+        try { if (await loginActive(sbx)) loginUrl = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? helloTask).loginUrl; } catch { break; }
       }
     } else if (screenRead && !waiting) {
       // Remote Control can take a few seconds to connect: look again briefly, and stop if a prompt appears. A missing link never fails start.
@@ -628,20 +980,33 @@ async function start(c, args) {
       for (let i = 0; i < 3 && !link && !waiting; i++) {
         await c.sleep(3000);
         try {
-          const again = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? '');
+          const again = paneState(scrub((await sbx.commands.run('tmux capture-pane -t claude -p -J')).stdout ?? ''), task ?? helloTask);
           waiting = again.waiting || again.blocked || '';
         } catch { break; }
         if (!waiting) link = await readLink(sbx);
       }
     }
-  } catch (e) { e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values]; await sbx.kill().catch(() => {}); throw e; }
+  } catch (e) {
+    e.scrubValues = [...(e.scrubValues ?? []), ...bridged.values];
+    // The newest credential may already be on the machine: copy it back unless that read fails, in
+    // which case the account is uncertain and marked needsSignIn. The lease is released only when
+    // the machine's deletion is confirmed — while it may live, the lease stays with it.
+    let failedRead = false;
+    if (leased && delivered) failedRead = (await accounts.syncBack(accDir, sbx, leased, c.now(), { machineId: sbx.id ?? sbx.sandboxId, provider: c.primary.name }).catch(() => 'failed')) === 'failed';
+    const killed = await sbx.kill().then(() => true).catch(() => false);
+    if (leased && killed) {
+      if (failedRead) accounts.markNeedsSignIn(accDir, leased);
+      accounts.release(accDir, leased, { machineId: sbx.id ?? sbx.sandboxId });
+    }
+    throw e;
+  }
   const machine = await nameOf(sbx);
   const shownMachine = safeText(machine ?? ''); // the server-reported name is display data
   // Printed commands need a selector that resolves: with more than one provider configured a bare name can
   // be ambiguous, so they carry the primary provider prefix; one provider keeps the bare name as before.
   const sel = (c.provider.providers?.length ?? 1) > 1 ? `${c.primary.name}:${name}` : name;
   if (!args.includes('--json') && skipNote && !c.ui.term) c.out(skipNote); // a terminal shows it below the success line
-  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx }; }
+  if (args.includes('--json')) { c.out(JSON.stringify({ name, machine: shownMachine, remoteControlName: name, attach: `cloudy-cloud coordinator attach ${name}`, started: true, ...(leased && { account: leased }), ...(needsLogin ? { needsLogin: true, ...(loginUrl && { loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(link && { remoteControlUrl: link }), ...(skipNote && { skippedKeys: keys.skipped, note: skipNote }), ...(waiting && { waiting }), ...(!screenRead && { screenRead: false }) })); storeNotice(c, stored, { json: true }); return { needsLogin, loginUrl, sbx, account: leased, deleteAt }; }
   const needsLook = !screenRead || !!waiting; // only then can the first-run prompts be what blocks it
   if (c.ui.term) {
     const u = c.ui;
@@ -659,34 +1024,38 @@ async function start(c, args) {
     const reach = (rows) => u.block('Reach it', rows);
     const full = (v) => reach(needsLogin
       ? [['Sign in', `cloudy-cloud coordinator login ${sel}`], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]
-      : [['Remote Control', v], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
+      : [...(leased ? [['Claude account', leased]] : []), ['Remote Control', v], ['Terminal', `cloudy-cloud coordinator attach ${name}`], ['Stop', `cloudy-cloud coordinator stop ${name}`]]);
     const fits = (t) => t.split('\n').every((l) => cellWidth(l) <= u.width);
     const base = fits(full(rc)) ? full(rc)
-      : [reach(needsLogin ? [['Sign in', `cloudy-cloud coordinator login ${sel}`]] : [['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
+      : [reach(needsLogin ? [['Sign in', `cloudy-cloud coordinator login ${sel}`]] : [...(leased ? [['Claude account', leased]] : []), ['Remote Control', rc]]), `    cloudy-cloud coordinator attach ${name}`, `    cloudy-cloud coordinator stop ${name}`].join('\n');
     // The URL goes in the block row when it fits; otherwise on its own line below, whole.
     const linkRow = !needsLogin && link && fits(full(link));
     const block = linkRow ? full(link) : base;
     // The warning wraps whole words: a key name is never cut, and a custom key keeps its host-specific instructions.
-    const skipBlock = !skipNote ? [] : [
-      ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${keys.skipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
-      ...(custom.length < keys.skipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
-      ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
-    ];
+    // The full block prints once per key set; a set the config already recorded gets one short line instead.
+    const skipBlock = !warnSkipped.length ? [] : !newSkipped.length
+      ? [u.warn(`${warnSkipped.length} local key${warnSkipped.length === 1 ? ' was' : 's were'} not sent to the coordinator; see cloudy-cloud setup --more`)]
+      : [
+        ...wrapText(u, `Not sent to the coordinator (not stored as proxy secrets): ${warnSkipped.join(', ')}`).map((l, i) => (i ? `    ${u.dim(l)}` : u.warn(l))),
+        ...(custom.length < warnSkipped.length ? [u.hint('Store them with `cloudy-cloud setup --more`.')] : []),
+        ...custom.flatMap((k) => wrapText(u, `For ${k}: ${guideObj('key_on_machine_refused', { secret: k, host: customHost(c.env, k) }).nextStep}`).map((l) => `    ${u.dim(l)}`)),
+      ];
+    if (newSkipped.length) updateConfig(c.configFile, { [SKIPPED_KEYS]: [...shownSkipped, ...newSkipped].join(',') });
     c.out([okLine, ...warn, ...skipBlock, '', block, ...(loginUrl ? linkLines(u, loginUrl, 'Sign-in link') : []), ...(link && !linkRow ? linkLines(u, link) : []), ...(link ? qrLines(u, link) : []),
       ...(!link && !needsLogin ? [cmdFit(u, 'Link not ready yet. Get it with:', `cloudy-cloud coordinator status ${name}`)] : []),
       ...(stored === 'stored' ? [u.hint(STORE_NOTE)] : []),
       ...(needsLook || needsLogin ? ['', nextFit(u, needsLogin ? `cloudy-cloud coordinator login ${sel}` : `cloudy-cloud coordinator attach ${name}`)] : [])].join('\n'));
-    return { needsLogin, loginUrl, sbx }; // `cloud` attaches to — and health-checks — this same machine
+    return { needsLogin, loginUrl, sbx, account: leased, deleteAt }; // `cloud` attaches to — and health-checks — this same machine
   }
   c.out((!screenRead ? `Could not read the session screen to check it started.\nLook with: cloudy-cloud coordinator attach ${name}\n\n` : needsLogin ? 'The coordinator is waiting for its Claude sign-in (each coordinator has its own).\n\n' : waiting ? `The session is waiting on a prompt: ${waiting}\nRun: cloudy-cloud coordinator attach ${name}, then accept the prompt.\n\n` : '') + `Coordinator ${name} is running on machine ${shownMachine}${task !== undefined ? (needsLogin ? ' and starts on the task once it is signed in' : ' and has started on the task') : ''}. It never pauses. The server deletes it at ${deleteAt}.\n\n` +
     (needsLogin ? `Sign in to Claude on it:\n  cloudy-cloud coordinator login ${sel}${loginUrl ? `\n  Sign-in link: ${loginUrl}` : ''}\n\n`
-      : `Reach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n  - Terminal: cloudy-cloud coordinator attach ${name}\n\n`) +
+      : `${leased ? `Signed in with saved account ${leased}.\n` : ''}Reach it:\n  - Remote Control: ${link || `open claude.ai/code or the Claude app and pick the session named "${name}" (the link is not ready yet; get it with: cloudy-cloud coordinator status ${name})`}\n  - Terminal: cloudy-cloud coordinator attach ${name}\n\n`) +
     `${needsLook ? 'Attach once and accept any trust or Remote Control prompts.\n' : ''}Stop it earlier with: cloudy-cloud coordinator stop ${name}`);
   storeNotice(c, stored); // piped stdout keeps only the result; the notice is on stderr
-  return { needsLogin, loginUrl, sbx };
+  return { needsLogin, loginUrl, sbx, account: leased, deleteAt };
 }
 
-async function attach(c, args, { noAttach = false, machine = null } = {}) {
+async function attach(c, args, { noAttach = false, machine = null, labelArg = '' } = {}) {
   // `cloud` passes the machine it already validated (`machine`): a same-named machine created after the
   // lookup is not what this attach reaches. Without it the default lookup by name stands.
   const m = machine ?? uniqueCoordinator(await find(c.provider, 'coordinator', args[0] || usageError('Usage: cloudy-cloud coordinator attach NAME', 'attach', 'attach needs a coordinator name.')), args[0]);
@@ -702,7 +1071,14 @@ async function attach(c, args, { noAttach = false, machine = null } = {}) {
     // doctor checks self-hosted boxes only; everywhere else the fix is the missing provider CLI itself.
     if (r?.error) guided(selected.name === 'self-hosted' ? `Could not start ${argv[0]} (${r.error.message}). Install it or run: cloudy-cloud doctor` : `Could not start ${argv[0]} (${r.error.message}). Install ${argv[0]} first.`,
       selected.name === 'self-hosted' ? { short: `Could not start ${argv[0]} (${r.error.message}).`, reason: 'Install it first, or:', next: 'cloudy-cloud doctor' } : { short: `Could not start ${argv[0]} (${r.error.message}).`, next: `install ${argv[0]}, then attach again` });
-    return r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
+    const code = r?.status ?? (r?.signal ? 128 + (osConstants.signals[r.signal] ?? 0) : 1);
+    // After the attach returns, an install-labeled machine runs the same post-sign-in work `login`
+    // does — a new sign-in is saved, a leased account's newest credential syncs back, the link is
+    // reported. A legacy machine (no install label) only gets the silent credential sync.
+    if (m.labels?.install === installId(c.env)) return postAttach(c, args[0], () => selected.connect(m.id, { retry: false }), code, { machine: m, labelArg });
+    const accLabel = ownAccount(c, m);
+    if (accLabel) { try { const sbx = await selected.connect(m.id, { retry: false }); await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now(), machineLease(c, m)?.leasedBy); } catch { /* the newest copy is all a failed sync loses */ } }
+    return code;
   }
   if (c.ui.term) c.out(c.ui.hint('Run this to attach:'));
   c.out(`cloudy-cloud coordinator attach ${args[0]}`);
@@ -722,7 +1098,7 @@ const taskBrief = async (sbx) => {
 // an interactive attach): a session that exited, hit a spend or usage limit, or reports an invalid key is
 // reported plainly, with the stop command — the machine is NEVER deleted here, so reattaching or finishing
 // a sign-in can never destroy work. The only automatic deletion is start's own check on a brand-new machine.
-async function afterSignIn(c, sbx, name) {
+async function afterSignIn(c, sbx, name, m, j = null) {
   let pane = '';
   try { pane = (await sbx.commands.run('tmux capture-pane -t claude -p -J', { timeoutMs: 15_000 })).stdout ?? ''; }
   catch (e) {
@@ -731,24 +1107,56 @@ async function afterSignIn(c, sbx, name) {
   }
   const line = paneState(secretValues(c.env, c.provider.keyName, consentedLiterals(c.env)).reduce((t, v) => t.split(v).join('[redacted]'), pane), await taskBrief(sbx)).blocked;
   if (!line) return; // waiting on a prompt or still at the sign-in: the machine stays
+  // A usage-limit message on a leased account is recorded so the next start picks another; the
+  // running coordinator's own account never switches. The mark lands only on a lease whose saved
+  // identity the machine's own auth status confirms — a sign-in that switched accounts without
+  // being saved leaves the old label blameless (a status carrying no identity blocks nothing).
+  const accLabel = m && ownAccount(c, m);
+  if (accLabel && accounts.LIMIT_LINE.test(line)) {
+    const dir = accounts.accountsDir(c.env);
+    const confirmed = !(j?.loggedIn === true && (j.accountUuid || j.email)) || accounts.sameAccount(accounts.readIndex(dir)[accLabel], j);
+    if (confirmed) accounts.markLimited(dir, accLabel, accounts.limitUntil(line, c.now()));
+  }
   const [code, cause] = /invalid api key/i.test(line)
     ? ['coordinator_invalid_key', "the session reports an invalid API key; check the keys the image settings or your --env files send"]
     : ['spend_limit', 'the Claude account on the coordinator has hit its spend or usage limit; check the plan at claude.ai'];
   guided(`The coordinator session is not working after sign-in. Its screen shows: ${line}\nThe machine was kept — inspect it with cloudy-cloud coordinator attach ${name}.\nLikely cause: ${cause}.\nNext: cloudy-cloud coordinator stop ${name}.`, { code, short: 'The coordinator session is not working after sign-in.', reason: `${cause}; the machine was kept`, details: [`screen: ${fitCells(line, 40)}`], next: `cloudy-cloud coordinator stop ${name}` });
 }
 
-// After an interactive attach returns: the post-sign-in health check above, then the Remote Control link (and
-// QR, as `status` prints it) once the coordinator is signed in. `get` connects the machine the caller already
-// validated — never a second lookup by name; the attach exit status passes through.
-async function postAttach(c, name, get, code) {
+// After an interactive attach returns: the account work FIRST — a new sign-in is saved and leased,
+// or an already-saved account's newest credential syncs back silently — then the post-sign-in
+// health check, then the Remote Control link (and QR, as `status` prints it) once the coordinator
+// is signed in. The save runs before the health check so a usage-limit pane can never discard a
+// credential the machine is already running — it marks the saved account limitedUntil instead.
+// `get` connects the machine the caller already validated — never a second lookup by name; the
+// attach exit status passes through.
+async function postAttach(c, name, get, code, { machine = null, labelArg = '' } = {}) {
   try {
     const sbx = await get();
-    await afterSignIn(c, sbx, name);
-    if (await signedIn(sbx)) {
+    const j = await authStatus(sbx);
+    if (j?.loggedIn === true && j?.authMethod === 'claude.ai') {
+      const carried = ownAccount(c, machine);
+      const entry = carried && accounts.readIndex(accounts.accountsDir(c.env))[carried];
+      // Sync or save is chosen by the identity the machine reports, not only by the lease's stale
+      // flag: a lease whose saved account the auth status still confirms gets just its newest
+      // credential back, but a confirmed switch to another Claude account is saved under the label
+      // naming it (the lease travels with the live credential). A status that carries no identity
+      // cannot prove a switch — the lease's account stands.
+      if (carried && entry && !entry.needsSignIn && (!(j.accountUuid || j.email) || accounts.sameAccount(entry, j))) {
+        // The account was already saved: only its newest credential goes back to the laptop.
+        try { await accounts.syncBack(accounts.accountsDir(c.env), sbx, carried, c.now(), machineLease(c, machine)?.leasedBy); } catch { /* keep the attach report clean */ }
+      } else {
+        const label = await saveAccountFromMachine(c, sbx, machine, { labelArg, name });
+        if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
+      }
+      await afterSignIn(c, sbx, name, machine, j);
       const url = await readLink(sbx);
       if (url) { for (const l of linkLines(c.ui, url)) c.out(l); for (const l of qrLines(c.ui, url)) c.out(l); }
       else c.out(`Signed in. The Remote Control link is not ready yet; get it with: cloudy-cloud coordinator status ${name}`);
-    } else c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
+    } else {
+      await afterSignIn(c, sbx, name, machine);
+      c.out(`Not signed in yet — run: cloudy-cloud coordinator login ${name}`);
+    }
   } catch (e) { if (e?.local) throw e; c.out(`Check the session with: cloudy-cloud coordinator status ${name}`); }
   return code;
 }
@@ -760,6 +1168,8 @@ async function postAttach(c, name, get, code) {
 async function login(c, args) {
   const name = args[0];
   let code = flag(args, '--code');
+  const accountArg = flag(args, '--account');
+  if (accountArg !== undefined && !accounts.validLabel(accountArg)) usageError('--account takes a saved account label — lowercase letters, digits and ._@-.', 'login', '--account takes a saved account label.');
   if (code === '-') code = (await c.stdin()).split('\n')[0].trim();
   if (code !== undefined && !CODE_RE.test(code)) usageError('--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.', 'login', '--code takes 1 to 512 characters of letters, digits, #, _ and -, or - to read the code from stdin.');
   const m = uniqueCoordinator(await find(c.provider, 'coordinator', name), name);
@@ -783,9 +1193,11 @@ async function login(c, args) {
     // A terminal is required: signing in means seeing the pane (the URL and the code prompt live there).
     if (!c.tty) guided(`coordinator login opens the session on a terminal. For a non-interactive finish, pass the code the browser showed: cloudy-cloud coordinator login ${name} --code CODE`, { short: 'coordinator login needs a terminal.', reason: 'the sign-in lives in the session pane', next: `cloudy-cloud coordinator login ${name} --code CODE` });
     if (/Login expired|\/login/i.test(st.signin)) c.out('Type /login and sign in.');
-    const r = await attach(c, args, { machine: m });
-    // The person signs in inside the attach, then detaches: run the post-sign-in check and report the link.
-    return postAttach(c, name, async () => sbx, r);
+    const r = await attach(c, args, { machine: m, labelArg: accountArg });
+    // The person signs in inside the attach, then detaches: an install-labeled machine already ran
+    // the post-sign-in work inside attach; a legacy machine runs it here.
+    if (m.labels?.install === installId(c.env)) return r;
+    return postAttach(c, name, async () => sbx, r, { machine: m, labelArg: accountArg });
   }
   // The code reaches Claude only at a live sign-in prompt: `claude auth login` must be running on the machine
   // (launch.sh's login-active marker) AND the pane's last lines must be the code prompt — transcript text that
@@ -801,8 +1213,12 @@ async function login(c, args) {
   const t0 = c.now();
   while (c.now() - t0 < 60_000) {
     if (await signedIn(sbx)) {
-      // Signed in — run the post-sign-in health check, then report the Remote Control link.
-      await afterSignIn(c, sbx, name);
+      // Signed in — save the sign-in as an account FIRST, so the post-sign-in health check can
+      // never lose a credential the machine is already running: a usage-limit pane marks the saved
+      // account limitedUntil (afterSignIn does it) instead of discarding the sign-in.
+      const label = await saveAccountFromMachine(c, sbx, m, { labelArg: accountArg, name });
+      if (label) c.out(`Saved this sign-in as account ${label}; new coordinators reuse it.`);
+      await afterSignIn(c, sbx, name, m);
       const url = await readLink(sbx);
       return c.out(`Coordinator ${name} is signed in to Claude.${url ? `\nRemote Control: ${url}` : ''}`);
     }
@@ -814,7 +1230,7 @@ async function login(c, args) {
 // Reads a coordinator's screen once, read-only. waiting is the prompt line a person must answer ('' if none);
 // read is false when the screen could not be read (machine not running, network, no tmux session).
 async function screenOf(c, m, { withLink = false } = {}) {
-  const none = { read: false, waiting: '', signin: false, loginUrl: '', link: '' };
+  const none = { read: false, waiting: '', signin: false, loginUrl: '', link: '', blocked: '', stale: '' };
   if (m.state && m.state !== 'running') return none;
   // The sign-in URL is read back only for a coordinator this installation made AND only while `claude auth
   // login` is actually running there (the login-active marker): an unverified machine gets no loginUrl, and
@@ -831,7 +1247,8 @@ async function screenOf(c, m, { withLink = false } = {}) {
     const signin = !!st.signin;
     const loginUrl = own && signin && (await loginActive(sbx)) ? st.loginUrl : '';
     // No Remote Control link while the pane waits at the sign-in: there is no session to link to yet.
-    return { ...none, read: true, waiting: st.waiting || st.blocked, signin, loginUrl, link: withLink && !signin ? await readLink(sbx) : '' };
+    // blocked and stale ride along for the account bookkeeping (limitedUntil / needsSignIn marks).
+    return { ...none, read: true, waiting: st.waiting || st.blocked, signin, loginUrl, blocked: st.blocked ?? '', stale: st.stale ?? '', link: withLink && !signin ? await readLink(sbx) : '' };
   } catch { return none; }
 }
 const screenText = (r) => (!r.read ? 'screen not read' : r.signin ? 'waiting for Claude sign-in' : r.waiting ? `waiting on a prompt: ${r.waiting}` : '-');
@@ -840,12 +1257,15 @@ async function status(c, args) {
   const m = uniqueCoordinator(await find(c.provider, 'coordinator', args[0]), args[0]);
   if (!m) guided(`No coordinator named ${args[0]}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${args[0]}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
   const r = await screenOf(c, m, { withLink: true }), name = args[0], state = safeText(m.state ?? '') || 'unknown';
+  // The account the screen implies: limit → limitedUntil, dead sign-in → needsSignIn, healthy → sync back.
+  if (r.read) await accountFromScreen(c, m, r);
   const shown = safeText(mach(m) ?? '') || 'unknown'; // the server-reported name is display data
   const multiProvider = (c.provider.providers?.length ?? 1) > 1;
   const attach = `cloudy-cloud coordinator attach ${name}`;
   // The printed login command must resolve: with several providers configured it carries the row's provider.
   const sel = multiProvider ? `${m.provider ?? c.primary.name}:${name.slice(name.indexOf(':') + 1)}` : name;
-  if (args.includes('--json')) return c.out(JSON.stringify({ name, provider: m.provider ?? c.primary.name, machine: shown, state, screenRead: r.read, ...(r.signin ? { needsLogin: true, ...(r.loginUrl && { loginUrl: r.loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
+  const accLabel = ownAccount(c, m);
+  if (args.includes('--json')) return c.out(JSON.stringify({ name, provider: m.provider ?? c.primary.name, machine: shown, state, screenRead: r.read, ...(accLabel && { account: accLabel }), ...(r.signin ? { needsLogin: true, ...(r.loginUrl && { loginUrl: r.loginUrl }), next: `cloudy-cloud coordinator login ${sel}` } : {}), ...(r.waiting && { waiting: r.waiting }), ...(r.link && { remoteControlUrl: r.link }), attach }));
   if (c.ui.term) {
     const u = c.ui;
     const screen = !r.read ? 'not readable' : r.signin ? u.paint(u.col.warn, 'waiting for Claude sign-in') : r.waiting ? `waiting on a prompt: ${u.paint(u.col.warn, fitCells(r.waiting, Math.max(8, u.width - 35)))}` : 'no prompt waiting';
@@ -856,13 +1276,20 @@ async function status(c, args) {
 }
 
 async function ls(c) {
+  // The lease snapshot is taken BEFORE the listing: a lease created while the inventory is in
+  // flight is newer than it, so it is never a release candidate here.
+  let preLeases = [];
+  try { preLeases = accounts.leasedAccounts(accounts.accountsDir(c.env)); } catch { /* a damaged index must not break the listing — nothing is released on it */ }
   const rows = await find(c.provider, 'coordinator');
+  // A complete listing is also how stale leases die: a coordinator the listing no longer shows
+  // cannot still hold its account. providerErrors mean the inventory is partial — release nothing.
+  if (preLeases.length) await releaseStaleLeases(c, rows, preLeases);
   for (const e of rows.providerErrors ?? []) c.note(`cloudy-cloud coordinator: could not list ${e.provider}; that provider's coordinators are omitted.`);
   if (!rows.length) {
     if (!c.ui.term) return c.out('No coordinators.');
     // On a provider that cannot run coordinators there is no coordinator command to point at.
     if (c.provider.text?.coordinatorRefusal || !c.primary.caps?.hasSnapshots) return c.out('  No coordinators yet.');
-    return c.out(['  No coordinators yet.', c.ui.next(c.env[SNAPSHOT_KEY] ? 'cloudy-cloud coordinator start NAME --repo URL' : 'cloudy-cloud coordinator image')].join('\n'));
+    return c.out(['  No coordinators yet.', c.ui.next('cloudy-cloud cloud')].join('\n'));
   }
   // Names and states come from the server, so strip terminal control characters before printing them.
   const clean = (v) => safeText(v ?? '').replace(/\n/g, ' ');
@@ -873,7 +1300,7 @@ async function ls(c) {
   // One pane read per coordinator, at most a few at a time so a long list cannot flood the provider.
   const screens = new Array(rows.length), cap = Math.min(4, c.primary.caps?.maxConcurrentCalls || 4);
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(cap, rows.length) }, async () => { while (next < rows.length) { const i = next++; screens[i] = await screenOf(c, rows[i]); } }));
+  await Promise.all(Array.from({ length: Math.min(cap, rows.length) }, async () => { while (next < rows.length) { const i = next++; screens[i] = await screenOf(c, rows[i]); if (screens[i].read) await accountFromScreen(c, rows[i], screens[i]); } }));
   data.forEach((d, i) => { d.screen = data[i].state === 'running' ? screenText(screens[i]) : '-'; }); // only a running session has a screen to read
   if (c.ui.term) {
     const u = c.ui, color = { running: u.col.ok, creating: u.col.warn, suspended: u.col.warn, paused: u.col.warn };
@@ -922,9 +1349,25 @@ async function stop(c, args) {
   const name = args[0] || usageError('Usage: cloudy-cloud coordinator stop NAME', 'stop', 'stop needs a coordinator name.');
   const m = uniqueCoordinator(await find(c.provider, 'coordinator', name), name);
   if (!m) guided(`No coordinator named ${name}. List them with: cloudy-cloud coordinator ls`, { short: `No coordinator named ${name}.`, next: 'cloudy-cloud coordinator ls', neutral: true });
+  const accLabel = ownAccount(c, m);
+  // Before the machine goes, its newest credential comes back to the laptop. 'failed' — or no read
+  // at all — means the saved copy was never verified current: the machine carries the newer token
+  // away, so the account is marked needsSignIn before its lease is released.
+  let verified = false;
+  if (accLabel && m.state === 'running') {
+    try {
+      const sbx = await providerFor(c.provider, m).connect(m.id, { retry: false });
+      verified = (await accounts.syncBack(accounts.accountsDir(c.env), sbx, accLabel, c.now(), machineLease(c, m)?.leasedBy)) !== 'failed';
+    } catch (e) { c.note(`cloudy-cloud: could not sync the credential back to account ${accLabel} (${safeText(e.message ?? e)}); the newest token goes with the machine.`); }
+  }
   c.progress('Deleting the coordinator machine...');
   const selected = providerFor(c.provider, m);
   await selected.delete(m.id, { sdk: true });
+  if (accLabel) {
+    const dir = accounts.accountsDir(c.env);
+    if (!verified) accounts.markNeedsSignIn(dir, accLabel);
+    accounts.release(dir, accLabel, { machineId: m.id });
+  }
   // Both name our own command when the provider has one (listMachinesUi), so the provider stays behind cloudy-cloud.
   if (c.ui.term) return c.out([statusLine(c.ui, 'ok', `Deleted coordinator ${name}`, [`${(c.provider.providers?.length ?? 1) > 1 ? `${selected.name} ` : ''}machine ${safeText(mach(m))}`]),
     c.ui.hint('Its workers go with its cleanup or at their own deadline.'),
@@ -1018,9 +1461,54 @@ async function finish(c, args, deps) {
   c.out(`Verified: ${verified.join('; ')}.\nDeleted this machine (${safeText(mach(me))}).`);
 }
 
+// `cloudy-cloud accounts ls|rm|sync`: the saved Claude accounts coordinators reuse. `ls` and `rm`
+// touch only the laptop's saved files and index — the Claude account itself is never affected.
+async function accountsCmd(c, args) {
+  const dir = accounts.accountsDir(c.env);
+  const sub = args[0];
+  if (sub === 'ls') {
+    // A leased account whose coordinator no longer exists is freed here too — the same complete-
+    // inventory check `coordinator ls` runs, with the lease snapshot taken before the listing.
+    const pre = accounts.leasedAccounts(dir);
+    if (pre.length) await releaseStaleLeases(c, await find(c.provider, 'coordinator'), pre);
+    const now = c.now(), list = accounts.listAccounts(dir);
+    if (args.includes('--json')) return c.out(JSON.stringify(list.map((a) => accounts.accountRow(a, now, list))));
+    if (!list.length) return c.out('No saved accounts yet — a coordinator sign-in is saved as an account automatically.');
+    const rows = list.map((a) => accounts.accountRow(a, now, list));
+    return c.out(c.ui.table(['LABEL', 'EMAIL', 'STATE', 'LAST USED'], rows.map((r) => [r.label, r.email || '-', r.state, r.lastUsed])));
+  }
+  if (sub === 'rm') {
+    const label = args[1];
+    if (!accounts.validLabel(label ?? '')) guided(`Usage: cloudy-cloud accounts rm LABEL`, { short: 'accounts rm needs a saved account label.', details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]', 'List them with: cloudy-cloud accounts ls'], next: 'cloudy-cloud accounts ls' });
+    // The lease check, the file removal and the index update are one locked step — a lease granted
+    // mid-remove can never strand a delivered credential whose index row is already gone.
+    accounts.withLock(dir, () => {
+      const entry = accounts.readIndex(dir)[label];
+      if (!entry && !existsSync(accounts.credFile(dir, label))) guided(`There is no saved account ${label}. List them with: cloudy-cloud accounts ls`, { short: `No saved account ${label}.`, next: 'cloudy-cloud accounts ls', neutral: true });
+      if (entry?.leasedBy?.name) guided(`Account ${label} is used by coordinator ${entry.leasedBy.name} — a saved account serves one coordinator at a time.\nNext step: stop it with cloudy-cloud coordinator stop ${entry.leasedBy.name}`, { short: `Account ${label} is in use by ${entry.leasedBy.name}.`, next: `cloudy-cloud coordinator stop ${entry.leasedBy.name}` });
+      // The credential file plus leftover temp files of its writes go together. Only a missing file
+      // is ignored — any other unlink failure is reported, and the index entry stays while the
+      // credential file does (the account is still there).
+      const { gone, failed } = accounts.removeAccountFiles(dir, label);
+      if (!gone || failed.length) {
+        if (entry && gone) accounts.updateAccount(dir, label, () => null);
+        guided(`Could not remove every file of saved account ${label}: ${failed.map((p) => safeText(p)).join('; ')}.${gone ? ' Its index entry was removed anyway.' : ' The account is still saved.'}`, { short: `Could not remove every file of ${label}.`, next: `check the account files under ${tilde(dir, c.env)}, then run cloudy-cloud accounts rm ${label} again` });
+      }
+      if (entry) accounts.updateAccount(dir, label, () => null);
+    });
+    return c.out(`Removed saved account ${label}. The Claude account itself is unaffected — only this laptop's saved credential and lease record were deleted.`);
+  }
+  if (sub === 'sync') {
+    if (args.includes('--watch')) return watchAccounts(c);
+    for (const line of await syncAccounts(c)) c.out(line);
+    return;
+  }
+  guided(`Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]`, { short: `${sub ? `"${sub}" is not an` : 'accounts needs a'} command.`, details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]'], next: 'cloudy-cloud accounts --help', wrapShort: true });
+}
+
 // Rejects bad arguments before any key is read or the network is touched.
-const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model', '--env'];
-const CLOUD_OPTIONS = ['--name', '--branch', '--max-hours', '--model', '--env'];
+const START_OPTIONS = ['--repo', '--branch', '--task', '--task-file', '--max-hours', '--model', '--env', '--account'];
+const CLOUD_OPTIONS = ['--name', '--branch', '--max-hours', '--model', '--env', '--account'];
 const CLOUD_FLAGS = ['--no-attach', '--json'];
 function validateArgs(cmd, args) {
   const bad = (message, short = message) => usageError(`${message}\nRun: cloudy-cloud coordinator ${cmd} --help`, cmd, short);
@@ -1040,16 +1528,33 @@ function validateArgs(cmd, args) {
     }
     return;
   }
-  if (cmd === 'image') { if (args.some((a) => a !== '--save') || args.length > 1) bad('Expected image or image --save.'); return; }
+  if (cmd === 'image') { if (args.some((a) => a !== '--save' && a !== '--forget') || args.length > 1) bad('Expected image, image --save or image --forget.'); return; }
   if (cmd === 'status') { if (!SELECTOR_RE.test(args[0] ?? '') || args.slice(1).some((a) => a !== '--json') || args.length > 2) bad('Expected status NAME [--json].'); return; }
   if (cmd === 'ls') { if (args.length) bad('ls takes no arguments.'); return; }
   if (cmd === 'finish') { if (args.some((a) => a !== '--force') || args.length > 1) bad('finish takes only --force.'); return; }
   if (cmd === 'login') {
-    if (!SELECTOR_RE.test(args[0] ?? '')) bad('Expected login NAME [--code CODE|-].');
+    if (!SELECTOR_RE.test(args[0] ?? '')) bad('Expected login NAME [--code CODE|-] [--account LABEL].');
     const rest = args.slice(1);
-    // The --code value is checked in login() itself (its own rule decides), so any code shape reaches it.
-    if (rest.length > 2 || (rest.length && rest[0] !== '--code') || (rest[0] === '--code' && rest[1] === undefined)) bad('Expected login NAME [--code CODE|-].');
+    // --code CODE|- and --account LABEL may each appear once, in either order; the values are checked
+    // in login() itself (its own rules decide), so any value shape reaches it.
+    const seen = new Set();
+    for (let i = 0; i < rest.length; i++) {
+      const option = rest[i];
+      if (option !== '--code' && option !== '--account') bad('Expected login NAME [--code CODE|-] [--account LABEL].');
+      if (seen.has(option)) bad(`Repeated option: ${option}`);
+      seen.add(option);
+      if (rest[i + 1] === undefined || (option === '--account' && rest[i + 1].startsWith('-'))) bad('Expected login NAME [--code CODE|-] [--account LABEL].');
+      i++;
+    }
     return;
+  }
+  if (cmd === 'accounts') {
+    const [sub, ...rest] = args;
+    const badA = (message, short = message) => guided(`${message}\nUsage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]`, { short, details: ['Usage: cloudy-cloud accounts ls [--json] | rm LABEL | sync [--watch]'], next: 'cloudy-cloud accounts --help', wrapShort: true });
+    if (sub === 'ls') { if (rest.length > 1 || rest.some((a) => a !== '--json')) badA('Expected accounts ls [--json].'); return; }
+    if (sub === 'rm') { if (rest.length !== 1 || rest[0].startsWith('-')) badA('Expected accounts rm LABEL.'); return; }
+    if (sub === 'sync') { if (rest.length > 1 || rest.some((a) => a !== '--watch')) badA('Expected accounts sync [--watch].'); return; }
+    badA(sub ? `"${sub}" is not an accounts command.` : 'accounts needs a command.');
   }
   // Keep the original scripted error text. Selector prefixes are accepted by attach/stop here; start still uses NAME_RE.
   if (!(cmd === 'start' ? NAME_RE : SELECTOR_RE).test(args[0] ?? '')) bad('NAME must use lowercase letters, digits and hyphens (1 to 40 characters).', cmd === 'start' && (args[0] === undefined || args[0].startsWith('-')) ? 'start needs a NAME.' : 'NAME must use lowercase letters, digits and hyphens (1 to 40 characters).');
@@ -1114,11 +1619,20 @@ async function cloud(c, args) {
     }
     // --env on a reattach would silently do nothing: say so instead (env files apply at start only).
     if (envFileArgs(args, c.env).length) c.note(`Environment: the env files were not applied — coordinator ${name} already runs (env files are applied at start only).`);
+    // --account on a reattach must name the account the coordinator actually uses — a coordinator
+    // keeps its account; silently attaching to one on another account would be a lie. The local
+    // lease is the live record (a replacement sign-in moves it); the machine's account label was
+    // written at creation and can lag it, so it counts only when no lease exists.
+    const accountArg = flag(args, '--account');
+    const used = machineLease(c, match)?.label || match.labels?.account || '';
+    if (accountArg && used !== accountArg) guided(`Coordinator ${name} runs on account ${used || 'none'}, not ${accountArg} — a reattach cannot switch its account.\nNext step: pick another account (cloudy-cloud accounts ls) and start a new coordinator, or drop --account`, { short: `Coordinator ${name} does not use account ${accountArg}.`, next: 'cloudy-cloud accounts ls' });
     if (json) return c.out(JSON.stringify({ name, machine: safeText(mach(match) ?? ''), reattached: true, attach: `cloudy-cloud coordinator attach ${name}` }));
     c.out(`Reattaching to ${name}`);
     const code = await attach(c, [name], { noAttach: args.includes('--no-attach'), machine: match });
     if (!c.tty || args.includes('--no-attach')) return code;
-    return postAttach(c, name, async () => c.provider.connect(match.id, { retry: false }), code);
+    // An install-labeled machine already ran the post-sign-in work inside attach; a legacy one runs it here.
+    if (match.labels?.install === installId(c.env)) return code;
+    return postAttach(c, name, async () => c.provider.connect(match.id, { retry: false }), code, { machine: match });
   }
   // A fresh start only: what the GitHub clone would not have — commits the branch has not pushed to
   // origin/<branch> (fetched first), plus edits to tracked files. Untracked files warn but never block.
@@ -1142,30 +1656,36 @@ async function cloud(c, args) {
   }
   // Same start path as `coordinator start`; the flags that exist on both are passed straight through.
   const startArgs = [name, '--repo', repo, '--branch', branch,
-    ...['--max-hours', '--model'].flatMap((f) => (flag(args, f) !== undefined ? [f, flag(args, f)] : [])),
+    ...['--max-hours', '--model', '--account'].flatMap((f) => (flag(args, f) !== undefined ? [f, flag(args, f)] : [])),
     ...flags(args, '--env').flatMap((f) => ['--env', f]),
     ...(json ? ['--json'] : [])];
   const res = await start(c, startArgs);
   if (args.includes('--no-attach') || json || !c.tty) return undefined;
   // The machine attach and the post-attach check act on is the one start just made — never a second lookup
-  // by name (a same-named machine created meanwhile is not this coordinator).
-  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}` };
+  // by name (a same-named machine created meanwhile is not this coordinator). The labels it was created
+  // with are reconstructed here: install is what gates the account read-back (the account itself is in
+  // the local index, never on the machine).
+  const own = { id: res.sbx.id ?? res.sbx.sandboxId, name: res.sbx.name ?? `coord-${name}`, deleteAt: res.deleteAt, labels: { install: mine, name } };
   // A coordinator waiting for its Claude sign-in attaches to the sign-in pane, not to Claude: say so first.
   if (res?.needsLogin) c.out('Sign in to Claude in the window that opens (each coordinator has its own sign-in).');
-  const code = await attach(c, [name], { machine: own });
-  return postAttach(c, name, async () => res.sbx, code);
+  // attach runs the post-sign-in work (save/sync, health check, link report) itself.
+  return attach(c, [name], { machine: own });
 }
 
 async function run(argv, deps) {
   const [cmd, ...args] = argv;
-  const commands = { image, start, attach, login, ls, status, stop, finish: (c, a) => finish(c, a, deps), cloud };
+  const commands = { image, start, attach, login, ls, status, stop, finish: (c, a) => finish(c, a, deps), cloud, accounts: accountsCmd };
   const isHelp = (a) => a === '--help' || a === '-h';
   if ((isHelp(cmd) && !args.length) || (Object.hasOwn(commands, cmd) && args.length === 1 && isHelp(args[0]))) {
-    return (deps.out ?? console.log)(coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
+    return (deps.out ?? console.log)(cmd === 'accounts' ? helpText('accounts') : coordinatorHelp(Object.hasOwn(commands, cmd) ? cmd : undefined));
   }
-  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
+  if (!Object.hasOwn(commands, cmd)) usageError('Usage: cloudy-cloud coordinator image [--save] | start NAME --repo URL [--branch B] [--task TEXT | --task-file PATH] [--max-hours N] [--model NAME] [--env FILE]... [--json] | attach NAME | login NAME [--code CODE|-] [--account LABEL] | ls | status NAME [--json] | stop NAME | finish [--force]\nRun: cloudy-cloud coordinator --help', undefined, cmd ? `"${cmd}" is not a coordinator command.` : 'coordinator needs a command.');
   validateArgs(cmd, args);
   const c = await context(deps);
+  // The detached accounts-sync watcher can die with a laptop sleep: with leases outstanding and no
+  // live watcher, the next cloudy-cloud command resumes it (never the watcher process itself — its
+  // own run is the resume).
+  const isWatcher = cmd === 'accounts' && args[0] === 'sync' && args.includes('--watch');
   // A provider that cannot run coordinators at all says so in its own words first (it may name a working alternative);
   // only then does the generic snapshots check apply. The first sentence is the problem; it wraps, never truncates.
   if (['image', 'start', 'cloud'].includes(cmd) && c.provider.text?.coordinatorRefusal) {
@@ -1173,7 +1693,7 @@ async function run(argv, deps) {
     guided(c.provider.text.coordinatorRefusal, { short: s[0], details: s.slice(1, -1), next: s.length > 1 ? s.at(-1) : 'cloudy-cloud coordinator --help', wrapShort: true });
   }
   if (['image', 'start', 'cloud'].includes(cmd) && !c.primary.caps.hasSnapshots) guided(`Provider ${c.provider.name} has no snapshots, which coordinators need.`, { short: `Provider ${c.provider.name} has no snapshots, which coordinators need.`, next: 'cloudy-cloud setup --provider instabox' });
-  try { return await commands[cmd](c, args); } catch (e) {
+  try { const r = await commands[cmd](c, args); if (!isWatcher) accounts.ensureWatcher(c.env, c.spawnWatcher); return r; } catch (e) {
     // The key error always folds into one line for scripts (provider text is flattened so it cannot forge a
     // guidance label); the terminal fields carry our own words, with the provider's text as the diagnostic.
     // An error our own providers mark local keeps the short/next they carry; a foreign one gets generic words.

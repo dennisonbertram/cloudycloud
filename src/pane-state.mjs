@@ -11,6 +11,10 @@ const MARKS = /^[\s│|●⎿>*·⏺✗✖!❯-]+/; // box, bullet, prompt and c
 export const BLOCKED = /^(?:You've hit your [\w -]*limit|Invalid API key ·|Credit balance is too low)/i;
 // Claude's own "please sign in" screens. A fresh coordinator is expected to sit at one until the user signs in.
 export const SIGNIN = /^(?:Authentication required ·|Login expired ·|Not logged in ·|Select login method)/i;
+// A sign-in that died in place: the refresh token rotated away (a saved account used on a second
+// machine, or an old copy renewed after a newer one). The recovery is signing in again, so it counts
+// as a sign-in state — `stale` names it so callers can mark the account needsSignIn.
+export const STALE_AUTH = /(?:OAuth session expired|could not be refreshed)/i;
 // Screens a person answers once by attaching; the session is fine, so the machine stays.
 export const WAITING = /^(?:.*Do you trust the files|.*trust this folder|New MCP server found|Enable Remote Control|.*Remote Control.*\(y\/n\)|\d\. Yes, I accept)/i;
 const QUESTION = /^Do you want to /i, OPTION = /^1\.\s*Yes\b/i;
@@ -37,11 +41,13 @@ export function paneState(pane, task = '') {
   const loginUrl = lines.map((l) => { const u = l.match(LOGIN_URL)?.[0]; return u && u.length <= 4096 ? u : undefined; }).find(Boolean) ?? '';
   const codePrompt = lines.slice(-TAIL).some((l) => CODE_PROMPT.test(l));
   const signin = lines.find((l) => SIGNIN.test(l));
+  const stale = pick(lines.find((l) => STALE_AUTH.test(l)));
   return {
     blocked: pick(lines.find((l) => BLOCKED.test(l))),
     waiting: pick(lines.find((l) => WAITING.test(l)) ?? asked),
-    signin: pick(signin) || (codePrompt || loginUrl ? 'sign-in' : ''),
+    signin: pick(signin) || (codePrompt || loginUrl || stale ? 'sign-in' : ''),
     codePrompt,
     loginUrl,
+    stale,
   };
 }

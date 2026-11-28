@@ -5,7 +5,10 @@
 // Each coordinator signs in to Claude for itself — the image carries no sign-in: a copied login's
 // refresh token is single-use, so coordinators sharing one sign each other out. Before the session
 // command runs, this script removes a credentials file the image may have copied in — once, at the
-// first launch only, so a relaunch never deletes this coordinator's own sign-in. The sign-in check
+// first launch only, so a relaunch never deletes this coordinator's own sign-in. When `coordinator
+// start` delivers a saved account's credential to the machine it writes the .credentials-removed
+// marker itself before tmux starts, so this removal skips a delivered credential instead of
+// deleting it. The sign-in check
 // and `claude auth login` run under `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY`: an API-key
 // or token sign-in the session environment would satisfy is not the claude.ai sign-in each
 // coordinator needs. The check requires both "loggedIn": true and "authMethod": "claude.ai". The

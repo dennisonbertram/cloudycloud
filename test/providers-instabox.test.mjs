@@ -764,3 +764,29 @@ test('files.writeSecret uploads through the SDK upload route only, and fails clo
   await assert.rejects(bad.files.writeSecret('/home/user/a.json', 'TOKEN'), (e) => e.code === 'secret_write_unsupported' && /Next step/.test(e.message));
   assert.ok(!seen.some(([k]) => k === 'write'), 'files.write (and so the exec fallback) was never called');
 });
+
+test('files.readSecret downloads through the SDK file-content route only, and fails closed when it is missing', async () => {
+  const seen = [];
+  const execCalls = [];
+  const mk = (readStream) => {
+    const { sdk } = fakeSdk();
+    const create = sdk.Sandbox.create;
+    sdk.Sandbox.create = async (...a) => {
+      const b = await create(...a);
+      b.files = { read: async (p) => { seen.push(['read', p]); return new Uint8Array(); }, readStream };
+      b.commands = { exec: async (c) => { execCalls.push(c); return { stdout: 'e30=', stderr: '', exitCode: 0 }; }, run: async () => ({ stdout: '', stderr: '', exitCode: 0 }) };
+      return b;
+    };
+    return createProvider({ INSTABOX_API_KEY: KEY }, { sdk, fetchFn: fakeFetch().f, timing }).create({ image: 'x', envs: {}, labels: {}, ttlSeconds: 60 });
+  };
+  const ok = await mk(async (p, limit) => { seen.push(['stream', p]); return new TextEncoder().encode('SECRET'); });
+  assert.equal(new TextDecoder().decode(await ok.files.readSecret('/home/user/a.json')), 'SECRET');
+  // The route is missing (readStream resolves undefined): fail closed — the base64 exec fallback is never used for a secret.
+  const bad = await mk(async () => undefined);
+  await assert.rejects(bad.files.readSecret('/home/user/a.json'), (e) => e.code === 'secret_read_unsupported' && e.local === true && /Next step/.test(e.message));
+  // And when the SDK does not even have the route at all.
+  const gone = await mk(undefined);
+  await assert.rejects(gone.files.readSecret('/home/user/a.json'), (e) => e.code === 'secret_read_unsupported' && e.local === true);
+  assert.ok(!seen.some(([k]) => k === 'read'), 'files.read (and so the exec fallback) was never called');
+  assert.equal(execCalls.length, 0, 'no exec ran for a secret read');
+});
